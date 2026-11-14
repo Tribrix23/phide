@@ -49,9 +49,20 @@ public:
     void SaveSnippets(const std::wstring& filePath) const;
 
     /**
-     * @brief Retrieves all loaded snippets.
+     * @brief Retrieves all loaded snippets (mutable for GUI snippet editor).
      */
     [[nodiscard]] const std::vector<Snippet>& GetSnippets() const noexcept { return m_snippets; }
+    [[nodiscard]] std::vector<Snippet>& GetMutableSnippets() noexcept { return m_snippets; }
+
+    /**
+     * @brief Adds or updates a snippet and optionally saves snippets.json to disk.
+     */
+    size_t UpsertSnippet(size_t existingIndex, const Snippet& snippet, bool saveToDisk = true);
+
+    /**
+     * @brief Deletes a snippet by index and optionally saves snippets.json to disk.
+     */
+    bool DeleteSnippet(size_t index, bool saveToDisk = true);
 
     /**
      * @brief Retrieves the snippets file path on disk.

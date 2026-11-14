@@ -24,6 +24,9 @@ struct ShortcutItem {
     std::vector<std::wstring> keyPills; ///< e.g. {"Ctrl", "K"}, {"Ctrl", "S"}
     std::wstring when;                  ///< e.g. "global", "editorTextFocus"
     std::wstring source;                ///< e.g. "Default", "User"
+    std::wstring id;                    ///< Stable action id (e.g. "cmd_save", "cmd_find")
+    std::vector<std::wstring> defaultKeyPills; ///< Original default keys for reset
+    std::wstring conflictCommand;       ///< Non-empty when colliding with another binding
 };
 
 /**
@@ -71,21 +74,65 @@ public:
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] size_t GetShortcutsCount() const noexcept { return m_shortcuts.size(); }
 
+    // Interactive Editable Keybindings & Conflict Detection (#49)
+    [[nodiscard]] bool IsRecordingKeybinding() const noexcept { return m_isRecording; }
+    [[nodiscard]] int GetRecordingItemIdx() const noexcept { return m_recordingItemIdx; }
+    void BeginRecordingRow(int filteredRowIdx);
+    void BeginRecordingItem(int itemIdx);
+    void CancelRecording() noexcept;
+    bool CommitRecordedKeybinding();
+    bool ResetItemToDefault(int itemIdx);
+    bool HandleKeyRecording(WPARAM vk, bool isCtrl, bool isShift, bool isAlt);
+
+    [[nodiscard]] const std::vector<ShortcutItem>& GetShortcuts() const noexcept { return m_shortcuts; }
+    bool SetShortcutKeys(const std::wstring& idOrCommand, const std::vector<std::wstring>& newKeyPills);
+    [[nodiscard]] std::vector<std::wstring> FindConflictsForPills(
+        const std::vector<std::wstring>& pills,
+        int excludeItemIdx,
+        const std::wstring& whenScope) const;
+
+    bool LoadUserKeybindings(const std::wstring& jsonPath);
+    bool SaveUserKeybindings(const std::wstring& jsonPath) const;
+
+    [[nodiscard]] static std::vector<std::wstring> BuildKeyPillsFromEvent(bool isCtrl, bool isShift, bool isAlt, UINT vk);
+    [[nodiscard]] std::wstring ResolveOverrideActionForKey(bool isCtrl, bool isShift, bool isAlt, UINT vk, bool hasOpenEditor);
+    [[nodiscard]] bool IsActionDefaultUnchanged(const std::wstring& actionId) const;
+
 private:
     std::vector<ShortcutItem> m_shortcuts;
     std::wstring m_searchQuery;
+    std::wstring m_userKeybindingsPath;
     bool m_isSearchFocused = true;
     bool m_cursorVisible = true;
     float m_scrollOffsetY = 0.0f;
     int m_hoveredRow = -1;
 
+    bool m_isRecording = false;
+    int m_recordingItemIdx = -1;
+    std::vector<std::wstring> m_recordedPills;
+    std::wstring m_recordingConflictWarning;
+    std::vector<std::wstring> m_pendingChordPrefix;
+    ULONGLONG m_pendingChordTick = 0;
+
+    struct RowActionRect {
+        int itemIdx = -1;
+        D2D1_RECT_F editBounds{};
+        D2D1_RECT_F resetBounds{};
+    };
+    mutable std::vector<RowActionRect> m_rowActionRects;
+    D2D1_RECT_F m_recordCommitBounds{};
+    D2D1_RECT_F m_recordCancelBounds{};
+
     D2D1_RECT_F m_searchBoxBounds{};
     D2D1_RECT_F m_viewBounds{};
 
     void InitializeShortcuts();
+    void PopulateDefaultIdsAndBackups();
+    void RecomputeConflicts();
     [[nodiscard]] std::vector<size_t> GetFilteredIndices() const;
     void DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                         const std::wstring& text, float& curX, float centerY, float badgeH);
+                         const std::wstring& text, float& curX, float centerY, float badgeH,
+                         bool isConflict = false, bool isUserModified = false);
 };
 
 } // namespace phide::ui

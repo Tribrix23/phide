@@ -179,6 +179,7 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
         if (PtInRectF(pt, m_rcBtnTogglePma)) return DatabaseModalAction::TogglePmaRun;
         if (PtInRectF(pt, m_rcBtnOpenPma)) return DatabaseModalAction::OpenBrowserPma;
         if (PtInRectF(pt, m_rcBtnEditPma)) return DatabaseModalAction::EditPmaConfig;
+        if (PtInRectF(pt, m_rcBtnOpenSqlConsole)) return DatabaseModalAction::OpenSqlConsole;
     } else {
         if (PtInRectF(pt, m_rcCopyNginxUrl)) return DatabaseModalAction::CopyNginxUrl;
         if (PtInRectF(pt, m_rcCopyNginxPort)) return DatabaseModalAction::CopyNginxPort;
@@ -186,6 +187,10 @@ DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcep
         if (PtInRectF(pt, m_rcBtnToggleNginx)) return DatabaseModalAction::ToggleServerRun;
         if (PtInRectF(pt, m_rcBtnOpenNginx)) return DatabaseModalAction::OpenBrowserNginx;
         if (PtInRectF(pt, m_rcBtnEditNginx)) return DatabaseModalAction::EditNginxConfig;
+        if (PtInRectF(pt, m_rcBtnVhostPreset)) return DatabaseModalAction::CycleVhostPreset;
+        if (PtInRectF(pt, m_rcBtnApplyPreset)) return DatabaseModalAction::ApplyVhostPreset;
+        if (PtInRectF(pt, m_rcBtnPhpVersion)) return DatabaseModalAction::CyclePhpVersion;
+        if (PtInRectF(pt, m_rcBtnLiveReload)) return DatabaseModalAction::ToggleLiveReload;
     }
 
     return DatabaseModalAction::None;
@@ -451,6 +456,17 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         bool isEditHov = (m_hoveredAction == DatabaseModalAction::EditPmaConfig);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnEditPma, 4.0f, 4.0f), isEditHov ? theme.brushMenuHover.Get() : pBorderBrush);
         pRT->DrawText(L"Edit config.inc.php", 18, pFmtBtn, m_rcBtnEditPma, pWhiteBrush);
+
+        float sqlBtnW = config.ScaleF(132.0f);
+        m_rcBtnOpenSqlConsole = D2D1::RectF(m_rcBtnEditPma.right + config.ScaleF(10.0f), btnCY, (std::min)(rcSecC.right - config.ScaleF(10.0f), m_rcBtnEditPma.right + config.ScaleF(10.0f) + sqlBtnW), btnCY + actH);
+        bool isSqlHov = (m_hoveredAction == DatabaseModalAction::OpenSqlConsole);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnOpenSqlConsole, 4.0f, 4.0f), isSqlHov ? theme.brushMenuHover.Get() : pBorderBrush);
+        pRT->DrawText(L"SQL Console", 11, pFmtBtn, m_rcBtnOpenSqlConsole, pWhiteBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        m_rcBtnVhostPreset = {};
+        m_rcBtnApplyPreset = {};
+        m_rcBtnPhpVersion = {};
+        m_rcBtnLiveReload = {};
     } else {
         // Nginx Tab
         // Section A: Parameters Card
@@ -523,6 +539,49 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
         bool isEditHov = (m_hoveredAction == DatabaseModalAction::EditNginxConfig);
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnEditNginx, 4.0f, 4.0f), isEditHov ? theme.brushMenuHover.Get() : pBorderBrush);
         pRT->DrawText(L"Edit nginx.conf", 15, pFmtBtn, m_rcBtnEditNginx, pWhiteBrush);
+
+        m_rcBtnOpenSqlConsole = {};
+
+        // Section C: VHost Presets, PHP Version & Live Reload
+        float secPresetY = rcSecB.bottom + config.ScaleF(10.0f);
+        float secPresetH = config.ScaleF(106.0f);
+        D2D1_RECT_F rcSecPre = D2D1::RectF(cardX + padX, secPresetY, cardX + cardW - padX, secPresetY + secPresetH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcSecPre, 6.0f, 6.0f), theme.brushDrawerBg ? theme.brushDrawerBg.Get() : theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcSecPre, 6.0f, 6.0f), pBorderBrush, 1.0f);
+        D2D1_RECT_F rcHeadPre = D2D1::RectF(rcSecPre.left + config.ScaleF(12.0f), rcSecPre.top + config.ScaleF(7.0f), rcSecPre.right - config.ScaleF(12.0f), rcSecPre.top + config.ScaleF(24.0f));
+        pRT->DrawText(L"VHOST PRESETS, PHP RUNTIME & LIVE RELOAD (WS + SSE)", 53, pFmtHint, rcHeadPre, pAccentBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        float preY1 = rcSecPre.top + config.ScaleF(28.0f);
+        float preH = config.ScaleF(28.0f);
+        float colGap = config.ScaleF(8.0f);
+        float availW = (rcSecPre.right - rcSecPre.left) - config.ScaleF(24.0f);
+        float w1 = availW * 0.44f;
+        float w2 = availW * 0.24f;
+        float w3 = availW - w1 - w2 - colGap * 2.0f;
+
+        m_rcBtnVhostPreset = D2D1::RectF(rcSecPre.left + config.ScaleF(12.0f), preY1, rcSecPre.left + config.ScaleF(12.0f) + w1, preY1 + preH);
+        m_rcBtnApplyPreset = D2D1::RectF(m_rcBtnVhostPreset.right + colGap, preY1, m_rcBtnVhostPreset.right + colGap + w2, preY1 + preH);
+        m_rcBtnLiveReload  = D2D1::RectF(m_rcBtnApplyPreset.right + colGap, preY1, rcSecPre.right - config.ScaleF(12.0f), preY1 + preH);
+
+        auto drawChipBtn = [&](const D2D1_RECT_F& rc, DatabaseModalAction act, const std::wstring& txt, bool accent) {
+            bool hov = (m_hoveredAction == act);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rc, 4.0f, 4.0f),
+                accent ? pAccentBrush : (hov && theme.brushMenuHover ? theme.brushMenuHover.Get() : pBorderBrush));
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rc, 4.0f, 4.0f), pBorderBrush, 0.8f);
+            pRT->PushAxisAlignedClip(rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), pFmtBtn, rc, pWhiteBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->PopAxisAlignedClip();
+        };
+
+        drawChipBtn(m_rcBtnVhostPreset, DatabaseModalAction::CycleVhostPreset, L"Preset: " + GetSelectedVhostPreset(), false);
+        drawChipBtn(m_rcBtnApplyPreset, DatabaseModalAction::ApplyVhostPreset, L"Apply VHost", true);
+        drawChipBtn(m_rcBtnLiveReload, DatabaseModalAction::ToggleLiveReload,
+                    m_liveReloadEnabled ? L"Live Reload: WS+SSE ON" : L"Live Reload: OFF", false);
+
+        float preY2 = preY1 + preH + config.ScaleF(8.0f);
+        m_rcBtnPhpVersion = D2D1::RectF(rcSecPre.left + config.ScaleF(12.0f), preY2, rcSecPre.right - config.ScaleF(12.0f), preY2 + preH);
+        drawChipBtn(m_rcBtnPhpVersion, DatabaseModalAction::CyclePhpVersion,
+                    L"PHP Runtime: " + GetSelectedPhpLabel() + (m_phpVersions.size() > 1 ? L" (Click to Switch)" : L""), false);
     }
 
     // 5. Footer: Copied Feedback + Done Button

@@ -15,6 +15,8 @@
 #include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/dev/DapClient.hpp"
 
 namespace phide::ui {
 
@@ -59,6 +61,13 @@ enum class DebugBackend {
  */
 struct TerminalUrlHit {
     std::wstring url;
+    D2D1_RECT_F bounds{};
+};
+
+struct TerminalProblemHit {
+    std::wstring filePath;
+    int line1Based = 1;
+    int col1Based = 1;
     D2D1_RECT_F bounds{};
 };
 
@@ -160,6 +169,12 @@ struct TerminalSpan {
 struct TerminalLine {
     std::vector<TerminalSpan> spans;
     std::wstring rawText;
+    bool hasProblemMatch = false;
+    std::wstring problemFile;
+    int problemLine1 = 1;
+    int problemCol1 = 1;
+    size_t problemLinkStart = 0;
+    size_t problemLinkLen = 0;
 };
 
 /**
@@ -228,6 +243,8 @@ struct TerminalTab {
     std::wstring pendingErrorFile;
     int pendingErrorLine = 0;
     std::wstring pendingErrorToken;
+    phide::dev::ProblemMatcherState problemMatcherState;
+    std::function<void(const phide::dev::ProblemMatch&)> onProblemMatched;
 
     HANDLE hProcess = NULL;
     HANDLE hThread = NULL;
@@ -398,6 +415,25 @@ public:
     void SetOnDebugPaused(std::function<void(const std::wstring&, int)> cb) { m_onDebugPaused = std::move(cb); }
     void SetOnDebugResumed(std::function<void()> cb) { m_onDebugResumed = std::move(cb); }
     void SetOnDebugEnded(std::function<void()> cb) { m_onDebugEnded = std::move(cb); }
+    void SetOnProblemMatched(std::function<void(const phide::dev::ProblemMatch&)> cb) {
+        m_onProblemMatched = std::move(cb);
+        for (auto& t : m_tabs) {
+            if (t) {
+                t->onProblemMatched = m_onProblemMatched;
+                if (t->splitTab) t->splitTab->onProblemMatched = m_onProblemMatched;
+            }
+        }
+    }
+    void SetOnOpenProblemLink(std::function<void(const std::wstring& filePath, int line1, int col1)> cb) {
+        m_onOpenProblemLink = std::move(cb);
+    }
+    [[nodiscard]] bool HitTestProblemLink(POINT pt, TerminalProblemHit* outHit = nullptr) const;
+    void StartDapDebugSession(const phide::dev::LaunchConfig& cfg,
+                              const std::vector<phide::dev::DapBreakpoint>& breakpoints,
+                              const std::wstring& pythonExe = L"python.exe");
+    void UpdateDapBreakpoints(const std::vector<phide::dev::DapBreakpoint>& bps);
+    [[nodiscard]] phide::dev::DapClient& GetDapClient() noexcept { return m_dap; }
+    [[nodiscard]] const phide::dev::DapClient& GetDapClient() const noexcept { return m_dap; }
 
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -599,6 +635,32 @@ private:
     D2D1_RECT_F m_clearConsoleBtnBounds{};
     bool m_hoverClearConsole = false;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
+    mutable std::vector<TerminalProblemHit> m_visibleProblemLinks;
+    std::function<void(const phide::dev::ProblemMatch&)> m_onProblemMatched;
+    std::function<void(const std::wstring& filePath, int line1, int col1)> m_onOpenProblemLink;
+
+    // #26/#27 DAP Client + Debug Variables/Watch/Call Stack/Exception Breakpoints UI
+    phide::dev::DapClient m_dap;
+    bool m_useDapBackend = false;
+    phide::dev::LaunchConfig m_activeLaunchConfig{};
+    std::vector<phide::dev::DapBreakpoint> m_activeDapBreakpoints;
+    struct DebugInspectorStackHit { int frameId = 0; D2D1_RECT_F bounds{}; };
+    struct DebugInspectorVarHit { int varRef = 0; D2D1_RECT_F bounds{}; };
+    struct DebugInspectorWatchDelHit { size_t index = 0; D2D1_RECT_F bounds{}; };
+    D2D1_RECT_F m_debugInspectorBounds{};
+    D2D1_RECT_F m_debugWatchInputBounds{};
+    D2D1_RECT_F m_debugWatchAddBtnBounds{};
+    D2D1_RECT_F m_debugExcRaisedBounds{};
+    D2D1_RECT_F m_debugExcUncaughtBounds{};
+    bool m_debugWatchInputFocused = false;
+    std::wstring m_debugWatchInput;
+    float m_debugInspectorScrollY = 0.0f;
+    float m_debugInspectorMaxScrollY = 0.0f;
+    std::vector<DebugInspectorStackHit> m_debugStackHits;
+    std::vector<DebugInspectorVarHit> m_debugVarHits;
+    std::vector<DebugInspectorWatchDelHit> m_debugWatchDelHits;
+    void RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              const D2D1_RECT_F& inspectorBounds);
     std::function<void(const std::wstring&)> m_onLiveServerTabClosed;
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
     std::function<void(const std::wstring&, int, const std::wstring&, const std::wstring&)> m_onExecutionError;

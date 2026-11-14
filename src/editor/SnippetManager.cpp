@@ -2068,12 +2068,11 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
         if (in.is_open()) {
             std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
             in.close();
-            // If missing "!" or "picture:webp" or "css:gradient" or "rafce" or file is too small to contain the full expanded catalog
-            if (content.find(L"\"prefix\": \"!\"") == std::wstring::npos || 
-                content.find(L"\"prefix\": \"picture:webp\"") == std::wstring::npos ||
-                content.find(L"\"prefix\": \"css:gradient\"") == std::wstring::npos ||
-                content.find(L"\"prefix\": \"rafce\"") == std::wstring::npos ||
-                content.length() < 15000) {
+            // Only upgrade tiny legacy stubs lacking the expanded catalog; preserve full user-edited files
+            if (content.length() < 15000 &&
+                (content.find(L"\"prefix\": \"!\"") == std::wstring::npos ||
+                 content.find(L"\"prefix\": \"picture:webp\"") == std::wstring::npos ||
+                 content.find(L"\"prefix\": \"rafce\"") == std::wstring::npos)) {
                 needsExport = true;
             }
         } else {
@@ -2399,6 +2398,29 @@ bool SnippetManager::TryExpand(Buffer& buffer, const std::wstring& fileExt, cons
     if (!pMatch) return false;
 
     return ExpandSnippet(*pMatch, buffer, prefix.length(), filename);
+}
+
+size_t SnippetManager::UpsertSnippet(size_t existingIndex, const Snippet& snippet, bool saveToDisk) {
+    size_t resultIdx = existingIndex;
+    if (existingIndex < m_snippets.size()) {
+        m_snippets[existingIndex] = snippet;
+    } else {
+        m_snippets.push_back(snippet);
+        resultIdx = m_snippets.size() - 1;
+    }
+    if (saveToDisk && !m_snippetsFilePath.empty()) {
+        SaveSnippets(m_snippetsFilePath);
+    }
+    return resultIdx;
+}
+
+bool SnippetManager::DeleteSnippet(size_t index, bool saveToDisk) {
+    if (index >= m_snippets.size()) return false;
+    m_snippets.erase(m_snippets.begin() + static_cast<ptrdiff_t>(index));
+    if (saveToDisk && !m_snippetsFilePath.empty()) {
+        SaveSnippets(m_snippetsFilePath);
+    }
+    return true;
 }
 
 } // namespace phide::editor

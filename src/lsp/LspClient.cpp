@@ -1803,26 +1803,36 @@ bool LspClient::RequestRangeFormatting(
     return ParseFormattingEditsResponse(respJson, outEdits);
 }
 
+static std::wstring TrimWideWhitespace(const std::wstring& ws) {
+    size_t a = 0;
+    while (a < ws.size() && (ws[a] == L' ' || ws[a] == L'\t' || ws[a] == L'\r' || ws[a] == L'\n')) ++a;
+    size_t b = ws.size();
+    while (b > a && (ws[b - 1] == L' ' || ws[b - 1] == L'\t' || ws[b - 1] == L'\r' || ws[b - 1] == L'\n')) --b;
+    return ws.substr(a, b - a);
+}
+
 static std::wstring ExtractMarkupText(const JsonValue* v) {
     if (!v) return {};
     if (v->type == JsonValue::Type::String) {
-        return Utf8ToWide(v->strVal);
+        std::wstring text = Utf8ToWide(v->strVal);
+        return TrimWideWhitespace(text).empty() ? std::wstring{} : text;
     }
     if (v->type == JsonValue::Type::Object) {
         std::string val = v->GetString("value");
         std::string lang = v->GetString("language");
-        if (!val.empty()) {
+        std::wstring wideVal = Utf8ToWide(val);
+        if (!TrimWideWhitespace(wideVal).empty()) {
             if (!lang.empty()) {
-                return Utf8ToWide("```" + lang + "\n" + val + "\n```");
+                return Utf8ToWide("```" + lang + "\n") + wideVal + L"\n```";
             }
-            return Utf8ToWide(val);
+            return wideVal;
         }
     }
     if (v->type == JsonValue::Type::Array) {
         std::wstring joined;
         for (const auto& el : v->arrVal) {
             std::wstring part = ExtractMarkupText(&el);
-            if (!part.empty()) {
+            if (!TrimWideWhitespace(part).empty()) {
                 if (!joined.empty()) joined += L"\n\n";
                 joined += part;
             }

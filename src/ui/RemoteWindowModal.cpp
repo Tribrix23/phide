@@ -823,6 +823,185 @@ bool UploadRemoteSshFile(
     return true;
 }
 
+static std::wstring SanitizeVfsSegment(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (wchar_t c : s) {
+        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+            (c >= L'0' && c <= L'9') || c == L'-' || c == L'_' || c == L'.') {
+            out += c;
+        } else {
+            out += L'_';
+        }
+    }
+    return out.empty() ? L"default" : out;
+}
+
+std::wstring ResolveRemoteVfsCachePath(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& remotePath
+) {
+    wchar_t tempBuf[MAX_PATH] = { 0 };
+    DWORD n = ::GetTempPathW(MAX_PATH, tempBuf);
+    std::filesystem::path base = (n > 0) ? std::filesystem::path(tempBuf) : std::filesystem::temp_directory_path();
+    base /= L"phide_remote_vfs";
+
+    std::wstring scope;
+    switch (session.kind) {
+        case RemoteKind::Ssh:
+            scope = L"ssh_" + SanitizeVfsSegment(session.sshHost.alias.empty() ? session.sshHost.TargetSpec() : session.sshHost.alias);
+            break;
+        case RemoteKind::Wsl:
+            scope = L"wsl_" + SanitizeVfsSegment(session.wslDistro);
+            break;
+        case RemoteKind::DevContainer:
+            scope = L"docker_" + SanitizeVfsSegment(session.container.name.empty() ? session.container.id : session.container.name);
+            break;
+        default:
+            scope = L"local";
+            break;
+    }
+    base /= scope;
+
+    std::wstring rel = remotePath;
+    while (!rel.empty() && (rel.front() == L'/' || rel.front() == L'\\')) rel.erase(rel.begin());
+    std::filesystem::path combined = base;
+    size_t start = 0;
+    while (start < rel.size()) {
+        size_t sep = rel.find_first_of(L"/\\", start);
+        std::wstring seg = (sep == std::wstring::npos) ? rel.substr(start) : rel.substr(start, sep - start);
+        if (!seg.empty() && seg != L"." && seg != L"..") {
+            combined /= SanitizeVfsSegment(seg);
+        }
+        if (sep == std::wstring::npos) break;
+        start = sep + 1;
+    }
+    return combined.wstring();
+}
+
+std::wstring WrapCommandForRemote(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& commandLine,
+    const std::wstring& remoteWorkDir
+) {
+    if (session.kind == RemoteKind::Local || commandLine.empty()) {
+        return commandLine;
+    }
+    std::wstring effDir = !remoteWorkDir.empty() ? remoteWorkDir : session.remoteWorkDir;
+    std::wstring innerShell = commandLine;
+    if (!effDir.empty()) {
+        innerShell = L"cd " + QuotePosixSingle(effDir) + L" && " + commandLine;
+    }
+
+    if (session.kind == RemoteKind::Ssh) {
+        std::wstring sshExe = ResolveExePath(L"ssh.exe", L"C:\\Windows\\System32\\OpenSSH\\ssh.exe");
+        std::wstring cmd = QuoteWinArg(sshExe) + L" -o BatchMode=yes -o ConnectTimeout=10 ";
+        cmd += BuildSshBaseArgs(session.sshHost, false, false);
+        cmd += QuoteWinArg(session.sshHost.TargetSpec()) + L" ";
+        cmd += QuoteWinArg(L"sh -lc " + QuotePosixSingle(innerShell));
+        return cmd;
+    }
+    if (session.kind == RemoteKind::Wsl) {
+        std::wstring wslExe = ResolveExePath(L"wsl.exe", L"C:\\Windows\\System32\\wsl.exe");
+        std::wstring cmd = QuoteWinArg(wslExe);
+        if (!session.wslDistro.empty()) {
+            cmd += L" -d " + QuoteWinArg(session.wslDistro);
+        }
+        if (!effDir.empty()) {
+            cmd += L" --cd " + QuoteWinArg(effDir);
+        }
+        cmd += L" -- sh -lc " + QuoteWinArg(commandLine);
+        return cmd;
+    }
+    if (session.kind == RemoteKind::DevContainer) {
+        std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+        std::wstring cmd = QuoteWinArg(dockerExe) + L" exec -i ";
+        if (!effDir.empty()) {
+            cmd += L"-w " + QuoteWinArg(effDir) + L" ";
+        }
+        cmd += QuoteWinArg(session.container.id) + L" sh -lc " + QuoteWinArg(commandLine);
+        return cmd;
+    }
+    return commandLine;
+}
+
+bool DownloadRemoteContainerFile(
+    const DevContainerEntry& container,
+    const std::wstring& remotePath,
+    const std::wstring& localCachePath,
+    std::wstring& outError
+) {
+    outError.clear();
+    if (!HasDockerTool() || container.id.empty()) {
+        outError = L"Docker CLI not available or container ID empty.";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::path p(localCachePath);
+    if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring fullCmd = QuoteWinArg(dockerExe) + L" cp " + QuoteWinArg(container.id + L":" + remotePath) + L" " + QuoteWinArg(localCachePath);
+    DWORD exitCode = 1;
+    std::wstring out = RunSilentProcessOutput(fullCmd, 12000, &exitCode);
+    if (exitCode != 0 || !std::filesystem::exists(localCachePath, ec)) {
+        outError = out.empty() ? L"Failed to copy file from Dev Container." : TrimWS(out);
+        return false;
+    }
+    return true;
+}
+
+bool UploadRemoteContainerFile(
+    const DevContainerEntry& container,
+    const std::wstring& localCachePath,
+    const std::wstring& remotePath,
+    std::wstring& outError
+) {
+    outError.clear();
+    if (!HasDockerTool() || container.id.empty()) {
+        outError = L"Docker CLI not available or container ID empty.";
+        return false;
+    }
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring fullCmd = QuoteWinArg(dockerExe) + L" cp " + QuoteWinArg(localCachePath) + L" " + QuoteWinArg(container.id + L":" + remotePath);
+    DWORD exitCode = 1;
+    std::wstring out = RunSilentProcessOutput(fullCmd, 12000, &exitCode);
+    if (exitCode != 0) {
+        outError = out.empty() ? L"Failed to sync file back to Dev Container." : TrimWS(out);
+        return false;
+    }
+    return true;
+}
+
+bool UploadRemoteSessionFile(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& localCachePath,
+    const std::wstring& remotePath,
+    std::wstring& outError
+) {
+    if (session.kind == RemoteKind::Ssh) {
+        return UploadRemoteSshFile(session.sshHost, localCachePath, remotePath, outError);
+    }
+    if (session.kind == RemoteKind::DevContainer) {
+        return UploadRemoteContainerFile(session.container, localCachePath, remotePath, outError);
+    }
+    if (session.kind == RemoteKind::Wsl) {
+        // Direct UNC copy into \\wsl.localhost\<distro>\...
+        std::wstring posixRel = remotePath;
+        std::replace(posixRel.begin(), posixRel.end(), L'/', L'\\');
+        if (!posixRel.empty() && posixRel.front() != L'\\') posixRel = L"\\" + posixRel;
+        std::wstring uncDest = L"\\\\wsl.localhost\\" + session.wslDistro + posixRel;
+        if (::CopyFileW(localCachePath.c_str(), uncDest.c_str(), FALSE)) {
+            outError.clear();
+            return true;
+        }
+        outError = L"Failed to copy file to WSL destination.";
+        return false;
+    }
+    outError.clear();
+    return true;
+}
+
 } // namespace remote
 
 // =============================================================================

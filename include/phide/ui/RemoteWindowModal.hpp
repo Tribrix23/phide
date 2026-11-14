@@ -113,6 +113,56 @@ bool EnsureSshConfigExists();
     std::wstring& outError
 );
 
+enum class RemoteKind {
+    Local = 0,
+    Ssh = 1,
+    Wsl = 2,
+    DevContainer = 3
+};
+
+struct RemoteWorkspaceSession {
+    RemoteKind kind = RemoteKind::Local;
+    SshHostEntry sshHost;
+    std::wstring wslDistro;
+    DevContainerEntry container;
+    std::wstring remoteWorkDir;
+    std::wstring label;
+
+    [[nodiscard]] bool IsRemote() const noexcept { return kind != RemoteKind::Local; }
+};
+
+[[nodiscard]] std::wstring ResolveRemoteVfsCachePath(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& remotePath
+);
+
+[[nodiscard]] std::wstring WrapCommandForRemote(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& commandLine,
+    const std::wstring& remoteWorkDir = L""
+);
+
+[[nodiscard]] bool DownloadRemoteContainerFile(
+    const DevContainerEntry& container,
+    const std::wstring& remotePath,
+    const std::wstring& localCachePath,
+    std::wstring& outError
+);
+
+[[nodiscard]] bool UploadRemoteContainerFile(
+    const DevContainerEntry& container,
+    const std::wstring& localCachePath,
+    const std::wstring& remotePath,
+    std::wstring& outError
+);
+
+[[nodiscard]] bool UploadRemoteSessionFile(
+    const RemoteWorkspaceSession& session,
+    const std::wstring& localCachePath,
+    const std::wstring& remotePath,
+    std::wstring& outError
+);
+
 } // namespace remote
 
 enum class RemoteModalMode {

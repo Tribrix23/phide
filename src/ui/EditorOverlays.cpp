@@ -245,6 +245,7 @@ void EditorCanvas::OpenInlineFindBar(
     bool withReplace,
     const std::wstring& seedQuery,
     const editor::SearchRangeFilter* selRange) {
+    DismissHoverCard();
     m_findBar.isOpen = true;
     m_findBar.isReplaceOpen = withReplace;
     m_findBar.focusedInput = 1;
@@ -582,7 +583,11 @@ void EditorCanvas::OpenPeekPanel(
     const std::wstring& subtitle,
     size_t anchorLine,
     std::vector<PeekItemEntry> items) {
+    DismissHoverCard();
     m_peekPanel.isOpen = true;
+    m_peekPanel.rcPanel = {};
+    m_peekPanel.rcCloseBtn = {};
+    m_peekPanel.rcOpenFileBtn = {};
     m_peekPanel.mode = mode;
     m_peekPanel.title = title;
     m_peekPanel.subtitle = subtitle;
@@ -599,7 +604,11 @@ void EditorCanvas::OpenPeekPanel(
 void EditorCanvas::OpenCodeMetricsPanel(
     const editor::WorkspaceCodeMetrics& metrics,
     const std::wstring& activeFileLabel) {
+    DismissHoverCard();
     m_peekPanel.isOpen = true;
+    m_peekPanel.rcPanel = {};
+    m_peekPanel.rcCloseBtn = {};
+    m_peekPanel.rcOpenFileBtn = {};
     m_peekPanel.mode = PeekMode::CodeMetrics;
     m_peekPanel.title = L"Code Metrics & Complexity";
     m_peekPanel.subtitle = activeFileLabel;
@@ -713,6 +722,27 @@ bool EditorCanvas::HandlePeekWheel(POINT pt, short delta) {
         return true;
     }
     return true;
+}
+
+LPCWSTR EditorCanvas::GetPeekCursorForPoint(POINT pt) const noexcept {
+    if (!m_peekPanel.isOpen || !PtInRectF(pt, m_peekPanel.rcPanel)) return nullptr;
+    if (m_peekPanel.rcCloseBtn.right > m_peekPanel.rcCloseBtn.left && PtInRectF(pt, m_peekPanel.rcCloseBtn)) {
+        return IDC_HAND;
+    }
+    if (m_peekPanel.mode != PeekMode::CodeMetrics &&
+        m_peekPanel.rcOpenFileBtn.right > m_peekPanel.rcOpenFileBtn.left &&
+        PtInRectF(pt, m_peekPanel.rcOpenFileBtn)) {
+        return IDC_HAND;
+    }
+    if (m_peekPanel.mode != PeekMode::CodeMetrics) {
+        for (const auto& item : m_peekPanel.items) {
+            if (item.bounds.right > item.bounds.left && item.bounds.bottom > item.bounds.top &&
+                PtInRectF(pt, item.bounds)) {
+                return IDC_HAND;
+            }
+        }
+    }
+    return IDC_ARROW;
 }
 
 void EditorCanvas::RenderInlinePeekPanel(
@@ -881,6 +911,7 @@ void EditorCanvas::OpenRenameWidget(
     const std::wstring& oldName,
     editor::RenamePlan plan,
     const std::wstring& statusNote) {
+    DismissHoverCard();
     m_renameWidget.isOpen = true;
     m_renameWidget.showPreview = false;
     m_renameWidget.oldName = oldName;
@@ -1020,14 +1051,32 @@ bool EditorCanvas::HitTestBreadcrumbErrorBadge(POINT pt) const noexcept {
     return PtInRectF(pt, m_breadcrumbErrBadgeBounds);
 }
 
+static bool HasVisibleTextChars(const std::wstring& s) noexcept {
+    for (wchar_t ch : s) {
+        if (ch > L' ' && ch != L'\u00A0') return true;
+    }
+    return false;
+}
+
 void EditorCanvas::ShowHoverCard(size_t line, size_t col, POINT screenPt, const std::wstring& markdown) {
     m_hoverCard.line = line;
     m_hoverCard.col = col;
     m_hoverCard.anchorPt = screenPt;
     m_hoverCard.rawMarkdown = markdown;
     m_hoverCard.blocks = editor::HoverAndSignatureHelper::ParseMarkdownBlocks(markdown);
-    m_hoverCard.visible = !m_hoverCard.blocks.empty();
-    if (!m_hoverCard.visible) m_hoverCard.bounds = {};
+    bool hasReadable = false;
+    for (const auto& blk : m_hoverCard.blocks) {
+        if (blk.kind != editor::MarkdownBlock::Kind::Separator && HasVisibleTextChars(blk.text)) {
+            hasReadable = true;
+            break;
+        }
+    }
+    m_hoverCard.visible = hasReadable;
+    m_hoverCard.paneBounds = {};
+    if (!m_hoverCard.visible) {
+        m_hoverCard.blocks.clear();
+        m_hoverCard.bounds = {};
+    }
 }
 
 void EditorCanvas::RenderRichHoverCard(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
@@ -1051,36 +1100,52 @@ void EditorCanvas::RenderRichHoverCard(ID2D1RenderTarget* pRT, Theme& theme, con
     float totalH = padY * 2.0f;
     float maxContentW = config.ScaleF(180.0f);
     const float maxTotalH = config.ScaleF(260.0f);
+    bool hasTextBlock = false;
 
     for (const auto& blk : m_hoverCard.blocks) {
         if (blk.kind == editor::MarkdownBlock::Kind::Separator) {
+            if (measured.empty()) continue;
             measured.push_back({ blk.kind, nullptr, config.ScaleF(7.0f), 0.0f });
             totalH += config.ScaleF(7.0f);
             continue;
         }
+        if (!HasVisibleTextChars(blk.text)) continue;
         IDWriteTextFormat* fmt = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? codeFmt : bodyFmt;
         float availW = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? (innerW - config.ScaleF(12.0f)) : innerW;
         Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                blk.text.c_str(), static_cast<UINT32>(blk.text.size()), fmt, availW, 400.0f, &tl))) {
+                blk.text.c_str(), static_cast<UINT32>(blk.text.size()), fmt, availW, 400.0f, &tl)) && tl) {
+            // Theme formats default to vertical centering and NO_WRAP; align NEAR and enable wrapping before measuring.
+            tl->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            tl->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            tl->SetWordWrapping(blk.kind == editor::MarkdownBlock::Kind::CodeBlock
+                                ? DWRITE_WORD_WRAPPING_EMERGENCY_BREAK
+                                : DWRITE_WORD_WRAPPING_WRAP);
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(tl->GetMetrics(&tm))) {
                 float extra = (blk.kind == editor::MarkdownBlock::Kind::CodeBlock) ? config.ScaleF(10.0f) : config.ScaleF(4.0f);
-                float bh = tm.height + extra;
+                float bh = (std::max)(config.ScaleF(16.0f), tm.height + extra);
                 if (totalH + bh > maxTotalH && !measured.empty()) break;
                 totalH += bh;
                 maxContentW = (std::max)(maxContentW, tm.widthIncludingTrailingWhitespace +
                     (blk.kind == editor::MarkdownBlock::Kind::CodeBlock ? config.ScaleF(14.0f) : 0.0f));
                 measured.push_back({ blk.kind, std::move(tl), bh, tm.widthIncludingTrailingWhitespace });
+                hasTextBlock = true;
             }
         }
     }
-    if (measured.empty()) return;
+    if (!hasTextBlock || measured.empty()) {
+        m_hoverCard.visible = false;
+        m_hoverCard.bounds = {};
+        return;
+    }
 
     float boxW = (std::min)(maxCardW, maxContentW + padX * 2.0f);
     float boxH = (std::min)(maxTotalH, totalH);
-    float paneLeft = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.left : config.ScaleF(20.0f);
-    float paneRight = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left) ? m_lastActivePaneBounds.right : config.ScaleF(1100.0f);
+    const bool hasExplicitPane = (m_hoverCard.paneBounds.right > m_hoverCard.paneBounds.left);
+    const D2D1_RECT_F& activePane = hasExplicitPane ? m_hoverCard.paneBounds : m_lastActivePaneBounds;
+    float paneLeft = (activePane.right > activePane.left) ? activePane.left : config.ScaleF(20.0f);
+    float paneRight = (activePane.right > activePane.left) ? activePane.right : config.ScaleF(1100.0f);
 
     float x = static_cast<float>(m_hoverCard.anchorPt.x) - config.ScaleF(12.0f);
     x = (std::max)(paneLeft + config.ScaleF(8.0f), (std::min)(x, paneRight - boxW - config.ScaleF(10.0f)));
@@ -1191,7 +1256,10 @@ void EditorCanvas::RenderSignatureHelpPopup(ID2D1RenderTarget* pRT, Theme& theme
     Microsoft::WRL::ComPtr<IDWriteTextLayout> sigLayout;
     float sigW = config.ScaleF(200.0f), sigH = config.ScaleF(18.0f);
     if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-            sig.label.c_str(), static_cast<UINT32>(sig.label.size()), codeFmt, sigAvailW, 120.0f, &sigLayout))) {
+            sig.label.c_str(), static_cast<UINT32>(sig.label.size()), codeFmt, sigAvailW, 120.0f, &sigLayout)) && sigLayout) {
+        sigLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        sigLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        sigLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
         // Highlight active parameter substring inside signature label
         if (activeParam >= 0 && activeParam < static_cast<int>(sig.parameters.size())) {
             const std::wstring& pLbl = sig.parameters[static_cast<size_t>(activeParam)].label;
@@ -1226,7 +1294,10 @@ void EditorCanvas::RenderSignatureHelpPopup(ID2D1RenderTarget* pRT, Theme& theme
     float docH = 0.0f, docW = 0.0f;
     if (!docText.empty()) {
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                docText.c_str(), static_cast<UINT32>(docText.size()), docFmt, maxW - padX * 2.0f, 120.0f, &docLayout))) {
+                docText.c_str(), static_cast<UINT32>(docText.size()), docFmt, maxW - padX * 2.0f, 120.0f, &docLayout)) && docLayout) {
+            docLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            docLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            docLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(docLayout->GetMetrics(&tm))) {
                 docW = tm.widthIncludingTrailingWhitespace;

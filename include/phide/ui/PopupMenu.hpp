@@ -68,6 +68,7 @@ enum class MenuActionId {
     Settings,
     KeyboardShortcuts,
     UserSnippets,
+    UserSnippetsGui,
     ThemeSettings,
 
     // Main View Menu Actions
@@ -246,6 +247,8 @@ enum class MenuActionId {
 
     // More Actions Menu Actions (Activity Rail 3-Dot Dropdown)
     ViewMonitor,
+    ViewTestExplorer,
+    ViewSqlConsole,
     MoreTraceCode,
     MoreDependencyGraph,
     MoreCallHierarchy,

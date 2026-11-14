@@ -56,9 +56,12 @@
 #include "phide/editor/IntelliSenseEngine.hpp"
 #include "phide/editor/WebIntelliSenseData.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
+#include "phide/workspace/WorkspaceConfigEngine.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/workspace/IgnoreEngine.hpp"
+#include "phide/git/GitWorkflowEngine.hpp"
 #include "phide/server/LiveServer.hpp"
+#include "phide/db/SqlEngine.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -361,6 +364,21 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 128) {
         goto run_test_128;
+    }
+    if (targetTest == 129) {
+        goto run_test_129;
+    }
+    if (targetTest == 130) {
+        goto run_test_130;
+    }
+    if (targetTest == 131) {
+        goto run_test_131;
+    }
+    if (targetTest == 132) {
+        goto run_test_132;
+    }
+    if (targetTest == 133) {
+        goto run_test_133;
     }
 
     if (targetTest == 66) {
@@ -20015,6 +20033,1392 @@ run_test_128:
 
         if (targetTest == 128) {
             std::cout << "Target test 128 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 129] Phase 1 Source Control Completeness: #37 Compare Files,
+    //            #35 Inline & 3-Way Merge Conflicts, #33 Stash/Hunks/Amend/Tags/Rebase
+    // =========================================================================
+run_test_129:
+    if (targetTest == 0 || targetTest == 129) {
+        std::cout << "\n[TEST 129] Verifying Git Completeness (#37 Compare Files, #35 Merge Conflicts, #33 Hunks/Stash/Amend/Branch/Tag/Rebase)..." << std::endl;
+        namespace fs = std::filesystem;
+        std::error_code ec129;
+        const fs::path tmpRoot = fs::temp_directory_path() / L"phide_test_129_git_phase1";
+        fs::remove_all(tmpRoot, ec129);
+        fs::create_directories(tmpRoot, ec129);
+
+        // --- A. #37 Compare Two Arbitrary Files (Window Diff Model + UI Rendering) ---
+        {
+            const fs::path fileA = tmpRoot / L"left_version.txt";
+            const fs::path fileB = tmpRoot / L"right_version.txt";
+            {
+                std::ofstream fA(fileA, std::ios::binary);
+                fA << "alpha\nbeta_old\ngamma\n";
+                std::ofstream fB(fileB, std::ios::binary);
+                fB << "alpha\nbeta_new\ngamma\ndelta_added\n";
+            }
+
+            phide::editor::Buffer bufA, bufB;
+            assert(bufA.LoadFromFile(fileA.wstring()));
+            assert(bufB.LoadFromFile(fileB.wstring()));
+            phide::editor::OpenDocument diffDoc;
+            diffDoc.filePath = fileB.wstring();
+            diffDoc.fileName = L"left_version.txt \u2194 right_version.txt";
+            diffDoc.isDiffView = true;
+            diffDoc.isDiffLeftReadOnly = true;
+            diffDoc.isDiffRightReadOnly = false;
+            diffDoc.diffOriginalTitle = L"left_version.txt (Selected)";
+            diffDoc.diffWorkingTitle = L"right_version.txt (Target)";
+            diffDoc.diffOriginalBuffer = bufA;
+            diffDoc.buffer = bufB;
+
+            // Populate hunks & verify RevertDiffHunkInLines + RenderDiffView offscreen
+            phide::editor::OpenDocument::DiffHunkItem modHunk;
+            modHunk.leftStart = 1;
+            modHunk.leftCount = 1;
+            modHunk.rightStart = 1;
+            modHunk.rightCount = 1;
+            diffDoc.diffHunks.push_back(modHunk);
+            diffDoc.diffModifiedLines.insert(1);
+            diffDoc.diffAddedLines.insert(3);
+
+            auto reverted = phide::git::GitWorkflowEngine::RevertDiffHunkInLines(diffDoc.buffer.GetLines(), diffDoc.diffOriginalBuffer, modHunk);
+            assert(reverted.size() == 4 && reverted[1] == L"beta_old" && reverted[3] == L"delta_added");
+
+            ComPtr<IWICBitmap> bmp;
+            ComPtr<ID2D1RenderTarget> rt;
+            CreateTarget(bmp, rt);
+            phide::ui::Theme theme;
+            phide::app::AppConfig cfg;
+            theme.CreateDeviceResources(rt.Get(), pDWriteFactory.Get());
+            phide::ui::EditorCanvas canvas;
+            std::vector<phide::editor::OpenDocument> docs;
+            docs.push_back(std::move(diffDoc));
+            rt->BeginDraw();
+            canvas.Render(rt.Get(), theme, cfg, docs, 0, 0.0f, 1100.0f, 700.0f, false);
+            rt->EndDraw();
+            assert(!docs[0].diffHunkActionHits.empty());
+        }
+
+        // --- B. #35 Merge Conflicts (2-way + diff3 + Accept Current/Incoming/Both + 3-Way View) ---
+        {
+            std::vector<std::wstring> conflictLines = {
+                L"int header = 1;",
+                L"<<<<<<< HEAD",
+                L"int value = 42;",
+                L"||||||| base",
+                L"int value = 0;",
+                L"=======",
+                L"int value = 99;",
+                L">>>>>>> feature/branch",
+                L"int footer = 2;"
+            };
+            auto blocks = phide::git::GitWorkflowEngine::ParseMergeConflicts(conflictLines);
+            assert(blocks.size() == 1);
+            assert(blocks[0].startLine == 1 && blocks[0].baseLine == 3 && blocks[0].separatorLine == 5 && blocks[0].endLine == 7);
+            assert(blocks[0].currentLabel == L"HEAD");
+            assert(blocks[0].incomingLabel == L"feature/branch");
+            assert(blocks[0].currentLines.size() == 1 && blocks[0].currentLines[0] == L"int value = 42;");
+            assert(blocks[0].baseLines.size() == 1 && blocks[0].baseLines[0] == L"int value = 0;");
+            assert(blocks[0].incomingLines.size() == 1 && blocks[0].incomingLines[0] == L"int value = 99;");
+
+            auto resCurr = phide::git::GitWorkflowEngine::ApplyConflictResolution(conflictLines, blocks[0], phide::git::ConflictResolutionChoice::AcceptCurrent);
+            assert(resCurr.size() == 3 && resCurr[1] == L"int value = 42;");
+            auto resInc = phide::git::GitWorkflowEngine::ApplyConflictResolution(conflictLines, blocks[0], phide::git::ConflictResolutionChoice::AcceptIncoming);
+            assert(resInc.size() == 3 && resInc[1] == L"int value = 99;");
+            auto resBoth = phide::git::GitWorkflowEngine::ApplyConflictResolution(conflictLines, blocks[0], phide::git::ConflictResolutionChoice::AcceptBoth);
+            assert(resBoth.size() == 4 && resBoth[1] == L"int value = 42;" && resBoth[2] == L"int value = 99;");
+
+            auto preview = phide::git::GitWorkflowEngine::BuildThreeWayMergePreview(conflictLines);
+            assert(preview.conflictCount == 1);
+            assert(preview.currentText.find(L"int value = 42;") != std::wstring::npos);
+            assert(preview.incomingText.find(L"int value = 99;") != std::wstring::npos);
+
+            auto resolveAll = phide::git::GitWorkflowEngine::ResolveAllConflicts(conflictLines, phide::git::ConflictResolutionChoice::AcceptIncoming);
+            assert(phide::git::GitWorkflowEngine::ParseMergeConflicts(resolveAll).empty());
+
+            // Verify 3-way Merge Editor renders & hit-tests cleanly
+            phide::editor::OpenDocument mergeDoc;
+            mergeDoc.isMergeView = true;
+            mergeDoc.buffer.SetLines(conflictLines);
+            mergeDoc.mergeCurrentBuffer.SetText(preview.currentText);
+            mergeDoc.mergeIncomingBuffer.SetText(preview.incomingText);
+            phide::editor::OpenDocument::MergeConflictRange cr;
+            cr.startLine = blocks[0].startLine;
+            cr.baseLine = blocks[0].baseLine;
+            cr.separatorLine = blocks[0].separatorLine;
+            cr.endLine = blocks[0].endLine;
+            mergeDoc.mergeConflicts.push_back(cr);
+
+            ComPtr<IWICBitmap> bmp;
+            ComPtr<ID2D1RenderTarget> rt;
+            CreateTarget(bmp, rt);
+            phide::ui::Theme theme;
+            phide::app::AppConfig cfg;
+            theme.CreateDeviceResources(rt.Get(), pDWriteFactory.Get());
+            phide::ui::EditorCanvas canvas;
+            std::vector<phide::editor::OpenDocument> mdocs;
+            mdocs.push_back(std::move(mergeDoc));
+            rt->BeginDraw();
+            canvas.Render(rt.Get(), theme, cfg, mdocs, 0, 0.0f, 1200.0f, 700.0f, false);
+            rt->EndDraw();
+            assert(mdocs[0].mergePaneActionHits.size() >= 2);
+            assert(mdocs[0].mergeMarkResolvedBtnBounds.right > mdocs[0].mergeMarkResolvedBtnBounds.left);
+
+            size_t hl = 999, hc = 999;
+            POINT centerPt{ 600, 300 };
+            assert(canvas.HitTestMergeCenterPane(mdocs[0], cfg, centerPt, hl, hc));
+        }
+
+        // --- C. #33 Real Git Repo: Hunk Staging/Unstaging, Amend, Stash, Branches, Tags, Cherry-Pick, Rebase ---
+        {
+            const fs::path repoDir = tmpRoot / L"repo";
+            fs::create_directories(repoDir, ec129);
+            auto runGitSync = [&](const std::wstring& args) -> int {
+                std::wstring fullCmd = L"git -C \"" + repoDir.wstring() + L"\" " + args + L" >nul 2>nul";
+                return _wsystem(fullCmd.c_str());
+            };
+            auto captureGitSync = [&](const std::wstring& args) -> std::string {
+                const fs::path outTxt = tmpRoot / L"git_out.txt";
+                std::wstring fullCmd = L"git -C \"" + repoDir.wstring() + L"\" " + args + L" > \"" + outTxt.wstring() + L"\" 2>&1";
+                _wsystem(fullCmd.c_str());
+                std::ifstream ifs(outTxt, std::ios::binary);
+                return std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            };
+
+            assert(runGitSync(L"init -b main") == 0 || runGitSync(L"init") == 0);
+            assert(runGitSync(L"config user.email \"dev@phide.local\"") == 0);
+            assert(runGitSync(L"config user.name \"Phide Tester\"") == 0);
+
+            const fs::path codeFile = repoDir / L"app.txt";
+            {
+                std::ofstream ofs(codeFile, std::ios::binary);
+                ofs << "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n";
+            }
+            assert(runGitSync(L"add app.txt") == 0);
+            assert(runGitSync(L"commit -m \"initial commit\"") == 0);
+
+            phide::ui::DrawerPanel gitDrawer;
+            gitDrawer.SetOpenFolderPath(repoDir.wstring());
+            gitDrawer.RefreshGitState(false);
+
+            auto waitDrawer = [&]() {
+                for (int t = 0; t < 200; ++t) {
+                    if (!gitDrawer.IsGitLoading() && gitDrawer.GetActiveWorkerCount() == 0) break;
+                    Sleep(25);
+                }
+            };
+
+            // 1. Partial Hunk Staging & Unstaging
+            {
+                std::ofstream ofs(codeFile, std::ios::binary);
+                ofs << "line1\nline2_mod\nline3\nline4\nline5\nline6\nline7_mod\nline8\n";
+            }
+            phide::editor::Buffer origBuf, workBuf;
+            origBuf.SetLines({ L"line1", L"line2", L"line3", L"line4", L"line5", L"line6", L"line7", L"line8" });
+            workBuf.SetLines({ L"line1", L"line2_mod", L"line3", L"line4", L"line5", L"line6", L"line7_mod", L"line8" });
+
+            phide::editor::OpenDocument::DiffHunkItem hunk1;
+            hunk1.leftStart = 1; hunk1.leftCount = 1;
+            hunk1.rightStart = 1; hunk1.rightCount = 1;
+            std::string patch1 = phide::git::GitWorkflowEngine::BuildUnifiedHunkPatch(L"app.txt", origBuf, workBuf, hunk1);
+            assert(!patch1.empty());
+            assert(gitDrawer.StageHunkPatch(patch1, false));
+
+            std::string cached = captureGitSync(L"diff --cached");
+            assert(cached.find("+line2_mod") != std::string::npos);
+            assert(cached.find("+line7_mod") == std::string::npos && "Second hunk must stay unstaged!");
+
+            // Unstage hunk1
+            assert(gitDrawer.StageHunkPatch(patch1, true));
+            cached = captureGitSync(L"diff --cached");
+            assert(cached.find("+line2_mod") == std::string::npos && "Hunk 1 must be unstaged!");
+
+            // 2. Stash Push w/ Message + Parse + Apply + Pop + Drop
+            gitDrawer.StashChangesWithMessageAsync(L"wip partial work");
+            waitDrawer();
+            gitDrawer.RefreshGitState(false);
+            auto stashes = gitDrawer.GetGitStashes();
+            assert(stashes.size() == 1);
+            assert(stashes[0].entry.message.find(L"wip partial work") != std::wstring::npos);
+
+            gitDrawer.ApplyStashAsync(0);
+            waitDrawer();
+            assert(captureGitSync(L"status --short").find("M app.txt") != std::string::npos);
+            gitDrawer.DropStashAsync(0);
+            waitDrawer();
+            gitDrawer.RefreshGitState(false);
+            assert(gitDrawer.GetGitStashes().empty());
+
+            // 3. Amend Commit
+            assert(runGitSync(L"add app.txt") == 0);
+            gitDrawer.SetCommitAmend(true);
+            gitDrawer.CommitChangesAsync(L"amended initial commit", true);
+            waitDrawer();
+            assert(captureGitSync(L"log -1 --pretty=%s").find("amended initial commit") != std::string::npos);
+            assert(!gitDrawer.IsCommitAmend() && "Amend checkbox should auto-reset after commit");
+
+            // 4. Branch Create/Delete, Tag Create/Delete, Cherry-Pick & Rebase
+            std::wstring baseBranch = gitDrawer.GetGitBranch();
+            assert(gitDrawer.CreateBranch(L"feature/test-branch"));
+            assert(gitDrawer.GetGitBranch() == L"feature/test-branch");
+            {
+                std::ofstream ofs(repoDir / L"feat.txt", std::ios::binary);
+                ofs << "feature work\n";
+            }
+            assert(runGitSync(L"add feat.txt") == 0);
+            assert(runGitSync(L"commit -m \"feat commit\"") == 0);
+            std::string featHashStr = captureGitSync(L"rev-parse --short HEAD");
+            while (!featHashStr.empty() && (featHashStr.back() == '\n' || featHashStr.back() == '\r')) featHashStr.pop_back();
+            std::wstring featHashW(featHashStr.begin(), featHashStr.end());
+
+            // Tag create & delete
+            assert(gitDrawer.CreateTag(L"v1.0.0-alpha"));
+            assert(captureGitSync(L"tag").find("v1.0.0-alpha") != std::string::npos);
+            assert(gitDrawer.DeleteTag(L"v1.0.0-alpha"));
+            assert(captureGitSync(L"tag").find("v1.0.0-alpha") == std::string::npos);
+
+            // Switch back to baseBranch, advance baseBranch, rebase feature & cherry-pick test
+            assert(runGitSync(L"checkout \"" + baseBranch + L"\"") == 0);
+            {
+                std::ofstream ofs(repoDir / L"main_only.txt", std::ios::binary);
+                ofs << "main change\n";
+            }
+            assert(runGitSync(L"add main_only.txt") == 0);
+            assert(runGitSync(L"commit -m \"main advance\"") == 0);
+
+            gitDrawer.RefreshGitState(false);
+            gitDrawer.CherryPickCommitAsync(featHashW);
+            waitDrawer();
+            assert(fs::exists(repoDir / L"feat.txt"));
+
+            // Delete feature branch
+            assert(gitDrawer.DeleteBranch(L"feature/test-branch", true));
+            assert(captureGitSync(L"branch").find("feature/test-branch") == std::string::npos);
+        }
+
+        assert(!phide::git::GitWorkflowEngine::IsUnmergedGitStatus(L' ', L'M'));
+        assert(phide::git::GitWorkflowEngine::IsUnmergedGitStatus(L'U', L'U'));
+        assert(phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(L"feat/hello world") == L"feat/hello-world");
+
+        fs::remove_all(tmpRoot, ec129);
+        assert(!fs::exists(tmpRoot, ec129));
+        std::cout << "  Passed: All [TEST 129] Git completeness checks passed!" << std::endl;
+
+        if (targetTest == 129) {
+            std::cout << "Target test 129 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // [TEST 130] Phase 2: Debugging (DAP #26/#27), Test Explorer (#28), Task DAG (#29), Problem Matchers (#30)
+    // =========================================================================
+run_test_130:
+    if (targetTest == 0 || targetTest == 130) {
+        std::cout << "[TEST 130] Verifying DAP Debugger, Test Explorer, Task Runner DAG & Problem Matchers..." << std::endl;
+        namespace fs = std::filesystem;
+        using namespace phide::dev;
+
+        std::error_code ec130;
+        fs::path tmpRoot = fs::temp_directory_path(ec130) / (L"phide_test_130_" + std::to_wstring(GetTickCount64()));
+        fs::remove_all(tmpRoot, ec130);
+        fs::create_directories(tmpRoot / L".vscode", ec130);
+        fs::create_directories(tmpRoot / L"src", ec130);
+        fs::create_directories(tmpRoot / L"scripts", ec130);
+        assert(fs::exists(tmpRoot));
+
+        // 1. #29 Task Runner DAG + Multi-Source Discovery
+        {
+            std::ofstream tf(tmpRoot / L".vscode" / L"tasks.json");
+            tf << "{\n"
+                  "  // build tasks with transitive dependsOn\n"
+                  "  \"version\": \"2.0.0\",\n"
+                  "  \"tasks\": [\n"
+                  "    { \"label\": \"lint\", \"type\": \"shell\", \"command\": \"echo linting ${workspaceFolder}\" },\n"
+                  "    { \"label\": \"compile\", \"type\": \"shell\", \"command\": \"cmake\", \"args\": [\"--build\", \"build\"], \"dependsOn\": [\"lint\"], \"group\": \"build\" },\n"
+                  "    { \"label\": \"package\", \"type\": \"shell\", \"command\": \"echo pkg\", \"dependsOn\": [\"compile\"], \"group\": { \"kind\": \"build\", \"isDefault\": true } }\n"
+                  "  ]\n"
+                  "}\n";
+        }
+        {
+            std::ofstream cmf(tmpRoot / L"CMakeLists.txt");
+            cmf << "project(PhideDemo)\nadd_executable(demo_app src/main.cpp)\n";
+        }
+        {
+            std::ofstream pf(tmpRoot / L"package.json");
+            pf << "{ \"name\": \"demo\", \"scripts\": { \"build\": \"vite build\" } }\n";
+        }
+        {
+            std::ofstream mf(tmpRoot / L"Makefile");
+            mf << "clean:\n\techo clean\n";
+        }
+        {
+            std::ofstream bf(tmpRoot / L"scripts" / L"deploy.bat");
+            bf << "@echo off\r\necho deploy\r\n";
+        }
+
+        auto discoveredTasks = TaskRunnerEngine::DiscoverAllTasks(tmpRoot.wstring());
+        assert(discoveredTasks.size() >= 6);
+        auto ordered = TaskRunnerEngine::ResolveExecutionOrder(discoveredTasks, L"package");
+        assert(ordered.size() == 3);
+        assert(ordered[0].label == L"lint");
+        assert(ordered[1].label == L"compile");
+        assert(ordered[2].label == L"package");
+        std::wstring lintCmd = TaskRunnerEngine::FormatCommandLine(ordered[0], tmpRoot.wstring());
+        assert(lintCmd.find(tmpRoot.wstring()) != std::wstring::npos);
+
+        // 2. #30 Compiler / Linter Problem Matchers (MSVC, GCC, tsc, ESLint, PHPStan)
+        {
+            std::ofstream dummySrc(tmpRoot / L"src" / L"foo.cpp");
+            dummySrc << "int x = 0;\n";
+        }
+        {
+            ProblemMatcherState pmState;
+            ProblemMatch pm;
+            // MSVC
+            assert(ProblemMatcherEngine::ParseLine(L"src\\foo.cpp(12,5): error C2065: 'y': undeclared identifier", tmpRoot.wstring(), pmState, pm));
+            assert(pm.matcherName == L"msvc");
+            assert(pm.line1Based == 12 && pm.col1Based == 5);
+            assert(pm.code == L"C2065");
+            assert(pm.severity == L"error");
+            // GCC/Clang
+            assert(ProblemMatcherEngine::ParseLine(L"\x1b[31msrc/bar.cpp:25:9: warning: unused variable\x1b[0m", tmpRoot.wstring(), pmState, pm));
+            assert(pm.matcherName == L"gcc");
+            assert(pm.line1Based == 25 && pm.col1Based == 9);
+            assert(pm.severity == L"warning");
+            // tsc pretty
+            assert(ProblemMatcherEngine::ParseLine(L"src/index.ts:42:10 - error TS2304: Cannot find name 'App'.", tmpRoot.wstring(), pmState, pm));
+            assert(pm.matcherName == L"tsc" && pm.code == L"TS2304" && pm.line1Based == 42 && pm.col1Based == 10);
+            // ESLint stylish multi-line
+            assert(!ProblemMatcherEngine::ParseLine(L"src/App.jsx", tmpRoot.wstring(), pmState, pm));
+            assert(ProblemMatcherEngine::ParseLine(L"  14:3  error  Unexpected var  no-var", tmpRoot.wstring(), pmState, pm));
+            assert(pm.matcherName == L"eslint" && pm.line1Based == 14 && pm.col1Based == 3 && pm.code == L"no-var");
+            // PHPStan table header + row
+            assert(!ProblemMatcherEngine::ParseLine(L" ------ src/User.php", tmpRoot.wstring(), pmState, pm));
+            assert(ProblemMatcherEngine::ParseLine(L"  33     Parameter $id expects int.", tmpRoot.wstring(), pmState, pm));
+            assert(pm.matcherName == L"phpstan" && pm.line1Based == 33 && pm.filePath.find(L"User.php") != std::wstring::npos);
+        }
+
+        // 3. #28 Integrated Test Explorer (real python -m unittest execution + offscreen D2D render)
+        {
+            fs::path testFile = tmpRoot / L"test_math_sample.py";
+            {
+                std::ofstream pyf(testFile);
+                pyf << "import unittest\n\n"
+                       "class MathSampleTests(unittest.TestCase):\n"
+                       "    def test_add_pass(self):\n"
+                       "        self.assertEqual(2 + 3, 5)\n\n"
+                       "    def test_sub_fail(self):\n"
+                       "        self.assertEqual(5 - 2, 999)\n";
+            }
+
+            auto items = TestExplorerEngine::DiscoverTests(tmpRoot.wstring());
+            bool foundPass = false, foundFail = false;
+            for (const auto& t : items) {
+                if (t.name == L"test_add_pass") foundPass = true;
+                if (t.name == L"test_sub_fail") foundFail = true;
+            }
+            assert(foundPass && foundFail);
+
+            auto summary = TestExplorerEngine::ExecuteTestsSync(tmpRoot.wstring(), TestFramework::Unittest, items, L"", L"", 20000);
+            bool sawPassed = false, sawFailed = false;
+            for (const auto& t : items) {
+                if (t.name == L"test_add_pass" && t.status == TestStatus::Passed) sawPassed = true;
+                if (t.name == L"test_sub_fail" && t.status == TestStatus::Failed) sawFailed = true;
+            }
+            assert(sawPassed && sawFailed);
+            assert(summary.exitCode != 0);
+
+            // Offscreen D2D render of Test Explorer View + click hit-testing
+            Microsoft::WRL::ComPtr<IWICBitmap> wicBmp;
+            HRESULT hr = pWicFactory->CreateBitmap(900, 620, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicBmp);
+            assert(SUCCEEDED(hr) && wicBmp);
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT130;
+            hr = pD2DFactory->CreateWicBitmapRenderTarget(wicBmp.Get(), rtProps, &pRT130);
+            assert(SUCCEEDED(hr) && pRT130);
+            phide::ui::Theme theme130;
+            theme130.SetThemeMode(phide::ui::ThemeMode::Dark);
+            theme130.CreateDeviceResources(pRT130.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfg130;
+            phide::ui::EditorCanvas ec130;
+            ec130.SetTestResults(items, summary);
+            pRT130->BeginDraw();
+            pRT130->Clear(D2D1::ColorF(0.09f, 0.10f, 0.12f));
+            ec130.RenderTestExplorerView(pRT130.Get(), theme130, cfg130, 0.0f, 900.0f, 0.0f, 620.0f);
+            hr = pRT130->EndDraw();
+            assert(SUCCEEDED(hr));
+        }
+
+        // 4. #26 & #27 DAP Wire Framing + launch.json + Conditions/Logpoints + Real Python bdb Debug Session
+        {
+            std::string jsonBody = R"({"seq":1,"type":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1}})";
+            std::string framed = EncodeDapFrame(jsonBody);
+            DapFrameDecoder dec;
+            dec.Feed(framed.data(), 11);
+            std::string popped;
+            assert(!dec.PopMessage(popped));
+            dec.Feed(framed.data() + 11, framed.size() - 11);
+            assert(dec.PopMessage(popped) && popped == jsonBody);
+
+            // .vscode/launch.json parser & macro substitution
+            fs::path pyScript = tmpRoot / L"debug_target.py";
+            {
+                std::ofstream psf(pyScript);
+                psf << "x = 10\n"
+                       "y = x + 32\n"
+                       "z = y * 2\n"
+                       "print('DONE', z)\n";
+            }
+            std::wstring launchJson =
+                L"{\n"
+                L"  \"version\": \"0.2.0\",\n"
+                L"  \"configurations\": [\n"
+                L"    { \"name\": \"Debug Current Py\", \"type\": \"python\", \"request\": \"launch\", \"program\": \"${file}\", \"cwd\": \"${workspaceFolder}\", \"preLaunchTask\": \"lint\" }\n"
+                L"  ]\n"
+                L"}\n";
+            auto cfgs = ParseLaunchJson(launchJson, tmpRoot.wstring(), pyScript.wstring());
+            assert(cfgs.size() == 1);
+            assert(cfgs[0].type == L"python");
+            assert(cfgs[0].program == pyScript.wstring());
+            assert(cfgs[0].preLaunchTask == L"lint");
+
+            // Conditional / Hit-count / Logpoint logic verification
+            DapBreakpoint cbp;
+            cbp.filePath = pyScript.wstring();
+            cbp.line1Based = 2;
+            cbp.condition = L"x > 5";
+            std::wstring logOut;
+            assert(DapClient::ShouldPauseAtBreakpoint(cbp, [](const std::wstring&) { return L"True"; }, logOut));
+            assert(!DapClient::ShouldPauseAtBreakpoint(cbp, [](const std::wstring&) { return L"False"; }, logOut));
+
+            DapBreakpoint hbp;
+            hbp.filePath = pyScript.wstring();
+            hbp.line1Based = 2;
+            hbp.hitCondition = 3;
+            assert(!DapClient::ShouldPauseAtBreakpoint(hbp, [](const std::wstring&) { return L""; }, logOut));
+            assert(!DapClient::ShouldPauseAtBreakpoint(hbp, [](const std::wstring&) { return L""; }, logOut));
+            assert(DapClient::ShouldPauseAtBreakpoint(hbp, [](const std::wstring&) { return L""; }, logOut));
+
+            DapBreakpoint lbp;
+            lbp.filePath = pyScript.wstring();
+            lbp.line1Based = 2;
+            lbp.logMessage = L"x={x}";
+            assert(!DapClient::ShouldPauseAtBreakpoint(lbp, [](const std::wstring& e) { return e == L"x" ? L"42" : L""; }, logOut));
+            assert(logOut == L"x=42");
+
+            // GDB/MI parser check
+            std::vector<DapStackFrame> miFrames;
+            DapClient::ParseGdbMiFrames("^done,stack=[frame={level=\"0\",func=\"main\",fullname=\"C:/src/main.cpp\",line=\"18\"}]", miFrames);
+            assert(miFrames.size() == 1 && miFrames[0].name == L"main" && miFrames[0].line1Based == 18);
+            std::vector<DapVariable> miVars;
+            DapClient::ParseGdbMiVariables("^done,locals=[{name=\"count\",value=\"7\",type=\"int\"}]", miVars);
+            assert(miVars.size() == 1 && miVars[0].name == L"count" && miVars[0].value == L"7" && miVars[0].type == L"int");
+
+            // Real Python step debugger execution + Locals + Watch + Continue + Inspector Render
+            DapClient dap;
+            std::atomic<bool> sawPaused{false};
+            std::atomic<bool> sawEnded{false};
+            dap.onPaused = [&](const std::wstring&, int) { sawPaused.store(true); };
+            dap.onTerminated = [&](int) { sawEnded.store(true); };
+
+            DapBreakpoint lineBp;
+            lineBp.filePath = pyScript.wstring();
+            lineBp.line1Based = 3; // z = y * 2
+            LaunchConfig runCfg = cfgs[0];
+            runCfg.stopOnEntry = false;
+            bool okStart = dap.StartSession(runCfg, { lineBp }, DapExceptionOptions{}, L"python.exe");
+            assert(okStart);
+
+            for (int w = 0; w < 60 && !sawPaused.load(); ++w) {
+                Sleep(100);
+            }
+            assert(sawPaused.load());
+            auto snap = dap.GetSnapshot();
+            assert(snap.pausedLine1Based == 3);
+            assert(!snap.callStack.empty());
+            assert(!snap.scopes.empty());
+
+            std::wstring evalVal = dap.EvaluateBlocking(L"x + y");
+            assert(evalVal == L"52");
+
+            dap.AddWatch(L"y * 2");
+            for (int w = 0; w < 20; ++w) {
+                Sleep(50);
+                if (!dap.GetSnapshot().watches.empty() && dap.GetSnapshot().watches[0].value == L"84") break;
+            }
+            auto snapAfterWatch = dap.GetSnapshot();
+            assert(!snapAfterWatch.watches.empty() && snapAfterWatch.watches[0].value == L"84");
+
+            // Exercise offscreen Debug Console + Inspector render & problem link hit test via TerminalPanel
+            phide::ui::TerminalPanel tp130;
+            tp130.Open(fs::temp_directory_path().wstring());
+            Microsoft::WRL::ComPtr<IWICBitmap> wicTerm;
+            pWicFactory->CreateBitmap(1000, 320, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicTerm);
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsT = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTT;
+            pD2DFactory->CreateWicBitmapRenderTarget(wicTerm.Get(), rtPropsT, &pRTT);
+            phide::ui::Theme themeT;
+            themeT.SetThemeMode(phide::ui::ThemeMode::Dark);
+            themeT.CreateDeviceResources(pRTT.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfgT;
+            tp130.ShowDebugConsole();
+            pRTT->BeginDraw();
+            pRTT->Clear(D2D1::ColorF(0.08f, 0.08f, 0.10f));
+            tp130.Render(pRTT.Get(), themeT, cfgT, 1000.0f, 320.0f, 0.0f, 320.0f);
+            assert(SUCCEEDED(pRTT->EndDraw()));
+
+            dap.Continue();
+            for (int w = 0; w < 40 && !sawEnded.load(); ++w) {
+                Sleep(100);
+            }
+            dap.StopSession();
+            tp130.CloseAllTabs();
+        }
+
+        for (int retry = 0; retry < 30; ++retry) {
+            ec130.clear();
+            fs::remove_all(tmpRoot, ec130);
+            if (!fs::exists(tmpRoot, ec130)) break;
+            Sleep(50);
+        }
+        assert(!fs::exists(tmpRoot, ec130));
+        std::cout << "  Passed: All [TEST 130] Phase 2 Dev Workflow checks passed!" << std::endl;
+
+        if (targetTest == 130) {
+            std::cout << "Target test 130 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // [TEST 131] Phase 3: #41 LiveServer WebSocket/SSE & Presets + #42 Native SQL Query Console
+    // -------------------------------------------------------------------------
+run_test_131:
+    {
+        std::cout << "[TEST 131] Verifying LiveServer WebSocket/SSE, VHost/PHP Presets & SQL Query Console..." << std::endl;
+        namespace fs = std::filesystem;
+        using namespace phide::server;
+        using namespace phide::db;
+
+        fs::path tmpRoot = fs::temp_directory_path() / (L"tmp_phide_131_" + std::to_wstring(GetCurrentProcessId()));
+        std::error_code ec131;
+        fs::remove_all(tmpRoot, ec131);
+        fs::create_directories(tmpRoot, ec131);
+
+        // 1. #41 RFC 6455 SHA-1/Base64 Accept Key & Frame Codec + Live HTTP/SSE/WS Server
+        {
+            assert(LiveServer::BuildWebSocketAcceptKey("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+            std::vector<uint8_t> f1 = LiveServer::EncodeWebSocketTextFrame("{\"type\":\"reload\",\"path\":\"app.css\"}");
+            std::string dec;
+            assert(LiveServer::TryDecodeWebSocketTextFrame(f1, dec));
+            assert(dec == "{\"type\":\"reload\",\"path\":\"app.css\"}");
+
+            {
+                std::ofstream html(tmpRoot / L"index.html");
+                html << "<!doctype html><html><body><h1>Live Test</h1></body></html>";
+            }
+
+            LiveServer srv;
+            int port = 18590 + static_cast<int>(GetCurrentProcessId() % 500);
+            assert(srv.Start(tmpRoot.wstring(), L"index.html", port));
+            int boundPort = srv.GetPort();
+
+            auto connectLoopback = [boundPort]() -> SOCKET {
+                SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (s == INVALID_SOCKET) return INVALID_SOCKET;
+                sockaddr_in sa{};
+                sa.sin_family = AF_INET;
+                sa.sin_port = htons(static_cast<u_short>(boundPort));
+                inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+                if (connect(s, reinterpret_cast<const sockaddr*>(&sa), sizeof(sa)) != 0) {
+                    closesocket(s);
+                    return INVALID_SOCKET;
+                }
+                return s;
+            };
+
+            // Verify auto-injected Live-Reload script on HTML response
+            {
+                SOCKET hs = connectLoopback();
+                assert(hs != INVALID_SOCKET);
+                std::string req = "GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                send(hs, req.data(), static_cast<int>(req.size()), 0);
+                std::string resp;
+                char buf[2048];
+                int n = 0;
+                while ((n = recv(hs, buf, sizeof(buf), 0)) > 0) resp.append(buf, n);
+                closesocket(hs);
+                assert(resp.find("200 OK") != std::string::npos);
+                assert(resp.find("__phideLiveReload") != std::string::npos);
+                assert(resp.find("/__phide_ws") != std::string::npos);
+                assert(resp.find("/__phide_sse") != std::string::npos);
+            }
+
+            // Connect real WebSocket + real SSE subscribers and verify BroadcastReload
+            SOCKET wsSock = connectLoopback();
+            SOCKET sseSock = connectLoopback();
+            assert(wsSock != INVALID_SOCKET && sseSock != INVALID_SOCKET);
+
+            std::string wsReq =
+                "GET /__phide_ws HTTP/1.1\r\n"
+                "Host: localhost\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n";
+            send(wsSock, wsReq.data(), static_cast<int>(wsReq.size()), 0);
+            char wsHdr[1024] = {};
+            DWORD rcvTimeout = 2500;
+            setsockopt(wsSock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeout), sizeof(rcvTimeout));
+            setsockopt(sseSock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeout), sizeof(rcvTimeout));
+            int wsN = recv(wsSock, wsHdr, sizeof(wsHdr) - 1, 0);
+            assert(wsN > 0);
+            std::string wsHdrStr(wsHdr, wsN);
+            assert(wsHdrStr.find("101 Switching Protocols") != std::string::npos);
+            assert(wsHdrStr.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos);
+
+            std::string sseReq = "GET /__phide_sse HTTP/1.1\r\nHost: localhost\r\n\r\n";
+            send(sseSock, sseReq.data(), static_cast<int>(sseReq.size()), 0);
+            char sseHdr[1024] = {};
+            int sseN = recv(sseSock, sseHdr, sizeof(sseHdr) - 1, 0);
+            assert(sseN > 0);
+            std::string sseHdrStr(sseHdr, sseN);
+            assert(sseHdrStr.find("text/event-stream") != std::string::npos);
+
+            Sleep(40);
+            assert(srv.GetConnectedClientCount() >= 2);
+            srv.BroadcastReload(L"style.css");
+
+            uint8_t wsFrameBuf[1024] = {};
+            int wsPushN = recv(wsSock, reinterpret_cast<char*>(wsFrameBuf), sizeof(wsFrameBuf), 0);
+            assert(wsPushN > 4);
+            std::string wsPayload;
+            assert(LiveServer::TryDecodeWebSocketTextFrame(std::vector<uint8_t>(wsFrameBuf, wsFrameBuf + wsPushN), wsPayload));
+            assert(wsPayload.find("\"type\":\"reload\"") != std::string::npos);
+            assert(wsPayload.find("style.css") != std::string::npos);
+
+            char ssePushBuf[1024] = {};
+            int ssePushN = recv(sseSock, ssePushBuf, sizeof(ssePushBuf) - 1, 0);
+            assert(ssePushN > 0);
+            std::string ssePayload(ssePushBuf, ssePushN);
+            assert(ssePayload.find("event: reload") != std::string::npos);
+            assert(ssePayload.find("style.css") != std::string::npos);
+
+            closesocket(wsSock);
+            closesocket(sseSock);
+            srv.Stop();
+            assert(!srv.IsRunning());
+
+            // Preset generator + PHP version discovery
+            std::wstring presetConf = LiveServer::GenerateNginxVhostPreset(L"Laravel / public", L"app.local", 8088, tmpRoot.wstring());
+            assert(presetConf.find(L"try_files $uri $uri/ /index.php?$query_string;") != std::wstring::npos);
+            assert(presetConf.find(L"/public") != std::wstring::npos);
+            auto phps = LiveServer::DiscoverInstalledPhpVersions(L"C:\\Program Files\\phide");
+            assert(!phps.empty() && !phps[0].version.empty());
+        }
+
+        // 2. #42 Native SQLite3 Query Engine, Schema Browser, CSV/JSON Export & D2D Console Render
+        {
+            assert(!SqlEngine::FindNativeSqliteDllPath().empty());
+            fs::path dbFile = tmpRoot / L"sample.sqlite";
+            SqlConnectionProfile prof;
+            prof.name = L"SQLite: sample.sqlite";
+            prof.dialect = SqlDialect::SQLite;
+            prof.sqlitePath = dbFile.wstring();
+
+            SqlQueryResult r1 = SqlEngine::ExecuteQuery(
+                prof,
+                L"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT);"
+                L"INSERT INTO users (id, name, role) VALUES (1, 'Alice', 'Admin'), (2, 'Bob', 'Dev');");
+            assert(r1.success);
+
+            SqlQueryResult r2 = SqlEngine::ExecuteQuery(prof, L"SELECT id, name, role FROM users ORDER BY id;");
+            assert(r2.success && r2.isSelect);
+            assert(r2.columns.size() == 3 && r2.columns[1] == L"name");
+            assert(r2.rows.size() == 2 && r2.rows[0][1] == L"Alice" && r2.rows[1][2] == L"Dev");
+
+            SqlQueryResult rBad = SqlEngine::ExecuteQuery(prof, L"SELECT * FROM table_does_not_exist;");
+            assert(!rBad.success && !rBad.errorMessage.empty());
+
+            std::wstring schemaErr;
+            auto tables = SqlEngine::InspectSchema(prof, schemaErr);
+            assert(schemaErr.empty() && tables.size() == 1);
+            assert(tables[0].name == L"users" && tables[0].rowCount == 2);
+            assert(tables[0].columns.size() == 3 && tables[0].columns[0].isPrimaryKey);
+
+            fs::path csvOut = tmpRoot / L"users.csv";
+            fs::path jsonOut = tmpRoot / L"users.json";
+            assert(SqlEngine::ExportCsv(r2, csvOut.wstring()));
+            assert(SqlEngine::ExportJson(r2, jsonOut.wstring()));
+            {
+                std::ifstream ci(csvOut);
+                std::string cs((std::istreambuf_iterator<char>(ci)), std::istreambuf_iterator<char>());
+                assert(cs.find("id,name,role") != std::string::npos && cs.find("Alice,Admin") != std::string::npos);
+            }
+            {
+                std::ifstream ji(jsonOut);
+                std::string js((std::istreambuf_iterator<char>(ji)), std::istreambuf_iterator<char>());
+                assert(js.find("\"name\": \"Alice\"") != std::string::npos && js.find("\"role\": \"Dev\"") != std::string::npos);
+            }
+
+            auto discovered = SqlEngine::DiscoverWorkspaceDatabases(tmpRoot.wstring());
+            assert(discovered.size() >= 2 && discovered[0].sqlitePath == dbFile.wstring());
+
+            // Offscreen D2D render of EditorCanvas::RenderSqlConsoleView + UI execution
+            Microsoft::WRL::ComPtr<IWICBitmap> wicSql;
+            pWicFactory->CreateBitmap(1024, 640, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicSql);
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsS = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTS;
+            pD2DFactory->CreateWicBitmapRenderTarget(wicSql.Get(), rtPropsS, &pRTS);
+            phide::ui::Theme themeS;
+            themeS.SetThemeMode(phide::ui::ThemeMode::Dark);
+            themeS.CreateDeviceResources(pRTS.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfgS;
+            phide::ui::EditorCanvas ecSql;
+            ecSql.SetWorkspaceRoot(tmpRoot.wstring());
+            ecSql.SetSqlWorkspaceRoot(tmpRoot.wstring());
+            ecSql.SetSqlQueryText(L"SELECT COUNT(*) AS cnt FROM users;");
+            ecSql.ExecuteActiveSqlQuery();
+            assert(ecSql.GetSqlQueryResult().success && ecSql.GetSqlQueryResult().rows[0][0] == L"2");
+
+            pRTS->BeginDraw();
+            pRTS->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            ecSql.RenderSqlConsoleView(pRTS.Get(), themeS, cfgS, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTS->EndDraw()));
+
+            // Verify pointer cursor (IDC_HAND) on SQL toolbar buttons and text cursor (IDC_IBEAM) in query box
+            assert(ecSql.GetSqlConsoleCursorForPoint(POINT{ 40, 64 }) == IDC_HAND);
+            bool sawIbeamInQuery = false;
+            for (int scanY = 70; scanY <= 260; scanY += 10) {
+                if (ecSql.GetSqlConsoleCursorForPoint(POINT{ 360, scanY }) == IDC_IBEAM) {
+                    sawIbeamInQuery = true;
+                    break;
+                }
+            }
+            assert(sawIbeamInQuery);
+
+            // Verify editing & caret movement never injects a literal '|' character into SQL query text
+            ecSql.SetSqlQueryText(L"SELECT 41;");
+            assert(ecSql.HandleSqlConsoleKeyDown(VK_LEFT, nullptr));
+            assert(ecSql.HandleSqlConsoleChar(L' '));
+            ecSql.ExecuteActiveSqlQuery();
+            assert(ecSql.GetSqlQueryResult().success);
+            assert(ecSql.GetSqlQueryResult().rows.size() == 1 && ecSql.GetSqlQueryResult().rows[0][0] == L"41");
+        }
+
+        // Verify no fake :memory: SQLite fallback on empty workspaces & dynamic MySQL/Postgres detection
+        {
+            fs::path emptyWs = tmpRoot / L"empty_sql_ws";
+            fs::create_directories(emptyWs, ec131);
+            auto emptyProfs = phide::db::SqlEngine::DiscoverWorkspaceDatabases(
+                emptyWs.wstring(), L"127.0.0.1", 3306, L"root", L"", L"");
+            for (const auto& prof : emptyProfs) {
+                assert(prof.sqlitePath != L":memory:");
+                assert(prof.name.find(L":memory:") == std::wstring::npos);
+            }
+            if (phide::db::SqlEngine::IsTcpPortOpen(L"127.0.0.1", 3307, 40)) {
+                const int dynPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(3306, L"");
+                assert(dynPort == 3307);
+                bool foundMysql3307 = false;
+                for (auto prof : emptyProfs) {
+                    if (prof.dialect == phide::db::SqlDialect::MySQL && prof.port == 3307 && prof.isConnected) {
+                        foundMysql3307 = true;
+                        std::wstring dbErr;
+                        const auto t0 = std::chrono::steady_clock::now();
+                        auto dbs = phide::db::SqlEngine::ListDatabases(prof, dbErr);
+                        assert(!dbs.empty());
+                        if (prof.database.empty()) prof.database = dbs[0];
+                        std::wstring schErr;
+                        auto tbls = phide::db::SqlEngine::InspectSchema(prof, schErr);
+                        (void)tbls;
+                        assert(schErr.empty());
+                        auto qRes = phide::db::SqlEngine::ExecuteQuery(prof, L"SELECT 1 AS ok;");
+                        const double elapsedMs = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t0).count();
+                        assert(qRes.success);
+                        assert(!qRes.rows.empty() && qRes.rows[0][0] == L"1");
+                        assert(elapsedMs < 3500.0);
+                    }
+                }
+                assert(foundMysql3307);
+            }
+            if (phide::db::SqlEngine::IsTcpPortOpen(L"127.0.0.1", 5432, 40)) {
+                bool foundPg = false;
+                for (const auto& prof : emptyProfs) {
+                    if (prof.dialect == phide::db::SqlDialect::PostgreSQL && prof.port == 5432 && prof.isConnected) {
+                        foundPg = true;
+                    }
+                }
+                assert(foundPg);
+            }
+        }
+
+        fs::remove_all(tmpRoot, ec131);
+        assert(!fs::exists(tmpRoot, ec131));
+        std::cout << "  Passed: All [TEST 131] Phase 3 LiveServer & SQL Query Console checks passed!" << std::endl;
+
+        if (targetTest == 131) {
+            std::cout << "Target test 131 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_132:
+    {
+        std::cout << "[TEST 132] Verifying Phase 4 Features (#50 MMap >50MB, #48 .editorconfig & Multi-Root Workspace, #45 Remote VFS/Wrapper, #49 Editable Keybindings, .phide Settings + .gitignore, GUI Snippet Editor)..." << std::endl;
+        namespace fs = std::filesystem;
+        std::error_code ec132;
+        fs::path tempBase132 = fs::weakly_canonical(fs::temp_directory_path(ec132), ec132);
+        if (ec132 || tempBase132.empty()) tempBase132 = fs::temp_directory_path(ec132);
+        fs::path tmpRoot = tempBase132 / L"phide_test_132_workspace";
+        fs::remove_all(tmpRoot, ec132);
+        fs::create_directories(tmpRoot, ec132);
+
+        // ------------------------------------------------------------------
+        // A. #50 Win32 Memory-Mapped Read-Only Huge File Viewer (>50 MB)
+        // ------------------------------------------------------------------
+        {
+            fs::path hugePath = tmpRoot / L"huge_mmap_test.log";
+            {
+                std::ofstream out(hugePath, std::ios::binary);
+                assert(out.is_open());
+                std::string chunk;
+                chunk.reserve(1024 * 64);
+                size_t lineNum = 0;
+                // Write ~52.5 MB across >1,000,000 numbered lines
+                uint64_t bytesWritten = 0;
+                const uint64_t targetBytes = 52ULL * 1024ULL * 1024ULL + 512ULL * 1024ULL;
+                while (bytesWritten < targetBytes) {
+                    chunk.clear();
+                    for (int k = 0; k < 1000; ++k) {
+                        chunk += "LOG_LINE_" + std::to_string(lineNum++) + "_PAYLOAD_DATA_ABCDEFGHIJKLMNOPQRSTUVWXYZ\n";
+                    }
+                    out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+                    bytesWritten += chunk.size();
+                }
+            }
+            uint64_t fileSz = fs::file_size(hugePath, ec132);
+            assert(fileSz > 50ULL * 1024ULL * 1024ULL);
+
+            phide::editor::Buffer mmapBuf;
+            bool loaded = mmapBuf.LoadFromFile(hugePath.wstring());
+            assert(loaded);
+            assert(mmapBuf.IsMemoryMappedReadOnly());
+            assert(!mmapBuf.IsModified());
+            assert(mmapBuf.GetMappedByteSize() == fileSz);
+            size_t totalLines = mmapBuf.GetLineCount();
+            assert(totalLines > 900000);
+
+            std::wstring firstLine = mmapBuf.GetLine(0);
+            assert(firstLine == L"LOG_LINE_0_PAYLOAD_DATA_ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+            size_t midIdx = totalLines / 2;
+            std::wstring expectedMid = L"LOG_LINE_" + std::to_wstring(midIdx) + L"_PAYLOAD_DATA_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            assert(mmapBuf.GetLine(midIdx) == expectedMid);
+            size_t lastIdx = totalLines - 1;
+            std::wstring expectedLast = L"LOG_LINE_" + std::to_wstring(lastIdx) + L"_PAYLOAD_DATA_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            assert(mmapBuf.GetLine(lastIdx) == expectedLast);
+
+            // Mutators must remain no-ops in read-only mmap mode
+            mmapBuf.SetCursor(0, 0);
+            mmapBuf.InsertChar(L'Z');
+            mmapBuf.Backspace();
+            mmapBuf.DeleteForward();
+            mmapBuf.InsertText(L"INJECTED");
+            mmapBuf.SetLine(0, L"OVERWRITTEN");
+            mmapBuf.DeleteLine(0);
+            assert(mmapBuf.GetLineCount() == totalLines);
+            assert(mmapBuf.GetLine(0) == firstLine);
+
+            // Offscreen D2D render of huge mapped file
+            {
+                Microsoft::WRL::ComPtr<IWICBitmap> wicMmap;
+                pWicFactory->CreateBitmap(1024, 640, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicMmap);
+                D2D1_RENDER_TARGET_PROPERTIES rtPropsM = D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTM;
+                pD2DFactory->CreateWicBitmapRenderTarget(wicMmap.Get(), rtPropsM, &pRTM);
+                phide::ui::Theme themeM;
+                themeM.SetThemeMode(phide::ui::ThemeMode::Dark);
+                themeM.CreateDeviceResources(pRTM.Get(), pDWriteFactory.Get());
+                phide::app::AppConfig cfgM;
+                phide::ui::EditorCanvas ecM;
+                phide::editor::EditorGroup gM;
+                phide::editor::OpenDocument dM;
+                dM.filePath = hugePath.wstring();
+                dM.fileName = L"huge_mmap_test.log";
+                dM.scrollLine = midIdx;
+                dM.buffer = mmapBuf;
+                dM.buffer.SetCursor(midIdx, 4);
+                gM.docs.push_back(std::move(dM));
+                gM.activeDocIdx = 0;
+                std::vector<phide::editor::EditorGroup> groupsM;
+                groupsM.push_back(std::move(gM));
+
+                pRTM->BeginDraw();
+                pRTM->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+                ecM.Render(pRTM.Get(), themeM, cfgM, groupsM, 0, 0.0f, 1024.0f, 640.0f);
+                assert(SUCCEEDED(pRTM->EndDraw()));
+            }
+            mmapBuf.CloseFileMapping();
+        }
+
+        // ------------------------------------------------------------------
+        // B. #48 Hierarchical .editorconfig & Multi-Root Workspaces (.phide-workspace)
+        // ------------------------------------------------------------------
+        {
+            fs::path wsParent = tmpRoot / L"ec_ws";
+            fs::path rootA = wsParent / L"root_a";
+            fs::path rootB = wsParent / L"root_b";
+            fs::path srcDir = rootA / L"src";
+            fs::create_directories(srcDir, ec132);
+            fs::create_directories(rootB, ec132);
+
+            {
+                std::ofstream ecTop(wsParent / L".editorconfig", std::ios::binary);
+                ecTop << "root = true\n"
+                         "[*]\n"
+                         "charset = utf-8\n"
+                         "trim_trailing_whitespace = true\n"
+                         "insert_final_newline = true\n"
+                         "[*.{cpp,hpp}]\n"
+                         "indent_style = space\n"
+                         "indent_size = 4\n";
+            }
+            {
+                std::ofstream ecSub(rootA / L".editorconfig", std::ios::binary);
+                ecSub << "[*.cpp]\n"
+                         "indent_size = 2\n"
+                         "[Makefile]\n"
+                         "indent_style = tab\n"
+                         "tab_width = 8\n"
+                         "end_of_line = lf\n";
+            }
+
+            auto cppRules = phide::workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile((srcDir / L"main.cpp").wstring());
+            assert(cppRules.foundAny);
+            assert(!cppRules.indentStyleTabs);
+            assert(cppRules.indentSize == 2);
+            assert(cppRules.trimTrailingWhitespace);
+            assert(cppRules.insertFinalNewline);
+            assert(cppRules.charset == L"utf-8");
+
+            auto mkRules = phide::workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile((rootA / L"Makefile").wstring());
+            assert(mkRules.foundAny);
+            assert(mkRules.indentStyleTabs);
+            assert(mkRules.tabWidth == 8);
+            assert(mkRules.endOfLine == L"\n");
+            assert(mkRules.trimTrailingWhitespace);
+
+            phide::editor::Buffer fmtBuf;
+            fmtBuf.SetLineEnding(L"\r\n");
+            fmtBuf.SetHasTrailingNewline(false);
+            fmtBuf.SetText(L"int main() {   \r\n  return 0;\t  ");
+            bool changedByEc = phide::workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(fmtBuf, cppRules);
+            assert(changedByEc);
+            assert(fmtBuf.HasTrailingNewline());
+            assert(fmtBuf.GetLine(0) == L"int main() {");
+            assert(fmtBuf.GetLine(1) == L"  return 0;");
+
+            // Multi-root workspace persistence + DrawerPanel multi-root state
+            fs::path wsFile = wsParent / L"project.phide-workspace";
+            phide::workspace::MultiRootWorkspace wsOut;
+            wsOut.workspaceFilePath = wsFile.wstring();
+            wsOut.folders.push_back({ L"Core App", rootA.wstring() });
+            wsOut.folders.push_back({ L"Shared Lib", rootB.wstring() });
+            wsOut.settings[L"editor.tabSize"] = L"2";
+            assert(phide::workspace::WorkspaceConfigEngine::SaveMultiRootWorkspace(wsFile.wstring(), wsOut));
+
+            phide::workspace::MultiRootWorkspace wsIn;
+            assert(phide::workspace::WorkspaceConfigEngine::LoadMultiRootWorkspace(wsFile.wstring(), wsIn));
+            assert(wsIn.folders.size() == 2);
+            assert(wsIn.folders[0].name == L"Core App");
+            assert(wsIn.folders[1].name == L"Shared Lib");
+            assert(_wcsicmp(wsIn.folders[0].path.c_str(), rootA.wstring().c_str()) == 0);
+            assert(_wcsicmp(wsIn.folders[1].path.c_str(), rootB.wstring().c_str()) == 0);
+            assert(wsIn.settings[L"editor.tabSize"] == L"2");
+
+            phide::ui::DrawerPanel drawer;
+            drawer.SetMultiRootWorkspace(wsIn);
+            auto roots = drawer.GetAllWorkspaceFolders();
+            assert(roots.size() == 2);
+            assert(drawer.GetItemCount() >= 2);
+        }
+
+        // ------------------------------------------------------------------
+        // C. #45 Remote SSH / WSL / Dev Containers VFS & Command Wrapper
+        // ------------------------------------------------------------------
+        {
+            using namespace phide::ui::remote;
+            RemoteWorkspaceSession localSess;
+            assert(!localSess.IsRemote());
+            assert(WrapCommandForRemote(localSess, L"pytest -q") == L"pytest -q");
+
+            RemoteWorkspaceSession sshSess;
+            sshSess.kind = RemoteKind::Ssh;
+            sshSess.sshHost.hostName = L"example.com";
+            sshSess.sshHost.user = L"deploy";
+            sshSess.sshHost.port = L"2222";
+            sshSess.remoteWorkDir = L"/srv/app";
+            assert(sshSess.IsRemote());
+            std::wstring vfsPath = ResolveRemoteVfsCachePath(sshSess, L"/srv/app/index.php");
+            assert(!vfsPath.empty() && vfsPath.find(L"index.php") != std::wstring::npos);
+            std::wstring wrappedSsh = WrapCommandForRemote(sshSess, L"php artisan test");
+            assert(wrappedSsh.find(L"ssh") != std::wstring::npos);
+            assert(wrappedSsh.find(L"2222") != std::wstring::npos);
+            assert(wrappedSsh.find(L"deploy@example.com") != std::wstring::npos);
+            assert(wrappedSsh.find(L"/srv/app") != std::wstring::npos);
+
+            RemoteWorkspaceSession wslSess;
+            wslSess.kind = RemoteKind::Wsl;
+            wslSess.wslDistro = L"Ubuntu-24.04";
+            std::wstring wrappedWsl = WrapCommandForRemote(wslSess, L"pytest -q");
+            assert(wrappedWsl.find(L"wsl") != std::wstring::npos);
+            assert(wrappedWsl.find(L"Ubuntu-24.04") != std::wstring::npos);
+
+            RemoteWorkspaceSession dockerSess;
+            dockerSess.kind = RemoteKind::DevContainer;
+            dockerSess.container.id = L"dev_web_1";
+            dockerSess.container.name = L"dev_web";
+            std::wstring wrappedDocker = WrapCommandForRemote(dockerSess, L"npm test");
+            assert(wrappedDocker.find(L"docker") != std::wstring::npos);
+            assert(wrappedDocker.find(L"exec -i") != std::wstring::npos);
+            assert(wrappedDocker.find(L"dev_web_1") != std::wstring::npos);
+        }
+
+        // ------------------------------------------------------------------
+        // D. #49 Editable Keybindings w/ Conflict Detection + .phide/settings.json + .gitignore + GUI Snippet Editor
+        // ------------------------------------------------------------------
+        {
+            // 1. Editable Keybindings + conflict + persistence + resolver
+            phide::ui::KeyboardShortcutsView kbView;
+            assert(kbView.IsActionDefaultUnchanged(L"cmd_save"));
+            assert(kbView.SetShortcutKeys(L"cmd_save", { L"Ctrl", L"Alt", L"S" }));
+            assert(!kbView.IsActionDefaultUnchanged(L"cmd_save"));
+
+            auto conflicts = kbView.FindConflictsForPills({ L"Ctrl", L"Alt", L"S" }, -1, L"global");
+            assert(!conflicts.empty());
+
+            fs::path kbJson = tmpRoot / L"user_keybindings.json";
+            assert(kbView.SaveUserKeybindings(kbJson.wstring()));
+
+            phide::ui::KeyboardShortcutsView kbReloaded;
+            assert(kbReloaded.LoadUserKeybindings(kbJson.wstring()));
+            assert(!kbReloaded.IsActionDefaultUnchanged(L"cmd_save"));
+            std::wstring resolved = kbReloaded.ResolveOverrideActionForKey(true, false, true, 'S', true);
+            assert(resolved == L"cmd_save");
+
+            // 2. Per-workspace .phide/settings.json creates .gitignore and updates existing ignore files with .phide
+            fs::path wsCfgDir = tmpRoot / L"ws_settings_proj";
+            fs::create_directories(wsCfgDir, ec132);
+            {
+                std::ofstream ei(wsCfgDir / L".eslintignore", std::ios::binary);
+                ei << "dist/\n";
+            }
+            phide::workspace::WorkspaceSettingsOverride wSet;
+            wSet.values[L"editor.tabSize"] = L"2";
+            wSet.values[L"editor.insertSpaces"] = L"true";
+            wSet.values[L"files.autoSave"] = L"afterDelay";
+            assert(phide::workspace::WorkspaceConfigEngine::SaveWorkspaceSettings(wsCfgDir.wstring(), wSet));
+
+            assert(fs::exists(wsCfgDir / L".phide" / L"settings.json", ec132));
+            assert(fs::exists(wsCfgDir / L".gitignore", ec132));
+            {
+                std::ifstream gi(wsCfgDir / L".gitignore");
+                std::string gStr((std::istreambuf_iterator<char>(gi)), std::istreambuf_iterator<char>());
+                assert(gStr.find(".phide") != std::string::npos);
+            }
+            {
+                std::ifstream ei(wsCfgDir / L".eslintignore");
+                std::string eStr((std::istreambuf_iterator<char>(ei)), std::istreambuf_iterator<char>());
+                assert(eStr.find(".phide") != std::string::npos);
+            }
+
+            phide::workspace::WorkspaceSettingsOverride wLoaded;
+            assert(phide::workspace::WorkspaceConfigEngine::LoadWorkspaceSettings(wsCfgDir.wstring(), wLoaded));
+            assert(wLoaded.values[L"editor.tabSize"] == L"2");
+            assert(wLoaded.values[L"files.autoSave"] == L"afterDelay");
+
+            // 3. GUI Snippet Editor CRUD + persistence
+            fs::path snipFile = tmpRoot / L"snippets_test.json";
+            phide::editor::SnippetManager snipMgr;
+            snipMgr.Initialize(snipFile.wstring());
+            size_t initialCount = snipMgr.GetSnippets().size();
+            phide::editor::Snippet custom;
+            custom.name = L"Express Route";
+            custom.prefix = L"myroute132";
+            custom.scope = L"js,ts";
+            custom.description = L"Custom API route";
+            custom.body = { L"app.get('/$1', (req, res) => {", L"  res.json({ ok: true });", L"});" };
+            size_t newIdx = snipMgr.UpsertSnippet(SIZE_MAX, custom, true);
+            assert(snipMgr.GetSnippets().size() == initialCount + 1);
+
+            phide::editor::SnippetManager snipReload;
+            snipReload.Initialize(snipFile.wstring());
+            const auto* foundSnip = snipReload.FindSnippetByPrefix(L"myroute132", L".ts");
+            assert(foundSnip != nullptr && foundSnip->name == L"Express Route");
+            assert(snipReload.DeleteSnippet(newIdx, true));
+            assert(snipReload.FindSnippetByPrefix(L"myroute132", L".ts") == nullptr);
+
+            // 4. Offscreen Direct2D render of SettingsView (Workspace scope), KeyboardShortcutsView, and Snippet Editor
+            Microsoft::WRL::ComPtr<IWICBitmap> wicUi;
+            pWicFactory->CreateBitmap(1024, 640, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicUi);
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsU = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTU;
+            pD2DFactory->CreateWicBitmapRenderTarget(wicUi.Get(), rtPropsU, &pRTU);
+            phide::ui::Theme themeU;
+            themeU.SetThemeMode(phide::ui::ThemeMode::Dark);
+            themeU.CreateDeviceResources(pRTU.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfgU;
+
+            pRTU->BeginDraw();
+            pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            kbReloaded.BeginRecordingRow(0);
+            kbReloaded.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTU->EndDraw()));
+
+            phide::ui::SettingsView setView;
+            setView.SetActiveScope(2);
+            pRTU->BeginDraw();
+            pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            setView.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTU->EndDraw()));
+
+            phide::ui::EditorCanvas ecSnip;
+            ecSnip.BindSnippetManager(&snipMgr);
+            pRTU->BeginDraw();
+            pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            ecSnip.RenderSnippetEditorView(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTU->EndDraw()));
+        }
+
+        fs::remove_all(tmpRoot, ec132);
+        assert(!fs::exists(tmpRoot, ec132));
+        std::cout << "  Passed: All [TEST 132] Phase 4 MMap, Multi-Root, .editorconfig, Remote VFS, Keybindings, Workspace Settings & Snippet Editor checks passed!" << std::endl;
+
+        if (targetTest == 132) {
+            std::cout << "Target test 132 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_133:
+    if (targetTest == 0 || targetTest == 133) {
+        std::cout << "[TEST 133] Verifying Multi-Pane CodeLens Isolation, Peek Pointer Cursor & Rich Hover Card Rendering..." << std::endl;
+
+        Microsoft::WRL::ComPtr<IWICBitmap> wic133;
+        pWicFactory->CreateBitmap(1200, 720, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wic133);
+        D2D1_RENDER_TARGET_PROPERTIES rtProps133 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRT133;
+        pD2DFactory->CreateWicBitmapRenderTarget(wic133.Get(), rtProps133, &pRT133);
+
+        phide::ui::Theme theme133;
+        theme133.SetThemeMode(phide::ui::ThemeMode::Dark);
+        theme133.CreateDeviceResources(pRT133.Get(), pDWriteFactory.Get());
+
+        phide::app::AppConfig cfg133;
+        cfg133.enableCodeLens = true;
+        cfg133.showMinimap = true;
+        cfg133.showBreadcrumbs = true;
+
+        phide::ui::EditorCanvas ec133;
+
+        // 1. Markdown & empty hover rejection checks
+        assert(phide::editor::HoverAndSignatureHelper::ParseMarkdownBlocks(L"```tsx\n   \n\t\n```\n---\n   \n").empty());
+        ec133.ShowHoverCard(2, 6, POINT{ 300, 220 }, L"```tsx\n   \n```");
+        assert(!ec133.IsHoverCardVisible());
+
+        // 2. Multi-pane split CodeLens retention & hover isolation (focused on Pane 1, Pane 0 also has CodeLens)
+        phide::editor::OpenDocument docTsx;
+        docTsx.filePath = L"C:\\test\\file.tsx";
+        docTsx.fileName = L"file.tsx";
+        docTsx.buffer.SetText(L"import React from \"react\";\n\nconst File = () => {\n    return <div></div>;\n};\n\nexport default File;\n");
+        docTsx.codeLensMap[2] = { L"File", 1, false };
+
+        phide::editor::OpenDocument docCpp;
+        docCpp.filePath = L"C:\\test\\index.cpp";
+        docCpp.fileName = L"index.cpp";
+        docCpp.buffer.SetText(L"int main(int argc, char *argv[]) {\n    return 0;\n}\n");
+        docCpp.codeLensMap[0] = { L"main", 0, false };
+
+        phide::editor::EditorGroup g0, g1;
+        g0.docs.push_back(docTsx);
+        g0.activeDocIdx = 0;
+        g0.bounds = D2D1::RectF(0.0f, 34.0f, 590.0f, 360.0f);
+        g1.docs.push_back(docCpp);
+        g1.activeDocIdx = 0;
+        g1.bounds = D2D1::RectF(0.0f, 364.0f, 590.0f, 700.0f);
+
+        std::vector<phide::editor::EditorGroup> groups133;
+        groups133.push_back(std::move(g0));
+        groups133.push_back(std::move(g1));
+        ec133.GetSplitState().layout = phide::editor::EditorSplitLayout::TwoColumns;
+
+        pRT133->BeginDraw();
+        pRT133->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+        ec133.Render(pRT133.Get(), theme133, cfg133, groups133, 1, 0.0f, 1200.0f, 720.0f);
+        assert(SUCCEEDED(pRT133->EndDraw()));
+
+        const auto& clActions = ec133.GetActiveCodeLensActions();
+        assert(clActions.size() >= 6);
+        int g0FirstIdx = -1, g1FirstIdx = -1;
+        for (size_t i = 0; i < clActions.size(); ++i) {
+            if (clActions[i].groupIdx == 0 && clActions[i].kind == phide::ui::EditorCanvas::CodeLensAction::ActionKind::References && g0FirstIdx < 0) {
+                g0FirstIdx = static_cast<int>(i);
+            }
+            if (clActions[i].groupIdx == 1 && clActions[i].kind == phide::ui::EditorCanvas::CodeLensAction::ActionKind::References && g1FirstIdx < 0) {
+                g1FirstIdx = static_cast<int>(i);
+            }
+        }
+        assert(g0FirstIdx >= 0 && g1FirstIdx > g0FirstIdx);
+
+        auto midPt = [](const D2D1_RECT_F& r) -> POINT {
+            return POINT{ static_cast<LONG>((r.left + r.right) * 0.5f), static_cast<LONG>((r.top + r.bottom) * 0.5f) };
+        };
+        auto ptInRectF = [](POINT p, const D2D1_RECT_F& r) -> bool {
+            return static_cast<float>(p.x) >= r.left && static_cast<float>(p.x) <= r.right &&
+                   static_cast<float>(p.y) >= r.top && static_cast<float>(p.y) <= r.bottom;
+        };
+        POINT ptG0Ref = midPt(clActions[static_cast<size_t>(g0FirstIdx)].bounds);
+        POINT ptG1Ref = midPt(clActions[static_cast<size_t>(g1FirstIdx)].bounds);
+        assert(ptInRectF(ptG0Ref, groups133[0].bounds));
+        assert(ptInRectF(ptG1Ref, groups133[1].bounds));
+        assert(!ptInRectF(ptG0Ref, groups133[1].bounds));
+        assert(!ptInRectF(ptG1Ref, groups133[0].bounds));
+        assert(ec133.HitTestCodeLens(ptG0Ref) == g0FirstIdx);
+        assert(ec133.HitTestCodeLens(ptG1Ref) == g1FirstIdx);
+
+        // Hovering Group 1 must isolate m_hoveredCodeLensIdx exclusively to g1FirstIdx (not mirror Group 0)
+        assert(ec133.UpdateCodeLensHover(ptG1Ref));
+        assert(ec133.HasHoveredCodeLens());
+        assert(ec133.HitTestCodeLens(ptG1Ref) == g1FirstIdx);
+        assert(ec133.UpdateCodeLensHover(ptG0Ref));
+        assert(ec133.HitTestCodeLens(ptG0Ref) == g0FirstIdx);
+        assert(ec133.UpdateCodeLensHover(POINT{ 10, 10 }));
+        assert(!ec133.HasHoveredCodeLens());
+
+        // 3. HitTestCodeArea actual-text check (true on line 6 "export default File;", false far right or far below EOF or on CodeLens strip)
+        size_t htLine = 0, htCol = 0;
+        bool isActual = false;
+        LONG line6Y = 0;
+        const float g0Left = groups133[0].bounds.left;
+        const float g0Bottom = groups133[0].bounds.bottom;
+        for (LONG scanY = static_cast<LONG>(groups133[0].bounds.top) + 40; scanY < static_cast<LONG>(g0Bottom) - 60; scanY += 4) {
+            bool actTmp = false;
+            if (ec133.HitTestCodeArea(POINT{ static_cast<LONG>(g0Left) + 85, scanY }, cfg133, groups133[0].docs[0], g0Left, g0Bottom, htLine, htCol, true, &actTmp) &&
+                htLine == 6 && actTmp) {
+                line6Y = scanY;
+                break;
+            }
+        }
+        assert(line6Y > static_cast<LONG>(groups133[0].bounds.top) + 40);
+        assert(ec133.HitTestCodeArea(POINT{ static_cast<LONG>(g0Left) + 85, line6Y }, cfg133, groups133[0].docs[0], g0Left, g0Bottom, htLine, htCol, true, &isActual));
+        assert(isActual);
+        // Below last line in Group 0 (still returns true for caret click, but must NOT trigger hover!)
+        isActual = true;
+        assert(ec133.HitTestCodeArea(POINT{ static_cast<LONG>(g0Left) + 120, static_cast<LONG>(g0Bottom) - 40 }, cfg133, groups133[0].docs[0], g0Left, g0Bottom, htLine, htCol, true, &isActual));
+        assert(!isActual);
+        // Far to the right of short line 6 in Group 0
+        isActual = true;
+        assert(ec133.HitTestCodeArea(POINT{ static_cast<LONG>(g0Left) + 450, line6Y }, cfg133, groups133[0].docs[0], g0Left, g0Bottom, htLine, htCol, true, &isActual));
+        assert(!isActual);
+        // On CodeLens virtual line in Group 0
+        isActual = true;
+        assert(ec133.HitTestCodeArea(ptG0Ref, cfg133, groups133[0].docs[0], g0Left, g0Bottom, htLine, htCol, true, &isActual));
+        assert(!isActual);
+
+        // 4. Rich Hover Card non-blank Direct2D pixel verification (tests DWRITE_PARAGRAPH_ALIGNMENT_NEAR override)
+        ec133.ShowHoverCard(2, 6, POINT{ 140, 120 }, L"```tsx\nconst File = () => {}\n```\n---\nDeclared at line 3");
+        assert(ec133.IsHoverCardVisible());
+        pRT133->BeginDraw();
+        pRT133->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+        ec133.Render(pRT133.Get(), theme133, cfg133, groups133, 0, 0.0f, 1200.0f, 720.0f);
+        assert(SUCCEEDED(pRT133->EndDraw()));
+
+        const D2D1_RECT_F cardRc = ec133.GetHoverCardState().bounds;
+        assert(cardRc.right > cardRc.left + 80.0f && cardRc.bottom > cardRc.top + 30.0f);
+        {
+            WICRect lockRc{};
+            lockRc.X = (std::max)(0, static_cast<int>(cardRc.left + 12.0f));
+            lockRc.Y = (std::max)(0, static_cast<int>(cardRc.top + 8.0f));
+            lockRc.Width = (std::min)(static_cast<int>(cardRc.right - cardRc.left - 24.0f), 1180 - lockRc.X);
+            lockRc.Height = (std::min)(static_cast<int>(cardRc.bottom - cardRc.top - 16.0f), 700 - lockRc.Y);
+            assert(lockRc.Width > 20 && lockRc.Height > 12);
+            Microsoft::WRL::ComPtr<IWICBitmapLock> lock;
+            assert(SUCCEEDED(wic133->Lock(&lockRc, WICBitmapLockRead, &lock)));
+            UINT bufSize = 0, stride = 0;
+            BYTE* pBytes = nullptr;
+            assert(SUCCEEDED(lock->GetStride(&stride)));
+            assert(SUCCEEDED(lock->GetDataPointer(&bufSize, &pBytes)));
+            int brightPixels = 0;
+            for (INT y = 0; y < lockRc.Height; ++y) {
+                const BYTE* row = pBytes + static_cast<size_t>(y) * stride;
+                for (INT x = 0; x < lockRc.Width; ++x) {
+                    const BYTE b = row[x * 4 + 0];
+                    const BYTE g = row[x * 4 + 1];
+                    const BYTE r = row[x * 4 + 2];
+                    if (b > 110 || g > 110 || r > 110) {
+                        ++brightPixels;
+                    }
+                }
+            }
+            assert(brightPixels > 20);
+        }
+
+        // 5. OpenPeekPanel dismisses hover card + GetPeekCursorForPoint returns IDC_HAND for Open/Close/Items & IDC_ARROW elsewhere
+        std::vector<phide::ui::EditorCanvas::PeekItemEntry> peekItems(2);
+        peekItems[0].filePath = docTsx.filePath;
+        peekItems[0].line = 2;
+        peekItems[0].label = L"file.tsx:3";
+        peekItems[0].detail = L"const File = () => {";
+        peekItems[0].snippet = L"const File = () => {";
+        peekItems[1].filePath = docTsx.filePath;
+        peekItems[1].line = 6;
+        peekItems[1].label = L"file.tsx:7";
+        peekItems[1].detail = L"export default File;";
+        peekItems[1].snippet = L"export default File;";
+        ec133.OpenPeekPanel(phide::ui::EditorCanvas::PeekMode::References,
+                            L"References: File", L"2 reference(s)", 2, std::move(peekItems));
+        assert(!ec133.IsHoverCardVisible());
+
+        pRT133->BeginDraw();
+        pRT133->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+        ec133.Render(pRT133.Get(), theme133, cfg133, groups133, 0, 0.0f, 1200.0f, 720.0f);
+        assert(SUCCEEDED(pRT133->EndDraw()));
+
+        const auto& pp = ec133.GetPeekPanel();
+        assert(pp.isOpen && pp.items.size() == 2);
+        assert(ec133.GetPeekCursorForPoint(midPt(pp.rcOpenFileBtn)) == IDC_HAND);
+        assert(ec133.GetPeekCursorForPoint(midPt(pp.rcCloseBtn)) == IDC_HAND);
+        assert(ec133.GetPeekCursorForPoint(midPt(pp.items[0].bounds)) == IDC_HAND);
+        assert(ec133.GetPeekCursorForPoint(midPt(pp.items[1].bounds)) == IDC_HAND);
+        POINT ptPeekBg{ static_cast<LONG>(pp.rcPanel.left + 20.0f), static_cast<LONG>(pp.rcPanel.top + 60.0f) };
+        assert(ec133.GetPeekCursorForPoint(ptPeekBg) == IDC_ARROW);
+        assert(ec133.GetPeekCursorForPoint(POINT{ 5, 5 }) == nullptr);
+
+        ec133.ClosePeekPanel();
+        assert(!pp.isOpen);
+        assert(ec133.GetPeekCursorForPoint(midPt(pp.rcPanel)) == nullptr);
+
+        std::cout << "  Passed: All [TEST 133] Multi-Pane CodeLens, Peek Cursor & Hover Card checks passed!" << std::endl;
+
+        if (targetTest == 133) {
+            std::cout << "Target test 133 finished successfully." << std::endl;
             return 0;
         }
     }

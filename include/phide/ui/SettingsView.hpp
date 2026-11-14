@@ -128,6 +128,8 @@ public:
 
     [[nodiscard]] SettingCategory GetActiveCategory() const noexcept { return m_activeCategory; }
     void SetActiveCategory(SettingCategory cat) noexcept { m_activeCategory = cat; m_scrollOffsetY = 0.0f; }
+    [[nodiscard]] int GetActiveScope() const noexcept { return m_activeScope; }
+    void SetActiveScope(int scope) noexcept { m_activeScope = scope; m_scrollOffsetY = 0.0f; }
     void ResetScroll() noexcept { m_scrollOffsetY = 0.0f; }
     [[nodiscard]] const std::vector<SettingItem>& GetItems() const noexcept { return m_items; }
 

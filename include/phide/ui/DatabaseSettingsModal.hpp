@@ -52,6 +52,11 @@ enum class DatabaseModalAction {
     EditPmaConfig,
     EditNginxConfig,
     ImportSql,
+    CycleVhostPreset,
+    ApplyVhostPreset,
+    CyclePhpVersion,
+    ToggleLiveReload,
+    OpenSqlConsole,
     SwitchTabPma,
     SwitchTabNginx,
     CloseModal
@@ -80,6 +85,29 @@ public:
 
     void SetSqlFileAvailable(const std::wstring& sqlFileName) noexcept { m_sqlFileName = sqlFileName; }
     [[nodiscard]] const std::wstring& GetSqlFileName() const noexcept { return m_sqlFileName; }
+
+    void SetAvailablePhpVersions(const std::vector<std::pair<std::wstring, std::wstring>>& versions) {
+        m_phpVersions = versions;
+        if (m_phpVersionIndex >= m_phpVersions.size()) m_phpVersionIndex = 0;
+    }
+    void CyclePhpVersion() noexcept {
+        if (!m_phpVersions.empty()) m_phpVersionIndex = (m_phpVersionIndex + 1) % m_phpVersions.size();
+    }
+    [[nodiscard]] std::wstring GetSelectedPhpExe() const {
+        if (m_phpVersionIndex < m_phpVersions.size()) return m_phpVersions[m_phpVersionIndex].second;
+        return L"";
+    }
+    [[nodiscard]] std::wstring GetSelectedPhpLabel() const {
+        if (m_phpVersionIndex < m_phpVersions.size()) return m_phpVersions[m_phpVersionIndex].first;
+        return L"System Default";
+    }
+    void CycleVhostPreset() noexcept { m_vhostPresetIndex = (m_vhostPresetIndex + 1) % 3; }
+    [[nodiscard]] std::wstring GetSelectedVhostPreset() const {
+        static const wchar_t* kPresets[] = { L"Standard", L"Laravel / public", L"SPA History Mode" };
+        return kPresets[m_vhostPresetIndex % 3];
+    }
+    void SetLiveReloadEnabled(bool e) noexcept { m_liveReloadEnabled = e; }
+    [[nodiscard]] bool IsLiveReloadEnabled() const noexcept { return m_liveReloadEnabled; }
 
     void SetCopiedFeedback(const std::wstring& fieldName) {
         m_copiedField = fieldName;
@@ -214,6 +242,16 @@ private:
     D2D1_RECT_F m_rcBtnDone{};
     D2D1_RECT_F m_rcBtnImportSql{};
     std::wstring m_sqlFileName;
+
+    D2D1_RECT_F m_rcBtnOpenSqlConsole{};
+    D2D1_RECT_F m_rcBtnVhostPreset{};
+    D2D1_RECT_F m_rcBtnApplyPreset{};
+    D2D1_RECT_F m_rcBtnPhpVersion{};
+    D2D1_RECT_F m_rcBtnLiveReload{};
+    std::vector<std::pair<std::wstring, std::wstring>> m_phpVersions;
+    size_t m_phpVersionIndex = 0;
+    size_t m_vhostPresetIndex = 0;
+    bool m_liveReloadEnabled = true;
 
     DatabaseModalAction m_hoveredAction = DatabaseModalAction::None;
 };

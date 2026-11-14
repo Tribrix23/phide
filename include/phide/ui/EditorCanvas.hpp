@@ -11,6 +11,10 @@
 #include <wrl/client.h>
 #include <vector>
 #include <string>
+#include <memory>
+#include <mutex>
+#include <atomic>
+#include <cstdint>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
@@ -21,6 +25,9 @@
 #include "phide/editor/PredictionEngine.hpp"
 #include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/editor/LanguageIntelligence.hpp"
+#include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/db/SqlEngine.hpp"
+#include "phide/editor/SnippetManager.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
@@ -80,7 +87,7 @@ public:
         bool isChecked = false;
     };
     EditorCanvas();
-    ~EditorCanvas() = default;
+    ~EditorCanvas();
 
     /**
      * @brief Renders the entire editor canvas (multi-tabs, active document, split editor side-by-side panes, or placeholder watermark).
@@ -254,10 +261,11 @@ public:
     /**
      * @brief Tests if mouse clicked inside the code area to position cursor.
      * @param clampToLineEnd When false, returns virtual column coordinates past end-of-line (for box selection).
+     * @param outIsActualTextChar Optional flag set true only when pt lies directly over a real code line and within rendered characters (false for empty space below EOF, past line end, or virtual CodeLens/prediction lines).
      */
     bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                          float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol,
-                         bool clampToLineEnd = true) const;
+                         bool clampToLineEnd = true, bool* outIsActualTextChar = nullptr) const;
 
     /**
      * @brief Computes whether a buffer line can be folded and returns its terminating line.
@@ -302,6 +310,7 @@ public:
      * @return Reference to the KeyboardShortcutsView component.
      */
     KeyboardShortcutsView& GetKeyboardShortcutsView() noexcept { return m_keybindingsView; }
+    const KeyboardShortcutsView& GetKeyboardShortcutsView() const noexcept { return m_keybindingsView; }
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
     GraphView& GetGraphView() noexcept { return m_graphView; }
@@ -546,7 +555,8 @@ private:
                     bool highlightMatchCase = false,
                     bool highlightWholeWord = false,
                     bool highlightUseRegex = false,
-                    bool isRenaming = false);
+                    bool isRenaming = false,
+                    int groupIdx = 0);
 
     /**
      * @brief Renders side-by-side diff comparison view with read-only left pane and editable right pane (Images 2, 3, 4, 5).
@@ -554,6 +564,13 @@ private:
     void RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                         editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                         float topY, float clientHeight, bool isFocused);
+
+    /**
+     * @brief Renders interactive 3-way merge editor (Left: Current, Center: Editable Result, Right: Incoming) (#35).
+     */
+    void RenderThreeWayMergeView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                 float topY, float clientHeight, bool isFocused);
 
     /**
      * @brief Renders ambient background theme effects (3D perspective grid, particles, starfields) for unique themes.
@@ -687,6 +704,74 @@ public:
                                float topY, float clientHeight);
     bool HandleExtensionDetailWheel(short delta, editor::OpenDocument& doc) noexcept;
     bool HandleExtensionDetailClick(POINT pt, editor::OpenDocument& doc);
+
+    // --- #28 Integrated Test Explorer Special View & Gutter Test Status ---
+    struct GutterTestHit {
+        size_t line0 = 0;
+        std::wstring testId;
+        D2D1_RECT_F bounds{};
+    };
+    struct TestRowHit {
+        size_t itemIndex = 0;
+        D2D1_RECT_F rowBounds{};
+        D2D1_RECT_F runBtnBounds{};
+    };
+    void SetTestResults(std::vector<phide::dev::TestItem> items, phide::dev::TestRunSummary summary);
+    void SetTestIsRunning(bool running) noexcept { m_testIsRunning = running; }
+    [[nodiscard]] bool IsTestRunning() const noexcept { return m_testIsRunning; }
+    [[nodiscard]] const std::vector<phide::dev::TestItem>& GetTestItems() const noexcept { return m_testItems; }
+    [[nodiscard]] bool HitTestGutterTest(POINT pt, size_t& outLine0, std::wstring& outTestId) const noexcept;
+    void RenderTestExplorerView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleTestExplorerMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleTestExplorerMouseWheel(short delta) noexcept;
+
+    // #42 SQL Query Console & Schema Browser View (`sql_console`)
+    void SetSqlWorkspaceRoot(const std::wstring& root,
+                             const std::wstring& mysqlHost = L"localhost",
+                             int mysqlPort = 3306,
+                             const std::wstring& mysqlUser = L"root",
+                             const std::wstring& mysqlPass = L"",
+                             const std::wstring& mysqlDb = L"");
+    void SetSqlProfiles(const std::vector<phide::db::SqlConnectionProfile>& profiles);
+    void SetSqlQueryText(const std::wstring& sql);
+    void RefreshActiveSqlSchema();
+    void ExecuteActiveSqlQuery();
+    void SetSqlNotifyHwnd(HWND hwnd) noexcept { m_sqlNotifyHwnd = hwnd; }
+    bool ApplyPendingSqlAsyncResults();
+    void StartRefreshActiveSqlSchemaAsync();
+    void StartExecuteActiveSqlQueryAsync();
+    void StartDiscoverSqlServersAsync();
+    void UpdateMysqlProfilesPort(int newPort);
+    [[nodiscard]] bool IsSqlBusy() const noexcept { return m_sqlIsBusy; }
+    [[nodiscard]] const phide::db::SqlQueryResult& GetSqlQueryResult() const noexcept { return m_sqlResult; }
+    [[nodiscard]] const std::vector<phide::db::SqlConnectionProfile>& GetSqlProfiles() const noexcept { return m_sqlProfiles; }
+    [[nodiscard]] size_t GetSqlSelectedProfileIndex() const noexcept { return m_sqlSelectedProfileIdx; }
+    [[nodiscard]] LPCWSTR GetSqlConsoleCursorForPoint(POINT pt) const noexcept;
+    bool UpdateSqlConsoleHover(POINT pt) noexcept;
+    void RenderSqlConsoleView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleSqlConsoleMouseWheel(POINT pt, short delta) noexcept;
+    bool HandleSqlConsoleChar(wchar_t ch);
+    bool HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd);
+    std::function<void(const std::wstring&)> onSqlStatusToast;
+    std::function<void()> onRequestEnsureMysqlRunning;
+
+    // #49 GUI Snippet Editor View (`snippet_editor`)
+    void BindSnippetManager(editor::SnippetManager* pMgr);
+    void SyncSnippetEditorFieldsFromSelection();
+    void RenderSnippetEditorView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleSnippetEditorMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleSnippetEditorMouseWheel(POINT pt, short delta) noexcept;
+    bool HandleSnippetEditorChar(wchar_t ch);
+    bool HandleSnippetEditorKeyDown(WPARAM wParam);
+
+    std::function<void()> onTestRunAll;
+    std::function<void()> onTestRefresh;
+    std::function<void(const phide::dev::TestItem&)> onTestRunSingle;
+    std::function<void(const std::wstring& filePath, size_t line0)> onTestOpenLocation;
     float m_lastExtSubTabY = 0.0f;
     float m_lastExtSubTabH = 0.0f;
     float m_lastExtTab0X = 0.0f;
@@ -699,10 +784,12 @@ public:
     D2D1_RECT_F m_lastExtUninstallBtn{};
 
     struct CodeLensAction {
-        enum class ActionKind { Run, Debug, References, RunTest, DebugTest };
+        enum class ActionKind { Run, Debug, References, RunTest, DebugTest, AcceptCurrent, AcceptIncoming, AcceptBoth, OpenThreeWayMerge };
         ActionKind kind = ActionKind::Run;
         std::wstring symbolName;
+        size_t conflictIdx = 0;
         size_t bufferLine = 0;
+        int groupIdx = 0;
         bool isDebug = false;
         D2D1_RECT_F bounds{};
     };
@@ -785,6 +872,12 @@ public:
     [[nodiscard]] bool IsDraggingMonitorScrollbar() const noexcept { return m_isDraggingMonitorScrollbar; }
     void RefreshMonitorTelemetry();
     [[nodiscard]] bool HitTestMonitorInteractive(POINT pt) const;
+    [[nodiscard]] bool HitTestMergeCenterPane(const editor::OpenDocument& doc, const app::AppConfig& config,
+                                                POINT pt, size_t& outLine, size_t& outCol) const noexcept;
+    mutable float m_lastMergeCanvasLeft = 0.0f;
+    mutable float m_lastMergeCanvasWidth = 0.0f;
+    mutable float m_lastMergeTopY = 0.0f;
+    mutable float m_lastMergeClientH = 0.0f;
     double MeasureCurrentProcessCpu();
 
     D2D1_RECT_F m_rcMonitorRefreshBtn{};
@@ -1023,11 +1116,17 @@ public:
     void OpenPeekPanel(PeekMode mode, const std::wstring& title, const std::wstring& subtitle,
                        size_t anchorLine, std::vector<PeekItemEntry> items);
     void OpenCodeMetricsPanel(const editor::WorkspaceCodeMetrics& metrics, const std::wstring& activeFileLabel);
-    void ClosePeekPanel() noexcept { m_peekPanel.isOpen = false; }
+    void ClosePeekPanel() noexcept {
+        m_peekPanel.isOpen = false;
+        m_peekPanel.rcPanel = {};
+        m_peekPanel.rcCloseBtn = {};
+        m_peekPanel.rcOpenFileBtn = {};
+    }
     void LoadSelectedPeekPreview();
     PeekAction HandlePeekClick(POINT pt);
     PeekAction HandlePeekKeyDown(WPARAM vk);
     bool HandlePeekWheel(POINT pt, short delta);
+    [[nodiscard]] LPCWSTR GetPeekCursorForPoint(POINT pt) const noexcept;
 
     InlineRenameState& GetRenameWidget() noexcept { return m_renameWidget; }
     const InlineRenameState& GetRenameWidget() const noexcept { return m_renameWidget; }
@@ -1058,8 +1157,10 @@ public:
         std::wstring rawMarkdown;
         std::vector<editor::MarkdownBlock> blocks;
         D2D1_RECT_F bounds{};
+        D2D1_RECT_F paneBounds{};
     };
     void ShowHoverCard(size_t line, size_t col, POINT screenPt, const std::wstring& markdown);
+    void SetHoverCardPaneBounds(const D2D1_RECT_F& bounds) noexcept { m_hoverCard.paneBounds = bounds; }
     void DismissHoverCard() noexcept { m_hoverCard.visible = false; m_hoverCard.bounds = {}; }
     [[nodiscard]] bool IsHoverCardVisible() const noexcept { return m_hoverCard.visible; }
     [[nodiscard]] const HoverCardState& GetHoverCardState() const noexcept { return m_hoverCard; }
@@ -1120,6 +1221,134 @@ private:
     HoverCardState m_hoverCard;
     SignatureHelpPopupState m_sigHelpPopup;
     CodeActionMenuState m_codeActionMenu;
+    bool m_inMultiPaneRender = false;
+
+    // #28 Test Explorer state
+    std::vector<phide::dev::TestItem> m_testItems;
+    phide::dev::TestRunSummary m_testSummary{};
+    bool m_testIsRunning = false;
+    int m_testFilterMode = 0; // 0=All, 1=Failed, 2=Passed
+    int m_testSelectedIdx = -1;
+    float m_testScrollY = 0.0f;
+    float m_testMaxScrollY = 0.0f;
+    D2D1_RECT_F m_rcTestRunAllBtn{};
+    D2D1_RECT_F m_rcTestRefreshBtn{};
+    D2D1_RECT_F m_rcTestFilterBtns[3]{};
+    std::vector<TestRowHit> m_testRowHits;
+    std::vector<GutterTestHit> m_visibleGutterTests;
+
+    // #42 SQL Query Console state
+    struct SqlTableHit {
+        D2D1_RECT_F bounds{};
+        size_t tableIndex = 0;
+    };
+    struct SqlProfileHit {
+        D2D1_RECT_F bounds{};
+        size_t profileIndex = 0;
+    };
+    struct SqlDbHit {
+        D2D1_RECT_F bounds{};
+        std::wstring dbName;
+    };
+    struct SqlColHeaderHit {
+        D2D1_RECT_F bounds{};
+        size_t colIndex = 0;
+    };
+    struct SqlAsyncInbox {
+        std::mutex mtx;
+        std::atomic<bool> alive{ true };
+        uint64_t schemaReqGen = 0;
+        uint64_t queryReqGen = 0;
+        uint64_t discoverReqGen = 0;
+        bool hasSchemaUpdate = false;
+        size_t schemaProfileIdx = 0;
+        std::vector<phide::db::SqlTableInfo> schemaTables;
+        std::vector<std::wstring> schemaDatabases;
+        std::wstring schemaError;
+        bool hasQueryUpdate = false;
+        phide::db::SqlQueryResult queryResult;
+        bool refreshSchemaAfterQuery = false;
+        bool hasDiscoverUpdate = false;
+        std::vector<phide::db::SqlConnectionProfile> discoveredProfiles;
+    };
+    std::shared_ptr<SqlAsyncInbox> m_sqlAsyncInbox = std::make_shared<SqlAsyncInbox>();
+    uint64_t m_sqlSchemaReqGen = 0;
+    uint64_t m_sqlQueryReqGen = 0;
+    uint64_t m_sqlDiscoverReqGen = 0;
+    bool m_sqlIsBusy = false;
+    HWND m_sqlNotifyHwnd = nullptr;
+    std::wstring m_sqlMysqlHost = L"localhost";
+    int m_sqlMysqlPort = 3306;
+    std::wstring m_sqlMysqlUser = L"root";
+    std::wstring m_sqlMysqlPass;
+    std::wstring m_sqlMysqlDb;
+    std::vector<phide::db::SqlConnectionProfile> m_sqlProfiles;
+    size_t m_sqlSelectedProfileIdx = 0;
+    std::vector<phide::db::SqlTableInfo> m_sqlTables;
+    int m_sqlExpandedTableIdx = -1;
+    std::wstring m_sqlQueryText = L"SELECT 1 AS ok;";
+    size_t m_sqlCursorPos = 15;
+    phide::db::SqlQueryResult m_sqlResult;
+    std::wstring m_sqlSchemaError;
+    std::wstring m_sqlStatusBanner;
+    bool m_sqlEditorFocused = true;
+    size_t m_sqlPage = 0;
+    size_t m_sqlPageSize = 50;
+    int m_sqlSortCol = -1;
+    bool m_sqlSortAsc = true;
+    float m_sqlSidebarScrollY = 0.0f;
+    float m_sqlMaxSidebarScrollY = 0.0f;
+    float m_sqlQueryScrollY = 0.0f;
+    float m_sqlGridScrollY = 0.0f;
+    float m_sqlGridScrollX = 0.0f;
+    float m_sqlMaxGridScrollY = 0.0f;
+    int m_sqlHoveredBtnId = 0;
+    int m_sqlHoveredProfileIdx = -1;
+    int m_sqlHoveredDbIdx = -1;
+    int m_sqlHoveredTableIdx = -1;
+    int m_sqlHoveredColIdx = -1;
+    D2D1_RECT_F m_rcSqlViewport{};
+    D2D1_RECT_F m_rcSqlRunBtn{};
+    D2D1_RECT_F m_rcSqlRefreshBtn{};
+    D2D1_RECT_F m_rcSqlNewMemBtn{};
+    D2D1_RECT_F m_rcSqlStartMysqlBtn{};
+    D2D1_RECT_F m_rcSqlExportCsvBtn{};
+    D2D1_RECT_F m_rcSqlExportJsonBtn{};
+    D2D1_RECT_F m_rcSqlPrevPageBtn{};
+    D2D1_RECT_F m_rcSqlNextPageBtn{};
+    D2D1_RECT_F m_rcSqlQueryBox{};
+    D2D1_RECT_F m_rcSqlQueryTextInner{};
+    D2D1_RECT_F m_rcSqlSidebar{};
+    D2D1_RECT_F m_rcSqlGrid{};
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> m_sqlLastQueryLayout;
+    std::vector<SqlProfileHit> m_sqlProfileHits;
+    std::vector<SqlDbHit> m_sqlDbHits;
+    std::vector<SqlTableHit> m_sqlTableHits;
+    std::vector<SqlColHeaderHit> m_sqlColHeaderHits;
+
+    // #49 GUI Snippet Editor state
+    struct SnipListHit {
+        D2D1_RECT_F bounds{};
+        size_t idx = 0;
+    };
+    editor::SnippetManager* m_pSnippetMgr = nullptr;
+    int m_snipSelectedIdx = -1;
+    int m_snipFocusedField = 0; ///< 0=Name, 1=Prefix, 2=Scope, 3=Desc, 4=Body
+    std::wstring m_snipDraftName;
+    std::wstring m_snipDraftPrefix;
+    std::wstring m_snipDraftScope;
+    std::wstring m_snipDraftDesc;
+    std::wstring m_snipDraftBody;
+    size_t m_snipBodyCursor = 0;
+    std::wstring m_snipStatusMsg;
+    float m_snipListScrollY = 0.0f;
+    float m_snipMaxListScrollY = 0.0f;
+    D2D1_RECT_F m_rcSnipNewBtn{};
+    D2D1_RECT_F m_rcSnipSaveBtn{};
+    D2D1_RECT_F m_rcSnipDeleteBtn{};
+    D2D1_RECT_F m_rcSnipListPane{};
+    D2D1_RECT_F m_rcSnipField[5]{};
+    std::vector<SnipListHit> m_snipListHits;
 };
 
 } // namespace phide::ui

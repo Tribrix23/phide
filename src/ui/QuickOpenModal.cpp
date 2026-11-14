@@ -5,6 +5,8 @@
 
 #include "phide/ui/QuickOpenModal.hpp"
 #include "phide/plugin/PluginManager.hpp"
+#include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/dev/DapClient.hpp"
 #include <filesystem>
 #include <algorithm>
 #include <cwctype>
@@ -354,10 +356,15 @@ void QuickOpenModal::FilterItems() {
             { L"View: Toggle Terminal", L"Ctrl + `", L"cmd_toggle_terminal" },
             { L"View: Color Theme", L"Ctrl + K Ctrl + T", L"cmd_theme_picker" },
             { L"View: Keyboard Shortcuts", L"Ctrl + K Ctrl + S", L"cmd_shortcuts" },
+            { L"Preferences: Open Snippet Editor (GUI)", L"", L"cmd_snippet_editor" },
             { L"View: Runtimes", L"Ctrl + Shift + X", L"cmd_runtimes" },
             { L"Terminal: New Terminal", L"Ctrl + Shift + `", L"cmd_new_terminal" },
             { L"Run: Start Debugging", L"F5", L"cmd_start_debugging" },
             { L"Run: Run Without Debugging", L"Ctrl + F5", L"cmd_run_without_debugging" },
+            { L"Debug: Edit Breakpoint Condition / Logpoint", L"Shift + F9", L"cmd_edit_breakpoint_condition" },
+            { L"View: Test Explorer", L"", L"cmd_test_explorer" },
+            { L"View: SQL Query Console", L"", L"cmd_sql_console" },
+            { L"Testing: Run All Tests", L"", L"cmd_run_all_tests" },
             { L"Git: Commit", L"Ctrl + Enter", L"cmd_git_commit" },
             { L"Git: Refresh", L"Ctrl + Shift + R", L"cmd_git_refresh" }
         };
@@ -554,18 +561,36 @@ void QuickOpenModal::FilterItems() {
         std::wstring term = m_query.substr(5);
         while (!term.empty() && term.front() == L' ') term.erase(0, 1);
 
-        auto configs = phide::editor::DiscoverLaunchConfigurations(m_workspaceFolder);
-        for (const auto& cfg : configs) {
-            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, cfg.label, cfg.command);
+        auto dapConfigs = phide::dev::LoadWorkspaceLaunchConfigs(m_workspaceFolder);
+        for (const auto& cfg : dapConfigs) {
+            std::wstring cmdSummary = cfg.type + (cfg.program.empty() ? L"" : (L" · " + cfg.program));
+            int score = term.empty() ? 2 : phide::editor::ScoreFuzzyMatch(term, cfg.name, cmdSummary);
             if (score <= 0) continue;
             QuickOpenItem it;
             it.type = QuickOpenItem::Type::Action;
-            it.title = cfg.label;
-            it.description = cfg.detail.empty() ? cfg.command : (cfg.detail + L" - " + cfg.command);
-            it.actionCommand = L"cmd_start_debugging";
+            it.title = cfg.name;
+            it.description = L"launch.json (" + cfg.type + L") - " + cfg.program;
+            it.actionCommand = L"run_launch:" + cfg.name;
             it.shortcut = L"F5";
             it.iconType = FileIconType::Terminal;
+            it.score = score + 10;
             m_filteredItems.push_back(std::move(it));
+        }
+
+        if (dapConfigs.empty()) {
+            auto configs = phide::editor::DiscoverLaunchConfigurations(m_workspaceFolder);
+            for (const auto& cfg : configs) {
+                int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, cfg.label, cfg.command);
+                if (score <= 0) continue;
+                QuickOpenItem it;
+                it.type = QuickOpenItem::Type::Action;
+                it.title = cfg.label;
+                it.description = cfg.detail.empty() ? cfg.command : (cfg.detail + L" - " + cfg.command);
+                it.actionCommand = L"cmd_start_debugging";
+                it.shortcut = L"F5";
+                it.iconType = FileIconType::Terminal;
+                m_filteredItems.push_back(std::move(it));
+            }
         }
 
         QuickOpenItem it2;
@@ -580,24 +605,25 @@ void QuickOpenModal::FilterItems() {
         std::wstring term = m_query.substr(4);
         while (!term.empty() && term.front() == L' ') term.erase(0, 1);
 
-        auto tasks = phide::editor::DiscoverWorkspaceTasks(m_workspaceFolder);
+        auto tasks = phide::dev::TaskRunnerEngine::DiscoverAllTasks(m_workspaceFolder);
         for (const auto& t : tasks) {
-            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, t.label, t.command);
+            std::wstring cmdLine = phide::dev::TaskRunnerEngine::FormatCommandLine(t, m_workspaceFolder);
+            int score = term.empty() ? 1 : phide::editor::ScoreFuzzyMatch(term, t.label, cmdLine);
             if (score <= 0) continue;
             QuickOpenItem it;
             it.type = QuickOpenItem::Type::Action;
-            it.title = t.label;
-            it.description = t.detail + L" - " + t.command;
-            it.actionCommand = L"run_task:" + t.command;
+            it.title = t.label + (t.isDefault ? L" (default)" : L"");
+            it.description = t.source + (cmdLine.empty() ? L"" : (L" · " + cmdLine));
+            it.actionCommand = L"run_task_label:" + t.label;
             it.iconType = FileIconType::Terminal;
-            it.score = score;
+            it.score = score + (t.isDefault ? 20 : 0);
             m_filteredItems.push_back(std::move(it));
         }
         if (m_filteredItems.empty()) {
             QuickOpenItem it;
             it.type = QuickOpenItem::Type::Action;
             it.title = L"Open Integrated Terminal to Run Task";
-            it.description = L"No package.json / tasks.json / Makefile tasks discovered";
+            it.description = L"No tasks.json / CMakeLists.txt / package.json / Makefile tasks discovered";
             it.actionCommand = L"cmd_new_terminal";
             it.iconType = FileIconType::Terminal;
             m_filteredItems.push_back(std::move(it));

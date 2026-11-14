@@ -939,6 +939,29 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
                 }
             }
         }
+    }
+
+    // Real-time Compiler / Linter Problem Matcher (#30: MSVC, Clang, GCC, tsc, ESLint, PHPStan)
+    if (!lines.empty()) {
+        size_t pmStart = lastScannedLineIdx;
+        if (pmStart >= lines.size()) {
+            pmStart = lines.size() - 1;
+        }
+        for (size_t li = pmStart; li < lines.size(); ++li) {
+            if (lines[li].hasProblemMatch) continue;
+            phide::dev::ProblemMatch pm;
+            if (phide::dev::ProblemMatcherEngine::ParseLine(lines[li].rawText, workingDir, problemMatcherState, pm)) {
+                lines[li].hasProblemMatch = true;
+                lines[li].problemFile = pm.filePath;
+                lines[li].problemLine1 = pm.line1Based;
+                lines[li].problemCol1 = pm.col1Based;
+                lines[li].problemLinkStart = pm.linkStart;
+                lines[li].problemLinkLen = pm.linkLength;
+                if (onProblemMatched) {
+                    onProblemMatched(pm);
+                }
+            }
+        }
         lastScannedLineIdx = lines.size() > 0 ? lines.size() - 1 : 0;
     }
 
@@ -1060,6 +1083,7 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
     tab->onOutput = m_outputCallback;
     tab->onExecutionError = m_onExecutionError;
     tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    tab->onProblemMatched = m_onProblemMatched;
 
     StartShellProcess(*tab);
     m_tabs.push_back(std::move(tab));
@@ -1077,6 +1101,7 @@ void TerminalPanel::NewRemoteCommandTab(const std::wstring& title, const std::ws
     tab->onOutput = m_outputCallback;
     tab->onExecutionError = m_onExecutionError;
     tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    tab->onProblemMatched = m_onProblemMatched;
 
     if (!commandLine.empty()) {
         int u8Len = WideCharToMultiByte(CP_UTF8, 0, commandLine.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -1238,6 +1263,7 @@ void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
     split->onOutput = m_outputCallback;
     split->onExecutionError = m_onExecutionError;
     split->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    split->onProblemMatched = m_onProblemMatched;
 
     StartShellProcess(*split);
     primary->splitTab = std::move(split);
@@ -2550,8 +2576,20 @@ void TerminalPanel::RenderContent(ID2D1RenderTarget* pRT, Theme& theme, const ap
 }
 
 void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                                     TerminalTab* tab, const D2D1_RECT_F& bounds, bool isFocused) {
+                                     TerminalTab* tab, const D2D1_RECT_F& fullBounds, bool isFocused) {
     if (!tab) return;
+
+    D2D1_RECT_F bounds = fullBounds;
+    D2D1_RECT_F inspectorBounds{};
+    bool showInspector = (tab->shellType == TerminalShellType::DebugConsole) &&
+                         ((fullBounds.right - fullBounds.left) >= config.ScaleF(520.0f));
+    if (showInspector) {
+        float inspW = (std::clamp)((fullBounds.right - fullBounds.left) * 0.44f, config.ScaleF(230.0f), config.ScaleF(420.0f));
+        inspectorBounds = D2D1::RectF(fullBounds.right - inspW, fullBounds.top, fullBounds.right, fullBounds.bottom);
+        bounds.right = inspectorBounds.left - 1.0f;
+    } else if (tab->shellType == TerminalShellType::DebugConsole) {
+        m_debugInspectorBounds = {};
+    }
 
     pRT->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -2670,6 +2708,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     size_t startLine = (maxScroll > 0) ? (maxScroll - static_cast<size_t>(tab->scrollOffsetLines)) : 0;
 
     m_visibleUrls.clear();
+    m_visibleProblemLinks.clear();
 
     float curY = bounds.top + padY;
     float curX = bounds.left + padX;
@@ -2814,6 +2853,22 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             curX += spanW;
         }
 
+        if (line.hasProblemMatch && line.problemLinkLen > 0) {
+            float pX = bounds.left + padX + static_cast<float>(line.problemLinkStart) * charW;
+            float pW = static_cast<float>(line.problemLinkLen) * charW;
+            D2D1_RECT_F pRc = D2D1::RectF(pX, curY, pX + pW, curY + lineH);
+            m_visibleProblemLinks.push_back({ line.problemFile, line.problemLine1, line.problemCol1, pRc });
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pmBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.72f, 0.20f, 0.95f), &pmBrush);
+                if (pmBrush) {
+                    pRT->DrawLine(D2D1::Point2F(pX, curY + lineH - 2.0f),
+                                  D2D1::Point2F(pX + pW, curY + lineH - 2.0f),
+                                  pmBrush.Get(), 1.3f);
+                }
+            }
+        }
+
         // Render typed command line in real-time
         if (l == totalLines - 1 && !tab->currentInputLine.empty()) {
             auto inputSpans = TokenizeCommandLineWithLinuxRules(tab->currentInputLine, tab->workingDir);
@@ -2910,6 +2965,10 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     }
 
     pRT->PopAxisAlignedClip();
+
+    if (showInspector) {
+        RenderDebugInspector(pRT, theme, config, inspectorBounds);
+    }
 }
 
 // =============================================================================
@@ -3292,6 +3351,250 @@ bool TerminalPanel::HitTestUrl(POINT pt, std::wstring* outUrl) const {
         }
     }
     return false;
+}
+
+bool TerminalPanel::HitTestProblemLink(POINT pt, TerminalProblemHit* outHit) const {
+    if (!m_isOpen) return false;
+    auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+        return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+    };
+    for (const auto& hit : m_visibleProblemLinks) {
+        if (inRect(pt, hit.bounds)) {
+            if (outHit) *outHit = hit;
+            return true;
+        }
+    }
+    return false;
+}
+
+void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         const D2D1_RECT_F& inspectorBounds) {
+    m_debugInspectorBounds = inspectorBounds;
+    m_debugStackHits.clear();
+    m_debugVarHits.clear();
+    m_debugWatchDelHits.clear();
+    m_debugWatchInputBounds = {};
+    m_debugWatchAddBtnBounds = {};
+    m_debugExcRaisedBounds = {};
+    m_debugExcUncaughtBounds = {};
+
+    if (!pRT || inspectorBounds.right <= inspectorBounds.left + 10.0f) return;
+
+    pRT->PushAxisAlignedClip(inspectorBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    const bool isDark = theme.IsDarkMode();
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBg, brSecBg, brAccent, brGreen, brRed, brAmber, brCyan, brBtn;
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.085f, 0.095f, 0.120f, 1.0f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), &brBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.125f, 0.140f, 0.175f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f), &brSecBg);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 0.98f, 1.0f), &brAccent);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &brGreen);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &brRed);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &brAmber);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &brCyan);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.20f, 0.25f, 1.0f) : D2D1::ColorF(0.84f, 0.87f, 0.92f, 1.0f), &brBtn);
+
+    ID2D1Brush* textPrimary = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* textMuted = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrimary;
+    IDWriteTextFormat* fHdr = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontCode.Get();
+    IDWriteTextFormat* fSmall = theme.fontHint ? theme.fontHint.Get() : (theme.fontTerminal ? theme.fontTerminal.Get() : theme.fontCode.Get());
+
+    if (brBg) pRT->FillRectangle(inspectorBounds, brBg.Get());
+    if (theme.brushBorderSubtle) {
+        pRT->DrawLine(D2D1::Point2F(inspectorBounds.left, inspectorBounds.top),
+                      D2D1::Point2F(inspectorBounds.left, inspectorBounds.bottom),
+                      theme.brushBorderSubtle.Get(), 1.0f);
+    }
+
+    auto snap = m_dap.GetSnapshot();
+    float padX = config.ScaleF(8.0f);
+    float secH = config.ScaleF(20.0f);
+    float rowH = config.ScaleF(18.0f);
+    float innerW = (std::max)(config.ScaleF(80.0f), (inspectorBounds.right - inspectorBounds.left) - padX * 2.0f);
+    float curY = inspectorBounds.top + config.ScaleF(6.0f) - m_debugInspectorScrollY;
+
+    auto drawSectionHdr = [&](const wchar_t* title) {
+        D2D1_RECT_F rcSec = D2D1::RectF(inspectorBounds.left + 1.0f, curY, inspectorBounds.right, curY + secH);
+        if (brSecBg && rcSec.bottom > inspectorBounds.top && rcSec.top < inspectorBounds.bottom) {
+            pRT->FillRectangle(rcSec, brSecBg.Get());
+            if (fSmall && textPrimary) {
+                pRT->DrawText(title, static_cast<UINT32>(wcslen(title)), fSmall,
+                              D2D1::RectF(rcSec.left + padX, curY + config.ScaleF(2.0f), rcSec.right - padX, curY + secH),
+                              textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+        curY += secH + config.ScaleF(2.0f);
+    };
+
+    // Status Header Pill
+    std::wstring stMsg = snap.isRunning
+        ? (snap.isPaused ? (L"PAUSED (" + snap.stoppedReason + L") L" + std::to_wstring(snap.pausedLine1Based)) : L"RUNNING")
+        : L"IDLE";
+    ID2D1Brush* stBrush = snap.isPaused
+        ? static_cast<ID2D1Brush*>(brAmber.Get())
+        : (snap.isRunning ? static_cast<ID2D1Brush*>(brGreen.Get()) : textMuted);
+    if (fHdr && stBrush) {
+        D2D1_RECT_F rcSt = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcSt.bottom > inspectorBounds.top && rcSt.top < inspectorBounds.bottom) {
+            pRT->DrawText(stMsg.c_str(), static_cast<UINT32>(stMsg.size()), fHdr, rcSt,
+                          stBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+    }
+    curY += rowH + config.ScaleF(4.0f);
+
+    // 1. VARIABLES (Locals / Globals / Closure)
+    drawSectionHdr(L"VARIABLES");
+    if (snap.scopes.empty()) {
+        D2D1_RECT_F rcEmpty = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcEmpty.bottom > inspectorBounds.top && rcEmpty.top < inspectorBounds.bottom && fSmall && textMuted) {
+            pRT->DrawText(L"(Pause debugger to inspect variables)", 37, fSmall, rcEmpty, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        curY += rowH;
+    } else {
+        auto drawVarRow = [&](auto& selfRef, const phide::dev::DapVariable& v, int depth) -> void {
+            D2D1_RECT_F rcV = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+            if (rcV.bottom > inspectorBounds.top && rcV.top < inspectorBounds.bottom) {
+                float indent = static_cast<float>(depth) * config.ScaleF(12.0f);
+                std::wstring prefix = (v.variablesReference > 0) ? (v.expanded ? L"v " : L"> ") : L"  ";
+                std::wstring lineStr = prefix + v.name + L" = " + v.value;
+                if (!v.type.empty()) lineStr += L"  [" + v.type + L"]";
+                if (fSmall && brCyan) {
+                    pRT->DrawText(lineStr.c_str(), static_cast<UINT32>(lineStr.size()), fSmall,
+                                  D2D1::RectF(rcV.left + indent, rcV.top + 1.0f, rcV.right, rcV.bottom),
+                                  textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                if (v.variablesReference > 0) {
+                    m_debugVarHits.push_back({ v.variablesReference, rcV });
+                }
+            }
+            curY += rowH;
+            if (v.expanded) {
+                for (const auto& ch : v.children) {
+                    selfRef(selfRef, ch, depth + 1);
+                }
+            }
+        };
+
+        for (const auto& sc : snap.scopes) {
+            D2D1_RECT_F rcSc = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+            if (rcSc.bottom > inspectorBounds.top && rcSc.top < inspectorBounds.bottom && fSmall && brAccent) {
+                std::wstring scLbl = L"[" + sc.name + L"] (" + std::to_wstring(sc.variables.size()) + L")";
+                pRT->DrawText(scLbl.c_str(), static_cast<UINT32>(scLbl.size()), fSmall, rcSc, brAccent.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            curY += rowH;
+            for (const auto& v : sc.variables) {
+                drawVarRow(drawVarRow, v, 1);
+            }
+        }
+    }
+
+    curY += config.ScaleF(4.0f);
+
+    // 2. WATCH EXPRESSIONS
+    drawSectionHdr(L"WATCH");
+    {
+        float addW = config.ScaleF(42.0f);
+        float inH = config.ScaleF(20.0f);
+        D2D1_RECT_F rcWatchIn = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX - addW - config.ScaleF(4.0f), curY + inH);
+        D2D1_RECT_F rcWatchBtn = D2D1::RectF(rcWatchIn.right + config.ScaleF(4.0f), curY, inspectorBounds.right - padX, curY + inH);
+        if (curY + inH > inspectorBounds.top && curY < inspectorBounds.bottom) {
+            m_debugWatchInputBounds = rcWatchIn;
+            m_debugWatchAddBtnBounds = rcWatchBtn;
+            if (theme.brushBorderSubtle) {
+                pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcWatchIn, 3.0f, 3.0f),
+                                          m_debugWatchInputFocused && brAccent ? brAccent.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+            }
+            std::wstring wTxt = m_debugWatchInput.empty() ? L"Add watch expression..." : m_debugWatchInput;
+            if (fSmall) {
+                pRT->DrawText(wTxt.c_str(), static_cast<UINT32>(wTxt.size()), fSmall,
+                              D2D1::RectF(rcWatchIn.left + config.ScaleF(5.0f), rcWatchIn.top + config.ScaleF(2.0f), rcWatchIn.right - config.ScaleF(4.0f), rcWatchIn.bottom),
+                              m_debugWatchInput.empty() ? textMuted : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            if (brBtn) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcWatchBtn, 3.0f, 3.0f), brBtn.Get());
+            if (fSmall && textPrimary) {
+                pRT->DrawText(L"+ Add", 5, fSmall, D2D1::RectF(rcWatchBtn.left + config.ScaleF(6.0f), rcWatchBtn.top + config.ScaleF(2.0f), rcWatchBtn.right, rcWatchBtn.bottom), textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+        curY += inH + config.ScaleF(3.0f);
+    }
+    for (size_t wi = 0; wi < snap.watches.size(); ++wi) {
+        const auto& w = snap.watches[wi];
+        float delW = config.ScaleF(18.0f);
+        D2D1_RECT_F rcW = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX - delW, curY + rowH);
+        D2D1_RECT_F rcDel = D2D1::RectF(inspectorBounds.right - padX - delW, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcW.bottom > inspectorBounds.top && rcW.top < inspectorBounds.bottom) {
+            std::wstring wLine = w.expression + L" = " + (w.value.empty() ? L"<pending>" : w.value);
+            if (fSmall) {
+                pRT->DrawText(wLine.c_str(), static_cast<UINT32>(wLine.size()), fSmall, rcW,
+                              w.hasError && brRed ? brRed.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                pRT->DrawText(L"x", 1, fSmall, rcDel, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            m_debugWatchDelHits.push_back({ wi, rcDel });
+        }
+        curY += rowH;
+    }
+
+    curY += config.ScaleF(4.0f);
+
+    // 3. CALL STACK
+    drawSectionHdr(L"CALL STACK");
+    if (snap.callStack.empty()) {
+        D2D1_RECT_F rcEmpty = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcEmpty.bottom > inspectorBounds.top && rcEmpty.top < inspectorBounds.bottom && fSmall && textMuted) {
+            pRT->DrawText(L"(No active stack frames)", 24, fSmall, rcEmpty, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        curY += rowH;
+    } else {
+        for (const auto& fr : snap.callStack) {
+            D2D1_RECT_F rcF = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+            if (rcF.bottom > inspectorBounds.top && rcF.top < inspectorBounds.bottom) {
+                if (fr.id == snap.selectedFrameId && theme.brushTreeSelected) {
+                    pRT->FillRectangle(rcF, theme.brushTreeSelected.Get());
+                }
+                std::wstring fnName = std::filesystem::path(fr.sourcePath).filename().wstring();
+                std::wstring fTxt = fr.name + L"  (" + fnName + L":" + std::to_wstring(fr.line1Based) + L")";
+                if (fSmall && textPrimary) {
+                    pRT->DrawText(fTxt.c_str(), static_cast<UINT32>(fTxt.size()), fSmall, rcF, textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                m_debugStackHits.push_back({ fr.id, rcF });
+            }
+            curY += rowH;
+        }
+    }
+
+    curY += config.ScaleF(4.0f);
+
+    // 4. EXCEPTION BREAKPOINTS & LOADED SCRIPTS
+    drawSectionHdr(L"BREAKPOINTS & SCRIPTS");
+    {
+        float halfW = innerW * 0.5f;
+        D2D1_RECT_F rcRaised = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.left + padX + halfW - config.ScaleF(4.0f), curY + rowH);
+        D2D1_RECT_F rcUncaught = D2D1::RectF(inspectorBounds.left + padX + halfW, curY, inspectorBounds.right - padX, curY + rowH);
+        if (curY + rowH > inspectorBounds.top && curY < inspectorBounds.bottom && fSmall && textPrimary) {
+            m_debugExcRaisedBounds = rcRaised;
+            m_debugExcUncaughtBounds = rcUncaught;
+            std::wstring lblR = std::wstring(snap.exceptions.breakOnRaised ? L"[x] " : L"[ ] ") + L"Raised";
+            std::wstring lblU = std::wstring(snap.exceptions.breakOnUncaught ? L"[x] " : L"[ ] ") + L"Uncaught";
+            pRT->DrawText(lblR.c_str(), static_cast<UINT32>(lblR.size()), fSmall, rcRaised, snap.exceptions.breakOnRaised && brAmber ? brAmber.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->DrawText(lblU.c_str(), static_cast<UINT32>(lblU.size()), fSmall, rcUncaught, snap.exceptions.breakOnUncaught && brAmber ? brAmber.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        curY += rowH + config.ScaleF(2.0f);
+    }
+    for (const auto& scPath : snap.loadedScripts) {
+        D2D1_RECT_F rcSc = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcSc.bottom > inspectorBounds.top && rcSc.top < inspectorBounds.bottom && fSmall && textMuted) {
+            std::wstring shortSc = std::filesystem::path(scPath).filename().wstring() + L"  " + scPath;
+            pRT->DrawText(shortSc.c_str(), static_cast<UINT32>(shortSc.size()), fSmall, rcSc, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        curY += rowH;
+    }
+
+    float contentH = (curY + m_debugInspectorScrollY) - inspectorBounds.top;
+    float viewH = inspectorBounds.bottom - inspectorBounds.top;
+    m_debugInspectorMaxScrollY = (std::max)(0.0f, contentH - viewH + config.ScaleF(8.0f));
+    if (m_debugInspectorScrollY > m_debugInspectorMaxScrollY) m_debugInspectorScrollY = m_debugInspectorMaxScrollY;
+    if (m_debugInspectorScrollY < 0.0f) m_debugInspectorScrollY = 0.0f;
+
+    pRT->PopAxisAlignedClip();
 }
 
 DebugAction TerminalPanel::HitTestDebugButtons(POINT pt) const noexcept {
@@ -4288,6 +4591,8 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
     m_pendingBreakpoints = breakpoints;
     m_debugPythonExe = pythonExe;
     m_debugBackend = SelectDebugBackendForFile(filePath);
+    m_useDapBackend = false;
+    m_dap.StopSession();
 
     auto debugTab = std::make_unique<TerminalTab>();
     debugTab->shellType = TerminalShellType::DebugConsole;
@@ -4298,6 +4603,7 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
     debugTab->onOutput = m_outputCallback;
     debugTab->onExecutionError = m_onExecutionError;
     debugTab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    debugTab->onProblemMatched = m_onProblemMatched;
     debugTab->onDebugPaused = m_onDebugPaused;
     debugTab->onDebugResumed = m_onDebugResumed;
     debugTab->onDebugEnded = [this]() {
@@ -4364,7 +4670,31 @@ void TerminalPanel::StartDebugSession(const std::wstring& filePath, const std::w
 }
 
 void TerminalPanel::SyncBreakpoint(const std::wstring& filePath, size_t line0, bool added) {
-    if (!m_isDebugActive || m_debugBackend == DebugBackend::None) return;
+    if (!m_isDebugActive) return;
+    if (m_useDapBackend && m_dap.IsRunning()) {
+        auto it = std::find(m_pendingBreakpoints.begin(), m_pendingBreakpoints.end(), line0);
+        if (added && it == m_pendingBreakpoints.end()) m_pendingBreakpoints.push_back(line0);
+        else if (!added && it != m_pendingBreakpoints.end()) m_pendingBreakpoints.erase(it);
+
+        size_t target1 = line0 + 1;
+        m_activeDapBreakpoints.erase(
+            std::remove_if(m_activeDapBreakpoints.begin(), m_activeDapBreakpoints.end(),
+                           [&](const phide::dev::DapBreakpoint& bp) {
+                               return bp.line1Based == target1 &&
+                                      (filePath.empty() || _wcsicmp(bp.filePath.c_str(), filePath.c_str()) == 0);
+                           }),
+            m_activeDapBreakpoints.end());
+        if (added) {
+            phide::dev::DapBreakpoint nb;
+            nb.filePath = filePath;
+            nb.line1Based = target1;
+            nb.enabled = true;
+            m_activeDapBreakpoints.push_back(std::move(nb));
+        }
+        m_dap.UpdateBreakpoints(m_activeDapBreakpoints);
+        return;
+    }
+    if (m_debugBackend == DebugBackend::None) return;
     TerminalTab* tab = nullptr;
     for (auto& t : m_tabs) {
         if (t && t->shellType == TerminalShellType::DebugConsole) {
@@ -4443,10 +4773,153 @@ void TerminalPanel::ShowDebugConsole() {
     if (m_outputCallback) m_outputCallback();
 }
 
+void TerminalPanel::StartDapDebugSession(const phide::dev::LaunchConfig& cfg,
+                                         const std::vector<phide::dev::DapBreakpoint>& breakpoints,
+                                         const std::wstring& pythonExe) {
+    StopDebugSession();
+    if (!m_isOpen) {
+        Open(cfg.cwd.empty() ? m_defaultWorkingDir : cfg.cwd);
+    }
+
+    // Remove existing DebugConsole tabs so only the live DAP console is active
+    for (int i = static_cast<int>(m_tabs.size()) - 1; i >= 0; --i) {
+        if (m_tabs[i]->shellType == TerminalShellType::DebugConsole) {
+            m_tabs[i]->Terminate();
+            m_tabs.erase(m_tabs.begin() + i);
+        }
+    }
+
+    m_activeLaunchConfig = cfg;
+    m_activeDapBreakpoints = breakpoints;
+    m_debugTargetFile = cfg.program;
+    m_debugWorkingDir = cfg.cwd.empty() ? m_defaultWorkingDir : cfg.cwd;
+    m_debugPythonExe = pythonExe;
+    m_pendingBreakpoints.clear();
+    for (const auto& bp : breakpoints) {
+        if (bp.line1Based > 0) m_pendingBreakpoints.push_back(bp.line1Based - 1);
+    }
+    m_debugProcessEnded.store(false);
+    m_isDebugActive = true;
+    m_useDapBackend = true;
+    m_debugBackend = SelectDebugBackendForFile(cfg.program);
+
+    auto debugTab = std::make_unique<TerminalTab>();
+    debugTab->shellType = TerminalShellType::DebugConsole;
+    debugTab->title = cfg.name.empty() ? L"🐞 Debug Console (DAP)" : (L"🐞 " + cfg.name);
+    debugTab->workingDir = m_debugWorkingDir;
+    debugTab->associatedFilePath = cfg.program;
+    debugTab->debugBackend = m_debugBackend;
+    debugTab->isIdleDebugConsole = true;
+    debugTab->onOutput = m_outputCallback;
+    debugTab->onExecutionError = m_onExecutionError;
+    debugTab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    debugTab->onProblemMatched = m_onProblemMatched;
+    debugTab->onDebugPaused = m_onDebugPaused;
+    debugTab->onDebugResumed = m_onDebugResumed;
+    debugTab->onDebugEnded = m_onDebugEnded;
+
+    {
+        std::lock_guard<std::mutex> lock(debugTab->bufferMutex);
+        TerminalLine l0;
+        std::wstring info = L"[DAP] Launching " + (cfg.type.empty() ? L"auto" : cfg.type) + L" · " +
+                            std::filesystem::path(cfg.program).filename().wstring() + L" (" +
+                            std::to_wstring(breakpoints.size()) + L" breakpoints)";
+        l0.rawText = info;
+        l0.spans.push_back({ info, D2D1::ColorF(0.24f, 0.78f, 0.96f), true });
+        debugTab->lines.push_back(std::move(l0));
+    }
+
+    m_tabs.push_back(std::move(debugTab));
+    m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+
+    TerminalTab* rawTab = m_tabs.back().get();
+    m_dap.onOutput = [this, rawTab](const std::wstring& txt) {
+        // Split multiline text cleanly into active debug tab if still present
+        for (const auto& t : m_tabs) {
+            if (t.get() == rawTab) {
+                std::lock_guard<std::mutex> lock(rawTab->bufferMutex);
+                std::wstringstream ss(txt);
+                std::wstring ln;
+                while (std::getline(ss, ln)) {
+                    if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+                    if (ln.empty()) continue;
+                    TerminalLine tl;
+                    tl.rawText = ln;
+                    D2D1_COLOR_F col = (ln.find(L"Exception") != std::wstring::npos || ln.find(L"error") != std::wstring::npos)
+                        ? D2D1::ColorF(0.95f, 0.42f, 0.42f)
+                        : D2D1::ColorF(0.88f, 0.90f, 0.94f);
+                    tl.spans.push_back({ ln, col, false });
+                    rawTab->lines.push_back(std::move(tl));
+                }
+                if (rawTab->lines.size() > 2000) {
+                    rawTab->lines.erase(rawTab->lines.begin(), rawTab->lines.begin() + 500);
+                }
+                break;
+            }
+        }
+        if (m_outputCallback) m_outputCallback();
+    };
+    m_dap.onPaused = [this](const std::wstring& filePath, int line1) {
+        if (m_onDebugPaused) m_onDebugPaused(filePath, line1);
+        if (m_outputCallback) m_outputCallback();
+    };
+    m_dap.onContinued = [this]() {
+        if (m_onDebugResumed) m_onDebugResumed();
+        if (m_outputCallback) m_outputCallback();
+    };
+    m_dap.onStateChanged = [this]() {
+        if (m_outputCallback) m_outputCallback();
+    };
+    m_dap.onTerminated = [this](int exitCode) {
+        (void)exitCode;
+        m_debugProcessEnded.store(true);
+        m_isDebugActive = false;
+        m_useDapBackend = false;
+        if (m_onDebugEnded) m_onDebugEnded();
+        if (m_outputCallback) m_outputCallback();
+    };
+
+    auto curSnap = m_dap.GetSnapshot();
+    bool started = m_dap.StartSession(cfg, breakpoints, curSnap.exceptions, pythonExe);
+    if (!started) {
+        // Graceful fallback to legacy interactive ConPTY backend if no DAP adapter binary started
+        m_useDapBackend = false;
+        std::vector<size_t> lines0 = m_pendingBreakpoints;
+        StartDebugSession(cfg.program, m_debugWorkingDir, lines0, pythonExe);
+        return;
+    }
+
+    if (m_outputCallback) m_outputCallback();
+}
+
+void TerminalPanel::UpdateDapBreakpoints(const std::vector<phide::dev::DapBreakpoint>& bps) {
+    m_activeDapBreakpoints = bps;
+    m_pendingBreakpoints.clear();
+    for (const auto& b : bps) {
+        if (b.line1Based > 0) m_pendingBreakpoints.push_back(b.line1Based - 1);
+    }
+    if (m_useDapBackend && m_dap.IsRunning()) {
+        m_dap.UpdateBreakpoints(bps);
+    }
+}
+
 void TerminalPanel::TriggerDebugAction(DebugAction action) {
     if (!m_isDebugActive) return;
     if (action == DebugAction::Stop) {
         StopDebugSession();
+        return;
+    }
+    if (m_useDapBackend) {
+        if (action == DebugAction::Restart) {
+            if (m_onDebugResumed) m_onDebugResumed();
+            StartDapDebugSession(m_activeLaunchConfig, m_activeDapBreakpoints, m_debugPythonExe);
+            return;
+        }
+        if (m_onDebugResumed) m_onDebugResumed();
+        if (action == DebugAction::Continue) m_dap.Continue();
+        else if (action == DebugAction::StepOver) m_dap.StepOver();
+        else if (action == DebugAction::StepInto) m_dap.StepInto();
+        else if (action == DebugAction::StepOut) m_dap.StepOut();
         return;
     }
     if (action == DebugAction::Restart) {
@@ -4479,6 +4952,10 @@ void TerminalPanel::TriggerDebugAction(DebugAction action) {
 void TerminalPanel::StopDebugSession() {
     m_isDebugActive = false;
     m_debugProcessEnded.store(false);
+    if (m_useDapBackend) {
+        m_useDapBackend = false;
+        m_dap.StopSession();
+    }
     if (m_onDebugEnded) {
         m_onDebugEnded();
     }
@@ -4538,14 +5015,74 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
 
-    // Check Ctrl + Click on URL links
+    // Check Ctrl + Click on URL links or Compiler/Linter Problem Matcher links (#30)
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
         std::wstring clickedUrl;
         if (HitTestUrl(pt, &clickedUrl)) {
             ShellExecuteW(NULL, L"open", clickedUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
             return true;
         }
+        TerminalProblemHit probHit;
+        if (HitTestProblemLink(pt, &probHit) && m_onOpenProblemLink) {
+            m_onOpenProblemLink(probHit.filePath, probHit.line1Based, probHit.col1Based);
+            return true;
+        }
     }
+
+    // Check Debug Inspector Panel (#27 Variables / Watch / Call Stack / Exceptions)
+    if (m_debugInspectorBounds.right > m_debugInspectorBounds.left && inRect(pt, m_debugInspectorBounds)) {
+        if (inRect(pt, m_debugWatchInputBounds)) {
+            m_debugWatchInputFocused = true;
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        m_debugWatchInputFocused = false;
+        if (inRect(pt, m_debugWatchAddBtnBounds)) {
+            if (!m_debugWatchInput.empty()) {
+                m_dap.AddWatch(m_debugWatchInput);
+                m_debugWatchInput.clear();
+            }
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        for (const auto& wd : m_debugWatchDelHits) {
+            if (inRect(pt, wd.bounds)) {
+                m_dap.RemoveWatch(wd.index);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+        }
+        if (inRect(pt, m_debugExcRaisedBounds)) {
+            auto opts = m_dap.GetSnapshot().exceptions;
+            opts.breakOnRaised = !opts.breakOnRaised;
+            m_dap.SetExceptionOptions(opts);
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        if (inRect(pt, m_debugExcUncaughtBounds)) {
+            auto opts = m_dap.GetSnapshot().exceptions;
+            opts.breakOnUncaught = !opts.breakOnUncaught;
+            m_dap.SetExceptionOptions(opts);
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        for (const auto& st : m_debugStackHits) {
+            if (inRect(pt, st.bounds)) {
+                m_dap.SelectStackFrame(st.frameId);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+        }
+        for (const auto& vh : m_debugVarHits) {
+            if (inRect(pt, vh.bounds)) {
+                m_dap.ExpandVariableChildren(vh.varRef);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+        }
+        return true;
+    }
+    m_debugWatchInputFocused = false;
 
     // Check Debug Toolbar Actions
     if (m_isDebugActive) {
@@ -4942,7 +5479,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
         m_hoveredDebugAction = DebugAction::None;
     }
 
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && HitTestUrl(pt)) {
+    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (HitTestUrl(pt) || HitTestProblemLink(pt))) {
         SetCursor(LoadCursor(NULL, IDC_HAND));
     } else if (HitTestButtons(pt)) {
         SetCursor(LoadCursor(NULL, IDC_HAND));
@@ -5078,6 +5615,14 @@ void TerminalPanel::OnMouseUp(POINT pt) {
 
 bool TerminalPanel::OnMouseWheel(POINT pt, short delta) {
     if (!m_isOpen) return false;
+    if (m_debugInspectorBounds.right > m_debugInspectorBounds.left &&
+        pt.x >= m_debugInspectorBounds.left && pt.x <= m_debugInspectorBounds.right &&
+        pt.y >= m_debugInspectorBounds.top && pt.y <= m_debugInspectorBounds.bottom) {
+        m_debugInspectorScrollY -= (static_cast<float>(delta) / 120.0f) * 28.0f;
+        if (m_debugInspectorScrollY < 0.0f) m_debugInspectorScrollY = 0.0f;
+        if (m_debugInspectorScrollY > m_debugInspectorMaxScrollY) m_debugInspectorScrollY = m_debugInspectorMaxScrollY;
+        return true;
+    }
     if (m_textAreaBounds.bottom > m_textAreaBounds.top && !HitTestTextArea(pt)) return false;
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
@@ -5130,6 +5675,37 @@ bool TerminalPanel::OnChar(wchar_t ch) {
                 }
             }
             return true;
+        }
+        return true;
+    }
+
+    // Debug Watch Expression Input typing (#27)
+    if (m_debugWatchInputFocused && tab->shellType == TerminalShellType::DebugConsole) {
+        if (ch == L'\r' || ch == L'\n') {
+            std::wstring wExpr = m_debugWatchInput;
+            while (!wExpr.empty() && wExpr.front() == L' ') wExpr.erase(wExpr.begin());
+            while (!wExpr.empty() && wExpr.back() == L' ') wExpr.pop_back();
+            if (!wExpr.empty()) {
+                m_dap.AddWatch(wExpr);
+            }
+            m_debugWatchInput.clear();
+            m_debugWatchInputFocused = false;
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        if (ch == L'\b') {
+            if (!m_debugWatchInput.empty()) m_debugWatchInput.pop_back();
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        if (ch == 27) {
+            m_debugWatchInputFocused = false;
+            if (m_outputCallback) m_outputCallback();
+            return true;
+        }
+        if (ch >= 32) {
+            m_debugWatchInput.push_back(ch);
+            if (m_outputCallback) m_outputCallback();
         }
         return true;
     }
@@ -5196,7 +5772,10 @@ bool TerminalPanel::OnChar(wchar_t ch) {
 
             std::wstring expr = trimmed;
             std::wstring evalResult;
-            if (expr == L"document.title") {
+            if (m_useDapBackend && m_dap.IsRunning() && !expr.empty()) {
+                evalResult = m_dap.EvaluateBlocking(expr);
+                if (evalResult.empty()) evalResult = L"<no response>";
+            } else if (expr == L"document.title") {
                 evalResult = L"\"CleaveDB - Native Desktop\"";
             } else if (expr == L"location.href" || expr == L"window.location.href") {
                 evalResult = L"\"http://localhost:5500/index.html\"";
@@ -5218,6 +5797,12 @@ bool TerminalPanel::OnChar(wchar_t ch) {
                 lRes.spans.push_back({ L"◀ ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
                 lRes.spans.push_back({ evalResult, D2D1::ColorF(0.40f, 0.85f, 0.95f), false });
                 tab->lines.push_back(std::move(lRes));
+            }
+            if (m_useDapBackend && m_dap.IsRunning()) {
+                tab->currentInputLine.clear();
+                tab->inputCursorCol = 0;
+                if (m_outputCallback) m_outputCallback();
+                return true;
             }
         }
 
@@ -5295,6 +5880,15 @@ bool TerminalPanel::OnChar(wchar_t ch) {
 
 bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     if (!m_isOpen) return false;
+    if (m_debugWatchInputFocused) {
+        if (vk == VK_ESCAPE) {
+            m_debugWatchInputFocused = false;
+            return true;
+        }
+        if (vk == VK_BACK || vk == VK_RETURN) {
+            return true;
+        }
+    }
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
 

@@ -559,10 +559,6 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
     for (size_t i = 0; i < m_items.size(); ++i) {
         const auto& it = m_items[i];
 
-        // Scope filter
-        if (m_activeScope == 1 && it.scope == L"APPEARANCE") continue;
-        if (m_activeScope == 2 && it.scope == L"FILES") continue;
-
         // If search query is non-empty, search across title, description, and id
         if (!qLower.empty()) {
             std::wstring tLower = it.title;
@@ -841,13 +837,69 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         curCatY += catItemH + config.ScaleF(4.0f);
     }
 
-    // 4. Render Right Content Area (Wider Cards Grid filling container gracefully)
+    // 4. Render Scope Switcher Bar (All Settings | User | Workspace) + Right Content Area
     float contentLeft = left + sidebarW + config.ScaleF(28.0f);
     float contentW = (std::max)(config.ScaleF(560.0f), width - sidebarW - config.ScaleF(56.0f));
-    float contentTop = bodyTop + config.ScaleF(16.0f);
-    float contentH = bodyH - config.ScaleF(24.0f);
+    float scopeBarH = config.ScaleF(36.0f);
 
-    D2D1_RECT_F rcContentClip = D2D1::RectF(contentLeft, bodyTop, left + width - config.ScaleF(8.0f), top + height);
+    // Draw scope switcher strip
+    {
+        static const wchar_t* kScopeNames[3] = { L"All Settings", L"User", L"Workspace" };
+        m_scopeBounds.clear();
+        float sx = contentLeft;
+        float sy = bodyTop + config.ScaleF(5.0f);
+        float sh = config.ScaleF(26.0f);
+        for (int s = 0; s < 3; ++s) {
+            float sw = config.ScaleF(s == 0 ? 96.0f : (s == 1 ? 64.0f : 92.0f));
+            D2D1_RECT_F rcS = D2D1::RectF(sx, sy, sx + sw, sy + sh);
+            m_scopeBounds.push_back(rcS);
+            bool activeS = (m_activeScope == s);
+            bool hovS = (m_hoveredScopeIdx == s);
+            if (activeS) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> activeBg;
+                if (theme.IsDarkMode()) {
+                    activeBg = theme.brushHomeBadgeBg ? theme.brushHomeBadgeBg : theme.brushItemHover;
+                } else {
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.91f, 0.97f, 1.0f), &activeBg);
+                }
+                if (activeBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcS, 5.0f, 5.0f), activeBg.Get());
+                pRT->DrawLine(D2D1::Point2F(rcS.left + 8.0f, rcS.bottom - 1.5f),
+                              D2D1::Point2F(rcS.right - 8.0f, rcS.bottom - 1.5f),
+                              pAccentBrush, 2.0f);
+            } else if (hovS) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcS, 5.0f, 5.0f), theme.brushItemHover.Get());
+            }
+            pRT->PushAxisAlignedClip(rcS, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            ID2D1Brush* pSCol = (activeS || hovS)
+                ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get())
+                : theme.brushTextSecondary.Get();
+            if (m_pFontTitle || theme.fontBody.Get()) {
+                pRT->DrawText(kScopeNames[s], static_cast<UINT32>(wcslen(kScopeNames[s])),
+                              theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
+                              D2D1::RectF(rcS.left + config.ScaleF(10.0f), rcS.top, rcS.right - config.ScaleF(6.0f), rcS.bottom),
+                              pSCol, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            pRT->PopAxisAlignedClip();
+            sx += sw + config.ScaleF(8.0f);
+        }
+        if (m_activeScope == 2) {
+            const wchar_t* wsNote = L"Saves to .phide/settings.json (auto-ignored in .gitignore)";
+            D2D1_RECT_F rcNote = D2D1::RectF(sx + config.ScaleF(8.0f), sy, left + width - config.ScaleF(16.0f), sy + sh);
+            if (rcNote.right > rcNote.left + config.ScaleF(40.0f)) {
+                pRT->DrawText(wsNote, static_cast<UINT32>(wcslen(wsNote)),
+                              theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
+                              rcNote, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+        pRT->DrawLine(D2D1::Point2F(left + sidebarW, bodyTop + scopeBarH),
+                      D2D1::Point2F(left + width, bodyTop + scopeBarH),
+                      theme.brushBorderSubtle.Get(), 0.8f);
+    }
+
+    float contentTop = bodyTop + scopeBarH + config.ScaleF(14.0f);
+    float contentH = (bodyH - scopeBarH) - config.ScaleF(20.0f);
+
+    D2D1_RECT_F rcContentClip = D2D1::RectF(contentLeft, bodyTop + scopeBarH, left + width - config.ScaleF(8.0f), top + height);
     pRT->PushAxisAlignedClip(rcContentClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Filter items
@@ -1038,7 +1090,7 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     if (m_maxScrollOffsetY > 0.0f) {
         float scrollTrackW = config.ScaleF(6.0f);
         float scrollTrackX = left + width - scrollTrackW - config.ScaleF(4.0f);
-        m_rcScrollTrack = D2D1::RectF(scrollTrackX, bodyTop + config.ScaleF(8.0f), scrollTrackX + scrollTrackW, top + height - config.ScaleF(8.0f));
+        m_rcScrollTrack = D2D1::RectF(scrollTrackX, bodyTop + scopeBarH + config.ScaleF(8.0f), scrollTrackX + scrollTrackW, top + height - config.ScaleF(8.0f));
         float trackH = m_rcScrollTrack.bottom - m_rcScrollTrack.top;
         float thumbH = (std::max)(config.ScaleF(30.0f), trackH * (contentH / totalContentH));
         float thumbY = m_rcScrollTrack.top + (m_scrollOffsetY / m_maxScrollOffsetY) * (trackH - thumbH);
@@ -1338,6 +1390,18 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
         m_hoveredSearchClear = true;
     }
 
+    // Check Scope tabs hover
+    int oldScopeHover = m_hoveredScopeIdx;
+    m_hoveredScopeIdx = -1;
+    for (size_t i = 0; i < m_scopeBounds.size(); ++i) {
+        const auto& rc = m_scopeBounds[i];
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+            clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            m_hoveredScopeIdx = static_cast<int>(i);
+            break;
+        }
+    }
+
     // Check Category sidebar (full row width clickable/hoverable)
     for (size_t i = 0; i < m_categoryBounds.size(); ++i) {
         const auto& rc = m_categoryBounds[i];
@@ -1372,7 +1436,7 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
 
     return (oldCard != m_hoveredCardIdx || oldCat != m_hoveredCategoryIdx ||
             oldClear != m_hoveredSearchClear || oldCtrlSub != m_hoveredControlSubId ||
-            oldDropOpt != m_hoveredDropdownOption);
+            oldDropOpt != m_hoveredDropdownOption || oldScopeHover != m_hoveredScopeIdx);
 }
 
 bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, Theme& theme, std::wstring& outModifiedSettingId) {
@@ -1449,6 +1513,19 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
         return true;
     }
     m_isSearchFocused = false;
+
+    // 1b. Scope Tabs Click (All Settings | User | Workspace)
+    for (size_t i = 0; i < m_scopeBounds.size(); ++i) {
+        const auto& rc = m_scopeBounds[i];
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+            clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            m_activeScope = static_cast<int>(i);
+            m_scrollOffsetY = 0.0f;
+            m_openDropdownItemIdx = -1;
+            m_hoveredDropdownOption = -1;
+            return true;
+        }
+    }
 
     // 2. Category Sidebar Click
     for (size_t i = 0; i < m_categoryBounds.size(); ++i) {

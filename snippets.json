@@ -1506,7 +1506,7 @@
             "    return () => {",
             "        $1",
             "    };",
-            "}, [${2}]);"
+            "}, []);"
         ],
         "description": "React useEffect hook",
         "scope": "tsx,jsx,ts,js"

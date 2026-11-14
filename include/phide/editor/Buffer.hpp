@@ -6,6 +6,8 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,16 +48,9 @@ public:
     /**
      * @brief Gets the number of lines in the document.
      */
-    [[nodiscard]] size_t GetLineCount() const noexcept { return m_lines.size(); }
+    [[nodiscard]] size_t GetLineCount() const noexcept { return m_mappedState ? m_mappedLineCount : m_lines.size(); }
     [[nodiscard]] const std::vector<std::wstring>& GetLines() const noexcept { return m_lines; }
-    [[nodiscard]] std::wstring GetText() const {
-        std::wstring res;
-        for (size_t i = 0; i < m_lines.size(); ++i) {
-            res += m_lines[i];
-            if (i + 1 < m_lines.size()) res += L"\n";
-        }
-        return res;
-    }
+    [[nodiscard]] std::wstring GetText() const;
 
     /**
      * @brief Retrieves the text content of a line by index.
@@ -132,7 +127,12 @@ public:
     /**
      * @brief Loads text file from disk into buffer lines.
      */
+    static constexpr uint64_t kMemoryMappedThresholdBytes = 50ULL * 1024ULL * 1024ULL;
     bool LoadFromFile(const std::wstring& path);
+    bool LoadFromFileMapped(const std::wstring& path);
+    void CloseFileMapping() noexcept;
+    [[nodiscard]] bool IsMemoryMappedReadOnly() const noexcept { return m_mappedState != nullptr; }
+    [[nodiscard]] uint64_t GetMappedByteSize() const noexcept { return m_mappedByteSize; }
 
     /**
      * @brief Saves buffer lines to file on disk.
@@ -222,6 +222,13 @@ public:
 
 private:
     std::vector<std::wstring> m_lines;
+    struct MappedFileState;
+    std::shared_ptr<MappedFileState> m_mappedState;
+    size_t m_mappedLineCount = 0;
+    uint64_t m_mappedByteSize = 0;
+    mutable std::unordered_map<size_t, std::wstring> m_mmapLineCache;
+    mutable std::deque<size_t> m_mmapLruOrder;
+    static constexpr size_t kMaxMmapLineCache = 512;
     CursorPosition m_cursor{ 0, 0 };
     SyntaxLexer m_lexer;
 

@@ -1360,7 +1360,9 @@ std::vector<MarkdownBlock> HoverAndSignatureHelper::ParseMarkdownBlocks(const st
     };
 
     for (const auto& rawLine : lines) {
-        std::wstring t = TrimW(rawLine);
+        std::wstring cleanRaw = rawLine;
+        if (!cleanRaw.empty() && cleanRaw.back() == L'\r') cleanRaw.pop_back();
+        std::wstring t = TrimW(cleanRaw);
         if (t.rfind(L"```", 0) == 0) {
             if (!inCode) {
                 inCode = true;
@@ -1368,8 +1370,12 @@ std::vector<MarkdownBlock> HoverAndSignatureHelper::ParseMarkdownBlocks(const st
                 curCode.text.clear();
             } else {
                 inCode = false;
-                if (!curCode.text.empty()) {
-                    while (!curCode.text.empty() && curCode.text.back() == L'\n') curCode.text.pop_back();
+                while (!curCode.text.empty() &&
+                       (curCode.text.back() == L'\n' || curCode.text.back() == L'\r' ||
+                        curCode.text.back() == L' ' || curCode.text.back() == L'\t')) {
+                    curCode.text.pop_back();
+                }
+                if (!TrimW(curCode.text).empty()) {
                     blocks.push_back(curCode);
                 }
                 curCode.text.clear();
@@ -1378,29 +1384,51 @@ std::vector<MarkdownBlock> HoverAndSignatureHelper::ParseMarkdownBlocks(const st
             continue;
         }
         if (inCode) {
+            if (curCode.text.empty() && t.empty()) continue;
             if (!curCode.text.empty()) curCode.text.push_back(L'\n');
-            curCode.text += rawLine;
+            curCode.text += cleanRaw;
             continue;
         }
         if (t.empty()) continue;
         if (t == L"---" || t == L"***" || t == L"___") {
-            blocks.push_back({ MarkdownBlock::Kind::Separator, L"", L"" });
+            if (!blocks.empty() && blocks.back().kind != MarkdownBlock::Kind::Separator) {
+                blocks.push_back({ MarkdownBlock::Kind::Separator, L"", L"" });
+            }
             continue;
         }
         if (t[0] == L'#') {
             size_t hashEnd = 0;
             while (hashEnd < t.size() && t[hashEnd] == L'#') ++hashEnd;
-            blocks.push_back({ MarkdownBlock::Kind::Heading, stripInlineBackticksAndBold(TrimW(t.substr(hashEnd))), L"" });
+            std::wstring txt = stripInlineBackticksAndBold(TrimW(t.substr(hashEnd)));
+            if (!TrimW(txt).empty()) {
+                blocks.push_back({ MarkdownBlock::Kind::Heading, std::move(txt), L"" });
+            }
             continue;
         }
         if (t.rfind(L"- ", 0) == 0 || t.rfind(L"* ", 0) == 0) {
-            blocks.push_back({ MarkdownBlock::Kind::Bullet, L"\u2022 " + stripInlineBackticksAndBold(TrimW(t.substr(2))), L"" });
+            std::wstring itemTxt = stripInlineBackticksAndBold(TrimW(t.substr(2)));
+            if (!TrimW(itemTxt).empty()) {
+                blocks.push_back({ MarkdownBlock::Kind::Bullet, L"\u2022 " + itemTxt, L"" });
+            }
             continue;
         }
-        blocks.push_back({ MarkdownBlock::Kind::Paragraph, stripInlineBackticksAndBold(t), L"" });
+        std::wstring paraTxt = stripInlineBackticksAndBold(t);
+        if (!TrimW(paraTxt).empty()) {
+            blocks.push_back({ MarkdownBlock::Kind::Paragraph, std::move(paraTxt), L"" });
+        }
     }
-    if (inCode && !curCode.text.empty()) {
-        blocks.push_back(std::move(curCode));
+    if (inCode && !TrimW(curCode.text).empty()) {
+        while (!curCode.text.empty() &&
+               (curCode.text.back() == L'\n' || curCode.text.back() == L'\r' ||
+                curCode.text.back() == L' ' || curCode.text.back() == L'\t')) {
+            curCode.text.pop_back();
+        }
+        if (!TrimW(curCode.text).empty()) {
+            blocks.push_back(std::move(curCode));
+        }
+    }
+    while (!blocks.empty() && blocks.back().kind == MarkdownBlock::Kind::Separator) {
+        blocks.pop_back();
     }
     return blocks;
 }

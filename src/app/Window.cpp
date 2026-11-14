@@ -16,6 +16,9 @@
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/plugin/PluginManager.hpp"
+#include "phide/git/GitWorkflowEngine.hpp"
+#include "phide/workspace/WorkspaceConfigEngine.hpp"
+#include "phide/db/SqlEngine.hpp"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -360,12 +363,8 @@ Window::Window() {
     m_autoSave = (m_config.autoSave != L"off");
     m_editorGroups.push_back(editor::EditorGroup{});
     UpdateExecutionButtonStates();
-    // Pre-probe MySQL port in case 3306 is already bound on host
-    int targetPort = 3306;
-    while (IsPortListening(targetPort) && targetPort < 65535) {
-        targetPort++;
-    }
-    m_mysqlPort = targetPort;
+    // Resolve active MySQL port dynamically (PHIDE_MYSQL_PORT, mysql_port.txt, or live localhost scan)
+    m_mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(3306);
     m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
 }
 
@@ -569,6 +568,151 @@ std::wstring Window::GetSnippetsConfigPath() const {
         return (dir / L"snippets.json").wstring();
     }
     return L"snippets.json";
+}
+
+std::wstring Window::GetKeybindingsConfigPath() const {
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path p(pAppData);
+        free(pAppData);
+        std::filesystem::path dir = p / L"phide";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return (dir / L"user_keybindings.json").wstring();
+    }
+    return L"user_keybindings.json";
+}
+
+void Window::LoadUserKeybindings() {
+    std::wstring path = GetKeybindingsConfigPath();
+    if (!path.empty()) {
+        m_editor.GetKeyboardShortcutsView().LoadUserKeybindings(path);
+    }
+}
+
+void Window::SaveUserKeybindings() const {
+    std::wstring path = GetKeybindingsConfigPath();
+    if (!path.empty()) {
+        m_editor.GetKeyboardShortcutsView().SaveUserKeybindings(path);
+    }
+}
+
+int Window::GetDocTabSize(const editor::OpenDocument* pDoc) const {
+    if (pDoc && pDoc->effectiveTabSize > 0) return pDoc->effectiveTabSize;
+    return (m_config.tabSize > 0) ? m_config.tabSize : 4;
+}
+
+bool Window::GetDocInsertSpaces(const editor::OpenDocument* pDoc) const {
+    if (pDoc && pDoc->effectiveIndentStyle >= 0) {
+        return pDoc->effectiveIndentStyle == 0;
+    }
+    return m_config.insertSpaces;
+}
+
+void Window::ApplyWorkspaceSettingsToConfig(const workspace::WorkspaceSettingsOverride& settings) {
+    auto parseBool = [](const std::wstring& v, bool fallback) {
+        if (v == L"true" || v == L"1") return true;
+        if (v == L"false" || v == L"0") return false;
+        return fallback;
+    };
+    for (const auto& [k, v] : settings.values) {
+        if (k == L"editor.tabSize") {
+            int n = _wtoi(v.c_str());
+            if (n >= 1 && n <= 16) m_config.tabSize = n;
+        } else if (k == L"editor.insertSpaces") {
+            m_config.insertSpaces = parseBool(v, m_config.insertSpaces);
+        } else if (k == L"editor.wordWrap") {
+            m_config.wordWrap = parseBool(v, m_config.wordWrap);
+        } else if (k == L"editor.minimap") {
+            m_config.showMinimap = parseBool(v, m_config.showMinimap);
+        } else if (k == L"editor.codeLens") {
+            m_config.enableCodeLens = parseBool(v, m_config.enableCodeLens);
+        } else if (k == L"editor.lineNumbers") {
+            m_config.showLineNumbers = parseBool(v, m_config.showLineNumbers);
+        } else if (k == L"editor.formatOnSave") {
+            m_config.formatOnSave = parseBool(v, m_config.formatOnSave);
+        } else if (k == L"editor.fontSize") {
+            float f = static_cast<float>(_wtof(v.c_str()));
+            if (f >= 8.0f && f <= 48.0f) {
+                m_config.fontSize = f;
+                m_config.zoomLevel = f / 15.0f;
+            }
+        } else if (k == L"editor.fontFamily" && !v.empty()) {
+            m_config.fontFamily = v;
+        } else if (k == L"editor.renderWhitespace" && !v.empty()) {
+            m_config.renderWhitespaceMode = v;
+            m_config.renderWhitespace = (v != L"none");
+        } else if (k == L"editor.cursorStyle" && !v.empty()) {
+            m_config.cursorStyle = v;
+        } else if (k == L"files.autoSave" && !v.empty()) {
+            m_config.autoSave = v;
+            m_autoSave = (v != L"off");
+        } else if (k == L"files.autoSaveDelay") {
+            int d = _wtoi(v.c_str());
+            if (d >= 100) m_config.autoSaveDelay = d;
+        } else if (k == L"explorer.updateImportsOnRename") {
+            m_config.updateImportsOnRename = parseBool(v, m_config.updateImportsOnRename);
+        } else if (k == L"workbench.breadcrumbs") {
+            m_config.showBreadcrumbs = parseBool(v, m_config.showBreadcrumbs);
+        } else if (k == L"workbench.statusBar") {
+            m_config.showStatusBar = parseBool(v, m_config.showStatusBar);
+        } else if (k == L"workbench.graphColored") {
+            m_config.isGraphColored = parseBool(v, m_config.isGraphColored);
+        } else if (k == L"workbench.markdownPreview") {
+            m_config.enableMarkdownPreview = parseBool(v, m_config.enableMarkdownPreview);
+        } else if (k == L"editor.gitLens") {
+            m_config.enableGitLens = parseBool(v, m_config.enableGitLens);
+        } else if (k == L"editor.inlayHints") {
+            m_config.enableInlayHints = parseBool(v, m_config.enableInlayHints);
+        } else if (k == L"editor.lspHover") {
+            m_config.enableLspHover = parseBool(v, m_config.enableLspHover);
+        } else if (k == L"editor.signatureHelp") {
+            m_config.enableSignatureHelp = parseBool(v, m_config.enableSignatureHelp);
+        } else if (k == L"linter.externalEnabled") {
+            m_config.enableExternalLinters = parseBool(v, m_config.enableExternalLinters);
+        }
+    }
+}
+
+void Window::LoadAndApplyWorkspaceSettings(const std::wstring& workspaceRoot) {
+    m_workspaceSettings.values.clear();
+    if (workspaceRoot.empty()) return;
+    if (workspace::WorkspaceConfigEngine::LoadWorkspaceSettings(workspaceRoot, m_workspaceSettings)) {
+        ApplyWorkspaceSettingsToConfig(m_workspaceSettings);
+    }
+}
+
+void Window::SaveCurrentWorkspaceSetting(const std::wstring& settingId) {
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    if (wsRoot.empty() || settingId.empty()) return;
+    auto bstr = [](bool b) { return std::wstring(b ? L"true" : L"false"); };
+    if (settingId == L"editor.tabSize") m_workspaceSettings.values[settingId] = std::to_wstring(m_config.tabSize);
+    else if (settingId == L"editor.insertSpaces") m_workspaceSettings.values[settingId] = bstr(m_config.insertSpaces);
+    else if (settingId == L"editor.wordWrap") m_workspaceSettings.values[settingId] = bstr(m_config.wordWrap);
+    else if (settingId == L"editor.minimap") m_workspaceSettings.values[settingId] = bstr(m_config.showMinimap);
+    else if (settingId == L"editor.codeLens") m_workspaceSettings.values[settingId] = bstr(m_config.enableCodeLens);
+    else if (settingId == L"editor.lineNumbers") m_workspaceSettings.values[settingId] = bstr(m_config.showLineNumbers);
+    else if (settingId == L"editor.formatOnSave") m_workspaceSettings.values[settingId] = bstr(m_config.formatOnSave);
+    else if (settingId == L"editor.fontSize") m_workspaceSettings.values[settingId] = std::to_wstring(static_cast<int>(m_config.fontSize));
+    else if (settingId == L"editor.fontFamily") m_workspaceSettings.values[settingId] = m_config.fontFamily;
+    else if (settingId == L"editor.renderWhitespace") m_workspaceSettings.values[settingId] = m_config.renderWhitespaceMode;
+    else if (settingId == L"editor.cursorStyle") m_workspaceSettings.values[settingId] = m_config.cursorStyle;
+    else if (settingId == L"files.autoSave") m_workspaceSettings.values[settingId] = m_config.autoSave;
+    else if (settingId == L"files.autoSaveDelay") m_workspaceSettings.values[settingId] = std::to_wstring(m_config.autoSaveDelay);
+    else if (settingId == L"explorer.updateImportsOnRename") m_workspaceSettings.values[settingId] = bstr(m_config.updateImportsOnRename);
+    else if (settingId == L"workbench.breadcrumbs") m_workspaceSettings.values[settingId] = bstr(m_config.showBreadcrumbs);
+    else if (settingId == L"workbench.statusBar") m_workspaceSettings.values[settingId] = bstr(m_config.showStatusBar);
+    else if (settingId == L"workbench.graphColored") m_workspaceSettings.values[settingId] = bstr(m_config.isGraphColored);
+    else if (settingId == L"workbench.markdownPreview") m_workspaceSettings.values[settingId] = bstr(m_config.enableMarkdownPreview);
+    else if (settingId == L"editor.gitLens") m_workspaceSettings.values[settingId] = bstr(m_config.enableGitLens);
+    else if (settingId == L"editor.inlayHints") m_workspaceSettings.values[settingId] = bstr(m_config.enableInlayHints);
+    else if (settingId == L"editor.lspHover") m_workspaceSettings.values[settingId] = bstr(m_config.enableLspHover);
+    else if (settingId == L"editor.signatureHelp") m_workspaceSettings.values[settingId] = bstr(m_config.enableSignatureHelp);
+    else if (settingId == L"linter.externalEnabled") m_workspaceSettings.values[settingId] = bstr(m_config.enableExternalLinters);
+    else return;
+
+    workspace::WorkspaceConfigEngine::SaveWorkspaceSettings(wsRoot, m_workspaceSettings);
 }
 
 void Window::TriggerDebouncedGitRefresh(DWORD delayMs) {
@@ -1548,6 +1692,16 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"welcome", L"Welcome");
                 } else if (vType == L"student") {
                     OpenSpecialView(L"student", L"Learning Hub");
+                } else if (vType == L"monitor") {
+                    OpenSpecialView(L"monitor", L"Performance Monitor");
+                } else if (vType == L"test_explorer") {
+                    OpenSpecialView(L"test_explorer", L"Test Explorer");
+                } else if (vType == L"sql_console") {
+                    OpenSpecialView(L"sql_console", L"SQL Query Console");
+                } else if (vType == L"snippet_editor") {
+                    m_snippetManager.EnsureDefaultSnippetsFile();
+                    m_editor.BindSnippetManager(&m_snippetManager);
+                    OpenSpecialView(L"snippet_editor", L"Snippet Editor");
                 } else if (vType == L"terminal") {
                     m_terminal.SetDockPosition(1);
                     std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
@@ -2601,7 +2755,25 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.binaryFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else {
         newDoc.buffer.LoadFromFile(resolvedPath);
-        newDoc.originalDiskText = newDoc.buffer.GetText();
+        if (newDoc.buffer.IsMemoryMappedReadOnly()) {
+            // Skip copying >50 MB mapped files into RAM or running full-file LSP/symbol indexing
+            newDoc.originalDiskText.clear();
+        } else {
+            newDoc.originalDiskText = newDoc.buffer.GetText();
+        }
+        {
+            auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(resolvedPath);
+            if (ecRules.foundAny) {
+                if (ecRules.hasIndentSize && ecRules.indentSize > 0) {
+                    newDoc.effectiveTabSize = ecRules.indentSize;
+                } else if (ecRules.hasTabWidth && ecRules.tabWidth > 0) {
+                    newDoc.effectiveTabSize = ecRules.tabWidth;
+                }
+                if (ecRules.hasIndentStyle) {
+                    newDoc.effectiveIndentStyle = ecRules.indentStyleTabs ? 1 : 0;
+                }
+            }
+        }
         {
             std::error_code writeEc;
             newDoc.lastDiskWriteTime = std::filesystem::last_write_time(resolvedPath, writeEc);
@@ -2612,7 +2784,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         // Compute Git diff highlights against HEAD if inside a git repository (Images 1, 2, 3)
         bool isInsideOpenRepo = false;
         std::wstring relPath = resolvedPath;
-        if (m_drawer.IsGitRepo() && m_drawer.HasOpenFolder()) {
+        if (!newDoc.buffer.IsMemoryMappedReadOnly() && m_drawer.IsGitRepo() && m_drawer.HasOpenFolder()) {
             try {
                 std::error_code relEc;
                 auto rel = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath(), relEc);
@@ -2643,6 +2815,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
             newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
             CalculateImportCosts(newDoc);
+            RefreshMergeConflicts(newDoc);
         }
     }
 
@@ -2658,7 +2831,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             }
         }
     }
-    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
+    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary && !newDoc.buffer.IsMemoryMappedReadOnly()) {
         m_symbolIndex.UpdateFileSymbols(resolvedPath, newDoc.buffer.GetText());
     }
 
@@ -2677,7 +2850,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
     if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
         auto& openedDoc = group.docs[group.activeDocIdx];
-        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary) {
+        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary && !openedDoc.buffer.IsMemoryMappedReadOnly()) {
             StartLspForDocumentAsync(resolvedPath, openedDoc.buffer.GetText());
             ScheduleLangIntelAndLintersAsync(&openedDoc, m_config.enableExternalLinters);
         }
@@ -2732,6 +2905,8 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     newDoc.isDiffLeftReadOnly = true;
     newDoc.isDiffRightReadOnly = false;
     newDoc.diffActivePane = 1; // Focus right (editable) pane
+    newDoc.diffRepoRelPath = relPath;
+    newDoc.isDiffStagedMode = false;
 
     newDoc.diffOriginalBuffer.SetText(headContent);
     // If file is currently open in an editor group with unsaved changes, use the in-memory buffer!
@@ -2784,6 +2959,103 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     UpdateDrawerErrorFiles();
     RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::RefreshMergeConflicts(editor::OpenDocument& doc) {
+    doc.mergeConflicts.clear();
+    if (doc.isSpecialView || doc.isDiffView || doc.isImageView || doc.isUnsupportedBinary) return;
+    auto blocks = git::GitWorkflowEngine::ParseMergeConflicts(doc.buffer);
+    doc.mergeConflicts.reserve(blocks.size());
+    for (const auto& b : blocks) {
+        editor::OpenDocument::MergeConflictRange r;
+        r.startLine = b.startLine;
+        r.baseLine = b.baseLine;
+        r.separatorLine = b.separatorLine;
+        r.endLine = b.endLine;
+        r.currentLabel = b.currentLabel;
+        r.baseLabel = b.baseLabel;
+        r.incomingLabel = b.incomingLabel;
+        doc.mergeConflicts.push_back(std::move(r));
+    }
+    if (doc.isMergeView) {
+        auto preview = git::GitWorkflowEngine::BuildThreeWayMergePreview(doc.buffer.GetLines());
+        doc.mergeCurrentBuffer.SetText(preview.currentText);
+        doc.mergeIncomingBuffer.SetText(preview.incomingText);
+    }
+}
+
+void Window::OpenCompareFilesDiffDocument(const std::wstring& leftPath, const std::wstring& rightPath) {
+    if (leftPath.empty() || rightPath.empty()) return;
+    namespace fs = std::filesystem;
+    std::wstring leftName = fs::path(leftPath).filename().wstring();
+    std::wstring rightName = fs::path(rightPath).filename().wstring();
+    std::wstring tabTitle = leftName + L" \u2194 " + rightName;
+
+    auto& group = GetActiveGroup();
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].isDiffView && !group.docs[i].isMultiFileDiff &&
+            group.docs[i].filePath == rightPath && group.docs[i].diffOriginalTitle == leftName) {
+            group.activeDocIdx = static_cast<int>(i);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    editor::OpenDocument newDoc;
+    newDoc.filePath = rightPath;
+    newDoc.fileName = tabTitle;
+    newDoc.isDirty = false;
+    newDoc.isPreview = false;
+    newDoc.isSpecialView = false;
+    newDoc.isDiffView = true;
+    newDoc.isDiffLeftReadOnly = true;
+    newDoc.isDiffRightReadOnly = false;
+    newDoc.diffActivePane = 1;
+    newDoc.diffOriginalTitle = leftName + L" (Selected)";
+    newDoc.diffWorkingTitle = rightName + L" (Target)";
+    newDoc.isDiffBinary = IsBinaryDiffPath(leftPath) || IsBinaryDiffPath(rightPath);
+
+    if (!newDoc.isDiffBinary) {
+        newDoc.diffOriginalBuffer.LoadFromFile(leftPath);
+        newDoc.buffer.LoadFromFile(rightPath);
+        ComputeDiffHunks(newDoc);
+    }
+
+    group.docs.push_back(std::move(newDoc));
+    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenThreeWayMergeDocument(const std::wstring& filePath) {
+    editor::OpenDocument* targetDoc = nullptr;
+    auto& group = GetActiveGroup();
+    if (!filePath.empty()) {
+        for (size_t i = 0; i < group.docs.size(); ++i) {
+            if (!group.docs[i].isDiffView && !group.docs[i].isSpecialView && group.docs[i].filePath == filePath) {
+                group.activeDocIdx = static_cast<int>(i);
+                targetDoc = &group.docs[i];
+                break;
+            }
+        }
+        if (!targetDoc) {
+            OpenFileDocument(filePath, false);
+            targetDoc = GetActiveDoc();
+        }
+    } else {
+        targetDoc = GetActiveDoc();
+    }
+    if (!targetDoc) return;
+
+    targetDoc->isMergeView = true;
+    RefreshMergeConflicts(*targetDoc);
+    if (!targetDoc->mergeConflicts.empty()) {
+        const auto& c0 = targetDoc->mergeConflicts[0];
+        targetDoc->mergeCurrentLabel = c0.currentLabel.empty() ? L"Current (HEAD)" : (L"Current (" + c0.currentLabel + L")");
+        targetDoc->mergeIncomingLabel = c0.incomingLabel.empty() ? L"Incoming" : (L"Incoming (" + c0.incomingLabel + L")");
+    }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -3220,6 +3492,23 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             } else if (viewType == L"monitor") {
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            } else if (viewType == L"test_explorer") {
+                RefreshWorkspaceTestsAsync();
+            } else if (viewType == L"sql_console") {
+                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                int mysqlPort = m_mysqlPort;
+                try {
+                    if (!m_dbSettingsModal.GetPort().empty()) mysqlPort = std::stoi(m_dbSettingsModal.GetPort());
+                } catch (...) {}
+                mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, wsFolder);
+                if (m_hMysqlProcess == nullptr) {
+                    m_mysqlPort = mysqlPort;
+                    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+                }
+                m_editor.SetSqlWorkspaceRoot(
+                    wsFolder,
+                    m_dbSettingsModal.GetHost(), mysqlPort,
+                    m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
             }
             ClearExplorerSelectionOverride();
             SyncActiveTabWithDrawer();
@@ -3256,6 +3545,23 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     } else if (viewType == L"monitor") {
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    } else if (viewType == L"test_explorer") {
+        RefreshWorkspaceTestsAsync();
+    } else if (viewType == L"sql_console") {
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        int mysqlPort = m_mysqlPort;
+        try {
+            if (!m_dbSettingsModal.GetPort().empty()) mysqlPort = std::stoi(m_dbSettingsModal.GetPort());
+        } catch (...) {}
+        mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, wsFolder);
+        if (m_hMysqlProcess == nullptr) {
+            m_mysqlPort = mysqlPort;
+            m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+        }
+        m_editor.SetSqlWorkspaceRoot(
+            wsFolder,
+            m_dbSettingsModal.GetHost(), mysqlPort,
+            m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
     }
     ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
@@ -3479,6 +3785,9 @@ void Window::RunCodeLens(size_t bufferLine, bool isDebug) {
 }
 
 void Window::HandleCodeLensClick(const ui::EditorCanvas::CodeLensAction& act) {
+    if (act.groupIdx >= 0 && act.groupIdx < static_cast<int>(m_editorGroups.size())) {
+        m_focusedGroupIdx = act.groupIdx;
+    }
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
     size_t col = 0;
@@ -3487,6 +3796,30 @@ void Window::HandleCodeLensClick(const ui::EditorCanvas::CodeLensAction& act) {
         if (pos != std::wstring::npos) col = pos;
     }
     pDoc->buffer.SetCursor(act.bufferLine, col);
+    if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::AcceptCurrent ||
+        act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::AcceptIncoming ||
+        act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::AcceptBoth) {
+        auto blocks = git::GitWorkflowEngine::ParseMergeConflicts(pDoc->buffer);
+        if (act.conflictIdx < blocks.size()) {
+            auto choice = git::ConflictResolutionChoice::AcceptCurrent;
+            if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::AcceptIncoming) {
+                choice = git::ConflictResolutionChoice::AcceptIncoming;
+            } else if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::AcceptBoth) {
+                choice = git::ConflictResolutionChoice::AcceptBoth;
+            }
+            pDoc->buffer.PushUndo();
+            auto resolved = git::GitWorkflowEngine::ApplyConflictResolution(pDoc->buffer.GetLines(), blocks[act.conflictIdx], choice);
+            pDoc->buffer.SetLines(resolved);
+            MarkDocumentModified(pDoc);
+            RefreshMergeConflicts(*pDoc);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::OpenThreeWayMerge) {
+        OpenThreeWayMergeDocument(pDoc->filePath);
+        return;
+    }
     if (act.kind == ui::EditorCanvas::CodeLensAction::ActionKind::References) {
         DoFindReferences();
         return;
@@ -3712,6 +4045,10 @@ void Window::DoOpenFolder() {
 
 void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
+    if (path.rfind(L"\\\\wsl", 0) != 0) {
+        m_activeRemoteSession = {};
+    }
+    m_activeWorkspaceFilePath.clear();
     CleanupLegacyLocalHistory(path);
     ClearExplorerSelectionOverride();
     m_explorerHasFocus = false;
@@ -3721,6 +4058,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_intelliSense.SetWorkspaceRoot(path);
     m_editor.SetWorkspaceRoot(path);
     m_adaptiveEngine.LoadProfile(path + L"\\.phide\\user_adaptive_profile.json");
+    LoadAndApplyWorkspaceSettings(path);
     m_drawer.ClearGitLoading();
     m_rail.SetGitLoading(false);
     m_drawer.RefreshGitState(true, false);
@@ -3814,7 +4152,7 @@ void Window::DoOpenWorkspaceFromFile() {
     wchar_t szFile[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Workspace Files (*.code-workspace;*.phide;*.json)\0*.code-workspace;*.phide;*.json\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"Workspace Files (*.phide-workspace;*.code-workspace;*.phide;*.json)\0*.phide-workspace;*.code-workspace;*.phide;*.json\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ENABLESIZING;
@@ -3822,39 +4160,77 @@ void Window::DoOpenWorkspaceFromFile() {
     if (GetOpenFileNameW(&ofn)) {
         std::filesystem::path p(szFile);
         if (std::filesystem::exists(p)) {
-            DoOpenFolderFromPath(p.parent_path().wstring());
-            LoadFileFromPath(szFile);
+            workspace::MultiRootWorkspace ws;
+            if (workspace::WorkspaceConfigEngine::LoadMultiRootWorkspace(szFile, ws) && !ws.folders.empty()) {
+                DoOpenFolderFromPath(ws.folders[0].path);
+                m_activeWorkspaceFilePath = szFile;
+                m_drawer.SetMultiRootWorkspace(ws);
+                if (!ws.settings.empty()) {
+                    workspace::WorkspaceSettingsOverride ov{ ws.settings };
+                    ApplyWorkspaceSettingsToConfig(ov);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else {
+                DoOpenFolderFromPath(p.parent_path().wstring());
+                LoadFileFromPath(szFile);
+            }
         }
     }
 }
 
 void Window::DoAddFolderToWorkspace() {
-    DoOpenFolder();
+    IFileOpenDialog* pfd = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+    if (SUCCEEDED(hr) && pfd) {
+        DWORD dwOptions = 0;
+        if (SUCCEEDED(pfd->GetOptions(&dwOptions))) {
+            pfd->SetOptions(dwOptions | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+        }
+        pfd->SetTitle(L"Add Folder to Workspace");
+        if (SUCCEEDED(pfd->Show(m_hwnd))) {
+            IShellItem* psi = nullptr;
+            if (SUCCEEDED(pfd->GetResult(&psi)) && psi) {
+                PWSTR pszPath = nullptr;
+                if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath) {
+                    std::wstring picked(pszPath);
+                    CoTaskMemFree(pszPath);
+                    if (!m_drawer.HasOpenFolder()) {
+                        DoOpenFolderFromPath(picked);
+                    } else {
+                        m_drawer.AddWorkspaceRoot(picked);
+                        if (!m_config.isDrawerOpen) {
+                            ToggleSidebar();
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                }
+                psi->Release();
+            }
+        }
+        pfd->Release();
+    }
 }
 
 void Window::DoSaveWorkspaceAs() {
     wchar_t szFile[MAX_PATH] = { 0 };
-    wcscpy_s(szFile, L"workspace.phide");
+    wcscpy_s(szFile, L"workspace.phide-workspace");
     OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Phide Workspace (*.phide)\0*.phide\0Code Workspace (*.code-workspace)\0*.code-workspace\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"Phide Workspace (*.phide-workspace)\0*.phide-workspace\0Code Workspace (*.code-workspace)\0*.code-workspace\0Legacy Phide Workspace (*.phide)\0*.phide\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"phide-workspace";
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
 
     if (GetSaveFileNameW(&ofn)) {
-        std::ofstream ws(std::filesystem::path{ szFile });
-        if (ws.is_open()) {
-            std::string rootU8;
-            if (m_drawer.HasOpenFolder()) {
-                const auto& w = m_drawer.GetOpenFolderPath();
-                int ulen = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-                if (ulen > 0) {
-                    rootU8.resize(ulen - 1);
-                    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &rootU8[0], ulen, nullptr, nullptr);
-                }
-            }
-            ws << "{\n  \"folders\": [\n    { \"path\": \"" << rootU8 << "\" }\n  ],\n  \"settings\": {}\n}\n";
+        workspace::MultiRootWorkspace ws;
+        ws.workspaceFilePath = szFile;
+        ws.folders = m_drawer.GetAllWorkspaceFolders();
+        ws.settings = m_workspaceSettings.values;
+        if (workspace::WorkspaceConfigEngine::SaveMultiRootWorkspace(szFile, ws)) {
+            m_activeWorkspaceFilePath = szFile;
+            m_drawer.SetMultiRootWorkspace(ws);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
 }
@@ -3884,6 +4260,27 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
                                  col1 > 0 ? static_cast<size_t>(col1 - 1) : 0);
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (actionCmd.rfind(L"run_task_label:", 0) == 0) {
+        ExecuteWorkspaceTaskByLabel(actionCmd.substr(15));
+        return;
+    }
+
+    if (actionCmd.rfind(L"run_launch:", 0) == 0) {
+        std::wstring cfgName = actionCmd.substr(11);
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        auto* pDoc = GetActiveDoc();
+        std::wstring activePath = (pDoc && !pDoc->isSpecialView) ? pDoc->filePath : L"";
+        auto cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath);
+        for (const auto& c : cfgs) {
+            if (c.name == cfgName) {
+                LaunchDebugWithConfig(c);
+                return;
+            }
+        }
+        DoDebugActiveDocument();
         return;
     }
 
@@ -4043,6 +4440,40 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         DoDebugActiveDocument();
         return;
     }
+    if (actionCmd == L"cmd_edit_breakpoint_condition") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
+            OpenBreakpointConditionPrompt(pDoc->buffer.GetCursor().line);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_test_explorer") {
+        OpenSpecialView(L"test_explorer", L"Test Explorer");
+        return;
+    }
+    if (actionCmd == L"cmd_sql_console") {
+        OpenSpecialView(L"sql_console", L"SQL Query Console");
+        return;
+    }
+    if (actionCmd == L"cmd_snippet_editor") {
+        m_snippetManager.EnsureDefaultSnippetsFile();
+        m_snippetManager.LoadSnippets();
+        m_editor.BindSnippetManager(&m_snippetManager);
+        OpenSpecialView(L"snippet_editor", L"Snippet Editor");
+        return;
+    }
+    if (actionCmd == L"cmd_command_palette") {
+        DoCommandPalette();
+        return;
+    }
+    if (actionCmd == L"cmd_quick_open") {
+        DoQuickOpenFileSearch();
+        return;
+    }
+    if (actionCmd == L"cmd_run_all_tests") {
+        OpenSpecialView(L"test_explorer", L"Test Explorer");
+        RunWorkspaceTestsAsync();
+        return;
+    }
     if (actionCmd == L"cmd_run_without_debugging") {
         DoRunActiveDocument();
         return;
@@ -4160,11 +4591,16 @@ void Window::DoSaveAll() {
                             }
                         }
                     }
+                    if (!doc.buffer.IsMemoryMappedReadOnly()) {
+                        auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(doc.filePath);
+                        workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(doc.buffer, ecRules);
+                    }
                     s_lastInternalAutoSaveTick = GetTickCount64();
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
                         doc.isDirty = false;
                         OnDocumentDiskSaved(doc);
+                        SyncRemoteDocumentIfNeeded(doc);
                         anySaved = true;
                     }
                 }
@@ -4827,9 +5263,10 @@ static std::unordered_set<std::wstring> s_pendingModifiedKeys;
 } // namespace
 
 void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
-    if (!pDoc || pDoc->isSpecialView) return;
+    if (!pDoc || pDoc->isSpecialView || pDoc->buffer.IsMemoryMappedReadOnly()) return;
     pDoc->isPreview = false;
     pDoc->isDirty = true; // Always mark dirty so changes are never lost
+    RefreshMergeConflicts(*pDoc);
     SyncDocumentBuffers(pDoc);
 
     std::wstring key = !pDoc->filePath.empty() ? pDoc->filePath : pDoc->fileName;
@@ -4852,6 +5289,10 @@ void Window::FlushPendingAutoSaves() {
                     doc.isDirty = false;
                     anySaved = true;
                 } else if (!doc.isSpecialView && !doc.hasExternalDiskConflict) {
+                    if (!doc.buffer.IsMemoryMappedReadOnly()) {
+                        auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(doc.filePath);
+                        workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(doc.buffer, ecRules);
+                    }
                     s_lastInternalAutoSaveTick = GetTickCount64();
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
@@ -4941,6 +5382,7 @@ void Window::DoCopy() {
 void Window::DoPaste() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->buffer.IsMemoryMappedReadOnly()) return;
         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
         if (OpenClipboard(m_hwnd)) {
             HANDLE hData = GetClipboardData(CF_UNICODETEXT);
@@ -5256,10 +5698,8 @@ void Window::UpdateDatabaseModalRuntimeStatus() {
             int parsed = std::stoi(m_dbSettingsModal.GetPort());
             if (parsed > 0 && parsed < 65536) targetPort = parsed;
         } catch (...) {}
-        while (IsPortListening(targetPort) && targetPort < 65535) {
-            targetPort++;
-        }
-        m_mysqlPort = targetPort;
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(targetPort, wsFolder);
     }
     m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
 }
@@ -5298,6 +5738,15 @@ void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
     }
     m_dbSettingsModal.SetSqlFileAvailable(sqlName);
 
+    {
+        auto phps = server::LiveServer::DiscoverInstalledPhpVersions(GetPhideRoot());
+        std::vector<std::pair<std::wstring, std::wstring>> phpPairs;
+        for (const auto& p : phps) {
+            phpPairs.push_back({ L"PHP " + p.version + L" (" + std::filesystem::path(p.exePath).parent_path().filename().wstring() + L")", p.exePath });
+        }
+        m_dbSettingsModal.SetAvailablePhpVersions(phpPairs);
+    }
+
     m_dbSettingsModal.Open(initialTab);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -5335,6 +5784,14 @@ void Window::RunManualGarbageCollection() {
 
 void Window::DoOpenServerSettings() {
     UpdateDatabaseModalRuntimeStatus();
+    {
+        auto phps = server::LiveServer::DiscoverInstalledPhpVersions(GetPhideRoot());
+        std::vector<std::pair<std::wstring, std::wstring>> phpPairs;
+        for (const auto& p : phps) {
+            phpPairs.push_back({ L"PHP " + p.version + L" (" + std::filesystem::path(p.exePath).parent_path().filename().wstring() + L")", p.exePath });
+        }
+        m_dbSettingsModal.SetAvailablePhpVersions(phpPairs);
+    }
     m_dbSettingsModal.Open(ui::DatabaseModalTab::NginxServer);
     m_header.CloseServerDatabaseDropdowns();
     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -6254,16 +6711,17 @@ void Window::DoFormatDocument(bool showFeedback) {
     std::wstring rawText = pDoc->buffer.GetText();
     if (rawText.empty()) return;
 
-    int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+    int tabSize = GetDocTabSize(pDoc);
+    bool insertSpaces = GetDocInsertSpaces(pDoc);
     std::wstring formatted;
     if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
         std::vector<lsp::LspTextEdit> lspEdits;
-        if (m_lsp.RequestFormatting(pDoc->filePath, tabSize, m_config.insertSpaces, lspEdits)) {
+        if (m_lsp.RequestFormatting(pDoc->filePath, tabSize, insertSpaces, lspEdits)) {
             formatted = ApplyLspTextEdits(rawText, std::move(lspEdits));
         }
     }
     if (formatted.empty()) {
-        formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize, pDoc->filePath, m_config.insertSpaces);
+        formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize, pDoc->filePath, insertSpaces);
     }
 
     if (!formatted.empty() && formatted != rawText) {
@@ -6311,18 +6769,19 @@ void Window::DoFormatSelection() {
     std::wstring rawText = pDoc->buffer.GetText();
     if (rawText.empty()) return;
 
-    int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+    int tabSize = GetDocTabSize(pDoc);
+    bool insertSpaces = GetDocInsertSpaces(pDoc);
     std::wstring formatted;
     if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
         std::vector<lsp::LspTextEdit> lspEdits;
         if (m_lsp.RequestRangeFormatting(pDoc->filePath, startLine, startCol, endLine, endCol,
-                                         tabSize, m_config.insertSpaces, lspEdits)) {
+                                         tabSize, insertSpaces, lspEdits)) {
             formatted = ApplyLspTextEdits(rawText, std::move(lspEdits));
         }
     }
     if (formatted.empty()) {
         formatted = editor::FormatEngine::FormatRange(
-            rawText, startLine, startCol, endLine, endCol, ext, tabSize, pDoc->filePath, m_config.insertSpaces);
+            rawText, startLine, startCol, endLine, endCol, ext, tabSize, pDoc->filePath, insertSpaces);
     }
 
     if (!formatted.empty() && formatted != rawText) {
@@ -8516,9 +8975,30 @@ void Window::DoDebugActiveDocument() {
 
     m_terminal.Open(folder);
     AnimateTerminalOpen();
-    m_terminal.StartDebugSession(pDoc->filePath, folder, pDoc->breakpoints, pythonExe);
-    m_isTerminalFocused = true;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+
+    // #26/#27 Check .vscode/launch.json first, else build launch configuration for active file
+    phide::dev::LaunchConfig chosenCfg;
+    bool matchedLaunch = false;
+    if (!wsRoot.empty()) {
+        auto cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, pDoc->filePath);
+        if (!cfgs.empty()) {
+            chosenCfg = cfgs.front();
+            matchedLaunch = true;
+        }
+    }
+    if (!matchedLaunch) {
+        std::wstring ext = std::filesystem::path(pDoc->filePath).extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        chosenCfg.name = std::filesystem::path(pDoc->filePath).filename().wstring();
+        chosenCfg.program = pDoc->filePath;
+        chosenCfg.cwd = folder;
+        if (ext == L".py" || ext == L".pyw") chosenCfg.type = L"python";
+        else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts") chosenCfg.type = L"node";
+        else if (ext == L".php") chosenCfg.type = L"php";
+        else if (ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" || ext == L".exe") chosenCfg.type = L"cppdbg";
+    }
+
+    LaunchDebugWithConfig(chosenCfg);
 }
 
 void Window::DoStopServer() {
@@ -8725,6 +9205,14 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
         phpExe = bundledPhp.wstring();
         if (std::filesystem::exists(GetPhideRoot() / L"runtimes" / L"php" / L"php.ini")) {
             phpIni = (GetPhideRoot() / L"runtimes" / L"php" / L"php.ini").wstring();
+        }
+    }
+    // Honor user-selected PHP runtime from Server modal switcher (#41)
+    if (!m_preferredPhpExe.empty() && std::filesystem::exists(m_preferredPhpExe)) {
+        phpExe = m_preferredPhpExe;
+        std::filesystem::path selIni = std::filesystem::path(m_preferredPhpExe).parent_path() / L"php.ini";
+        if (std::filesystem::exists(selIni)) {
+            phpIni = selIni.wstring();
         }
     }
     std::wstring iniArg = (!phpIni.empty() && std::filesystem::exists(phpIni)) ? (L" -c \"" + phpIni + L"\"") : L"";
@@ -9030,6 +9518,7 @@ void Window::StartMysqlServer() {
                 if (IsPortListening(m_mysqlPort)) break;
             }
             if (IsPortListening(m_mysqlPort)) {
+                m_editor.UpdateMysqlProfilesPort(m_mysqlPort);
                 RefreshDatabaseSchemaAsync();
             }
         }
@@ -9218,6 +9707,7 @@ void Window::StartPmaServer() {
         if (listening) {
             m_isPmaRunning = true;
             m_header.SetDatabaseState(ui::DatabaseState::Running);
+            m_editor.UpdateMysqlProfilesPort(m_mysqlPort);
         } else {
             // Port never became active or PHP crashed
             if (m_hPmaProcess) {
@@ -9453,6 +9943,10 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 }
             }
         }
+        if (!pDoc->buffer.IsMemoryMappedReadOnly()) {
+            auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(path);
+            workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(pDoc->buffer, ecRules);
+        }
         s_lastInternalAutoSaveTick = GetTickCount64();
         if (pDoc->buffer.SaveToFile(path)) {
             s_lastInternalAutoSaveTick = GetTickCount64();
@@ -9509,6 +10003,15 @@ void Window::SaveFileToPath(const std::wstring& path) {
             UpdateDrawerErrorFiles();
             SaveSessionState();
             NotifyGraphViewFilesystemChanged();
+            // Instant WebSocket/SSE live-reload broadcast on Save (#41)
+            if (m_liveServer.IsRunning()) {
+                m_liveServer.BroadcastReload(savedPath.filename().wstring());
+            }
+            for (auto& srv : m_activeLiveServers) {
+                if (srv.server && srv.server->IsRunning()) {
+                    srv.server->BroadcastReload(savedPath.filename().wstring());
+                }
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
     }
@@ -9952,6 +10455,49 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         });
 
+        // #30 Real-Time Problem Matcher Diagnostics & Clickable Links
+        m_terminal.SetOnProblemMatched([this](const phide::dev::ProblemMatch& pm) {
+            if (!m_hwnd || m_isDestroying.load()) return;
+            auto* copy = new phide::dev::ProblemMatch(pm);
+            if (!PostMessageW(m_hwnd, WM_USER + 218, 0, reinterpret_cast<LPARAM>(copy))) {
+                delete copy;
+            }
+        });
+        m_terminal.SetOnOpenProblemLink([this](const std::wstring& filePath, int line1, int col1) {
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(filePath,
+                                  line1 > 0 ? static_cast<size_t>(line1 - 1) : 0,
+                                  col1 > 0 ? static_cast<size_t>(col1 - 1) : 0);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        // #28 Test Explorer View Action Wiring
+        m_editor.onTestRunAll = [this]() {
+            RunWorkspaceTestsAsync();
+        };
+        m_editor.onTestRefresh = [this]() {
+            RefreshWorkspaceTestsAsync();
+        };
+        m_editor.onTestRunSingle = [this](const phide::dev::TestItem& item) {
+            RunWorkspaceTestsAsync(item.name, item.framework, item.filePath);
+        };
+        m_editor.onTestOpenLocation = [this](const std::wstring& filePath, size_t line0) {
+            RecordNavCheckpoint();
+            JumpToFileAndLocation(filePath, line0, 0);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.SetSqlNotifyHwnd(m_hwnd);
+        m_editor.onSqlStatusToast = [this](const std::wstring& msg) {
+            m_drawer.ShowGitNotification(msg);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onRequestEnsureMysqlRunning = [this]() {
+            StartMysqlServer();
+            m_editor.UpdateMysqlProfilesPort(m_mysqlPort);
+            m_editor.StartDiscoverSqlServersAsync();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
     m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
         for (auto& srv : m_activeLiveServers) {
@@ -10061,6 +10607,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Initialize user snippets engine and adaptive learning engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
+    m_editor.BindSnippetManager(&m_snippetManager);
+    LoadUserKeybindings();
     m_intelliSense.SetSnippetManager(&m_snippetManager);
     m_intelliSense.SetAdaptiveEngine(&m_adaptiveEngine);
     m_predictionEngine.SetAdaptiveEngine(&m_adaptiveEngine);
@@ -11287,6 +11835,9 @@ void Window::OnPaint() {
     if (m_drawer.IsPublishRepoModalOpen()) {
         m_drawer.RenderPublishRepoModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
+    if (m_drawer.IsGitPromptModalOpen()) {
+        m_drawer.RenderGitPromptModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+    }
 
     // 12. Render "Login to GitHub" Flat Design Modal
     if (m_drawer.IsGitHubLoginModalOpen()) {
@@ -11299,6 +11850,9 @@ void Window::OnPaint() {
     }
     if (m_preCommitModal.isOpen) {
         RenderPreCommitGuardModal(clientW, clientH);
+    }
+    if (m_bpPromptOpen) {
+        RenderBreakpointConditionPrompt(clientW, clientH);
     }
 
     // 13. Render Git Branch Switcher Dropdown (Status Bar Popup)
@@ -11320,8 +11874,8 @@ void Window::OnPaint() {
     if (m_popupMenu.IsOpen() || m_themePicker.IsOpen() || m_colorPicker.IsOpen() ||
         m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_confirmDiscardModal.IsOpen() ||
         m_gitErrorModal.IsOpen() || m_dbSettingsModal.IsOpen() ||
-        m_drawer.IsPublishRepoModalOpen() || m_drawer.IsGitHubLoginModalOpen() ||
-        m_portConflictModal.isOpen || m_preCommitModal.isOpen ||
+        m_drawer.IsPublishRepoModalOpen() || m_drawer.IsGitPromptModalOpen() || m_drawer.IsGitHubLoginModalOpen() ||
+        m_portConflictModal.isOpen || m_preCommitModal.isOpen || m_bpPromptOpen ||
         (m_terminal.IsOpen() && m_termFullScreenProgress > 0.05f)) {
         m_editor.GetPackageManagerView().HideWebView();
     }
@@ -12361,8 +12915,9 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
     // 1. Only show document metrics (Encoding, Indentation, Ln/Col) when an active document is open
     if (hasActiveDoc) {
-        // Dynamic Encoding & Line Ending (e.g. "UTF-8   CRLF" or "UTF-16 LE   LF")
-        std::wstring encStr = curDoc->buffer.GetEncodingDisplayName() + L"   " + curDoc->buffer.GetLineEndingDisplayName();
+        // Dynamic Encoding & Line Ending (e.g. "READ-ONLY (MMAP)   UTF-8   LF" or "UTF-8   CRLF")
+        std::wstring encStr = (curDoc->buffer.IsMemoryMappedReadOnly() ? L"READ-ONLY (MMAP)   " : L"") +
+                              curDoc->buffer.GetEncodingDisplayName() + L"   " + curDoc->buffer.GetLineEndingDisplayName();
         float encW = measureStatusPillWidth(encStr, m_config.ScaleF(95.0f));
         curRightX -= encW;
         m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
@@ -12381,8 +12936,9 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         curRightX -= rightPillGap;
 
         // Indentation
-        int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-        std::wstring indStr = (m_config.insertSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
+        int indentSize = GetDocTabSize(curDoc);
+        bool useSpaces = GetDocInsertSpaces(curDoc);
+        std::wstring indStr = (useSpaces ? L"Spaces: " : L"Tab Size: ") + std::to_wstring(indentSize);
         float indW = measureStatusPillWidth(indStr, m_config.ScaleF(85.0f));
         curRightX -= indW;
         m_rcStatusBarSpaces = D2D1::RectF(curRightX, itemY, curRightX + indW, itemY + itemH);
@@ -12668,8 +13224,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         std::wstring tip = L"Line " + std::to_wstring(curLine) + L", Column " + std::to_wstring(curCol);
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarLnCol, clientW);
     } else if (m_isHoveredStatusBarSpaces && hasActiveDoc) {
-        int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-        std::wstring indentTip = L"Indentation: " + std::to_wstring(indentSize) + (m_config.insertSpaces ? L" Spaces" : L" Tab Size");
+        int indentSize = GetDocTabSize(curDoc);
+        bool useSpaces = GetDocInsertSpaces(curDoc);
+        std::wstring indentTip = L"Indentation: " + std::to_wstring(indentSize) + (useSpaces ? L" Spaces" : L" Tab Size");
+        if (curDoc && (curDoc->effectiveTabSize > 0 || curDoc->effectiveIndentStyle >= 0)) {
+            indentTip += L" (.editorconfig)";
+        }
         RenderFloatingTooltip(m_pRenderTarget.Get(), indentTip, m_rcStatusBarSpaces, clientW);
     } else if (m_isHoveredStatusBarPrivacyMask) {
         std::wstring tip = m_config.enablePrivacyMask
@@ -12678,8 +13238,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarPrivacyMask, clientW);
     } else if (m_isHoveredStatusBarEncoding && hasActiveDoc) {
         std::wstring encTip = L"Encoding: " + curDoc->buffer.GetEncodingDisplayName() +
-                               L", End of Line: " + curDoc->buffer.GetLineEndingDisplayName() +
-                               L" (Click to change)";
+                               L", End of Line: " + curDoc->buffer.GetLineEndingDisplayName();
+        if (curDoc->buffer.IsMemoryMappedReadOnly()) {
+            encTip += L" — Read-only Win32 memory-mapped view (>50 MB)";
+        } else {
+            encTip += L" (Click to change)";
+        }
         RenderFloatingTooltip(m_pRenderTarget.Get(), encTip, m_rcStatusBarEncoding, clientW);
     }
 }
@@ -13695,6 +14259,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetWelcomeView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"sql_console") {
+            if (m_editor.UpdateSqlConsoleHover(clientPt)) {
+                needRepaint = true;
+            }
         }
     } else {
         // No active documents -> check watermark cheat-sheet row hover
@@ -14103,6 +14671,12 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::UserSnippets:
                         DoOpenUserSnippets();
                         break;
+                    case ui::MenuActionId::UserSnippetsGui:
+                        m_snippetManager.EnsureDefaultSnippetsFile();
+                        m_snippetManager.LoadSnippets();
+                        m_editor.BindSnippetManager(&m_snippetManager);
+                        OpenSpecialView(L"snippet_editor", L"Snippet Editor");
+                        break;
                     case ui::MenuActionId::ThemeSettings:
                         DoToggleThemeModal();
                         break;
@@ -14335,8 +14909,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::CtxCompareWithSelected:
                         if (!m_compareSourcePath.empty() && std::filesystem::exists(m_compareSourcePath)) {
-                            std::wstring msg = L"Diff Comparison:\nSelected: " + m_compareSourcePath + L"\nTarget: " + m_contextTargetPath;
-                            MessageBoxW(m_hwnd, msg.c_str(), L"Compare with Selected", MB_OK | MB_ICONINFORMATION);
+                            OpenCompareFilesDiffDocument(m_compareSourcePath, m_contextTargetPath);
                         } else {
                             m_compareSourcePath = m_contextTargetPath;
                         }
@@ -14543,11 +15116,13 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                             bool added = false;
                             if (it != pDoc->breakpoints.end()) {
                                 pDoc->breakpoints.erase(it);
+                                pDoc->RemoveBreakpointCondition(curLine);
                             } else {
                                 pDoc->breakpoints.push_back(curLine);
                                 added = true;
                             }
                             if (m_terminal.IsDebugActive()) {
+                                m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
                                 m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
                             }
                         }
@@ -14638,6 +15213,20 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         DoEmmetExpand();
                         break;
                     case ui::MenuActionId::ToolsBuildProject: {
+                        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+                        auto tasks = phide::dev::TaskRunnerEngine::DiscoverAllTasks(wsRoot);
+                        std::wstring buildLabel;
+                        for (const auto& t : tasks) {
+                            if (t.isDefault && t.group == L"build") { buildLabel = t.label; break; }
+                        }
+                        if (buildLabel.empty()) {
+                            for (const auto& t : tasks) {
+                                if (t.group == L"build") { buildLabel = t.label; break; }
+                            }
+                        }
+                        if (!buildLabel.empty() && ExecuteWorkspaceTaskByLabel(buildLabel)) {
+                            break;
+                        }
                         if (!m_terminal.IsOpen()) {
                             DoCreateTerminal();
                         }
@@ -14646,11 +15235,8 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     }
                     case ui::MenuActionId::ToolsRunTests: {
-                        if (!m_terminal.IsOpen()) {
-                            DoCreateTerminal();
-                        }
-                        auto* tab = m_terminal.GetActiveTab();
-                        if (tab) tab->SendInput("cmd.exe /c scripts\\run_test.bat\r\n");
+                        OpenSpecialView(L"test_explorer", L"Test Explorer");
+                        RunWorkspaceTestsAsync();
                         break;
                     }
                     case ui::MenuActionId::ToolsFormatDocument:
@@ -14762,6 +15348,16 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::ViewMonitor:
                         OpenSpecialView(L"monitor", L"Performance Monitor");
                         UpdateDrawerErrorFiles();
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ViewTestExplorer:
+                        OpenSpecialView(L"test_explorer", L"Test Explorer");
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ViewSqlConsole:
+                        OpenSpecialView(L"sql_console", L"SQL Query Console");
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
@@ -14999,12 +15595,28 @@ void Window::HandleLButtonDown(POINT clientPt) {
             return;
         }
     }
+    if (m_drawer.IsGitPromptModalOpen()) {
+        if (m_drawer.HandleGitPromptMouseDown(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
 
     auto inModalRect = [](POINT pt, const D2D1_RECT_F& rc) noexcept -> bool {
         return rc.right > rc.left &&
                static_cast<float>(pt.x) >= rc.left && static_cast<float>(pt.x) <= rc.right &&
                static_cast<float>(pt.y) >= rc.top && static_cast<float>(pt.y) <= rc.bottom;
     };
+
+    if (m_bpPromptOpen) {
+        if (inModalRect(clientPt, m_rcBpPromptSaveBtn)) {
+            SubmitBreakpointConditionPrompt();
+        } else if (inModalRect(clientPt, m_rcBpPromptCancelBtn) || !inModalRect(clientPt, m_rcBpPromptBox)) {
+            m_bpPromptOpen = false;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
 
     if (m_portConflictModal.isOpen) {
         if (inModalRect(clientPt, m_portConflictModal.rcKillStartBtn)) {
@@ -15205,6 +15817,60 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 OpenFileDocument(fullP.wstring(), false);
                 break;
             }
+            case ui::DatabaseModalAction::CycleVhostPreset:
+                m_dbSettingsModal.CycleVhostPreset();
+                m_dbSettingsModal.SetCopiedFeedback(L"Preset: " + m_dbSettingsModal.GetSelectedVhostPreset());
+                break;
+            case ui::DatabaseModalAction::ApplyVhostPreset: {
+                int ngxPort = 80;
+                try { ngxPort = std::stoi(m_dbSettingsModal.GetNginxPort()); } catch (...) {}
+                std::wstring docRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".";
+                std::wstring vhostConf = server::LiveServer::GenerateNginxVhostPreset(
+                    m_dbSettingsModal.GetSelectedVhostPreset(),
+                    m_dbSettingsModal.GetNginxHost(),
+                    ngxPort,
+                    docRoot);
+                std::filesystem::path targetDir = m_drawer.HasOpenFolder()
+                    ? (std::filesystem::path(docRoot) / L".phide")
+                    : (GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx" / L"conf");
+                std::error_code ec;
+                std::filesystem::create_directories(targetDir, ec);
+                std::filesystem::path outConf = targetDir / L"vhost_preset.conf";
+                std::ofstream ofs(outConf, std::ios::binary | std::ios::trunc);
+                if (ofs.is_open()) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, vhostConf.data(), static_cast<int>(vhostConf.size()), nullptr, 0, nullptr, nullptr);
+                    std::string u(n > 0 ? n : 0, '\0');
+                    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, vhostConf.data(), static_cast<int>(vhostConf.size()), u.data(), n, nullptr, nullptr);
+                    ofs.write(u.data(), u.size());
+                    ofs.close();
+                    if (m_drawer.HasOpenFolder()) {
+                        phide::workspace::IgnoreEngine::EnsurePhideIgnoredForPath(outConf);
+                    }
+                    m_dbSettingsModal.SetCopiedFeedback(L"Written vhost_preset.conf");
+                    m_dbSettingsModal.Close();
+                    OpenFileDocument(outConf.wstring(), true);
+                }
+                break;
+            }
+            case ui::DatabaseModalAction::CyclePhpVersion:
+                m_dbSettingsModal.CyclePhpVersion();
+                m_preferredPhpExe = m_dbSettingsModal.GetSelectedPhpExe();
+                m_dbSettingsModal.SetCopiedFeedback(L"PHP -> " + m_dbSettingsModal.GetSelectedPhpLabel());
+                break;
+            case ui::DatabaseModalAction::ToggleLiveReload: {
+                bool nextReload = !m_dbSettingsModal.IsLiveReloadEnabled();
+                m_dbSettingsModal.SetLiveReloadEnabled(nextReload);
+                m_liveServer.SetLiveReloadEnabled(nextReload);
+                for (auto& s : m_activeLiveServers) {
+                    if (s.server) s.server->SetLiveReloadEnabled(nextReload);
+                }
+                m_dbSettingsModal.SetCopiedFeedback(nextReload ? L"WS+SSE Live Reload ON" : L"WS+SSE Live Reload OFF");
+                break;
+            }
+            case ui::DatabaseModalAction::OpenSqlConsole:
+                m_dbSettingsModal.Close();
+                OpenSpecialView(L"sql_console", L"SQL Query Console");
+                break;
             case ui::DatabaseModalAction::ImportSql: {
                 StartMysqlServer();
                 if (m_portConflictModal.isOpen) {
@@ -16101,6 +16767,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     // Ensure drawer search focus is cleared when interacting with keyboard shortcuts view
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.GetKeyboardShortcutsView().HandleLButtonDown(clientPt)) {
+                        if (!m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
+                            SaveUserKeybindings();
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -16131,6 +16800,24 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"test_explorer") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleTestExplorerMouseDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleSqlConsoleMouseDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleSnippetEditorMouseDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"settings") {
                     m_drawer.SetSearchFocus(0);
                     std::wstring modifiedId;
@@ -16153,6 +16840,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
                                 SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
                                 UpdateDrawerErrorFiles();
+                            }
+                            if (m_editor.GetSettingsView().GetActiveScope() == 2) {
+                                SaveCurrentWorkspaceSetting(modifiedId);
                             }
                             SaveSessionState();
                         }
@@ -16409,8 +17099,83 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     }
 
                     // Code Area click (positions caret)
+                    auto inRectF = [](const D2D1_RECT_F& r, float x, float y) noexcept {
+                        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+                    };
+                    if (doc.isMergeView) {
+                        const float fx = static_cast<float>(clientPt.x);
+                        const float fy = static_cast<float>(clientPt.y);
+                        if (inRectF(doc.mergeMarkResolvedBtnBounds, fx, fy)) {
+                            if (!doc.mergeConflicts.empty()) {
+                                doc.buffer.SetCursor(doc.mergeConflicts[0].startLine, 0);
+                                EnsureCursorVisible();
+                            } else {
+                                doc.isMergeView = false;
+                                if (!doc.filePath.empty()) {
+                                    doc.buffer.SaveToFile(doc.filePath);
+                                    doc.isDirty = false;
+                                }
+                                m_drawer.RefreshGitStatusOnly();
+                            }
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                        for (const auto& mh : doc.mergePaneActionHits) {
+                            if (inRectF(mh.bounds, fx, fy)) {
+                                if (mh.choice == 3 || mh.choice == 4) {
+                                    doc.buffer.PushUndo();
+                                    auto resolved = git::GitWorkflowEngine::ResolveAllConflicts(
+                                        doc.buffer.GetLines(),
+                                        mh.choice == 3 ? git::ConflictResolutionChoice::AcceptCurrent
+                                                       : git::ConflictResolutionChoice::AcceptIncoming);
+                                    doc.buffer.SetLines(resolved);
+                                    MarkDocumentModified(&doc);
+                                    RefreshMergeConflicts(doc);
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                }
+                                return;
+                            }
+                        }
+                        size_t mLine = 0, mCol = 0;
+                        if (m_editor.HitTestMergeCenterPane(doc, m_config, clientPt, mLine, mCol)) {
+                            doc.buffer.SetCursor(mLine, mCol);
+                            doc.ClearSelection();
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                    }
                     if (doc.isDiffView) {
                         float subHeaderH = m_config.ScaleF(24.0f);
+                        const float fx = static_cast<float>(clientPt.x);
+                        const float fy = static_cast<float>(clientPt.y);
+                        for (const auto& hit : doc.diffHunkActionHits) {
+                            if (inRectF(hit.bounds, fx, fy) && hit.hunkIdx < doc.diffHunks.size()) {
+                                if (hit.action == editor::OpenDocument::DiffHunkActionHit::Action::Revert) {
+                                    doc.buffer.PushUndo();
+                                    auto reverted = git::GitWorkflowEngine::RevertDiffHunkInLines(
+                                        doc.buffer.GetLines(), doc.diffOriginalBuffer, doc.diffHunks[hit.hunkIdx]);
+                                    doc.buffer.SetLines(reverted);
+                                    MarkDocumentModified(&doc);
+                                    ComputeDiffHunks(doc);
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                    return;
+                                }
+                                std::wstring rel = doc.diffRepoRelPath;
+                                if (rel.empty() && !doc.filePath.empty() && !m_drawer.GetOpenFolderPath().empty()) {
+                                    std::error_code ec;
+                                    rel = std::filesystem::relative(doc.filePath, m_drawer.GetOpenFolderPath(), ec).wstring();
+                                }
+                                std::string patch = git::GitWorkflowEngine::BuildUnifiedHunkPatch(
+                                    rel, doc.diffOriginalBuffer, doc.buffer, doc.diffHunks[hit.hunkIdx]);
+                                if (!patch.empty()) {
+                                    bool rev = (hit.action == editor::OpenDocument::DiffHunkActionHit::Action::Unstage);
+                                    m_drawer.StageHunkPatchAsync(patch, rev);
+                                }
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                        }
                         float dividerW = m_config.ScaleF(32.0f);
                         float scrollbarW = m_config.ScaleF(12.0f);
                         float halfW = (paneW - dividerW - scrollbarW) / 2.0f;
@@ -16546,6 +17311,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             }
                         }
 
+                        // Check click on inline gutter test badge (#28)
+                        {
+                            size_t testLine0 = 0;
+                            std::wstring clickedTestId;
+                            if (m_editor.HitTestGutterTest(clientPt, testLine0, clickedTestId)) {
+                                std::vector<phide::dev::TestItem> itemsCopy;
+                                {
+                                    std::lock_guard<std::mutex> lk(m_testsMutex);
+                                    itemsCopy = m_workspaceTests;
+                                }
+                                for (const auto& ti : itemsCopy) {
+                                    if (ti.id == clickedTestId || (ti.line0Based == testLine0 && _wcsicmp(ti.filePath.c_str(), doc.filePath.c_str()) == 0)) {
+                                        RunWorkspaceTestsAsync(ti.name, ti.framework, ti.filePath);
+                                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
                         // Check gutter click for breakpoint toggle (or Alt+Click to toggle Bookmark)
                         size_t clickedLine = 0;
                         if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, paneBottom, clickedLine)) {
@@ -16555,15 +17340,22 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return;
                             }
+                            if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                                OpenBreakpointConditionPrompt(clickedLine);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
                             auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
                             bool added = false;
                             if (it != doc.breakpoints.end()) {
                                 doc.breakpoints.erase(it);
+                                doc.RemoveBreakpointCondition(clickedLine);
                             } else {
                                 doc.breakpoints.push_back(clickedLine);
                                 added = true;
                             }
                             if (m_terminal.IsDebugActive()) {
+                                m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(doc));
                                 m_terminal.SyncBreakpoint(doc.filePath, clickedLine, added);
                             }
                             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -18257,6 +19049,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                if (m_bpPromptOpen) {
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
                 if (m_portConflictModal.isOpen) {
                     auto inM = [&](const D2D1_RECT_F& r) noexcept {
                         return r.right > r.left &&
@@ -18540,42 +19337,79 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                if (LPCWSTR peekCur = m_editor.GetPeekCursorForPoint(pt)) {
+                    SetCursor(LoadCursor(nullptr, peekCur));
+                    return TRUE;
+                }
+
+                if (m_editor.UpdateCodeLensHover(pt)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                if (m_editor.HasHoveredCodeLens()) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+
+                // Determine the editor pane currently under the cursor (works for both focused and split panes)
+                editor::OpenDocument* pHoverPaneDoc = pCurDoc;
+                D2D1_RECT_F hoverPaneBounds{};
+                bool hasHoverPaneBounds = false;
+                if (!m_editorGroups.empty()) {
+                    UpdateEditorGroupBounds();
+                    int gUnder = FindEditorGroupAtPoint(pt);
+                    if (gUnder >= 0 && gUnder < static_cast<int>(m_editorGroups.size())) {
+                        const auto& grp = m_editorGroups[gUnder];
+                        hoverPaneBounds = grp.bounds;
+                        hasHoverPaneBounds = (hoverPaneBounds.right > hoverPaneBounds.left &&
+                                              hoverPaneBounds.bottom > hoverPaneBounds.top);
+                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                            pHoverPaneDoc = &m_editorGroups[gUnder].docs[grp.activeDocIdx];
+                        } else {
+                            pHoverPaneDoc = nullptr;
+                        }
+                    }
+                }
+
                 // Editor code text area: show I-beam cursor (matching Image 1)
-                if (pCurDoc && !pCurDoc->isSpecialView && !pCurDoc->isFolderView && !pCurDoc->isImageView && !pCurDoc->isUnsupportedBinary) {
+                if (pHoverPaneDoc && !pHoverPaneDoc->isSpecialView && !pHoverPaneDoc->isFolderView &&
+                    !pHoverPaneDoc->isImageView && !pHoverPaneDoc->isUnsupportedBinary) {
                     RECT rcClient;
                     GetClientRect(m_hwnd, &rcClient);
                     float clientW = static_cast<float>(rcClient.right - rcClient.left);
                     float canvasLeft = 0.0f, canvasWidth = 0.0f;
                     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
-                    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
                     float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                    float tabH    = m_config.ScaleF(34.0f);
-                    float breadcrumbH = m_config.ScaleF(24.0f);
-                    float topY    = headerH + tabH + breadcrumbH;
-                    float scrollbarW = m_config.ScaleF(14.0f);
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
                     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
                     float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
-                    float bottomEditorY = clientH - statusBarH - termH;
 
-                    if (m_editor.HasHoveredCodeLens()) {
-                        SetCursor(LoadCursor(nullptr, IDC_HAND));
-                        return TRUE;
-                    }
+                    float paneLeft = hasHoverPaneBounds ? hoverPaneBounds.left : canvasLeft;
+                    float paneRight = hasHoverPaneBounds ? hoverPaneBounds.right : (canvasLeft + canvasWidth);
+                    float paneTop = hasHoverPaneBounds ? hoverPaneBounds.top : headerH;
+                    float paneBottom = hasHoverPaneBounds ? hoverPaneBounds.bottom : (clientH - statusBarH - termH);
 
-                    if (pCurDoc->hasExternalDiskConflict) {
+                    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
+                    float tabH    = m_config.ScaleF(34.0f);
+                    float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
+                    float topY    = paneTop + tabH + breadcrumbH;
+                    if (pHoverPaneDoc->hasExternalDiskConflict) topY += m_config.ScaleF(34.0f);
+                    float scrollbarW = m_config.ScaleF(14.0f);
+
+                    if (pHoverPaneDoc->hasExternalDiskConflict) {
                         auto inCurBtn = [&](const D2D1_RECT_F& r) noexcept -> bool {
                             return r.right > r.left &&
                                    static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
                                    static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
                         };
-                        if (inCurBtn(pCurDoc->conflictReloadBtnBounds) || inCurBtn(pCurDoc->conflictDiffBtnBounds) || inCurBtn(pCurDoc->conflictOverwriteBtnBounds)) {
+                        if (inCurBtn(pHoverPaneDoc->conflictReloadBtnBounds) ||
+                            inCurBtn(pHoverPaneDoc->conflictDiffBtnBounds) ||
+                            inCurBtn(pHoverPaneDoc->conflictOverwriteBtnBounds)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
                     }
 
-                    if (!pCurDoc->isSpecialView && !pCurDoc->isDiffView && m_editor.HitTestStickyHeader(pt) >= 0) {
+                    if (!pHoverPaneDoc->isDiffView && m_editor.HitTestStickyHeader(pt) >= 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -18591,8 +19425,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
 
-                    if (pt.x >= canvasLeft + gutterW && pt.x < canvasLeft + canvasWidth - scrollbarW &&
-                        pt.y >= topY && pt.y < bottomEditorY) {
+                    if (pt.x >= paneLeft + gutterW && pt.x < paneRight - scrollbarW &&
+                        pt.y >= topY && pt.y < paneBottom) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
                     }
@@ -18664,6 +19498,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Welcome Walkthrough View cursor handling
                 if (pCurDoc && pCurDoc->isSpecialView && (pCurDoc->viewType == L"welcome" || pCurDoc->viewType == L"walkthrough")) {
                     LPCWSTR cur = m_editor.GetWelcomeView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // SQL Query Console cursor handling (IDC_HAND on buttons/pills/headers, IDC_IBEAM on SQL input)
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"sql_console") {
+                    LPCWSTR cur = m_editor.GetSqlConsoleCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
                         return TRUE;
@@ -18959,6 +19802,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"test_explorer") {
+                    if (m_editor.HandleTestExplorerMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"sql_console") {
+                    if (m_editor.HandleSqlConsoleMouseWheel(pt, delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"snippet_editor") {
+                    if (m_editor.HandleSnippetEditorMouseWheel(pt, delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"api") {
                     if (m_editor.GetApiTesterView().HandleMouseWheel(delta, static_cast<float>(pt.y))) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -19053,6 +19911,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             if (m_drawer.IsPublishRepoModalOpen()) {
                 if (m_drawer.HandlePublishRepoChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if (m_bpPromptOpen) {
+                wchar_t ch = static_cast<wchar_t>(wParam);
+                if (ch == L'\r' || ch == L'\n') {
+                    SubmitBreakpointConditionPrompt();
+                } else if (ch == 27) {
+                    m_bpPromptOpen = false;
+                } else if (ch == L'\b') {
+                    if (!m_bpPromptInput.empty()) m_bpPromptInput.pop_back();
+                } else if (ch >= 32) {
+                    m_bpPromptInput.push_back(ch);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            if (m_drawer.IsGitPromptModalOpen()) {
+                if (m_drawer.HandleGitPromptChar(static_cast<wchar_t>(wParam))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
                 return 0;
@@ -19171,6 +20050,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"sql_console") {
+                    if (m_editor.HandleSqlConsoleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"snippet_editor") {
+                    if (m_editor.HandleSnippetEditorChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"interactive_guide") {
                     if (m_editor.GetInteractiveGuideView().HandleChar(ch)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -19189,6 +20078,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
                     if (ch >= 32 && ch != 127) {
+                        if (pDoc->buffer.IsMemoryMappedReadOnly()) {
+                            return 0;
+                        }
                         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
                             return 0; // Read-only side!
                         }
@@ -19657,6 +20549,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 return 0;
             }
+            if (m_bpPromptOpen) {
+                if (wParam == VK_ESCAPE) {
+                    m_bpPromptOpen = false;
+                    m_suppressNextChar = true;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                } else if (wParam == VK_RETURN) {
+                    SubmitBreakpointConditionPrompt();
+                    m_suppressNextChar = true;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
+            if (m_drawer.IsGitPromptModalOpen()) {
+                if (m_drawer.HandleGitPromptKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
 
             if (m_dbSettingsModal.IsOpen()) {
                 if (m_dbSettingsModal.OnKeyDown(wParam)) {
@@ -19843,20 +20754,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            // F9 Toggle Breakpoint
+            // F9 Toggle Breakpoint (Shift+F9: Conditional / Hit-Count / Logpoint)
             if (wParam == VK_F9) {
                 auto* pDoc = GetActiveDoc();
                 if (pDoc && !pDoc->isSpecialView) {
                     size_t curLine = pDoc->buffer.GetCursor().line;
+                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+                        OpenBreakpointConditionPrompt(curLine);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
                     bool added = false;
                     if (it != pDoc->breakpoints.end()) {
                         pDoc->breakpoints.erase(it);
+                        pDoc->RemoveBreakpointCondition(curLine);
                     } else {
                         pDoc->breakpoints.push_back(curLine);
                         added = true;
                     }
                     if (m_terminal.IsDebugActive()) {
+                        m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
                         m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -20126,6 +21044,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Keybinding Recorder interception (#49) - capture arbitrary chords before global shortcuts
+            if (auto* pKeyRecDoc = GetActiveDoc();
+                pKeyRecDoc && pKeyRecDoc->isSpecialView && pKeyRecDoc->viewType == L"keybindings" &&
+                m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
+                bool isCtrlRec = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool isShiftRec = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool isAltRec = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().HandleKeyRecording(wParam, isCtrlRec, isShiftRec, isAltRec)) {
+                    if (wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU) {
+                        m_suppressNextChar = true;
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             // F2 inline rename trigger when hovering over tree item in File Explorer
             if (wParam == VK_F2 && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
                 int hovered = m_drawer.GetHoveredIndex();
@@ -20331,6 +21265,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"sql_console") {
+                    if (m_editor.HandleSqlConsoleKeyDown(wParam, m_hwnd)) {
+                        if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->viewType == L"snippet_editor") {
+                    if (m_editor.HandleSnippetEditorKeyDown(wParam)) {
+                        if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->viewType == L"interactive_guide") {
                     if (m_editor.GetInteractiveGuideView().HandleKeyDown(wParam)) {
                         if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
@@ -20352,6 +21302,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Dynamic user-remapped keyboard shortcut overrides (#49)
+            {
+                bool isCtrlOv = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool isShiftOv = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool isAltOv = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if (isCtrlOv || isAltOv || (wParam >= VK_F1 && wParam <= VK_F12)) {
+                    bool hasEd = (pDoc && !pDoc->isSpecialView && !pDoc->isFolderView);
+                    std::wstring overrideAct = m_editor.GetKeyboardShortcutsView().ResolveOverrideActionForKey(
+                        isCtrlOv, isShiftOv, isAltOv, static_cast<UINT>(wParam), hasEd);
+                    if (!overrideAct.empty()) {
+                        m_suppressNextChar = true;
+                        ExecuteQuickOpenAction(overrideAct);
+                        return 0;
+                    }
+                }
+            }
+
             if (wParam == VK_F11) {
                 if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
                 else ShowWindow(m_hwnd, SW_MAXIMIZE);
@@ -20359,13 +21326,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Shift+Alt+A: Toggle Block Comment (VS Code standard)
-            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'A') {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'A' &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_block_comment")) {
                 DoToggleBlockComment();
                 return 0;
             }
 
             // Shift+Alt+F: Format Document
-            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 'F' || wParam == 'f')) {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 'F' || wParam == 'f') &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_format_document")) {
                 DoFormatDocument(true);
                 return 0;
             }
@@ -20458,7 +21427,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
 
                 // Ctrl+Shift+L: Select All Occurrences of Current Selection / Word
-                if ((wParam == 'L' || wParam == 'l') && shiftDown && !altDown) {
+                if ((wParam == 'L' || wParam == 'l') && shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_select_all_occurrences")) {
                     DoChangeAllOccurrences();
                     return 0;
                 }
@@ -20551,14 +21521,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (wParam == 'P') {
                     if (altDown && !shiftDown) {
                         DoPrevBookmark();
-                    } else if (shiftDown) {
+                        return 0;
+                    } else if (shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_command_palette")) {
                         DoCommandPalette();
-                    } else {
+                        return 0;
+                    } else if (!shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_quick_open")) {
                         DoQuickOpenFileSearch();
+                        return 0;
                     }
-                    return 0;
                 }
-                if (wParam == 'B') {
+                if (wParam == 'B' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_sidebar")) {
                     ToggleSidebar();
                     return 0;
                 }
@@ -20587,14 +21559,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'S') {
                     if (m_chordCtrlK) {
-                        DoSaveAll();
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save_all")) {
+                            DoSaveAll();
+                            m_chordCtrlK = false;
+                            return 0;
+                        }
                     } else if (shiftDown) {
-                        DoSaveFileAs();
-                    } else {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save_as")) {
+                            DoSaveFileAs();
+                            m_chordCtrlK = false;
+                            return 0;
+                        }
+                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save")) {
                         DoSaveFile();
+                        m_chordCtrlK = false;
+                        return 0;
                     }
                     m_chordCtrlK = false;
-                    return 0;
                 }
                 if (wParam == 'W' || wParam == VK_F4) {
                     DoCloseEditor();
@@ -20610,20 +21591,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         }
                         return 0;
                     } else if (shiftDown) {
-                        DoShowSearch();
-                        return 0;
-                    } else {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_in_files")) {
+                            DoShowSearch();
+                            return 0;
+                        }
+                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_inline")) {
                         DoFind();
                         return 0;
                     }
                 }
                 if (wParam == 'H') {
                     if (shiftDown) {
-                        DoShowReplace();
-                    } else {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_replace_in_files")) {
+                            DoShowReplace();
+                            return 0;
+                        }
+                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_replace_inline")) {
                         DoReplace();
+                        return 0;
                     }
-                    return 0;
                 }
                 if (wParam == 'E') {
                     if (shiftDown) {
@@ -20790,6 +21776,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (wParam == VK_BACK || wParam == VK_DELETE) {
+                    if (pDoc->buffer.IsMemoryMappedReadOnly()) return 0;
                     m_explorerHasFocus = false;
                     if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
                         bool modified = (wParam == VK_BACK)
@@ -21018,9 +22005,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->scrollLine += page;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
+                    if (pDoc->buffer.IsMemoryMappedReadOnly()) return 0;
                     bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    int tSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-                    std::wstring indentStr = m_config.insertSpaces ? std::wstring(tSize, L' ') : L"\t";
+                    int tSize = GetDocTabSize(pDoc);
+                    std::wstring indentStr = GetDocInsertSpaces(pDoc) ? std::wstring(tSize, L' ') : L"\t";
 
                     if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
                         std::set<size_t> affectedLines;
@@ -21220,12 +22208,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
 
+                    if (pDoc->buffer.IsMemoryMappedReadOnly()) return 0;
                     if (pDoc->HasSelection()) {
                         pDoc->DeleteSelection();
                     }
 
-                    int tSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-                    std::wstring extraIndent = m_config.insertSpaces ? std::wstring(tSize, L' ') : L"\t";
+                    int tSize = GetDocTabSize(pDoc);
+                    std::wstring extraIndent = GetDocInsertSpaces(pDoc) ? std::wstring(tSize, L' ') : L"\t";
 
                     // Check if between opening and closing tags: <div>|</div>
                     auto pos = pDoc->buffer.GetCursor();
@@ -21323,17 +22312,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 ULONGLONG now = GetTickCount64();
                 if (m_hoverDwellPending && now >= m_hoverDwellTargetTime) {
                     m_hoverDwellPending = false;
-                    auto* pHoverDoc = GetActiveDoc();
-                    if (m_config.enableLspHover && pHoverDoc && !pHoverDoc->isSpecialView && !pHoverDoc->isDiffView &&
-                        !m_popupMenu.IsOpen() && !m_quickOpen.IsOpen() && !m_editor.IsAutocompleteVisible() &&
-                        !m_editor.IsCodeActionMenuVisible() && !m_editorGroups.empty()) {
+                    if (m_config.enableLspHover && !IsOverlayBlockingHover() && !m_editorGroups.empty() &&
+                        m_editor.HitTestCodeLens(m_hoverDwellPt) < 0) {
                         UpdateEditorGroupBounds();
-                        int gIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
-                        float paneLeft = m_editorGroups[gIdx].bounds.left;
-                        float paneBottom = m_editorGroups[gIdx].bounds.bottom;
-                        size_t hLine = 0, hCol = 0;
-                        if (m_editor.HitTestCodeArea(m_hoverDwellPt, m_config, *pHoverDoc, paneLeft, paneBottom, hLine, hCol)) {
-                            RequestHoverAsync(pHoverDoc, hLine, hCol, m_hoverDwellPt);
+                        int gIdx = FindEditorGroupAtPoint(m_hoverDwellPt);
+                        if (gIdx < 0) {
+                            gIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+                        }
+                        editor::OpenDocument* pHoverDoc = nullptr;
+                        if (gIdx >= 0 && gIdx < static_cast<int>(m_editorGroups.size())) {
+                            auto& grp = m_editorGroups[gIdx];
+                            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                                pHoverDoc = &grp.docs[grp.activeDocIdx];
+                            }
+                        }
+                        if (pHoverDoc && !pHoverDoc->isSpecialView && !pHoverDoc->isDiffView &&
+                            !pHoverDoc->isFolderView && !pHoverDoc->isImageView && !pHoverDoc->isUnsupportedBinary) {
+                            float paneLeft = m_editorGroups[gIdx].bounds.left;
+                            float paneBottom = m_editorGroups[gIdx].bounds.bottom;
+                            size_t hLine = 0, hCol = 0;
+                            bool isActualTextChar = false;
+                            if (m_editor.HitTestCodeArea(m_hoverDwellPt, m_config, *pHoverDoc, paneLeft, paneBottom,
+                                                         hLine, hCol, true, &isActualTextChar) && isActualTextChar) {
+                                RequestHoverAsync(pHoverDoc, hLine, hCol, m_hoverDwellPt, gIdx);
+                            }
                         }
                     }
                 }
@@ -21885,12 +22887,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 213: {
             std::unique_ptr<PendingLspHoverResult> res(reinterpret_cast<PendingLspHoverResult*>(lParam));
             if (!res || m_isDestroying.load() || res->gen != m_lspHoverGen.load()) return 0;
-            auto* pDoc = GetActiveDoc();
-            if (!pDoc || pDoc->isSpecialView) return 0;
+            if (!m_config.enableLspHover || IsOverlayBlockingHover() || m_editor.HitTestCodeLens(res->clientPt) >= 0) {
+                m_editor.DismissHoverCard();
+                return 0;
+            }
+            editor::OpenDocument* pDoc = nullptr;
+            int targetGrpIdx = res->groupIdx;
+            if (targetGrpIdx >= 0 && targetGrpIdx < static_cast<int>(m_editorGroups.size())) {
+                auto& grp = m_editorGroups[targetGrpIdx];
+                if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                    pDoc = &grp.docs[grp.activeDocIdx];
+                }
+            }
+            if (!pDoc) pDoc = GetActiveDoc();
+            if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return 0;
             std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
             if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
-            if (m_config.enableLspHover && !res->hover.markdown.empty()) {
+            if (!res->hover.markdown.empty()) {
                 m_editor.ShowHoverCard(res->line, res->col, res->clientPt, res->hover.markdown);
+                if (m_editor.IsHoverCardVisible() && targetGrpIdx >= 0 &&
+                    targetGrpIdx < static_cast<int>(m_editorGroups.size())) {
+                    m_editor.SetHoverCardPaneBounds(m_editorGroups[targetGrpIdx].bounds);
+                }
             } else {
                 m_editor.DismissHoverCard();
             }
@@ -21961,6 +22979,72 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 UpdateDrawerErrorFiles();
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 217: {
+            if (m_isDestroying.load()) return 0;
+            std::vector<phide::dev::TestItem> itemsCopy;
+            phide::dev::TestRunSummary summaryCopy;
+            {
+                std::lock_guard<std::mutex> lk(m_testsMutex);
+                itemsCopy = m_workspaceTests;
+                summaryCopy = m_workspaceTestSummary;
+            }
+            m_editor.SetTestResults(itemsCopy, summaryCopy);
+            SyncTestResultsToOpenDocs(itemsCopy);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 218: {
+            std::unique_ptr<phide::dev::ProblemMatch> pm(reinterpret_cast<phide::dev::ProblemMatch*>(lParam));
+            if (!pm || m_isDestroying.load() || pm->filePath.empty()) return 0;
+            std::wstring key = NormalizeRecentPath(pm->filePath);
+            for (auto& ch : key) ch = static_cast<wchar_t>(towlower(ch));
+
+            editor::ProblemEntry entry;
+            entry.filePath = pm->filePath;
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            std::error_code ec;
+            if (!wsRoot.empty()) {
+                auto rel = std::filesystem::relative(pm->filePath, wsRoot, ec);
+                entry.displayPath = (!ec && !rel.empty()) ? rel.wstring() : std::filesystem::path(pm->filePath).filename().wstring();
+            } else {
+                entry.displayPath = std::filesystem::path(pm->filePath).filename().wstring();
+            }
+            entry.line = pm->line1Based > 0 ? static_cast<size_t>(pm->line1Based - 1) : 0;
+            entry.col = pm->col1Based > 0 ? static_cast<size_t>(pm->col1Based - 1) : 0;
+            entry.length = 1;
+            if (pm->severity == L"warning") entry.severity = 2;
+            else if (pm->severity == L"info") entry.severity = 3;
+            else entry.severity = 1;
+            entry.message = pm->message;
+            entry.source = pm->matcherName.empty() ? L"Terminal" : pm->matcherName;
+            entry.code = pm->code;
+
+            auto& vec = m_externalLinterProblems[key];
+            bool exists = false;
+            for (const auto& ex : vec) {
+                if (ex.line == entry.line && ex.col == entry.col && ex.message == entry.message) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                vec.push_back(std::move(entry));
+                if (vec.size() > 200) vec.erase(vec.begin());
+                RebuildProblemsCache();
+                UpdateDrawerErrorFiles();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_USER + 225: {
+            if (!m_isDestroying.load() && m_editor.ApplyPendingSqlAsyncResults()) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
             return 0;
         }
 
@@ -22427,6 +23511,13 @@ std::vector<std::wstring> Window::FindCssDefinition(const std::wstring& selector
 void Window::UpdateCssPeekHover(POINT clientPt) {
     auto* curDoc = GetActiveDoc();
     if (!curDoc || curDoc->isSpecialView) return;
+    if (m_editor.GetPeekPanel().isOpen) {
+        if (curDoc->cssPeek.active) {
+            curDoc->cssPeek.active = false;
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
 
     size_t targetLine = static_cast<size_t>(-1);
     size_t targetCol = static_cast<size_t>(-1);
@@ -22923,6 +24014,13 @@ void Window::OpenRemoteWindowPopup(ui::RemoteModalMode mode, bool sshCurrentWind
 }
 
 void Window::ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, const std::wstring& initialDir) {
+    m_activeRemoteSession = {};
+    m_activeRemoteSession.kind = ui::remote::RemoteKind::Ssh;
+    m_activeRemoteSession.sshHost = host;
+    m_activeRemoteSession.remoteWorkDir = initialDir;
+    m_activeRemoteSession.label = L"SSH: " + host.TargetSpec();
+    PushCustomLspServerPaths();
+
     std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     std::wstring cmdLine = ui::remote::BuildInteractiveSshCommand(host, initialDir);
     std::wstring title = L"SSH: " + host.TargetSpec();
@@ -22943,46 +24041,69 @@ void Window::ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, cons
 
 void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::wstring& remotePath, const std::wstring& localCachePath) {
     if (!m_hwnd) return;
+    std::wstring resolvedCache = localCachePath;
+    if (resolvedCache.empty()) {
+        ui::remote::RemoteWorkspaceSession tmpSess;
+        tmpSess.kind = ui::remote::RemoteKind::Ssh;
+        tmpSess.sshHost = host;
+        resolvedCache = ui::remote::ResolveRemoteVfsCachePath(tmpSess, remotePath);
+    }
     HWND hwnd = m_hwnd;
-    std::thread([host, remotePath, localCachePath, hwnd]() {
+    std::thread([host, remotePath, resolvedCache, hwnd]() {
         auto* pRes = new RemoteFileOpenResult();
         pRes->host = host;
         pRes->remotePath = remotePath;
-        pRes->localCachePath = localCachePath;
+        pRes->localCachePath = resolvedCache;
         std::wstring err;
-        pRes->success = ui::remote::DownloadRemoteSshFile(host, remotePath, localCachePath, err);
+        pRes->success = ui::remote::DownloadRemoteSshFile(host, remotePath, resolvedCache, err);
         pRes->errorMsg = std::move(err);
         PostMessageW(hwnd, WM_USER + 207, 0, reinterpret_cast<LPARAM>(pRes));
     }).detach();
 }
 
 void Window::SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc) {
-    if (!doc.isRemoteFile || doc.remoteSshTarget.empty() || doc.remoteFilePath.empty() || doc.filePath.empty()) {
+    if (doc.remoteFilePath.empty() || doc.filePath.empty()) {
         return;
     }
-    ui::remote::SshHostEntry host;
-    host.alias = doc.remoteSshTarget;
-    host.hostName = doc.remoteSshTarget;
-    host.port = doc.remoteSshPort;
-    host.identityFile = doc.remoteSshIdentity;
-    const auto cfgHosts = ui::remote::LoadSshConfigHosts();
-    for (const auto& h : cfgHosts) {
-        if (h.TargetSpec() == doc.remoteSshTarget || h.alias == doc.remoteSshTarget) {
-            host = h;
-            break;
-        }
+    if (!doc.isRemoteFile && !(doc.isRemoteContainerFile && !doc.remoteContainerId.empty())) {
+        return;
     }
+
+    ui::remote::RemoteWorkspaceSession sess;
+    if (doc.isRemoteContainerFile && !doc.remoteContainerId.empty()) {
+        sess.kind = ui::remote::RemoteKind::DevContainer;
+        sess.container.id = doc.remoteContainerId;
+        sess.container.name = doc.remoteContainerId;
+        sess.label = L"Container: " + doc.remoteContainerId;
+    } else if (!doc.remoteSshTarget.empty()) {
+        sess.kind = ui::remote::RemoteKind::Ssh;
+        sess.sshHost.alias = doc.remoteSshTarget;
+        sess.sshHost.hostName = doc.remoteSshTarget;
+        sess.sshHost.port = doc.remoteSshPort;
+        sess.sshHost.identityFile = doc.remoteSshIdentity;
+        const auto cfgHosts = ui::remote::LoadSshConfigHosts();
+        for (const auto& h : cfgHosts) {
+            if (h.TargetSpec() == doc.remoteSshTarget || h.alias == doc.remoteSshTarget) {
+                sess.sshHost = h;
+                break;
+            }
+        }
+        sess.label = L"SSH: " + sess.sshHost.TargetSpec();
+    } else {
+        return;
+    }
+
     std::wstring localPath = doc.filePath;
     std::wstring remotePath = doc.remoteFilePath;
     HWND hwnd = m_hwnd;
-    std::thread([host, localPath, remotePath, hwnd]() {
+    std::thread([sess, localPath, remotePath, hwnd]() {
         static std::mutex s_remoteUploadMutex;
         std::lock_guard<std::mutex> lock(s_remoteUploadMutex);
         std::wstring err;
-        if (!ui::remote::UploadRemoteSshFile(host, localPath, remotePath, err)) {
+        if (!ui::remote::UploadRemoteSessionFile(sess, localPath, remotePath, err)) {
             if (hwnd) {
                 auto* pErr = new std::wstring(
-                    L"Failed to upload remote file '" + remotePath + L"' to " + host.TargetSpec() + L".\n\n" + err
+                    L"Failed to upload remote file '" + remotePath + L"' (" + sess.label + L").\n\n" + err
                 );
                 PostMessageW(hwnd, WM_USER + 209, 0, reinterpret_cast<LPARAM>(pErr));
             }
@@ -23083,6 +24204,12 @@ void Window::ConnectWslDistro(const std::wstring& distroName, bool openFolderInE
         }
     }
 
+    m_activeRemoteSession = {};
+    m_activeRemoteSession.kind = ui::remote::RemoteKind::Wsl;
+    m_activeRemoteSession.wslDistro = distroName;
+    m_activeRemoteSession.label = distroName.empty() ? L"WSL" : (L"WSL: " + distroName);
+    PushCustomLspServerPaths();
+
     std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     std::wstring cmdLine = ui::remote::BuildInteractiveWslCommand(distroName);
     std::wstring title = distroName.empty() ? L"WSL" : (L"WSL: " + distroName);
@@ -23119,6 +24246,12 @@ void Window::InstallWslInTerminal() {
 
 void Window::AttachDevContainer(const ui::remote::DevContainerEntry& container) {
     if (container.id.empty()) return;
+    m_activeRemoteSession = {};
+    m_activeRemoteSession.kind = ui::remote::RemoteKind::DevContainer;
+    m_activeRemoteSession.container = container;
+    m_activeRemoteSession.label = L"Container: " + (!container.name.empty() ? container.name : container.id);
+    PushCustomLspServerPaths();
+
     std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     std::wstring cmdLine = ui::remote::BuildInteractiveDockerCommand(container.id, !container.isRunning);
     std::wstring label = !container.name.empty() ? container.name : container.id;
@@ -24214,49 +25347,86 @@ void Window::PushCustomLspServerPaths() {
         paths[L"cpp"] = m_config.lspPathCpp;
         paths[L"c"] = m_config.lspPathCpp;
     }
+    if (m_activeRemoteSession.IsRemote()) {
+        for (auto& [langKey, cmdStr] : paths) {
+            if (!cmdStr.empty()) {
+                cmdStr = ui::remote::WrapCommandForRemote(m_activeRemoteSession, cmdStr, m_activeRemoteSession.remoteWorkDir);
+            }
+        }
+        m_lsp.ResetDiscoveryCache();
+    }
     m_lsp.SetCustomServerPaths(paths);
 }
 
+bool Window::IsOverlayBlockingHover() const noexcept {
+    return m_popupMenu.IsOpen() ||
+           m_quickOpen.IsOpen() ||
+           m_themePicker.IsOpen() ||
+           m_colorPicker.IsOpen() ||
+           m_remoteModal.IsOpen() ||
+           m_editor.IsAutocompleteVisible() ||
+           m_editor.IsCodeActionMenuVisible() ||
+           m_editor.GetPeekPanel().isOpen ||
+           m_editor.GetFindBar().isOpen ||
+           m_editor.GetRenameWidget().isOpen ||
+           m_editor.IsBreadcrumbDropdownOpen();
+}
+
 void Window::ScheduleHoverLookup(POINT clientPt) {
-    if (!m_config.enableLspHover || m_isDestroying.load()) {
+    auto cancelHover = [&](bool dismissVisible) {
         m_hoverDwellPending = false;
+        m_lspHoverGen.fetch_add(1);
+        if (dismissVisible && m_editor.IsHoverCardVisible()) {
+            m_editor.DismissHoverCard();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    };
+
+    if (!m_config.enableLspHover || m_isDestroying.load()) {
+        cancelHover(true);
         return;
     }
-    if (m_popupMenu.IsOpen() || m_quickOpen.IsOpen() || m_themePicker.IsOpen() ||
-        m_colorPicker.IsOpen() || m_remoteModal.IsOpen() || m_editor.IsAutocompleteVisible() ||
-        m_editor.IsCodeActionMenuVisible()) {
-        m_hoverDwellPending = false;
+    if (IsOverlayBlockingHover()) {
+        cancelHover(true);
         return;
     }
     if (IsBottomProblemsVisible() && PtInRectF(clientPt, m_rcProblemsPanel)) {
-        m_hoverDwellPending = false;
-        if (m_editor.IsHoverCardVisible()) {
-            m_editor.DismissHoverCard();
-        }
+        cancelHover(true);
         return;
     }
-
-    auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView || pDoc->isFolderView ||
-        pDoc->isImageView || pDoc->isUnsupportedBinary || m_editorGroups.empty()) {
-        m_hoverDwellPending = false;
-        if (m_editor.IsHoverCardVisible()) {
-            m_editor.DismissHoverCard();
-        }
+    if (m_editor.HitTestCodeLens(clientPt) >= 0) {
+        cancelHover(true);
+        return;
+    }
+    if (m_editorGroups.empty()) {
+        cancelHover(true);
         return;
     }
 
     UpdateEditorGroupBounds();
-    int grpIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
-    float paneLeft = m_editorGroups[grpIdx].bounds.left;
-    float paneBottom = m_editorGroups[grpIdx].bounds.bottom;
+    int grpIdx = FindEditorGroupAtPoint(clientPt);
+    if (grpIdx < 0) {
+        cancelHover(true);
+        return;
+    }
+    auto& grp = m_editorGroups[grpIdx];
+    editor::OpenDocument* pDoc = (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size()))
+        ? &grp.docs[grp.activeDocIdx]
+        : nullptr;
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView || pDoc->isFolderView ||
+        pDoc->isImageView || pDoc->isUnsupportedBinary) {
+        cancelHover(true);
+        return;
+    }
+
+    float paneLeft = grp.bounds.left;
+    float paneBottom = grp.bounds.bottom;
     size_t hLine = 0, hCol = 0;
-    if (!m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, paneLeft, paneBottom, hLine, hCol)) {
-        m_hoverDwellPending = false;
-        if (m_editor.IsHoverCardVisible()) {
-            m_editor.DismissHoverCard();
-            InvalidateRect(m_hwnd, nullptr, FALSE);
-        }
+    bool isActualTextChar = false;
+    if (!m_editor.HitTestCodeArea(clientPt, m_config, *pDoc, paneLeft, paneBottom,
+                                  hLine, hCol, true, &isActualTextChar) ||
+        !isActualTextChar) {
+        cancelHover(true);
         return;
     }
 
@@ -24275,7 +25445,7 @@ void Window::ScheduleHoverLookup(POINT clientPt) {
     m_hoverDwellPending = true;
 }
 
-void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt) {
+void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt, int groupIdx) {
     uint64_t gen = m_lspHoverGen.fetch_add(1) + 1;
     if (!pDoc || pDoc->isSpecialView || m_isDestroying.load() || !m_config.enableLspHover) return;
     if (pDoc->buffer.GetLineCount() == 0 || line >= pDoc->buffer.GetLineCount()) return;
@@ -24291,7 +25461,7 @@ void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t c
         ++m_activeBgWorkers;
     }
 
-    std::thread([this, gen, filePath, line, col, clientPt, lines = std::move(lines), hasLsp]() {
+    std::thread([this, gen, groupIdx, filePath, line, col, clientPt, lines = std::move(lines), hasLsp]() {
         BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
         if (m_isDestroying.load() || m_lspHoverGen.load() != gen || !m_hwnd) return;
 
@@ -24308,6 +25478,7 @@ void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t c
 
         auto* payload = new PendingLspHoverResult();
         payload->gen = gen;
+        payload->groupIdx = groupIdx;
         payload->filePath = filePath;
         payload->line = line;
         payload->col = col;
@@ -25053,6 +26224,301 @@ bool Window::HandleProblemsPanelKeyDown(WPARAM vk) {
         return true;
     }
     return false;
+}
+
+// =============================================================================
+// #26-#30 Dev Workflow Helpers (DAP, Breakpoint Conditions, Tasks DAG, Tests)
+// =============================================================================
+
+void Window::OpenBreakpointConditionPrompt(size_t line0) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    m_bpPromptLine0 = line0;
+    m_bpPromptInput.clear();
+    if (const auto* existing = pDoc->GetBreakpointCondition(line0)) {
+        if (!existing->logMessage.empty()) {
+            m_bpPromptInput = L"log:" + existing->logMessage;
+        } else if (existing->hitCondition > 0) {
+            m_bpPromptInput = L"hit:" + std::to_wstring(existing->hitCondition);
+        } else {
+            m_bpPromptInput = existing->condition;
+        }
+    }
+    m_bpPromptOpen = true;
+}
+
+void Window::SubmitBreakpointConditionPrompt() {
+    auto* pDoc = GetActiveDoc();
+    m_bpPromptOpen = false;
+    if (!pDoc || pDoc->isSpecialView) return;
+
+    std::wstring trimmed = m_bpPromptInput;
+    while (!trimmed.empty() && trimmed.front() == L' ') trimmed.erase(trimmed.begin());
+    while (!trimmed.empty() && trimmed.back() == L' ') trimmed.pop_back();
+
+    if (trimmed.empty()) {
+        pDoc->RemoveBreakpointCondition(m_bpPromptLine0);
+    } else if (trimmed.rfind(L"log:", 0) == 0) {
+        pDoc->SetBreakpointCondition(m_bpPromptLine0, L"", 0, trimmed.substr(4));
+    } else if (trimmed.rfind(L"hit:", 0) == 0) {
+        int hits = 0;
+        try { hits = std::stoi(trimmed.substr(4)); } catch (...) { hits = 0; }
+        pDoc->SetBreakpointCondition(m_bpPromptLine0, L"", hits, L"");
+    } else {
+        pDoc->SetBreakpointCondition(m_bpPromptLine0, trimmed, 0, L"");
+    }
+
+    if (m_terminal.IsDebugActive()) {
+        m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
+    }
+}
+
+void Window::RenderBreakpointConditionPrompt(float clientW, float clientH) {
+    if (!m_bpPromptOpen || !m_pRenderTarget) return;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brOverlay, brBg, brBorder, brBtn, brAccent;
+    m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f), &brOverlay);
+    m_pRenderTarget->CreateSolidColorBrush(m_theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.14f, 0.18f, 1.0f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 1.0f), &brBg);
+    m_pRenderTarget->CreateSolidColorBrush(m_theme.IsDarkMode() ? D2D1::ColorF(0.28f, 0.30f, 0.36f, 1.0f) : D2D1::ColorF(0.75f, 0.78f, 0.84f, 1.0f), &brBorder);
+    m_pRenderTarget->CreateSolidColorBrush(m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.28f, 1.0f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 1.0f), &brBtn);
+    m_pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.56f, 0.94f, 1.0f), &brAccent);
+
+    if (brOverlay) m_pRenderTarget->FillRectangle(D2D1::RectF(0.0f, 0.0f, clientW, clientH), brOverlay.Get());
+
+    float boxW = (std::min)(clientW - m_config.ScaleF(40.0f), m_config.ScaleF(480.0f));
+    float boxH = m_config.ScaleF(132.0f);
+    float left = (clientW - boxW) * 0.5f;
+    float top = (clientH - boxH) * 0.32f;
+    m_rcBpPromptBox = D2D1::RectF(left, top, left + boxW, top + boxH);
+
+    if (brBg) m_pRenderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_rcBpPromptBox, 6.0f, 6.0f), brBg.Get());
+    if (brBorder) m_pRenderTarget->DrawRoundedRectangle(D2D1::RoundedRect(m_rcBpPromptBox, 6.0f, 6.0f), brBorder.Get(), 1.2f);
+
+    IDWriteTextFormat* fTitle = m_theme.fontMenuItem ? m_theme.fontMenuItem.Get() : m_theme.fontCode.Get();
+    IDWriteTextFormat* fHint = m_theme.fontHint ? m_theme.fontHint.Get() : fTitle;
+    ID2D1Brush* txtPrim = m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get();
+    ID2D1Brush* txtSec = m_theme.brushTextSecondary ? m_theme.brushTextSecondary.Get() : txtPrim;
+
+    std::wstring hdr = L"Edit Breakpoint (Line " + std::to_wstring(m_bpPromptLine0 + 1) + L") - expr | hit:N | log:msg";
+    if (fTitle && txtPrim) {
+        m_pRenderTarget->DrawText(hdr.c_str(), static_cast<UINT32>(hdr.size()), fTitle,
+                                  D2D1::RectF(left + m_config.ScaleF(14.0f), top + m_config.ScaleF(10.0f), left + boxW - m_config.ScaleF(14.0f), top + m_config.ScaleF(32.0f)),
+                                  txtPrim, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    D2D1_RECT_F rcIn = D2D1::RectF(left + m_config.ScaleF(14.0f), top + m_config.ScaleF(40.0f), left + boxW - m_config.ScaleF(14.0f), top + m_config.ScaleF(68.0f));
+    if (brBorder) m_pRenderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rcIn, 4.0f, 4.0f), brAccent ? brAccent.Get() : brBorder.Get(), 1.0f);
+    std::wstring disp = m_bpPromptInput.empty() ? L"e.g. x > 5   or   hit:3   or   log:x={x}" : m_bpPromptInput;
+    if (fHint) {
+        m_pRenderTarget->DrawText(disp.c_str(), static_cast<UINT32>(disp.size()), fHint,
+                                  D2D1::RectF(rcIn.left + m_config.ScaleF(8.0f), rcIn.top + m_config.ScaleF(5.0f), rcIn.right - m_config.ScaleF(8.0f), rcIn.bottom),
+                                  m_bpPromptInput.empty() ? txtSec : txtPrim, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    float btnW = m_config.ScaleF(82.0f);
+    float btnH = m_config.ScaleF(26.0f);
+    m_rcBpPromptSaveBtn = D2D1::RectF(left + boxW - m_config.ScaleF(14.0f) - btnW, top + boxH - m_config.ScaleF(36.0f),
+                                      left + boxW - m_config.ScaleF(14.0f), top + boxH - m_config.ScaleF(10.0f));
+    m_rcBpPromptCancelBtn = D2D1::RectF(m_rcBpPromptSaveBtn.left - btnW - m_config.ScaleF(8.0f), m_rcBpPromptSaveBtn.top,
+                                        m_rcBpPromptSaveBtn.left - m_config.ScaleF(8.0f), m_rcBpPromptSaveBtn.bottom);
+
+    if (brAccent) m_pRenderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_rcBpPromptSaveBtn, 4.0f, 4.0f), brAccent.Get());
+    if (brBtn) m_pRenderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_rcBpPromptCancelBtn, 4.0f, 4.0f), brBtn.Get());
+    if (fTitle && txtPrim) {
+        m_pRenderTarget->DrawText(L"Save", 4, fTitle,
+                                  D2D1::RectF(m_rcBpPromptSaveBtn.left + m_config.ScaleF(24.0f), m_rcBpPromptSaveBtn.top + m_config.ScaleF(4.0f), m_rcBpPromptSaveBtn.right, m_rcBpPromptSaveBtn.bottom),
+                                  m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : txtPrim, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        m_pRenderTarget->DrawText(L"Cancel", 6, fTitle,
+                                  D2D1::RectF(m_rcBpPromptCancelBtn.left + m_config.ScaleF(16.0f), m_rcBpPromptCancelBtn.top + m_config.ScaleF(4.0f), m_rcBpPromptCancelBtn.right, m_rcBpPromptCancelBtn.bottom),
+                                  txtPrim, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+}
+
+std::vector<phide::dev::DapBreakpoint> Window::BuildDapBreakpointsForDoc(const editor::OpenDocument& doc) const {
+    std::vector<phide::dev::DapBreakpoint> out;
+    for (size_t line0 : doc.breakpoints) {
+        phide::dev::DapBreakpoint bp;
+        bp.filePath = doc.filePath;
+        bp.line1Based = line0 + 1;
+        bp.enabled = true;
+        if (const auto* cond = doc.GetBreakpointCondition(line0)) {
+            bp.condition = cond->condition;
+            bp.hitCondition = cond->hitCondition;
+            bp.logMessage = cond->logMessage;
+            bp.enabled = cond->enabled;
+        }
+        out.push_back(std::move(bp));
+    }
+    return out;
+}
+
+bool Window::ExecuteWorkspaceTaskByLabel(const std::wstring& taskLabel) {
+    if (taskLabel.empty()) return false;
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    auto tasks = phide::dev::TaskRunnerEngine::DiscoverAllTasks(wsRoot);
+    auto ordered = phide::dev::TaskRunnerEngine::ResolveExecutionOrder(tasks, taskLabel);
+    if (ordered.empty()) return false;
+
+    if (!m_terminal.IsOpen()) {
+        DoCreateTerminal();
+    }
+    auto* tab = m_terminal.GetActiveTab();
+    if (!tab) return false;
+
+    std::wstring chained;
+    for (size_t i = 0; i < ordered.size(); ++i) {
+        std::wstring cmd = phide::dev::TaskRunnerEngine::FormatCommandLine(ordered[i], wsRoot);
+        if (cmd.empty()) continue;
+        if (!chained.empty()) chained += L" && ";
+        chained += cmd;
+    }
+    if (chained.empty()) return false;
+    if (m_activeRemoteSession.IsRemote()) {
+        chained = ui::remote::WrapCommandForRemote(m_activeRemoteSession, chained, m_activeRemoteSession.remoteWorkDir);
+    }
+
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, chained.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Len > 1) {
+        std::string utf8(utf8Len - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, chained.c_str(), -1, utf8.data(), utf8Len - 1, nullptr, nullptr);
+        tab->SendInput(utf8 + "\r\n");
+    }
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+    return true;
+}
+
+void Window::LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg) {
+    auto* pDoc = GetActiveDoc();
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (!cfg.preLaunchTask.empty()) {
+        ExecuteWorkspaceTaskByLabel(cfg.preLaunchTask);
+    }
+
+    std::wstring pythonExe = L"python.exe";
+    if (!wsRoot.empty()) {
+        std::error_code ec;
+        std::filesystem::path venvPy = std::filesystem::path(wsRoot) / L".venv" / L"Scripts" / L"python.exe";
+        if (std::filesystem::exists(venvPy, ec)) {
+            pythonExe = venvPy.wstring();
+        }
+    }
+
+    std::vector<phide::dev::DapBreakpoint> bps;
+    if (pDoc && !pDoc->isSpecialView) {
+        bps = BuildDapBreakpointsForDoc(*pDoc);
+    }
+
+    if (!m_terminal.IsOpen()) {
+        m_terminal.Open(cfg.cwd.empty() ? wsRoot : cfg.cwd);
+    }
+    AnimateTerminalOpen();
+    m_terminal.StartDapDebugSession(cfg, bps, pythonExe);
+    m_isTerminalFocused = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::SyncTestResultsToOpenDocs(const std::vector<phide::dev::TestItem>& items) {
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            if (doc.isSpecialView || doc.filePath.empty()) continue;
+            doc.gutterTestBadges.clear();
+            for (const auto& t : items) {
+                if (t.filePath.empty()) continue;
+                if (AreRecentPathsEqual(doc.filePath, t.filePath)) {
+                    editor::OpenDocument::GutterTestBadge b;
+                    b.line0 = t.line0Based;
+                    b.testId = t.id;
+                    b.testName = t.name;
+                    b.status = static_cast<int>(t.status);
+                    b.durationMs = t.durationMs;
+                    b.failureMessage = t.failureMessage;
+                    doc.gutterTestBadges.push_back(std::move(b));
+                }
+            }
+        }
+    }
+}
+
+void Window::RefreshWorkspaceTestsAsync() {
+    if (m_testsRunningAsync.load() || m_isDestroying.load()) return;
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (wsRoot.empty()) return;
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        ++m_activeBgWorkers;
+    }
+    std::thread([this, wsRoot]() {
+        auto discovered = phide::dev::TestExplorerEngine::DiscoverTests(wsRoot);
+        if (!m_isDestroying.load()) {
+            {
+                std::lock_guard<std::mutex> lk(m_testsMutex);
+                m_workspaceTests = std::move(discovered);
+                m_workspaceTestSummary = {};
+                m_workspaceTestSummary.total = static_cast<int>(m_workspaceTests.size());
+            }
+            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 0, 0);
+        }
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_activeBgWorkers > 0) --m_activeBgWorkers;
+        m_bgWorkersCv.notify_all();
+    }).detach();
+}
+
+void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
+                                    phide::dev::TestFramework fw,
+                                    const std::wstring& filePath) {
+    if (m_testsRunningAsync.exchange(true) || m_isDestroying.load()) {
+        return;
+    }
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (wsRoot.empty()) {
+        m_testsRunningAsync.store(false);
+        return;
+    }
+
+    m_editor.SetTestIsRunning(true);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        ++m_activeBgWorkers;
+    }
+    std::thread([this, wsRoot, filterName, fw, filePath]() {
+        std::vector<phide::dev::TestItem> items = phide::dev::TestExplorerEngine::DiscoverTests(wsRoot);
+        phide::dev::TestFramework runFw = fw;
+        if (runFw == phide::dev::TestFramework::Unknown) {
+            if (!items.empty()) {
+                runFw = items.front().framework;
+            } else {
+                std::error_code ec;
+                if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"phpunit.xml", ec) ||
+                    std::filesystem::exists(std::filesystem::path(wsRoot) / L"phpunit.xml.dist", ec)) {
+                    runFw = phide::dev::TestFramework::PhpUnit;
+                } else if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"package.json", ec)) {
+                    runFw = phide::dev::TestFramework::Jest;
+                } else if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"CMakeLists.txt", ec)) {
+                    runFw = phide::dev::TestFramework::CTest;
+                } else {
+                    runFw = phide::dev::TestFramework::Pytest;
+                }
+            }
+        }
+        auto summary = phide::dev::TestExplorerEngine::ExecuteTestsSync(wsRoot, runFw, items, filterName, filePath, 45000);
+        if (!m_isDestroying.load()) {
+            {
+                std::lock_guard<std::mutex> lk(m_testsMutex);
+                m_workspaceTests = std::move(items);
+                m_workspaceTestSummary = std::move(summary);
+            }
+            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 0, 0);
+        }
+        m_testsRunningAsync.store(false);
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_activeBgWorkers > 0) --m_activeBgWorkers;
+        m_bgWorkersCv.notify_all();
+    }).detach();
 }
 
 } // namespace phide::app

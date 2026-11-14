@@ -31,11 +31,15 @@ struct OpenDocument {
     bool isDirty = false;        ///< True if document has unsaved edits
     bool isPreview = false;      ///< True if single-clicked and not yet edited/pinned (VS Code preview tab)
     bool isSpecialView = false;  ///< True for Keyboard Shortcuts, settings, etc.
-    bool isRemoteFile = false;   ///< True if opened via Remote Explorer (SSH/SCP) and synced on save
+    bool isRemoteFile = false;   ///< True if opened via Remote Explorer (SSH/SCP/Container) and synced on save
+    bool isRemoteContainerFile = false; ///< True if opened inside a Docker Dev Container
     std::wstring remoteSshTarget;
     std::wstring remoteSshPort;
     std::wstring remoteSshIdentity;
+    std::wstring remoteContainerId;
     std::wstring remoteFilePath;
+    int effectiveTabSize = 0;    ///< Per-document .editorconfig indent_size override (0 = global config)
+    int effectiveIndentStyle = -1; ///< -1 = global, 0 = spaces, 1 = tabs (.editorconfig)
     std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings", L"course")
     std::wstring courseId;       ///< Course identifier for course special views (e.g. L"python-1")
     D2D1_RECT_F tabBounds{};     ///< Screen bounding box of the tab
@@ -43,9 +47,58 @@ struct OpenDocument {
     D2D1_RECT_F splitTabBounds{};   ///< Screen bounding box of the tab in secondary/right split pane
     D2D1_RECT_F splitCloseBounds{}; ///< Screen bounding box of tab close button in right split pane
 
-    // Breakpoints for Debugging (F9 / Debug Menu)
+    // Breakpoints for Debugging (F9 / Debug Menu / #26 Conditional & Logpoints)
+    struct BreakpointConditionInfo {
+        size_t line0 = 0;
+        std::wstring condition;
+        int hitCondition = 0;       ///< Pause when hitCount >= hitCondition (0 = unconditional)
+        std::wstring logMessage;    ///< Non-empty => logpoint (logs without pausing)
+        bool enabled = true;
+    };
+
+    struct GutterTestBadge {
+        size_t line0 = 0;
+        std::wstring testId;
+        std::wstring testName;
+        int status = 0;             ///< 0=Unknown, 1=Running, 2=Passed, 3=Failed, 4=Skipped
+        double durationMs = 0.0;
+        std::wstring failureMessage;
+    };
+
     std::vector<size_t> breakpoints; ///< 0-based line indices where breakpoints are set
+    std::vector<BreakpointConditionInfo> breakpointConditions; ///< Optional condition / hit count / logpoint metadata
+    std::vector<GutterTestBadge> gutterTestBadges; ///< Discovered / executed tests on buffer lines (#28)
     size_t debugPausedLine = static_cast<size_t>(-1); ///< 0-based line where debugger is currently paused (-1 if not paused)
+
+    [[nodiscard]] const BreakpointConditionInfo* GetBreakpointCondition(size_t line0) const noexcept {
+        for (const auto& bc : breakpointConditions) {
+            if (bc.line0 == line0) return &bc;
+        }
+        return nullptr;
+    }
+
+    void SetBreakpointCondition(size_t line0, const std::wstring& cond, int hitCond, const std::wstring& logMsg) {
+        if (std::find(breakpoints.begin(), breakpoints.end(), line0) == breakpoints.end()) {
+            breakpoints.push_back(line0);
+        }
+        for (auto& bc : breakpointConditions) {
+            if (bc.line0 == line0) {
+                bc.condition = cond;
+                bc.hitCondition = hitCond;
+                bc.logMessage = logMsg;
+                bc.enabled = true;
+                return;
+            }
+        }
+        breakpointConditions.push_back({ line0, cond, hitCond, logMsg, true });
+    }
+
+    void RemoveBreakpointCondition(size_t line0) {
+        breakpointConditions.erase(
+            std::remove_if(breakpointConditions.begin(), breakpointConditions.end(),
+                           [line0](const BreakpointConditionInfo& bc) { return bc.line0 == line0; }),
+            breakpointConditions.end());
+    }
 
     // GitLens Inline Blame and Authorship State
     struct LineBlameInfo {
@@ -1320,6 +1373,40 @@ struct OpenDocument {
         enum class HunkType { Modified, Added, Deleted } type = HunkType::Modified;
     };
     std::vector<DiffHunkItem> diffHunks; ///< Structured diff hunks between left and right buffers
+
+    struct DiffHunkActionHit {
+        size_t hunkIdx = 0;
+        enum class Action { Stage, Unstage, Revert } action = Action::Stage;
+        D2D1_RECT_F bounds{};
+    };
+    mutable std::vector<DiffHunkActionHit> diffHunkActionHits; ///< Clickable partial hunk stage/revert buttons
+    bool isDiffStagedMode = false;       ///< True if diff compares HEAD vs Index (staged) for hunk unstaging
+    std::wstring diffRepoRelPath;        ///< Repo-relative path for partial hunk git apply operations
+
+    // Inline Merge Conflict & 3-Way Merge Editor state (#35)
+    struct MergeConflictRange {
+        size_t startLine = 0;
+        size_t baseLine = static_cast<size_t>(-1);
+        size_t separatorLine = 0;
+        size_t endLine = 0;
+        std::wstring currentLabel;
+        std::wstring baseLabel;
+        std::wstring incomingLabel;
+    };
+    std::vector<MergeConflictRange> mergeConflicts; ///< Active `<<<<<<< ... >>>>>>>` conflict blocks in buffer
+
+    bool isMergeView = false;            ///< True if displaying 3-way merge editor (Current | Result | Incoming)
+    Buffer mergeCurrentBuffer;           ///< Left pane in 3-way merge view
+    Buffer mergeIncomingBuffer;          ///< Right pane in 3-way merge view
+    std::wstring mergeCurrentLabel;
+    std::wstring mergeIncomingLabel;
+    struct MergePaneActionHit {
+        size_t conflictIdx = 0;
+        int choice = 0;                  ///< 0=Current, 1=Incoming, 2=Both, 3=ResolveAllCurrent, 4=ResolveAllIncoming
+        D2D1_RECT_F bounds{};
+    };
+    mutable std::vector<MergePaneActionHit> mergePaneActionHits;
+    mutable D2D1_RECT_F mergeMarkResolvedBtnBounds{};
 
     // Multi-File Commit Diff View (Image 4)
     struct MultiFileDiffEntry {

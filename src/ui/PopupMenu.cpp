@@ -382,6 +382,8 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.clear();
     // 1. Monitor
     m_items.push_back({ MenuActionId::ViewMonitor, L"Monitor", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ViewTestExplorer, L"Test Explorer", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ViewSqlConsole, L"SQL Query Console...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
     m_items.push_back({ MenuActionId::CodeFindReferences, L"Find All References", L"Shift+F12", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCallHierarchy, L"Call Hierarchy", L"", false, false, false, true, {}, {} });
@@ -779,7 +781,8 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
     prefItem.isEnabled = true;
     prefItem.submenuItems.push_back({ MenuActionId::Settings, L"Settings", L"Ctrl+,", false, false, false, true, {}, {} });
     prefItem.submenuItems.push_back({ MenuActionId::KeyboardShortcuts, L"Keyboard Shortcuts", L"Ctrl+K Ctrl+S", false, false, false, true, {}, {} });
-    prefItem.submenuItems.push_back({ MenuActionId::UserSnippets, L"User Snippets", L"", false, false, false, true, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::UserSnippetsGui, L"Snippet Editor (GUI)", L"", false, false, false, true, {}, {} });
+    prefItem.submenuItems.push_back({ MenuActionId::UserSnippets, L"User Snippets (JSON)", L"", false, false, false, true, {}, {} });
     prefItem.submenuItems.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
     prefItem.submenuItems.push_back({ MenuActionId::ThemeSettings, L"Theme", L"Ctrl+K Ctrl+T", false, false, false, true, {}, {} });
     m_items.push_back(std::move(prefItem));

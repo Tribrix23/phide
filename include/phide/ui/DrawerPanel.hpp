@@ -28,7 +28,9 @@
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/workspace/IgnoreEngine.hpp"
+#include "phide/workspace/WorkspaceConfigEngine.hpp"
 #include "phide/ui/RemoteWindowModal.hpp"
+#include "phide/git/GitWorkflowEngine.hpp"
 
 namespace phide::ui {
 
@@ -160,11 +162,20 @@ struct GitChangeItem {
     std::wstring path;
     std::wstring fileName;
     std::wstring relDir;
-    std::wstring status; ///< "M", "A", "D", "U"
+    std::wstring status; ///< "M", "A", "D", "U", "!" (merge conflict)
     bool isStaged = false;
+    bool isConflict = false;
     D2D1_RECT_F bounds{};
     D2D1_RECT_F stageBtnBounds{};
     D2D1_RECT_F discardBtnBounds{};
+};
+
+struct GitStashUiItem {
+    phide::git::GitStashEntry entry;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F applyBtnBounds{};
+    D2D1_RECT_F popBtnBounds{};
+    D2D1_RECT_F dropBtnBounds{};
 };
 
 struct GitCmdResult {
@@ -173,6 +184,7 @@ struct GitCmdResult {
 };
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock = true);
+GitCmdResult RunGitCmdWithInput(const std::wstring& cmd, const std::wstring& workDir, const std::string& stdinUtf8, bool retryOnLock = true);
 
 /**
  * @struct GitCommitFile
@@ -254,6 +266,29 @@ public:
     void PullCommitsAsync();
     void FetchAllRemotesAsync();
     void StashChangesAsync();
+    void StashChangesWithMessageAsync(const std::wstring& message);
+    void ApplyStashAsync(size_t stashIdx);
+    void PopStashAsync(size_t stashIdx);
+    void DropStashAsync(size_t stashIdx);
+    void StageHunkPatchAsync(const std::string& patchUtf8, bool reverse = false);
+    bool StageHunkPatch(const std::string& patchUtf8, bool reverse = false);
+    bool CreateBranch(const std::wstring& branchName);
+    void CreateBranchAsync(const std::wstring& branchName);
+    bool DeleteBranch(const std::wstring& branchName, bool force = false);
+    void DeleteBranchAsync(const std::wstring& branchName, bool force = false);
+    bool CreateTag(const std::wstring& tagName, const std::wstring& target = L"");
+    void CreateTagAsync(const std::wstring& tagName, const std::wstring& target = L"");
+    bool DeleteTag(const std::wstring& tagName);
+    void DeleteTagAsync(const std::wstring& tagName);
+    void CherryPickCommitAsync(const std::wstring& commitHash);
+    void CheckoutCommitAsync(const std::wstring& commitHash);
+    void RebaseBranchAsync(const std::wstring& targetBranch);
+    void SetCommitAmend(bool amend) noexcept { m_commitAmend = amend; }
+    [[nodiscard]] bool IsCommitAmend() const noexcept { return m_commitAmend; }
+    [[nodiscard]] std::vector<GitStashUiItem> GetGitStashes() const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        return m_gitStashes;
+    }
     void RunGarbageCollection();
     void RunGarbageCollectionAsync();
     void GenerateAiCommitMessage();
@@ -339,6 +374,7 @@ public:
     static std::string GenerateContextAwareGitignore(const std::wstring& rootDir);
     static void EnsureContextAwareGitignore(const std::wstring& rootDir);
     [[nodiscard]] bool IsGitRefreshing() const noexcept { return m_isGitRefreshing.load(); }
+    [[nodiscard]] int GetActiveWorkerCount() const noexcept { return m_activeWorkers ? m_activeWorkers->load() : 0; }
     [[nodiscard]] static ULONGLONG GetLastGitCmdTick() noexcept;
     [[nodiscard]] std::recursive_mutex& GetGitMutex() const noexcept { return m_gitMutex; }
     void UpdateGitLoadingAnim(float deltaAngle) noexcept { m_gitAnimAngle += deltaAngle; }
@@ -462,6 +498,13 @@ public:
     bool HandlePublishRepoMouseDown(POINT pt);
     bool HandlePublishRepoKeyDown(WPARAM wParam);
     bool HandlePublishRepoChar(wchar_t ch);
+    // --- Inline Git Ref/Stash Prompt Modal (#33) ---
+    [[nodiscard]] bool IsGitPromptModalOpen() const noexcept { return m_isGitPromptModalOpen; }
+    void CloseGitPromptModal() noexcept { m_isGitPromptModalOpen = false; }
+    void RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientWidth, float clientHeight);
+    bool HandleGitPromptMouseDown(POINT pt);
+    bool HandleGitPromptKeyDown(WPARAM wParam);
+    bool HandleGitPromptChar(wchar_t ch);
     void ConfirmPublishRepo(int visibilityChoice, bool bypassGuard = false); // 0 = Private, 1 = Public
     [[nodiscard]] int GetPublishRepoSelectedChoice() const noexcept { return m_publishRepoSelectedChoice; }
     [[nodiscard]] const std::wstring& GetPublishRepoName() const noexcept { return m_publishRepoName; }
@@ -635,6 +678,26 @@ public:
      * @brief Opens a folder and populates the explorer tree with real filesystem contents.
      */
     void OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded = nullptr);
+
+    /**
+     * @brief Adds an extra workspace root folder for Multi-Root Workspaces (.phide-workspace).
+     */
+    bool AddWorkspaceRoot(const std::wstring& folderPath, const std::wstring& explicitName = L"");
+
+    /**
+     * @brief Loads a multi-root workspace descriptor into the Explorer tree.
+     */
+    void SetMultiRootWorkspace(const workspace::MultiRootWorkspace& ws);
+
+    /**
+     * @brief Clears additional workspace roots while retaining the primary folder.
+     */
+    void ClearExtraWorkspaceRoots();
+
+    /**
+     * @brief Returns all open workspace root folders (primary + extra multi-root folders).
+     */
+    [[nodiscard]] std::vector<workspace::WorkspaceFolderEntry> GetAllWorkspaceFolders() const;
 
     /**
      * @brief Gets the currently expanded directories in the tree.
@@ -1151,9 +1214,32 @@ private:
 
     D2D1_RECT_F m_gitMsgBoxBounds{};
     D2D1_RECT_F m_gitGenerateAiBounds{};
+    D2D1_RECT_F m_gitAmendToggleBounds{};
     D2D1_RECT_F m_gitCommitBtnBounds{};
     D2D1_RECT_F m_gitSyncBtnBounds{};
     D2D1_RECT_F m_gitCommitDropdownBounds{};
+
+    // Stashes & Amend Commit State (#33)
+    bool m_commitAmend = false;
+    bool m_showStashesSection = true;
+    bool m_stashesExpanded = false;
+    std::vector<GitStashUiItem> m_gitStashes;
+    D2D1_RECT_F m_gitStashesHeaderBounds{};
+    D2D1_RECT_F m_gitStashSaveBtnBounds{};
+    int m_hoveredGitStashIdx = -1;
+
+    // Inline Git Ref/Stash Prompt Modal (Create/Delete Branch/Tag, Rebase, Stash w/ message)
+    enum class GitPromptKind { None, CreateBranch, DeleteBranch, CreateTag, DeleteTag, RebaseOnto, StashMessage };
+    bool m_isGitPromptModalOpen = false;
+    GitPromptKind m_gitPromptKind = GitPromptKind::None;
+    std::wstring m_gitPromptTitle;
+    std::wstring m_gitPromptValue;
+    D2D1_RECT_F m_gitPromptModalBounds{};
+    D2D1_RECT_F m_gitPromptInputBounds{};
+    D2D1_RECT_F m_gitPromptConfirmBounds{};
+    D2D1_RECT_F m_gitPromptCancelBounds{};
+    void OpenGitPromptModal(GitPromptKind kind, const std::wstring& title, const std::wstring& initial = L"");
+    void ConfirmGitPromptModal();
 
     D2D1_RECT_F m_gitGraphHeaderBounds{};
     D2D1_RECT_F m_gitGraphChevronBounds{};
@@ -1179,6 +1265,8 @@ private:
     D2D1_RECT_F m_commitCardCloseBounds{};
     D2D1_RECT_F m_commitCardOpenChangesBounds{};
     D2D1_RECT_F m_commitCardGitHubBounds{};
+    D2D1_RECT_F m_commitCardCherryPickBounds{};
+    D2D1_RECT_F m_commitCardCheckoutBounds{};
     std::wstring m_commitCardHash;
     mutable std::wstring m_cachedGitHubRepoUrl;
     mutable bool m_gitHubRepoUrlCached = false;
@@ -1265,6 +1353,8 @@ private:
 
     bool m_hasOpenFolder = false;
     std::wstring m_openFolderPath;
+    std::vector<workspace::WorkspaceFolderEntry> m_extraWorkspaceRoots;
+    std::wstring m_activeWorkspaceFilePath;
     std::wstring m_rootName;
 
     bool m_hasPythonFiles = false;

@@ -217,6 +217,7 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
     }
 
     m_hasOpenFolder = true;
+    m_extraWorkspaceRoots.clear();
     m_gitHubRepoUrlCached = false;
     m_cachedGitHubRepoUrl.clear();
     m_publishRepoName.clear();
@@ -258,6 +259,8 @@ void DrawerPanel::CloseFolder() {
     m_hasOpenFolder = false;
     m_openFolderPath.clear();
     m_rootName.clear();
+    m_extraWorkspaceRoots.clear();
+    m_activeWorkspaceFilePath.clear();
     m_gitHubRepoUrlCached = false;
     m_cachedGitHubRepoUrl.clear();
     m_publishRepoName.clear();
@@ -379,12 +382,93 @@ void DrawerPanel::DetectProjectLanguages() {
     }
 }
 
+bool DrawerPanel::AddWorkspaceRoot(const std::wstring& folderPath, const std::wstring& explicitName) {
+    if (folderPath.empty()) return false;
+    std::error_code ec;
+    std::filesystem::path fsPath(folderPath);
+    if (!std::filesystem::exists(fsPath, ec) || !std::filesystem::is_directory(fsPath, ec)) {
+        return false;
+    }
+    std::wstring canonPath = std::filesystem::canonical(fsPath, ec).wstring();
+    if (canonPath.empty()) canonPath = folderPath;
+    if (canonPath.size() >= 4 && canonPath.rfind(L"\\\\?\\", 0) == 0) {
+        canonPath = canonPath.substr(4);
+    }
+
+    if (!m_hasOpenFolder || m_openFolderPath.empty()) {
+        OpenFolder(canonPath);
+        if (!explicitName.empty()) m_rootName = explicitName;
+        return true;
+    }
+
+    auto eqPath = [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) == 0;
+    };
+    if (eqPath(canonPath, m_openFolderPath)) return true;
+    for (const auto& r : m_extraWorkspaceRoots) {
+        if (eqPath(canonPath, r.path)) return true;
+    }
+
+    workspace::WorkspaceFolderEntry entry;
+    entry.path = canonPath;
+    entry.name = explicitName.empty() ? std::filesystem::path(canonPath).filename().wstring() : explicitName;
+    if (entry.name.empty()) entry.name = canonPath;
+    m_extraWorkspaceRoots.push_back(std::move(entry));
+    m_expandedDirs.insert(canonPath);
+    RebuildVisibleItems();
+    return true;
+}
+
+void DrawerPanel::SetMultiRootWorkspace(const workspace::MultiRootWorkspace& ws) {
+    if (ws.folders.empty()) return;
+    OpenFolder(ws.folders[0].path);
+    if (!ws.folders[0].name.empty()) {
+        m_rootName = ws.folders[0].name;
+    }
+    m_activeWorkspaceFilePath = ws.workspaceFilePath;
+    for (size_t i = 1; i < ws.folders.size(); ++i) {
+        AddWorkspaceRoot(ws.folders[i].path, ws.folders[i].name);
+    }
+}
+
+void DrawerPanel::ClearExtraWorkspaceRoots() {
+    m_extraWorkspaceRoots.clear();
+    m_activeWorkspaceFilePath.clear();
+    RebuildVisibleItems();
+}
+
+std::vector<workspace::WorkspaceFolderEntry> DrawerPanel::GetAllWorkspaceFolders() const {
+    std::vector<workspace::WorkspaceFolderEntry> out;
+    if (m_hasOpenFolder && !m_openFolderPath.empty()) {
+        out.push_back({ m_rootName.empty() ? std::filesystem::path(m_openFolderPath).filename().wstring() : m_rootName, m_openFolderPath });
+    }
+    for (const auto& extra : m_extraWorkspaceRoots) {
+        out.push_back(extra);
+    }
+    return out;
+}
+
 void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.clear();
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
 
     // Directly populate root directory contents at depth 0 (standard modern IDE / VS Code behavior)
     AddDirectoryChildren(m_openFolderPath, 0);
+
+    // Additional Multi-Root Workspace folders (.phide-workspace) rendered as collapsible top-level roots
+    for (const auto& root : m_extraWorkspaceRoots) {
+        DrawerTreeItem rootItem;
+        rootItem.label = root.name;
+        rootItem.fullPath = root.path;
+        rootItem.depth = 0;
+        rootItem.isFolder = true;
+        rootItem.isExpanded = (m_expandedDirs.count(root.path) > 0);
+        rootItem.iconGlyph = rootItem.isExpanded ? L"\u25BE" : L"\u25B8";
+        m_visibleItems.push_back(rootItem);
+        if (rootItem.isExpanded) {
+            AddDirectoryChildren(root.path, 1);
+        }
+    }
 
     // PyCharm-style External Libraries section at the bottom of the project tree
     std::wstring extLibPath = L"__EXTERNAL_LIBRARIES__";
@@ -4678,11 +4762,12 @@ static std::vector<wchar_t> BuildScopedChildEnvBlock(const std::vector<std::pair
     return block;
 }
 
-static bool LaunchProcessAndCapture(
+static bool LaunchProcessWithInputAndCapture(
     const std::wstring& cmdLine,
     const std::wstring& workDir,
     DWORD timeoutMs,
     const std::vector<std::pair<std::wstring, std::wstring>>& envOverrides,
+    const std::string* pStdinUtf8,
     DWORD& outExitCode,
     std::string& outOutput,
     DWORD& outDurationMs
@@ -4703,13 +4788,22 @@ static bool LaunchProcessAndCapture(
     }
     SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-    HANDLE hNulRead = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hInReadPipe = NULL;
+    HANDLE hInWritePipe = NULL;
+    HANDLE hNulRead = INVALID_HANDLE_VALUE;
+    if (pStdinUtf8 != nullptr) {
+        if (CreatePipe(&hInReadPipe, &hInWritePipe, &sa, 0)) {
+            SetHandleInformation(hInWritePipe, HANDLE_FLAG_INHERIT, 0);
+        }
+    } else {
+        hNulRead = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
-    si.hStdInput = (hNulRead != INVALID_HANDLE_VALUE) ? hNulRead : NULL;
+    si.hStdInput = hInReadPipe ? hInReadPipe : ((hNulRead != INVALID_HANDLE_VALUE) ? hNulRead : NULL);
     si.hStdOutput = hWritePipe;
     si.hStdError = hWritePipe;
 
@@ -4742,11 +4836,26 @@ static bool LaunchProcessAndCapture(
     );
 
     CloseHandle(hWritePipe);
+    if (hInReadPipe) CloseHandle(hInReadPipe);
     if (hNulRead != INVALID_HANDLE_VALUE) CloseHandle(hNulRead);
 
     if (!created) {
+        if (hInWritePipe) CloseHandle(hInWritePipe);
         CloseHandle(hReadPipe);
         return false;
+    }
+
+    if (hInWritePipe) {
+        if (pStdinUtf8 && !pStdinUtf8->empty()) {
+            size_t total = 0;
+            while (total < pStdinUtf8->size()) {
+                DWORD written = 0;
+                DWORD chunk = static_cast<DWORD>((std::min)(size_t(65536), pStdinUtf8->size() - total));
+                if (!WriteFile(hInWritePipe, pStdinUtf8->data() + total, chunk, &written, NULL) || written == 0) break;
+                total += written;
+            }
+        }
+        CloseHandle(hInWritePipe);
     }
 
     bool timedOut = false;
@@ -4800,6 +4909,19 @@ static bool LaunchProcessAndCapture(
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
     return true;
+}
+
+static bool LaunchProcessAndCapture(
+    const std::wstring& cmdLine,
+    const std::wstring& workDir,
+    DWORD timeoutMs,
+    const std::vector<std::pair<std::wstring, std::wstring>>& envOverrides,
+    DWORD& outExitCode,
+    std::string& outOutput,
+    DWORD& outDurationMs
+) {
+    return LaunchProcessWithInputAndCapture(
+        cmdLine, workDir, timeoutMs, envOverrides, nullptr, outExitCode, outOutput, outDurationMs);
 }
 
 static bool HasExplicitOAuthTokenInHostsYml(const std::filesystem::path& p) {
@@ -5095,6 +5217,51 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
     return res;
 }
 
+GitCmdResult RunGitCmdWithInput(const std::wstring& cmd, const std::wstring& workDir, const std::string& stdinUtf8, bool retryOnLock) {
+    GitCmdResult res;
+    std::wstring cleanWorkDir = StripExtendedPathPrefix(workDir);
+    if (cleanWorkDir.empty()) {
+        res.exitCode = -1;
+        res.output = L"No project folder open.";
+        return res;
+    }
+
+    std::wstring gitExe = ResolveGitExePath();
+    std::wstring quotedGit = (gitExe.find(L' ') != std::wstring::npos && gitExe.front() != L'"')
+                                 ? (L"\"" + gitExe + L"\"")
+                                 : gitExe;
+    std::wstring fullCmd = quotedGit + L" " + cmd;
+    std::vector<std::pair<std::wstring, std::wstring>> envVars = {
+        {L"GIT_TERMINAL_PROMPT", L"0"},
+        {L"GCM_INTERACTIVE", L"never"}
+    };
+
+    s_lastGitCmdTick.store(GetTickCount64());
+    DWORD exitCode = 1;
+    std::string rawOut;
+    DWORD durationMs = 0;
+    bool launched = LaunchProcessWithInputAndCapture(
+        fullCmd, cleanWorkDir, 15000, envVars, &stdinUtf8, exitCode, rawOut, durationMs);
+    s_lastGitCmdTick.store(GetTickCount64());
+    if (!launched) {
+        res.exitCode = 9009;
+        res.output = L"Failed to execute git command.";
+        return res;
+    }
+    res.exitCode = static_cast<int>(exitCode);
+    res.output = GitUtf8ToWide(rawOut);
+    GitLogManager::Instance().LogCommand(L"git " + cmd, res.exitCode, res.output, durationMs);
+
+    if (res.exitCode != 0 && retryOnLock && res.output.find(L"index.lock") != std::wstring::npos) {
+        std::error_code ec;
+        std::filesystem::path lockPath = std::filesystem::path(NormalizeDirForGit(cleanWorkDir)) / ".git" / "index.lock";
+        if (std::filesystem::exists(lockPath, ec) && std::filesystem::remove(lockPath, ec)) {
+            return RunGitCmdWithInput(cmd, workDir, stdinUtf8, false);
+        }
+    }
+    return res;
+}
+
 GitCmdResult RunCliCmd(const std::wstring& fullCmd, const std::wstring& workDir, DWORD timeoutMs = 30000) {
     GitCmdResult res;
     std::wstring resolvedCmd = fullCmd;
@@ -5340,6 +5507,19 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 std::wstring parentDir = p.parent_path().wstring();
                 if (baseFileName.empty()) continue;
 
+                // 0. Unmerged merge conflict entry (UU, AA, DD, AU, UA, DU, UD)
+                if (phide::git::GitWorkflowEngine::IsUnmergedGitStatus(idxChar, wtChar)) {
+                    GitChangeItem conflictItem;
+                    conflictItem.path = filePath;
+                    conflictItem.fileName = baseFileName;
+                    conflictItem.relDir = parentDir;
+                    conflictItem.isStaged = false;
+                    conflictItem.isConflict = true;
+                    conflictItem.status = L"!";
+                    changes.push_back(std::move(conflictItem));
+                    continue;
+                }
+
                 // 1. Staged change in index
                 if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
                     GitChangeItem stagedItem;
@@ -5563,6 +5743,18 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         auto resRemotes = RunGitCmd(L"remote", dir);
         bool hasRemote = (resRemotes.exitCode == 0 && !TrimWideWhitespace(resRemotes.output).empty());
 
+        auto resStash = RunGitCmd(L"stash list", dir);
+        std::vector<GitStashUiItem> stashes;
+        if (resStash.exitCode == 0 && !resStash.output.empty()) {
+            auto parsed = phide::git::GitWorkflowEngine::ParseGitStashList(resStash.output);
+            stashes.reserve(parsed.size());
+            for (auto& se : parsed) {
+                GitStashUiItem uiItem;
+                uiItem.entry = std::move(se);
+                stashes.push_back(std::move(uiItem));
+            }
+        }
+
         int unpushedCount = 0;
         if (hasRemote) {
             auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
@@ -5603,6 +5795,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 commits[i].isUnpushed = (i < static_cast<size_t>(unpushedCount));
             }
             m_gitCommits = std::move(commits);
+            m_gitStashes = std::move(stashes);
             m_unpushedCommitsCount = unpushedCount;
             m_isGitLoading = false;
         }
@@ -6065,6 +6258,19 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                 std::wstring parentDir = p.parent_path().wstring();
                 if (baseFileName.empty()) continue;
 
+                // 0. Unmerged merge conflict entry (UU, AA, DD, AU, UA, DU, UD)
+                if (phide::git::GitWorkflowEngine::IsUnmergedGitStatus(idxChar, wtChar)) {
+                    GitChangeItem conflictItem;
+                    conflictItem.path = filePath;
+                    conflictItem.fileName = baseFileName;
+                    conflictItem.relDir = parentDir;
+                    conflictItem.isStaged = false;
+                    conflictItem.isConflict = true;
+                    conflictItem.status = L"!";
+                    changes.push_back(std::move(conflictItem));
+                    continue;
+                }
+
                 // 1. Staged change in index
                 if (idxChar != L' ' && idxChar != L'?' && idxChar != L'!') {
                     GitChangeItem stagedItem;
@@ -6219,6 +6425,18 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         // 4. Query remotes and unpushed commits count
         auto resRemotes = RunGitCmd(L"remote", dir);
         bool hasRemote = (resRemotes.exitCode == 0 && !TrimWideWhitespace(resRemotes.output).empty());
+
+        auto resStash = RunGitCmd(L"stash list", dir);
+        std::vector<GitStashUiItem> stashes;
+        if (resStash.exitCode == 0 && !resStash.output.empty()) {
+            auto parsed = phide::git::GitWorkflowEngine::ParseGitStashList(resStash.output);
+            stashes.reserve(parsed.size());
+            for (auto& se : parsed) {
+                GitStashUiItem uiItem;
+                uiItem.entry = std::move(se);
+                stashes.push_back(std::move(uiItem));
+            }
+        }
 
         int unpushedCount = 0;
         if (hasRemote) {
@@ -7170,10 +7388,11 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
         return;
     }
 
+    bool amendCommit = m_commitAmend;
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
-    std::thread([this, alive, workers, msg]() {
+    std::thread([this, alive, workers, msg, amendCommit]() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
@@ -7230,9 +7449,10 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
             }
         }
 
+        std::wstring amendFlag = amendCommit ? L" --amend" : L"";
         std::wstring commitCmd;
         if (wroteTmp) {
-            commitCmd = L"commit -F \"" + tmpMsgPath + L"\"";
+            commitCmd = L"commit" + amendFlag + L" -F \"" + tmpMsgPath + L"\"";
         } else {
             std::wstring escapedMsg;
             for (wchar_t c : msg) {
@@ -7240,7 +7460,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
                 else if (c == L'\r' || c == L'\n') escapedMsg += L" ";
                 else escapedMsg += c;
             }
-            commitCmd = L"commit -m \"" + escapedMsg + L"\"";
+            commitCmd = L"commit" + amendFlag + L" -m \"" + escapedMsg + L"\"";
         }
 
         auto resCommit = RunGitCmd(commitCmd, dir);
@@ -7261,6 +7481,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             m_commitMessage.clear();
+            m_commitAmend = false;
         }
         RefreshGitState(false);
         finish();
@@ -7417,10 +7638,14 @@ void DrawerPanel::FetchAllRemotesAsync() {
 }
 
 void DrawerPanel::StashChangesAsync() {
+    StashChangesWithMessageAsync(L"");
+}
+
+void DrawerPanel::StashChangesWithMessageAsync(const std::wstring& message) {
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
-    std::thread([this, alive, workers]() {
+    std::thread([this, alive, workers, message]() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
@@ -7431,12 +7656,309 @@ void DrawerPanel::StashChangesAsync() {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
                 std::wstring dir = NormalizeDirForGit(m_openFolderPath);
-                RunGitCmd(L"stash", dir);
+                std::wstring cleanMsg = TrimWideWhitespace(message);
+                GitCmdResult res;
+                if (cleanMsg.empty()) {
+                    res = RunGitCmd(L"stash push -u", dir);
+                } else {
+                    std::wstring esc;
+                    for (wchar_t c : cleanMsg) {
+                        if (c == L'"') esc += L"\\\"";
+                        else if (c != L'\r' && c != L'\n') esc.push_back(c);
+                    }
+                    res = RunGitCmd(L"stash push -u -m \"" + esc + L"\"", dir);
+                }
                 if (alive && alive->load()) {
                     RefreshGitState(false);
+                    ShowGitNotification(res.exitCode == 0 ? L"\u2713 Stashed working tree changes" : L"Stash failed");
                 }
             }
         } catch (...) {}
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::ApplyStashAsync(size_t stashIdx) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, stashIdx]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"stash apply stash@{" + std::to_wstring(stashIdx) + L"}", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Applied stash@{" + std::to_wstring(stashIdx) + L"}");
+                } else if (m_onGitError) {
+                    m_onGitError(L"git stash apply", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::PopStashAsync(size_t stashIdx) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, stashIdx]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"stash pop stash@{" + std::to_wstring(stashIdx) + L"}", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Popped stash@{" + std::to_wstring(stashIdx) + L"}");
+                } else if (m_onGitError) {
+                    m_onGitError(L"git stash pop", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::DropStashAsync(size_t stashIdx) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, stashIdx]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"stash drop stash@{" + std::to_wstring(stashIdx) + L"}", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                ShowGitNotification(res.exitCode == 0 ? (L"\u2713 Dropped stash@{" + std::to_wstring(stashIdx) + L"}") : L"Drop stash failed");
+            }
+        }
+        finish();
+    }).detach();
+}
+
+bool DrawerPanel::StageHunkPatch(const std::string& patchUtf8, bool reverse) {
+    if (patchUtf8.empty()) return false;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    if (dir.empty() || !IsLocalGitRepoRoot(dir)) return false;
+    std::wstring cmd = reverse
+        ? L"apply --cached -R --unidiff-zero --whitespace=nowarn -"
+        : L"apply --cached --unidiff-zero --whitespace=nowarn -";
+    auto res = RunGitCmdWithInput(cmd, dir, patchUtf8);
+    if (res.exitCode != 0 && m_onGitError) {
+        m_onGitError(L"git " + cmd, res.output, dir);
+    }
+    RefreshGitStatusOnly(false);
+    return res.exitCode == 0;
+}
+
+void DrawerPanel::StageHunkPatchAsync(const std::string& patchUtf8, bool reverse) {
+    if (patchUtf8.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, patchUtf8, reverse]() {
+        if (alive && alive->load()) {
+            bool ok = StageHunkPatch(patchUtf8, reverse);
+            if (ok) {
+                ShowGitNotification(reverse ? L"\u2713 Unstaged hunk" : L"\u2713 Staged hunk");
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
+bool DrawerPanel::CreateBranch(const std::wstring& branchName) {
+    std::wstring safeName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(branchName);
+    if (safeName.empty()) return false;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    auto res = RunGitCmd(L"checkout -b \"" + safeName + L"\"", dir);
+    if (res.exitCode != 0 && m_onGitError) m_onGitError(L"git checkout -b", res.output, dir);
+    RefreshGitState(false);
+    return res.exitCode == 0;
+}
+
+void DrawerPanel::CreateBranchAsync(const std::wstring& branchName) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, branchName]() {
+        if (alive && alive->load()) {
+            if (CreateBranch(branchName)) {
+                ShowGitNotification(L"\u2713 Switched to new branch '" + branchName + L"'");
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
+bool DrawerPanel::DeleteBranch(const std::wstring& branchName, bool force) {
+    std::wstring safeName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(branchName);
+    if (safeName.empty()) return false;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    auto res = RunGitCmd(std::wstring(force ? L"branch -D \"" : L"branch -d \"") + safeName + L"\"", dir);
+    if (res.exitCode != 0 && m_onGitError) m_onGitError(L"git branch -d", res.output, dir);
+    RefreshGitState(false);
+    return res.exitCode == 0;
+}
+
+void DrawerPanel::DeleteBranchAsync(const std::wstring& branchName, bool force) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, branchName, force]() {
+        if (alive && alive->load()) {
+            if (DeleteBranch(branchName, force)) {
+                ShowGitNotification(L"\u2713 Deleted branch '" + branchName + L"'");
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
+bool DrawerPanel::CreateTag(const std::wstring& tagName, const std::wstring& target) {
+    std::wstring safeName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(tagName);
+    if (safeName.empty()) return false;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    std::wstring cmd = L"tag \"" + safeName + L"\"";
+    if (!target.empty()) cmd += L" " + target;
+    auto res = RunGitCmd(cmd, dir);
+    if (res.exitCode != 0 && m_onGitError) m_onGitError(L"git tag", res.output, dir);
+    RefreshGitState(false);
+    return res.exitCode == 0;
+}
+
+void DrawerPanel::CreateTagAsync(const std::wstring& tagName, const std::wstring& target) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, tagName, target]() {
+        if (alive && alive->load()) {
+            if (CreateTag(tagName, target)) {
+                ShowGitNotification(L"\u2713 Created tag '" + tagName + L"'");
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
+bool DrawerPanel::DeleteTag(const std::wstring& tagName) {
+    std::wstring safeName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(tagName);
+    if (safeName.empty()) return false;
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    auto res = RunGitCmd(L"tag -d \"" + safeName + L"\"", dir);
+    if (res.exitCode != 0 && m_onGitError) m_onGitError(L"git tag -d", res.output, dir);
+    RefreshGitState(false);
+    return res.exitCode == 0;
+}
+
+void DrawerPanel::DeleteTagAsync(const std::wstring& tagName) {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, tagName]() {
+        if (alive && alive->load()) {
+            if (DeleteTag(tagName)) {
+                ShowGitNotification(L"\u2713 Deleted tag '" + tagName + L"'");
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
+void DrawerPanel::CherryPickCommitAsync(const std::wstring& commitHash) {
+    if (commitHash.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, commitHash]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"cherry-pick " + commitHash, dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Cherry-picked " + commitHash.substr(0, (std::min)(size_t(7), commitHash.size())));
+                } else if (m_onGitError) {
+                    m_onGitError(L"git cherry-pick", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::CheckoutCommitAsync(const std::wstring& commitHash) {
+    if (commitHash.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, commitHash]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"checkout " + commitHash, dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Checked out " + commitHash.substr(0, (std::min)(size_t(7), commitHash.size())));
+                } else if (m_onGitError) {
+                    m_onGitError(L"git checkout", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::RebaseBranchAsync(const std::wstring& targetBranch) {
+    std::wstring safeBranch = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(targetBranch);
+    if (safeBranch.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, safeBranch]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"rebase \"" + safeBranch + L"\"", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Rebased onto " + safeBranch);
+                } else if (m_onGitError) {
+                    m_onGitError(L"git rebase", res.output, dir);
+                }
+            }
+        }
         finish();
     }).detach();
 }
@@ -7748,6 +8270,22 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             DismissCommitCard();
             return true;
         }
+        if (m_commitCardCherryPickBounds.right > m_commitCardCherryPickBounds.left &&
+            pt.x >= m_commitCardCherryPickBounds.left && pt.x <= m_commitCardCherryPickBounds.right &&
+            pt.y >= m_commitCardCherryPickBounds.top && pt.y <= m_commitCardCherryPickBounds.bottom) {
+            std::wstring targetHash = m_commitCardHash;
+            DismissCommitCard();
+            CherryPickCommitAsync(targetHash);
+            return true;
+        }
+        if (m_commitCardCheckoutBounds.right > m_commitCardCheckoutBounds.left &&
+            pt.x >= m_commitCardCheckoutBounds.left && pt.x <= m_commitCardCheckoutBounds.right &&
+            pt.y >= m_commitCardCheckoutBounds.top && pt.y <= m_commitCardCheckoutBounds.bottom) {
+            std::wstring targetHash = m_commitCardHash;
+            DismissCommitCard();
+            CheckoutCommitAsync(targetHash);
+            return true;
+        }
         if (pt.x >= m_commitCardGitHubBounds.left && pt.x <= m_commitCardGitHubBounds.right &&
             pt.y >= m_commitCardGitHubBounds.top && pt.y <= m_commitCardGitHubBounds.bottom) {
             std::wstring repoBase = GetGitHubRepoUrl();
@@ -7823,6 +8361,24 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                         case 24: // Run Garbage Collection (git gc)
                             RunGarbageCollectionAsync();
                             break;
+                        case 30: // Stash Changes with Message...
+                            OpenGitPromptModal(GitPromptKind::StashMessage, L"Stash Changes (Optional Message)", L"");
+                            break;
+                        case 31: // Create Branch...
+                            OpenGitPromptModal(GitPromptKind::CreateBranch, L"Create & Checkout New Branch", L"");
+                            break;
+                        case 32: // Delete Branch...
+                            OpenGitPromptModal(GitPromptKind::DeleteBranch, L"Delete Local Branch", L"");
+                            break;
+                        case 33: // Create Tag...
+                            OpenGitPromptModal(GitPromptKind::CreateTag, L"Create Tag", L"v1.0.0");
+                            break;
+                        case 34: // Delete Tag...
+                            OpenGitPromptModal(GitPromptKind::DeleteTag, L"Delete Tag", L"");
+                            break;
+                        case 35: // Rebase Onto Branch...
+                            OpenGitPromptModal(GitPromptKind::RebaseOnto, L"Rebase Current Branch Onto...", L"main");
+                            break;
                         default:
                             break;
                     }
@@ -7890,6 +8446,19 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             ClearGitSelection();
         }
 
+        // Amend Last Commit toggle checkbox
+        if (m_gitAmendToggleBounds.right > m_gitAmendToggleBounds.left &&
+            pt.x >= m_gitAmendToggleBounds.left && pt.x <= m_gitAmendToggleBounds.right &&
+            pt.y >= m_gitAmendToggleBounds.top && pt.y <= m_gitAmendToggleBounds.bottom) {
+            m_commitAmend = !m_commitAmend;
+            if (m_commitAmend && TrimWideWhitespace(m_commitMessage).empty() && !m_gitCommits.empty()) {
+                m_commitMessage = m_gitCommits[0].message;
+                m_gitCaretPos = m_commitMessage.length();
+                ClearGitSelection();
+            }
+            return true;
+        }
+
         // Secondary Sync Changes Button (when both changes and unpushed commits exist)
         if (m_gitSyncBtnBounds.right > m_gitSyncBtnBounds.left &&
             pt.x >= m_gitSyncBtnBounds.left && pt.x <= m_gitSyncBtnBounds.right &&
@@ -7930,7 +8499,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 OpenPublishRepoModal();
                 return true;
             }
-            if (!m_gitChanges.empty()) {
+            if (!m_gitChanges.empty() || m_commitAmend) {
                 std::wstring trimmed = m_commitMessage;
                 size_t f = trimmed.find_first_not_of(L" \t\r\n");
                 if (f == std::wstring::npos) {
@@ -8005,6 +8574,48 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             pt.y >= m_gitChangesHeaderBounds.top && pt.y <= m_gitChangesHeaderBounds.bottom) {
             m_changesExpanded = !m_changesExpanded;
             return true;
+        }
+
+        // Stashes Section Header & Row Actions (Apply / Pop / Drop)
+        if (m_gitStashesHeaderBounds.right > m_gitStashesHeaderBounds.left &&
+            pt.x >= m_gitStashesHeaderBounds.left && pt.x <= m_gitStashesHeaderBounds.right &&
+            pt.y >= m_gitStashesHeaderBounds.top && pt.y <= m_gitStashesHeaderBounds.bottom) {
+            if (m_gitStashSaveBtnBounds.right > m_gitStashSaveBtnBounds.left &&
+                pt.x >= m_gitStashSaveBtnBounds.left && pt.x <= m_gitStashSaveBtnBounds.right &&
+                pt.y >= m_gitStashSaveBtnBounds.top && pt.y <= m_gitStashSaveBtnBounds.bottom) {
+                OpenGitPromptModal(GitPromptKind::StashMessage, L"Stash Changes (Optional Message)", L"");
+                return true;
+            }
+            m_stashesExpanded = !m_stashesExpanded;
+            return true;
+        }
+        if (m_stashesExpanded) {
+            for (size_t si = 0; si < m_gitStashes.size(); ++si) {
+                const auto& st = m_gitStashes[si];
+                if (st.applyBtnBounds.right > st.applyBtnBounds.left &&
+                    pt.x >= st.applyBtnBounds.left && pt.x <= st.applyBtnBounds.right &&
+                    pt.y >= st.applyBtnBounds.top && pt.y <= st.applyBtnBounds.bottom) {
+                    ApplyStashAsync(st.entry.index);
+                    return true;
+                }
+                if (st.popBtnBounds.right > st.popBtnBounds.left &&
+                    pt.x >= st.popBtnBounds.left && pt.x <= st.popBtnBounds.right &&
+                    pt.y >= st.popBtnBounds.top && pt.y <= st.popBtnBounds.bottom) {
+                    PopStashAsync(st.entry.index);
+                    return true;
+                }
+                if (st.dropBtnBounds.right > st.dropBtnBounds.left &&
+                    pt.x >= st.dropBtnBounds.left && pt.x <= st.dropBtnBounds.right &&
+                    pt.y >= st.dropBtnBounds.top && pt.y <= st.dropBtnBounds.bottom) {
+                    DropStashAsync(st.entry.index);
+                    return true;
+                }
+                if (st.bounds.right > st.bounds.left &&
+                    pt.x >= st.bounds.left && pt.x <= st.bounds.right &&
+                    pt.y >= st.bounds.top && pt.y <= st.bounds.bottom) {
+                    return true;
+                }
+            }
         }
 
         // File rows (staged & unstaged)
@@ -9046,6 +9657,9 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitHeaderMoreBounds = {};
         m_gitChangesHeaderBounds = {};
         m_gitStagedHeaderBounds = {};
+        m_gitStashesHeaderBounds = {};
+        m_gitStashSaveBtnBounds = {};
+        m_gitAmendToggleBounds = {};
         m_gitGraphHeaderBounds = {};
         m_gitMsgBoxBounds = {};
         m_gitCommitBtnBounds = {};
@@ -9053,6 +9667,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitSplitterBounds = {};
         m_commitCardBounds = {};
         m_commitCardGitHubBounds = {};
+        m_commitCardCherryPickBounds = {};
+        m_commitCardCheckoutBounds = {};
         m_commitCardOpenChangesBounds = {};
         return;
     }
@@ -9414,7 +10030,34 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
         pRT->PopAxisAlignedClip();
 
-        curY += msgH + config.ScaleF(6.0f);
+        curY += msgH + config.ScaleF(4.0f);
+
+        // Compact Amend Last Commit Checkbox Pill
+        {
+            float amendH = config.ScaleF(18.0f);
+            float cbSize = config.ScaleF(12.0f);
+            float cbLeft = railW + paddingX;
+            float cbTop = curY + (amendH - cbSize) * 0.5f;
+            m_gitAmendToggleBounds = D2D1::RectF(cbLeft, curY, cbLeft + config.ScaleF(132.0f), curY + amendH);
+            D2D1_RECT_F rcBox = D2D1::RectF(cbLeft, cbTop, cbLeft + cbSize, cbTop + cbSize);
+            D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(rcBox, 2.5f, 2.5f);
+            if (m_commitAmend) {
+                pRT->FillRoundedRectangle(rrcBox, theme.brushBrandAccent.Get());
+                pRT->DrawLine(D2D1::Point2F(cbLeft + 2.5f, cbTop + cbSize * 0.52f),
+                              D2D1::Point2F(cbLeft + cbSize * 0.44f, cbTop + cbSize - 3.0f),
+                              theme.brushTextWhite.Get(), 1.4f);
+                pRT->DrawLine(D2D1::Point2F(cbLeft + cbSize * 0.44f, cbTop + cbSize - 3.0f),
+                              D2D1::Point2F(cbLeft + cbSize - 2.2f, cbTop + 2.8f),
+                              theme.brushTextWhite.Get(), 1.4f);
+            } else {
+                pRT->DrawRoundedRectangle(rrcBox, theme.brushBorderSubtle.Get(), 1.0f);
+            }
+            D2D1_RECT_F rcAmendLbl = D2D1::RectF(cbLeft + cbSize + config.ScaleF(6.0f), curY, m_gitAmendToggleBounds.right, curY + amendH);
+            pRT->DrawText(L"Amend last commit", 17,
+                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                          rcAmendLbl, m_commitAmend ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get());
+            curY += amendH + config.ScaleF(4.0f);
+        }
 
         // Primary Commit / Sync Changes Button (Images 1 & 5)
         float commitH = config.ScaleF(28.0f);
@@ -9426,7 +10069,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         );
         D2D1_ROUNDED_RECT rrcCommit = D2D1::RoundedRect(m_gitCommitBtnBounds, 4.0f, 4.0f);
 
-        bool hasChanges = !m_gitChanges.empty();
+        bool hasChanges = !m_gitChanges.empty() || m_commitAmend;
         bool hasUnpushed = (m_unpushedCommitsCount > 0);
         bool isCommitting = m_isCommitting.load();
         bool isSyncing = m_isSyncing.load();
@@ -9467,7 +10110,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 m_gitCommitBtnBounds.right - config.ScaleF(26.0f),
                 curY + commitH
             );
-            DrawCenteredIconAndText(pRT, theme, config, rcCommitLabel, theme.brushTextWhite.Get(), DrawerActionIcon::Check, L"Commit");
+            DrawCenteredIconAndText(pRT, theme, config, rcCommitLabel, theme.brushTextWhite.Get(), DrawerActionIcon::Check, m_commitAmend ? L"Commit (Amend)" : L"Commit");
 
             // Vertical divider and chevron dropdown
             float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
@@ -9892,6 +10535,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                     pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
                                   theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
                                   rcNoCh, theme.brushTextMuted.Get());
+                    itemY += rowH;
                 } else {
                     std::vector<size_t> unstagedIndices;
                     unstagedIndices.reserve(m_gitChanges.size());
@@ -10080,6 +10724,81 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         float sbW = config.ScaleF(4.0f);
                         float sbX = railW + currentDrawerW - sbW - config.ScaleF(2.0f);
                         pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(sbX, thumbY, sbX + sbW, thumbY + thumbH), 2.0f, 2.0f), theme.brushBorderSubtle.Get());
+                    }
+                }
+            }
+
+            // =========================================================
+            // C. STASHES SECTION (Collapsible stash list w/ Apply, Pop, Drop)
+            // =========================================================
+            m_gitStashesHeaderBounds = {};
+            m_gitStashSaveBtnBounds = {};
+            if (m_showStashesSection && m_isGitRepo && (itemY + secH <= fileListBottomY + config.ScaleF(2.0f))) {
+                m_gitStashesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+                float scx = railW + config.ScaleF(14.0f);
+                float scy = itemY + secH / 2.0f;
+                if (m_stashesExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(scx - 3.5f, scy - 2.0f), D2D1::Point2F(scx, scy + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(scx, scy + 2.0f), D2D1::Point2F(scx + 3.5f, scy - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(scx - 2.0f, scy - 3.5f), D2D1::Point2F(scx + 2.0f, scy), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(scx + 2.0f, scy), D2D1::Point2F(scx - 2.0f, scy + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+                }
+
+                std::wstring stashTitle = L"Stashes (" + std::to_wstring(m_gitStashes.size()) + L")";
+                D2D1_RECT_F rcStashTitle = D2D1::RectF(scx + config.ScaleF(12.0f), itemY, railW + currentDrawerW - config.ScaleF(36.0f), itemY + secH);
+                pRT->DrawText(stashTitle.c_str(), static_cast<UINT32>(stashTitle.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcStashTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+                float sbW = config.ScaleF(18.0f);
+                m_gitStashSaveBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - sbW, itemY + 2.0f,
+                                                      railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
+                float spx = (m_gitStashSaveBtnBounds.left + m_gitStashSaveBtnBounds.right) * 0.5f;
+                float spy = (m_gitStashSaveBtnBounds.top + m_gitStashSaveBtnBounds.bottom) * 0.5f;
+                float spr = config.ScaleF(4.0f);
+                pRT->DrawLine(D2D1::Point2F(spx - spr, spy), D2D1::Point2F(spx + spr, spy), theme.brushTextSecondary.Get(), 1.3f);
+                pRT->DrawLine(D2D1::Point2F(spx, spy - spr), D2D1::Point2F(spx, spy + spr), theme.brushTextSecondary.Get(), 1.3f);
+
+                itemY += secH;
+                if (m_stashesExpanded) {
+                    for (auto& st : m_gitStashes) {
+                        if (itemY + rowH > fileListBottomY + config.ScaleF(2.0f)) {
+                            st.bounds = {};
+                            st.applyBtnBounds = {};
+                            st.popBtnBounds = {};
+                            st.dropBtnBounds = {};
+                            continue;
+                        }
+                        st.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
+                        float actionW = config.ScaleF(32.0f);
+                        float actionGap = config.ScaleF(3.0f);
+                        float rx = railW + currentDrawerW - config.ScaleF(8.0f);
+                        st.dropBtnBounds = D2D1::RectF(rx - config.ScaleF(20.0f), itemY + 3.0f, rx, itemY + rowH - 3.0f);
+                        rx = st.dropBtnBounds.left - actionGap;
+                        st.popBtnBounds = D2D1::RectF(rx - config.ScaleF(28.0f), itemY + 3.0f, rx, itemY + rowH - 3.0f);
+                        rx = st.popBtnBounds.left - actionGap;
+                        st.applyBtnBounds = D2D1::RectF(rx - actionW, itemY + 3.0f, rx, itemY + rowH - 3.0f);
+
+                        std::wstring stLabel = st.entry.refName + L": " + (st.entry.message.empty() ? st.entry.branch : st.entry.message);
+                        D2D1_RECT_F rcStLbl = D2D1::RectF(railW + config.ScaleF(16.0f), itemY, st.applyBtnBounds.left - config.ScaleF(4.0f), itemY + rowH);
+                        if (rcStLbl.right > rcStLbl.left) {
+                            pRT->DrawText(stLabel.c_str(), static_cast<UINT32>(stLabel.length()),
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          rcStLbl, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+
+                        auto drawMiniBtn = [&](const D2D1_RECT_F& r, const wchar_t* lbl) {
+                            pRT->FillRoundedRectangle(D2D1::RoundedRect(r, 2.5f, 2.5f), theme.brushItemHover.Get());
+                            pRT->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)),
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          r, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        };
+                        drawMiniBtn(st.applyBtnBounds, L"Apply");
+                        drawMiniBtn(st.popBtnBounds, L"Pop");
+                        drawMiniBtn(st.dropBtnBounds, L"\u00D7");
+
+                        itemY += rowH;
                     }
                 }
             }
@@ -10658,6 +11377,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 11, L"🔄 Discard All Changes" });
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 12, L"📦 Stash Changes" });
+            m_gitMenuItems.push_back({ 30, L"📦 Stash with Message..." });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 31, L"🌿 Create Branch..." });
+            m_gitMenuItems.push_back({ 32, L"✂  Delete Branch..." });
+            m_gitMenuItems.push_back({ 33, L"🏷  Create Tag..." });
+            m_gitMenuItems.push_back({ 34, L"🗑  Delete Tag..." });
+            m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
             m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
         } else if (m_activeGitMenu == GitMenuType::GraphMore) {
@@ -10667,6 +11393,10 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
             m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
             m_gitMenuItems.push_back({ 23, L"☁  Fetch All Remotes" });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 31, L"🌿 Create Branch..." });
+            m_gitMenuItems.push_back({ 33, L"🏷  Create Tag..." });
+            m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
         } else {
             // Header Views
             anchor = m_gitHeaderMoreBounds;
@@ -11444,6 +12174,113 @@ bool DrawerPanel::HandlePublishRepoChar(wchar_t ch) {
     if (ch >= 32 && ch != L'/' && ch != L'\\' && ch != L':' && ch != L'*' && ch != L'?' && ch != L'"' && ch != L'<' && ch != L'>' && ch != L'|') {
         if (ch == L' ') ch = L'-';
         m_publishRepoName.push_back(ch);
+    }
+    return true;
+}
+
+void DrawerPanel::OpenGitPromptModal(GitPromptKind kind, const std::wstring& title, const std::wstring& initial) {
+    m_isGitPromptModalOpen = true;
+    m_gitPromptKind = kind;
+    m_gitPromptTitle = title;
+    m_gitPromptValue = initial;
+}
+
+void DrawerPanel::ConfirmGitPromptModal() {
+    GitPromptKind kind = m_gitPromptKind;
+    std::wstring val = m_gitPromptValue;
+    m_isGitPromptModalOpen = false;
+    m_gitPromptKind = GitPromptKind::None;
+
+    switch (kind) {
+        case GitPromptKind::CreateBranch: CreateBranchAsync(val); break;
+        case GitPromptKind::DeleteBranch: DeleteBranchAsync(val, false); break;
+        case GitPromptKind::CreateTag: CreateTagAsync(val); break;
+        case GitPromptKind::DeleteTag: DeleteTagAsync(val); break;
+        case GitPromptKind::RebaseOnto: RebaseBranchAsync(val); break;
+        case GitPromptKind::StashMessage: StashChangesWithMessageAsync(val); break;
+        default: break;
+    }
+}
+
+void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientWidth, float clientHeight) {
+    if (!m_isGitPromptModalOpen || !pRT) return;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backdrop;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f), &backdrop);
+    if (backdrop) pRT->FillRectangle(D2D1::RectF(0, 0, clientWidth, clientHeight), backdrop.Get());
+
+    float mw = config.ScaleF(420.0f);
+    float mh = config.ScaleF(132.0f);
+    float left = (clientWidth - mw) * 0.5f;
+    float top = config.ScaleF(46.0f);
+    m_gitPromptModalBounds = D2D1::RectF(left, top, left + mw, top + mh);
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptModalBounds, 6.0f, 6.0f), theme.brushMenuBg.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_gitPromptModalBounds, 6.0f, 6.0f), theme.brushMenuBorder.Get(), 1.0f);
+
+    pRT->DrawText(m_gitPromptTitle.c_str(), static_cast<UINT32>(m_gitPromptTitle.size()),
+                  theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                  D2D1::RectF(left + 14.0f, top + 10.0f, left + mw - 14.0f, top + 34.0f),
+                  theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+    m_gitPromptInputBounds = D2D1::RectF(left + 14.0f, top + 40.0f, left + mw - 14.0f, top + 72.0f);
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushCanvasBg.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get(), 1.2f);
+    std::wstring dispVal = m_gitPromptValue + L"|";
+    pRT->DrawText(dispVal.c_str(), static_cast<UINT32>(dispVal.size()),
+                  theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                  D2D1::RectF(m_gitPromptInputBounds.left + 8.0f, m_gitPromptInputBounds.top + 6.0f, m_gitPromptInputBounds.right - 8.0f, m_gitPromptInputBounds.bottom - 4.0f),
+                  theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+    float bw = config.ScaleF(82.0f);
+    float bh = config.ScaleF(26.0f);
+    float by = top + mh - bh - 12.0f;
+    m_gitPromptConfirmBounds = D2D1::RectF(left + mw - bw - 14.0f, by, left + mw - 14.0f, by + bh);
+    m_gitPromptCancelBounds = D2D1::RectF(m_gitPromptConfirmBounds.left - bw - 8.0f, by, m_gitPromptConfirmBounds.left - 8.0f, by + bh);
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptCancelBounds, 4.0f, 4.0f), theme.brushHeaderBg.Get());
+    pRT->DrawText(L"Cancel", 6, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptCancelBounds, theme.brushTextSecondary.Get());
+
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptConfirmBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get());
+    pRT->DrawText(L"Apply", 5, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptConfirmBounds, theme.brushTextWhite.Get());
+}
+
+bool DrawerPanel::HandleGitPromptMouseDown(POINT pt) {
+    if (!m_isGitPromptModalOpen) return false;
+    auto hit = [&](const D2D1_RECT_F& r) {
+        return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+    };
+    if (hit(m_gitPromptConfirmBounds)) { ConfirmGitPromptModal(); return true; }
+    if (hit(m_gitPromptCancelBounds) || !hit(m_gitPromptModalBounds)) {
+        m_isGitPromptModalOpen = false;
+        m_gitPromptKind = GitPromptKind::None;
+        return true;
+    }
+    return true;
+}
+
+bool DrawerPanel::HandleGitPromptKeyDown(WPARAM wParam) {
+    if (!m_isGitPromptModalOpen) return false;
+    if (wParam == VK_ESCAPE) {
+        m_isGitPromptModalOpen = false;
+        m_gitPromptKind = GitPromptKind::None;
+        return true;
+    }
+    if (wParam == VK_RETURN) {
+        ConfirmGitPromptModal();
+        return true;
+    }
+    if (wParam == VK_BACK) {
+        if (!m_gitPromptValue.empty()) m_gitPromptValue.pop_back();
+        return true;
+    }
+    return true;
+}
+
+bool DrawerPanel::HandleGitPromptChar(wchar_t ch) {
+    if (!m_isGitPromptModalOpen) return false;
+    if (ch >= 32 && ch != L'\r' && ch != L'\n') {
+        m_gitPromptValue.push_back(ch);
     }
     return true;
 }
@@ -12510,21 +13347,43 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
             m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
         }
 
-        // Open Changes Button (Right-aligned, matching Image 5 & 3)
-        float chW = config.ScaleF(108.0f);
+        // Checkout & Cherry-Pick buttons left of Open Changes
+        float cpW = config.ScaleF(78.0f);
+        float coW = config.ScaleF(64.0f);
+        float chW = config.ScaleF(104.0f);
         float chLeft = cardLeft + cardW - chW - config.ScaleF(12.0f);
+        float cpLeft = chLeft - cpW - config.ScaleF(6.0f);
+        float coLeft = cpLeft - coW - config.ScaleF(6.0f);
+
+        m_commitCardCheckoutBounds = D2D1::RectF(coLeft, curCardY, coLeft + coW, curCardY + btnH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), brushCardBorder.Get(), 1.0f);
+        pRT->DrawText(L"Checkout", 8, pCardFmt,
+                      D2D1::RectF(coLeft + config.ScaleF(6.0f), curCardY + config.ScaleF(3.0f), coLeft + coW - 2.0f, curCardY + btnH),
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        m_commitCardCherryPickBounds = D2D1::RectF(cpLeft, curCardY, cpLeft + cpW, curCardY + btnH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), brushCardBorder.Get(), 1.0f);
+        pRT->DrawText(L"Cherry-Pick", 11, pCardFmt,
+                      D2D1::RectF(cpLeft + config.ScaleF(6.0f), curCardY + config.ScaleF(3.0f), cpLeft + cpW - 2.0f, curCardY + btnH),
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+        // Open Changes Button (Right-aligned, matching Image 5 & 3)
         m_commitCardOpenChangesBounds = D2D1::RectF(chLeft, curCardY, chLeft + chW, curCardY + btnH);
         D2D1_ROUNDED_RECT rrcOpenChanges = D2D1::RoundedRect(m_commitCardOpenChangesBounds, 3.5f, 3.5f);
         pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
         const wchar_t* ocText = L"Open Changes";
         pRT->DrawText(ocText, static_cast<UINT32>(wcslen(ocText)),
                       pCardFmt,
-                      D2D1::RectF(chLeft + config.ScaleF(10.0f), curCardY + config.ScaleF(3.0f), chLeft + chW, curCardY + btnH),
+                      D2D1::RectF(chLeft + config.ScaleF(8.0f), curCardY + config.ScaleF(3.0f), chLeft + chW, curCardY + btnH),
                       theme.brushTextWhite.Get());
     } else {
         m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardCherryPickBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardCheckoutBounds = D2D1::RectF(0, 0, 0, 0);
     }
 }
 

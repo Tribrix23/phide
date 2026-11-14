@@ -43,10 +43,13 @@
 #include "phide/ui/DatabaseSettingsModal.hpp"
 #include "phide/ui/TerminalPanel.hpp"
 #include "phide/ui/ExtensionsPanel.hpp"
+#include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/dev/DapClient.hpp"
 #include "phide/server/LiveServer.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/OpenDocument.hpp"
 #include "phide/workspace/WorkspaceManager.hpp"
+#include "phide/workspace/WorkspaceConfigEngine.hpp"
 #include "phide/workspace/ExplorerUndoManager.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/IntelliSenseEngine.hpp"
@@ -200,6 +203,7 @@ public:
      * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
+    void RefreshMergeConflicts(editor::OpenDocument& doc);
     void CalculateImportCosts(editor::OpenDocument& doc);
     void MarkDocumentModified(editor::OpenDocument* pDoc);
 
@@ -249,6 +253,8 @@ private:
      * Left pane is HEAD (read-only); right pane is working tree (editable).
      */
     void OpenDiffDocument(const std::wstring& relPath, bool isPreview = false);
+    void OpenCompareFilesDiffDocument(const std::wstring& leftPath, const std::wstring& rightPath);
+    void OpenThreeWayMergeDocument(const std::wstring& filePath);
 
     /**
      * @brief Opens a historical commit diff comparison between parent commit and target commit (Image 5).
@@ -689,6 +695,20 @@ private:
     /** @brief Computes absolute path to the user snippets configuration file in %APPDATA%\phide\snippets\snippets.json. */
     std::wstring GetSnippetsConfigPath() const;
 
+    /** @brief Computes absolute path to %APPDATA%\phide\user_keybindings.json. */
+    std::wstring GetKeybindingsConfigPath() const;
+
+    /** @brief Effective indentation size/mode combining global config and per-file .editorconfig. */
+    [[nodiscard]] int GetDocTabSize(const editor::OpenDocument* pDoc) const;
+    [[nodiscard]] bool GetDocInsertSpaces(const editor::OpenDocument* pDoc) const;
+
+    /** @brief Loads/saves .phide/settings.json and multi-root .phide-workspace state cleanly. */
+    void ApplyWorkspaceSettingsToConfig(const workspace::WorkspaceSettingsOverride& settings);
+    void LoadAndApplyWorkspaceSettings(const std::wstring& workspaceRoot);
+    void SaveCurrentWorkspaceSetting(const std::wstring& settingId);
+    void LoadUserKeybindings();
+    void SaveUserKeybindings() const;
+
     /** @brief Starts background filesystem watcher on active workspace for event-driven Git & tree reactivity. */
     void StartWorkspaceWatcher(const std::wstring& folderPath);
     void StopWorkspaceWatcher();
@@ -747,6 +767,9 @@ private:
 
     // Remote Explorer & Remote Window Modal helpers
     ui::RemoteWindowModal m_remoteModal;
+    ui::remote::RemoteWorkspaceSession m_activeRemoteSession;
+    std::wstring m_activeWorkspaceFilePath;
+    workspace::WorkspaceSettingsOverride m_workspaceSettings;
     ui::LucideIcons m_remoteStatusLucide;
     void SetupRemoteCallbacks();
     void SyncRemoteModalTargetCache();
@@ -788,6 +811,7 @@ private:
 
     // Background web server processes (PHP, Nginx, phpMyAdmin, MySQL)
     HANDLE m_hPhpServerProcess = nullptr;
+    std::wstring m_preferredPhpExe;
     HANDLE m_hNginxProcess = nullptr;
     HANDLE m_hPmaProcess = nullptr;
     HANDLE m_hMysqlProcess = nullptr;
@@ -902,6 +926,7 @@ private:
     // --- #19-#25 Multi-LSP & Language Intelligence Async Coordinators ---
     struct PendingLspHoverResult {
         uint64_t gen = 0;
+        int groupIdx = -1;
         std::wstring filePath;
         size_t line = 0;
         size_t col = 0;
@@ -938,8 +963,9 @@ private:
     POINT m_hoverDwellPt{};
 
     void PushCustomLspServerPaths();
+    [[nodiscard]] bool IsOverlayBlockingHover() const noexcept;
     void ScheduleHoverLookup(POINT clientPt);
-    void RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt);
+    void RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t col, POINT clientPt, int groupIdx = -1);
     void TriggerSignatureHelpAsync(editor::OpenDocument* pDoc, bool forceShow = false);
     void RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, bool isRefactorMode);
     void DoCodeActions();
@@ -988,6 +1014,29 @@ private:
     bool HandleProblemsPanelMouseWheel(POINT pt, short delta);
     bool HandleProblemsPanelChar(wchar_t ch);
     bool HandleProblemsPanelKeyDown(WPARAM vk);
+
+    // --- #26-#30 Dev Workflow Integration (DAP / Tasks DAG / Test Explorer / Conditional BPs) ---
+    bool m_bpPromptOpen = false;
+    size_t m_bpPromptLine0 = 0;
+    std::wstring m_bpPromptInput;
+    D2D1_RECT_F m_rcBpPromptBox{};
+    D2D1_RECT_F m_rcBpPromptSaveBtn{};
+    D2D1_RECT_F m_rcBpPromptCancelBtn{};
+    void OpenBreakpointConditionPrompt(size_t line0);
+    void SubmitBreakpointConditionPrompt();
+    void RenderBreakpointConditionPrompt(float clientW, float clientH);
+    [[nodiscard]] std::vector<phide::dev::DapBreakpoint> BuildDapBreakpointsForDoc(const editor::OpenDocument& doc) const;
+    bool ExecuteWorkspaceTaskByLabel(const std::wstring& taskLabel);
+    void LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg);
+    void RefreshWorkspaceTestsAsync();
+    void RunWorkspaceTestsAsync(const std::wstring& filterName = L"",
+                                phide::dev::TestFramework fw = phide::dev::TestFramework::Unknown,
+                                const std::wstring& filePath = L"");
+    void SyncTestResultsToOpenDocs(const std::vector<phide::dev::TestItem>& items);
+    std::atomic<bool> m_testsRunningAsync{false};
+    std::mutex m_testsMutex;
+    std::vector<phide::dev::TestItem> m_workspaceTests;
+    phide::dev::TestRunSummary m_workspaceTestSummary{};
 
     // Port Conflict Detector & Process Killer Modal
     struct PortConflictModalState {

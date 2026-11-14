@@ -601,6 +601,153 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
 
 // --- Buffer Implementation ---
 
+struct Buffer::MappedFileState {
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    HANDLE hMapping = nullptr;
+    const char* view = nullptr;
+    uint64_t fileSize = 0;
+    uint64_t contentStartOffset = 0;
+    bool isAsciiOrUtf8 = true;
+    std::vector<uint64_t> lineStarts;
+
+    ~MappedFileState() {
+        if (view) {
+            ::UnmapViewOfFile(view);
+            view = nullptr;
+        }
+        if (hMapping) {
+            ::CloseHandle(hMapping);
+            hMapping = nullptr;
+        }
+        if (hFile != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(hFile);
+            hFile = INVALID_HANDLE_VALUE;
+        }
+    }
+};
+
+void Buffer::CloseFileMapping() noexcept {
+    m_mappedState.reset();
+    m_mappedLineCount = 0;
+    m_mappedByteSize = 0;
+    m_mmapLineCache.clear();
+    m_mmapLruOrder.clear();
+}
+
+bool Buffer::LoadFromFileMapped(const std::wstring& path) {
+    CloseFileMapping();
+    HANDLE hFile = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    LARGE_INTEGER liSize{};
+    if (!::GetFileSizeEx(hFile, &liSize) || liSize.QuadPart <= 0) {
+        ::CloseHandle(hFile);
+        return false;
+    }
+    const uint64_t fileSize = static_cast<uint64_t>(liSize.QuadPart);
+    HANDLE hMapping = ::CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!hMapping) {
+        ::CloseHandle(hFile);
+        return false;
+    }
+    const char* view = static_cast<const char*>(::MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0));
+    if (!view) {
+        ::CloseHandle(hMapping);
+        ::CloseHandle(hFile);
+        return false;
+    }
+
+    auto state = std::make_shared<MappedFileState>();
+    state->hFile = hFile;
+    state->hMapping = hMapping;
+    state->view = view;
+    state->fileSize = fileSize;
+
+    // Detect UTF-8 BOM & line ending style from leading slice without copying
+    uint64_t startOff = 0;
+    TextEncoding enc = TextEncoding::UTF8;
+    if (fileSize >= 3 &&
+        static_cast<unsigned char>(view[0]) == 0xEF &&
+        static_cast<unsigned char>(view[1]) == 0xBB &&
+        static_cast<unsigned char>(view[2]) == 0xBF) {
+        startOff = 3;
+        enc = TextEncoding::UTF8_BOM;
+    }
+    state->contentStartOffset = startOff;
+
+    std::wstring lineEnding = L"\n";
+    uint64_t probeEnd = (std::min)(fileSize, static_cast<uint64_t>(65536));
+    for (uint64_t i = startOff; i + 1 < probeEnd; ++i) {
+        if (view[i] == '\r' && view[i + 1] == '\n') {
+            lineEnding = L"\r\n";
+            break;
+        }
+        if (view[i] == '\n') {
+            break;
+        }
+    }
+
+    state->lineStarts.reserve(static_cast<size_t>((std::min)(fileSize / 48 + 64, static_cast<uint64_t>(2000000))));
+    state->lineStarts.push_back(startOff);
+    uint64_t pos = startOff;
+    while (pos < fileSize) {
+        const void* found = ::memchr(view + pos, '\n', static_cast<size_t>(fileSize - pos));
+        if (!found) break;
+        uint64_t nlPos = static_cast<uint64_t>(static_cast<const char*>(found) - view);
+        if (nlPos + 1 < fileSize) {
+            state->lineStarts.push_back(nlPos + 1);
+        }
+        pos = nlPos + 1;
+    }
+
+    m_lines.clear();
+    m_lines.shrink_to_fit();
+    m_undoStack.clear();
+    m_redoStack.clear();
+    m_undoMemoryBytes = 0;
+    m_redoMemoryBytes = 0;
+    m_hasPendingUndo = false;
+    m_pendingUndoLines.clear();
+    m_tokenCache.clear();
+    m_lineEntryStates.clear();
+
+    m_mappedState = std::move(state);
+    m_mappedLineCount = m_mappedState->lineStarts.size();
+    m_mappedByteSize = fileSize;
+    m_filePath = path;
+    auto slashPos = path.find_last_of(L"\\/");
+    m_fileName = (slashPos != std::wstring::npos) ? path.substr(slashPos + 1) : path;
+    m_encoding = enc;
+    m_lineEnding = lineEnding;
+    m_hasTrailingNewline = (fileSize > startOff && view[fileSize - 1] == '\n');
+    m_cursor = { 0, 0 };
+    m_isModified = false;
+    ++m_version;
+    return true;
+}
+
+std::wstring Buffer::GetText() const {
+    if (m_mappedState) {
+        // Avoid massive heap spikes if called on huge mapped buffers; decode capped slice safely if small enough
+        const size_t total = m_mappedLineCount;
+        std::wstring res;
+        uint64_t reserveChars = (std::min)(m_mappedByteSize, static_cast<uint64_t>(32ULL * 1024ULL * 1024ULL));
+        res.reserve(static_cast<size_t>(reserveChars));
+        for (size_t i = 0; i < total; ++i) {
+            res += GetLine(i);
+            if (i + 1 < total) res += L"\n";
+        }
+        return res;
+    }
+    std::wstring res;
+    for (size_t i = 0; i < m_lines.size(); ++i) {
+        res += m_lines[i];
+        if (i + 1 < m_lines.size()) res += L"\n";
+    }
+    return res;
+}
+
 Buffer::Buffer() {
     m_lines = { L"" };
     m_cursor = { 0, 0 };
@@ -742,6 +889,7 @@ void Buffer::RunGarbageCollection() {
 }
 
 bool Buffer::Undo() {
+    if (m_mappedState) return false;
     s_undoCoalesceMap.erase(this);
     CommitPendingUndo();
     if (m_undoStack.empty()) return false;
@@ -782,6 +930,7 @@ bool Buffer::Undo() {
 }
 
 bool Buffer::Redo() {
+    if (m_mappedState) return false;
     s_undoCoalesceMap.erase(this);
     CommitPendingUndo();
     if (m_redoStack.empty()) return false;
@@ -822,7 +971,7 @@ bool Buffer::Redo() {
 }
 
 void Buffer::InsertText(const std::wstring& text) {
-    if (text.empty()) return;
+    if (m_mappedState || text.empty()) return;
     PushUndo();
     for (wchar_t ch : text) {
         if (ch == L'\r') continue;
@@ -849,6 +998,7 @@ void Buffer::InsertText(const std::wstring& text) {
 }
 
 void Buffer::LoadDefaultSample() {
+    CloseFileMapping();
     m_lines = {
         L"<?php",
         L"namespace Phide\\Core;",
@@ -876,6 +1026,48 @@ void Buffer::LoadDefaultSample() {
 
 const std::wstring& Buffer::GetLine(size_t lineIdx) const {
     static const std::wstring emptyLine;
+    if (m_mappedState) {
+        if (lineIdx >= m_mappedState->lineStarts.size()) {
+            return emptyLine;
+        }
+        auto it = m_mmapLineCache.find(lineIdx);
+        if (it != m_mmapLineCache.end()) {
+            return it->second;
+        }
+        uint64_t startOff = m_mappedState->lineStarts[lineIdx];
+        uint64_t endOff = (lineIdx + 1 < m_mappedState->lineStarts.size())
+            ? m_mappedState->lineStarts[lineIdx + 1]
+            : m_mappedState->fileSize;
+        const char* view = m_mappedState->view;
+        while (endOff > startOff && (view[endOff - 1] == '\n' || view[endOff - 1] == '\r')) {
+            --endOff;
+        }
+        std::wstring decoded;
+        uint64_t byteLen = endOff - startOff;
+        if (byteLen > 0) {
+            int lenInt = static_cast<int>((std::min)(byteLen, static_cast<uint64_t>(INT_MAX)));
+            int needed = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, view + startOff, lenInt, nullptr, 0);
+            UINT cp = CP_UTF8;
+            DWORD flags = MB_ERR_INVALID_CHARS;
+            if (needed <= 0) {
+                cp = CP_ACP;
+                flags = 0;
+                needed = ::MultiByteToWideChar(cp, flags, view + startOff, lenInt, nullptr, 0);
+            }
+            if (needed > 0) {
+                decoded.resize(static_cast<size_t>(needed));
+                ::MultiByteToWideChar(cp, flags, view + startOff, lenInt, &decoded[0], needed);
+            }
+        }
+        while (m_mmapLineCache.size() >= kMaxMmapLineCache && !m_mmapLruOrder.empty()) {
+            size_t oldest = m_mmapLruOrder.front();
+            m_mmapLruOrder.pop_front();
+            m_mmapLineCache.erase(oldest);
+        }
+        auto [insIt, inserted] = m_mmapLineCache.emplace(lineIdx, std::move(decoded));
+        m_mmapLruOrder.push_back(lineIdx);
+        return insIt->second;
+    }
     if (lineIdx < m_lines.size()) {
         return m_lines[lineIdx];
     }
@@ -883,6 +1075,12 @@ const std::wstring& Buffer::GetLine(size_t lineIdx) const {
 }
 
 std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wstring& ext) const {
+    if (m_mappedState) {
+        if (lineIdx >= m_mappedLineCount) return {};
+        const std::wstring& mappedLine = GetLine(lineIdx);
+        if (mappedLine.empty() || mappedLine.length() > 8192) return {};
+        return m_lexer.TokenizeLine(mappedLine, ext);
+    }
     if (lineIdx >= m_lines.size()) {
         return {};
     }
@@ -1028,15 +1226,17 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
 }
 
 void Buffer::SetCursor(size_t line, size_t col) {
-    if (m_lines.empty()) {
+    size_t total = GetLineCount();
+    if (total == 0) {
         m_cursor = { 0, 0 };
         return;
     }
-    m_cursor.line = (std::min)(line, m_lines.size() - 1);
-    m_cursor.col  = (std::min)(col, m_lines[m_cursor.line].length());
+    m_cursor.line = (std::min)(line, total - 1);
+    m_cursor.col  = (std::min)(col, GetLine(m_cursor.line).length());
 }
 
 void Buffer::InsertChar(wchar_t ch) {
+    if (m_mappedState) return;
     if (m_lines.empty()) m_lines.push_back(L"");
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
 
@@ -1081,6 +1281,7 @@ void Buffer::InsertChar(wchar_t ch) {
 }
 
 void Buffer::Backspace() {
+    if (m_mappedState) return;
     if (m_lines.empty()) return;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     if (m_cursor.col == 0 && m_cursor.line == 0) return;
@@ -1124,6 +1325,7 @@ void Buffer::Backspace() {
 }
 
 void Buffer::DeleteForward() {
+    if (m_mappedState) return;
     if (m_lines.empty()) return;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
 
@@ -1163,6 +1365,7 @@ void Buffer::DeleteForward() {
 }
 
 void Buffer::DeleteLine(size_t lineIdx) {
+    if (m_mappedState) return;
     if (m_lines.empty() || lineIdx >= m_lines.size()) return;
     PushUndo();
     if (m_lines.size() == 1) {
@@ -1182,6 +1385,7 @@ void Buffer::DeleteLine(size_t lineIdx) {
 }
 
 void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
+    if (m_mappedState) return;
     if (m_lines.empty()) return;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
@@ -1215,15 +1419,16 @@ void Buffer::MoveCursorLeft() {
         m_cursor.col--;
     } else if (m_cursor.line > 0) {
         m_cursor.line--;
-        m_cursor.col = m_lines[m_cursor.line].length();
+        m_cursor.col = GetLine(m_cursor.line).length();
     }
 }
 
 void Buffer::MoveCursorRight() {
-    if (m_cursor.line < m_lines.size()) {
-        if (m_cursor.col < m_lines[m_cursor.line].length()) {
+    size_t total = GetLineCount();
+    if (m_cursor.line < total) {
+        if (m_cursor.col < GetLine(m_cursor.line).length()) {
             m_cursor.col++;
-        } else if (m_cursor.line + 1 < m_lines.size()) {
+        } else if (m_cursor.line + 1 < total) {
             m_cursor.line++;
             m_cursor.col = 0;
         }
@@ -1233,22 +1438,26 @@ void Buffer::MoveCursorRight() {
 void Buffer::MoveCursorUp() {
     if (m_cursor.line > 0) {
         m_cursor.line--;
-        if (m_cursor.col > m_lines[m_cursor.line].length()) {
-            m_cursor.col = m_lines[m_cursor.line].length();
+        size_t len = GetLine(m_cursor.line).length();
+        if (m_cursor.col > len) {
+            m_cursor.col = len;
         }
     }
 }
 
 void Buffer::MoveCursorDown() {
-    if (m_cursor.line + 1 < m_lines.size()) {
+    size_t total = GetLineCount();
+    if (m_cursor.line + 1 < total) {
         m_cursor.line++;
-        if (m_cursor.col > m_lines[m_cursor.line].length()) {
-            m_cursor.col = m_lines[m_cursor.line].length();
+        size_t len = GetLine(m_cursor.line).length();
+        if (m_cursor.col > len) {
+            m_cursor.col = len;
         }
     }
 }
 
 void Buffer::Clear() {
+    CloseFileMapping();
     m_lines.clear();
     m_lines.push_back(L"");
     m_cursor = { 0, 0 };
@@ -1257,6 +1466,7 @@ void Buffer::Clear() {
 }
 
 void Buffer::SetLines(const std::vector<std::wstring>& lines) {
+    CloseFileMapping();
     m_lines = lines;
     if (m_lines.empty()) m_lines.push_back(L"");
     m_cursor = { 0, 0 };
@@ -1265,6 +1475,7 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
 }
 
 void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
+    if (m_mappedState) return;
     if (lineIdx < m_lines.size()) {
         m_lines[lineIdx] = text;
         m_tokenCache.erase(lineIdx);
@@ -1274,6 +1485,7 @@ void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
 }
 
 void Buffer::ReplaceLineSlice(size_t startLine, size_t removeCount, const std::vector<std::wstring>& insertLines) {
+    if (m_mappedState) return;
     if (startLine > m_lines.size()) startLine = m_lines.size();
     if (removeCount > m_lines.size() - startLine) removeCount = m_lines.size() - startLine;
     m_lines.erase(m_lines.begin() + startLine, m_lines.begin() + startLine + removeCount);
@@ -1285,6 +1497,7 @@ void Buffer::ReplaceLineSlice(size_t startLine, size_t removeCount, const std::v
 }
 
 void Buffer::SetText(const std::wstring& text) {
+    CloseFileMapping();
     m_lines.clear();
     std::wstring cleanText = text;
     if (!cleanText.empty() && cleanText[0] == 0xFEFF) {
@@ -1407,6 +1620,7 @@ std::wstring Buffer::GetLineEndingDisplayName() const {
 }
 
 bool Buffer::ConvertLineEnding(const std::wstring& le) {
+    if (m_mappedState) return false;
     std::wstring norm = le;
     if (norm == L"CRLF" || norm == L"crlf") norm = L"\r\n";
     else if (norm == L"LF" || norm == L"lf") norm = L"\n";
@@ -1420,6 +1634,7 @@ bool Buffer::ConvertLineEnding(const std::wstring& le) {
 }
 
 bool Buffer::ConvertEncoding(TextEncoding newEnc) {
+    if (m_mappedState) return false;
     if (m_encoding == newEnc) return false;
     m_encoding = newEnc;
     m_isModified = true;
@@ -1428,6 +1643,7 @@ bool Buffer::ConvertEncoding(TextEncoding newEnc) {
 }
 
 bool Buffer::ReopenWithEncoding(TextEncoding enc) {
+    if (m_mappedState) return false;
     if (m_filePath.empty()) {
         return ConvertEncoding(enc);
     }
@@ -1457,6 +1673,14 @@ bool Buffer::ReopenWithEncoding(TextEncoding enc) {
 }
 
 bool Buffer::LoadFromFile(const std::wstring& path) {
+    std::error_code mmapEc;
+    uint64_t mmapSize = std::filesystem::file_size(std::filesystem::path(path), mmapEc);
+    if (!mmapEc && mmapSize > kMemoryMappedThresholdBytes) {
+        if (LoadFromFileMapped(path)) {
+            return true;
+        }
+    }
+    CloseFileMapping();
     std::ifstream file(std::filesystem::path(path), std::ios::binary);
     if (!file.is_open()) return false;
 
@@ -1527,6 +1751,7 @@ bool Buffer::LoadFromFile(const std::wstring& path) {
 }
 
 bool Buffer::SaveToFile(const std::wstring& path) {
+    if (m_mappedState) return false;
     std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
     if (!file.is_open()) return false;
 
@@ -1603,7 +1828,7 @@ bool IsInsidePhpBlockAtLine(const std::vector<std::wstring>& lines, size_t targe
 } // namespace
 
 bool Buffer::MoveLinesUp(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine) {
-    if (m_lines.empty() || sLine == 0 || sLine > eLine || eLine >= m_lines.size()) return false;
+    if (m_mappedState || m_lines.empty() || sLine == 0 || sLine > eLine || eLine >= m_lines.size()) return false;
     PushUndo();
     std::wstring above = std::move(m_lines[sLine - 1]);
     for (size_t l = sLine; l <= eLine; ++l) {
@@ -1620,7 +1845,7 @@ bool Buffer::MoveLinesUp(size_t sLine, size_t eLine, size_t& outNewSLine, size_t
 }
 
 bool Buffer::MoveLinesDown(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine) {
-    if (m_lines.empty() || sLine > eLine || eLine + 1 >= m_lines.size()) return false;
+    if (m_mappedState || m_lines.empty() || sLine > eLine || eLine + 1 >= m_lines.size()) return false;
     PushUndo();
     std::wstring below = std::move(m_lines[eLine + 1]);
     for (size_t l = eLine + 1; l > sLine; --l) {
@@ -1637,7 +1862,7 @@ bool Buffer::MoveLinesDown(size_t sLine, size_t eLine, size_t& outNewSLine, size
 }
 
 bool Buffer::DuplicateLines(size_t sLine, size_t eLine, bool up, size_t& outNewSLine, size_t& outNewELine) {
-    if (m_lines.empty() || sLine > eLine || eLine >= m_lines.size()) return false;
+    if (m_mappedState || m_lines.empty() || sLine > eLine || eLine >= m_lines.size()) return false;
     PushUndo();
     std::vector<std::wstring> copySlice(m_lines.begin() + sLine, m_lines.begin() + eLine + 1);
     const size_t count = copySlice.size();
@@ -1658,7 +1883,7 @@ bool Buffer::DuplicateLines(size_t sLine, size_t eLine, bool up, size_t& outNewS
 }
 
 bool Buffer::JoinLines(size_t sLine, size_t eLine, bool hasSel, CursorPosition& outCursor) {
-    if (m_lines.empty()) return false;
+    if (m_mappedState || m_lines.empty()) return false;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
     if (!hasSel || sLine == eLine) {
@@ -1694,7 +1919,7 @@ bool Buffer::JoinLines(size_t sLine, size_t eLine, bool hasSel, CursorPosition& 
 }
 
 bool Buffer::SortLines(size_t sLine, size_t eLine, bool ascending, bool caseSensitive) {
-    if (m_lines.size() < 2) return false;
+    if (m_mappedState || m_lines.size() < 2) return false;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
     if (sLine >= eLine) return false;
@@ -1718,7 +1943,7 @@ bool Buffer::SortLines(size_t sLine, size_t eLine, bool ascending, bool caseSens
 }
 
 bool Buffer::TrimTrailingWhitespace(size_t sLine, size_t eLine) {
-    if (m_lines.empty()) return false;
+    if (m_mappedState || m_lines.empty()) return false;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
     if (sLine > eLine) return false;
@@ -1747,6 +1972,7 @@ bool Buffer::TrimTrailingWhitespace(size_t sLine, size_t eLine) {
 }
 
 void Buffer::ToggleLineComment() {
+    if (m_mappedState) return;
     if (m_lines.empty()) return;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     std::vector<int> deltas;
@@ -1762,6 +1988,7 @@ void Buffer::ToggleLineComment() {
 }
 
 bool Buffer::ToggleLineCommentRange(size_t sLine, size_t eLine, const std::wstring& explicitExt, std::vector<int>* outLineColDeltas) {
+    if (m_mappedState) return false;
     if (m_lines.empty()) return false;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
@@ -1879,6 +2106,7 @@ bool Buffer::ToggleLineCommentRange(size_t sLine, size_t eLine, const std::wstri
 }
 
 void Buffer::ToggleBlockComment() {
+    if (m_mappedState) return;
     if (m_lines.empty()) return;
     CursorPosition outA{}, outC{};
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
@@ -1888,6 +2116,7 @@ void Buffer::ToggleBlockComment() {
 
 bool Buffer::ToggleBlockCommentRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol, bool hasSel, const std::wstring& explicitExt,
                                      CursorPosition& outAnchor, CursorPosition& outCursor) {
+    if (m_mappedState) return false;
     if (m_lines.empty()) return false;
     if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
@@ -1981,7 +2210,7 @@ bool Buffer::ToggleBlockCommentRange(size_t sLine, size_t sCol, size_t eLine, si
 }
 
 bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
-    if (m_lines.empty()) return false;
+    if (m_mappedState || m_lines.empty()) return false;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col == 0 || line.empty()) return false;
@@ -2103,7 +2332,7 @@ bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
 }
 
 bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::wstring>& bodyLines, int targetCursorLineOffset, int targetCursorCol) {
-    if (m_lines.empty() || bodyLines.empty() || prefixLen == 0) return false;
+    if (m_mappedState || m_lines.empty() || bodyLines.empty() || prefixLen == 0) return false;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col < prefixLen) return false;
