@@ -344,6 +344,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 124) {
         goto run_test_124;
     }
+    if (targetTest == 125) {
+        goto run_test_125;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -18951,6 +18954,308 @@ run_test_124:
 
         if (targetTest == 124) {
             std::cout << "Target test 124 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_125:
+    // ---------------------------------------------------------
+    // [TEST 125] Multi-Cursor Same-Line Delta Fix, HTML/Pair Edits,
+    // Line Ops, Comments, Folding, Range Formatting, Column Selection,
+    // Encoding/EOL, Bracket Jump & Bounded Undo Memory
+    // ---------------------------------------------------------
+    if (targetTest == 0 || targetTest == 125) {
+        std::cout << "\n[TEST 125] Verifying Core Text Editing & Selection Suite (Features 1-9 & Multi-Cursor Fix)..." << std::endl;
+
+        // 125.1 Exact regression test for screenshot bug:
+        // <button class="btn btn-primary">Action</button> + Ctrl+D + typing "s" then "dsds"
+        {
+            phide::app::Window mcWin;
+            mcWin.OpenVirtualDocument(L"test_mc.html", L"<button class=\"btn btn-primary\">Action</button>");
+            auto* pDoc = mcWin.GetActiveDoc();
+            assert(pDoc != nullptr);
+
+            // Double click word "button" at col 2
+            pDoc->SelectWordAt(0, 2);
+            assert(pDoc->HasSelection());
+            assert(pDoc->GetSelectedText() == L"button");
+
+            // Ctrl+D (AddNextOccurrence) selects closing "button"
+            assert(pDoc->AddNextOccurrence());
+            assert(pDoc->secondarySelections.size() == 1);
+
+            // Type 's', then 'd','s','d','s' via Window::HandleMessage(WM_CHAR)
+            const wchar_t typed[] = L"sdsds";
+            for (int i = 0; i < 5; ++i) {
+                mcWin.HandleMessage(WM_CHAR, static_cast<WPARAM>(typed[i]), 0);
+            }
+            assert(pDoc->buffer.GetLine(0) == L"<sdsds class=\"btn btn-primary\">Action</sdsds>");
+            assert(pDoc->buffer.GetCursor().line == 0 && pDoc->buffer.GetCursor().col == 6);
+            assert(pDoc->secondarySelections.size() == 1);
+            assert(pDoc->secondarySelections[0].cursor.line == 0);
+            assert(pDoc->secondarySelections[0].cursor.col == 44);
+
+            // Backspace twice cleanly deletes inside both tags without leaking outside '>'
+            mcWin.HandleMessage(WM_KEYDOWN, VK_BACK, 0);
+            mcWin.HandleMessage(WM_KEYDOWN, VK_BACK, 0);
+            assert(pDoc->buffer.GetLine(0) == L"<sds class=\"btn btn-primary\">Action</sds>");
+            assert(pDoc->buffer.GetCursor().col == 4);
+            assert(pDoc->secondarySelections[0].cursor.col == 40);
+
+            // Typing '>' overtype/insertion & undo check
+            assert(pDoc->buffer.Undo());
+            assert(pDoc->buffer.Undo());
+            assert(pDoc->buffer.Undo());
+        }
+        std::cout << "  Passed: Multi-cursor HTML tag editing stays strictly inside </> with cumulative deltas" << std::endl;
+
+        // 125.2 Multi-cursor same-line auto-pairs, selection wrapping & pair backspace: "", '', {}, (), [], ``
+        {
+            const std::pair<wchar_t, wchar_t> pairs[] = {
+                { L'"', L'"' }, { L'\'', L'\'' }, { L'{', L'}' },
+                { L'(', L')' }, { L'[', L']' }, { L'`', L'`' }
+            };
+            for (const auto& pr : pairs) {
+                // Case A: Wrapping two selected words on the same line
+                phide::app::Window wWrap;
+                wWrap.OpenVirtualDocument(L"wrap.js", L"const a = val; const b = val;");
+                auto* dWrap = wWrap.GetActiveDoc();
+                assert(dWrap != nullptr);
+                dWrap->SelectWordAt(0, 11);
+                assert(dWrap->GetSelectedText() == L"val");
+                assert(dWrap->AddNextOccurrence());
+                wWrap.HandleMessage(WM_CHAR, static_cast<WPARAM>(pr.first), 0);
+                std::wstring expected = std::wstring(L"const a = ") + pr.first + L"val" + pr.second +
+                                        L"; const b = " + pr.first + L"val" + pr.second + L";";
+                assert(dWrap->buffer.GetLine(0) == expected);
+
+                // Case B: Empty cursors on the same line -> type opener (auto-close), type inner char, overtype closer, pair backspace
+                phide::app::Window wPair;
+                wPair.OpenVirtualDocument(L"pair.js", L"f(); g();");
+                auto* dPair = wPair.GetActiveDoc();
+                assert(dPair != nullptr);
+                dPair->buffer.SetCursor(0, 2); // Inside f(|)
+                dPair->AddCursorAt(0, 7);      // Inside g(|)
+                assert(dPair->secondarySelections.size() == 1);
+
+                wPair.HandleMessage(WM_CHAR, static_cast<WPARAM>(pr.first), 0);
+                std::wstring twoChars = std::wstring(1, pr.first) + std::wstring(1, pr.second);
+                assert(dPair->buffer.GetLine(0) == (L"f(" + twoChars + L"); g(" + twoChars + L");"));
+
+                wPair.HandleMessage(WM_CHAR, L'x', 0);
+                assert(dPair->buffer.GetLine(0) == (L"f(" + std::wstring(1, pr.first) + L"x" + std::wstring(1, pr.second) +
+                                                    L"); g(" + std::wstring(1, pr.first) + L"x" + std::wstring(1, pr.second) + L");"));
+
+                wPair.HandleMessage(WM_KEYDOWN, VK_BACK, 0);
+                assert(dPair->buffer.GetLine(0) == (L"f(" + twoChars + L"); g(" + twoChars + L");"));
+                // Backspace right between empty opener & closer deletes BOTH delimiters at all cursors on the same line
+                wPair.HandleMessage(WM_KEYDOWN, VK_BACK, 0);
+                assert(dPair->buffer.GetLine(0) == L"f(); g();");
+            }
+        }
+        std::cout << "  Passed: Multi-cursor same-line auto-pairs, selection wrapping & pair-backspace for \"\" '' {} () [] ``" << std::endl;
+
+        // 125.3 Multi-cursor Alt+Click, Ctrl+Alt+Up/Down, Ctrl+Shift+L, Copy/Cut/Paste, Arrows & Escape
+        {
+            phide::editor::OpenDocument doc;
+            doc.buffer.SetText(L"item alpha\nitem beta\nitem alpha\nend");
+            doc.SelectWordAt(0, 5); // "alpha"
+            assert(doc.SelectAllOccurrences());
+            assert(doc.secondarySelections.size() == 1);
+            assert(doc.GetMultiCursorCopyText() == L"alpha\r\nalpha");
+
+            // Replace both "alpha" via multi-cursor paste with 2 distinct lines
+            assert(doc.MultiCursorPaste(L"first\nsecond"));
+            assert(doc.buffer.GetLine(0) == L"item first");
+            assert(doc.buffer.GetLine(2) == L"item second");
+
+            // Vertical cursors & Cut
+            doc.ClearSelection();
+            doc.buffer.SetCursor(0, 0);
+            assert(doc.AddCursorVertical(false));
+            assert(doc.AddCursorVertical(false));
+            assert(doc.secondarySelections.size() == 2);
+            doc.MultiCursorTypeChar(L'#');
+            assert(doc.buffer.GetLine(0).rfind(L"#", 0) == 0);
+            assert(doc.buffer.GetLine(1).rfind(L"#", 0) == 0);
+            assert(doc.buffer.GetLine(2).rfind(L"#", 0) == 0);
+
+            doc.MultiCursorMove(VK_RIGHT, false);
+            assert(doc.buffer.GetCursor().col == 2);
+            assert(doc.secondarySelections[0].cursor.col == 2);
+            doc.ClearSelection();
+            assert(!doc.HasAnyMultiCursor());
+        }
+        std::cout << "  Passed: SelectAllOccurrences, vertical cursors, multi-cursor paste & arrow movement" << std::endl;
+
+        // 125.4 Line Manipulation + Mixed PHP/HTML Comment Toggling
+        {
+            phide::app::Window lineWin;
+            lineWin.OpenVirtualDocument(L"lines.php", L"<div>\n<span>hi</span>\n</div>\n<?php\n$b = 2;\n$a = 1;\n?>");
+            auto* d = lineWin.GetActiveDoc();
+            assert(d != nullptr);
+
+            // Move line up/down
+            d->buffer.SetCursor(4, 0); // "$b = 2;"
+            lineWin.ExecuteQuickOpenAction(L"cmd_move_line_down");
+            assert(d->buffer.GetLine(4) == L"$a = 1;");
+            assert(d->buffer.GetLine(5) == L"$b = 2;");
+            lineWin.ExecuteQuickOpenAction(L"cmd_move_line_up");
+            assert(d->buffer.GetLine(4) == L"$b = 2;");
+
+            // Sort lines ascending on selection
+            d->selAnchor = { 4, 0 };
+            d->selEnd = { 5, 7 };
+            d->hasSelection = true;
+            lineWin.ExecuteQuickOpenAction(L"cmd_sort_lines_asc");
+            assert(d->buffer.GetLine(4) == L"$a = 1;");
+            assert(d->buffer.GetLine(5) == L"$b = 2;");
+
+            // Duplicate & Join lines
+            d->ClearSelection();
+            d->buffer.SetCursor(4, 0);
+            lineWin.ExecuteQuickOpenAction(L"cmd_duplicate_line_down");
+            assert(d->buffer.GetLineCount() == 8);
+            assert(d->buffer.GetLine(4) == L"$a = 1;" && d->buffer.GetLine(5) == L"$a = 1;");
+            assert(d->buffer.GetCursor().line == 5);
+            d->buffer.SetCursor(4, 0);
+            lineWin.ExecuteQuickOpenAction(L"cmd_join_lines");
+            assert(d->buffer.GetLine(4) == L"$a = 1; $a = 1;");
+
+            // Mixed PHP/HTML comment toggling
+            d->ClearSelection();
+            d->buffer.SetCursor(1, 0); // HTML line <span>hi</span>
+            lineWin.ExecuteQuickOpenAction(L"cmd_toggle_line_comment");
+            assert(d->buffer.GetLine(1).find(L"<!--") != std::wstring::npos);
+            lineWin.ExecuteQuickOpenAction(L"cmd_toggle_line_comment");
+            assert(d->buffer.GetLine(1) == L"<span>hi</span>");
+
+            d->buffer.SetCursor(4, 0); // Inside <?php ... ?>
+            lineWin.ExecuteQuickOpenAction(L"cmd_toggle_line_comment");
+            assert(d->buffer.GetLine(4).find(L"// ") != std::wstring::npos);
+            lineWin.ExecuteQuickOpenAction(L"cmd_toggle_line_comment");
+            assert(d->buffer.GetLine(4) == L"$a = 1; $a = 1;");
+
+            // Trim trailing whitespace
+            d->buffer.SetLine(1, L"<span>hi</span>   \t ");
+            lineWin.ExecuteQuickOpenAction(L"cmd_trim_trailing_whitespace");
+            assert(d->buffer.GetLine(1) == L"<span>hi</span>");
+        }
+        std::cout << "  Passed: Line manipulation (move, sort, duplicate, join, trim) & mixed PHP/HTML comments" << std::endl;
+
+        // 125.5 Code Folding (#region, FoldAll, UnfoldAll, FoldLevel) & Bracket Jump
+        {
+            phide::editor::OpenDocument foldDoc;
+            foldDoc.buffer.SetText(
+                L"// #region Helpers\n"
+                L"function foo() {\n"
+                L"    if (true) {\n"
+                L"        return [1, 2];\n"
+                L"    }\n"
+                L"}\n"
+                L"// #endregion\n"
+                L"<section><button>Go</button></section>");
+            size_t endL = 0;
+            assert(phide::ui::EditorCanvas::GetFoldRange(foldDoc.buffer, 0, endL));
+            assert(endL == 6);
+
+            phide::ui::EditorCanvas::FoldAll(foldDoc);
+            assert(foldDoc.foldedLines.count(0) > 0 && foldDoc.foldedLines.count(1) > 0 && foldDoc.foldedLines.count(2) > 0);
+            phide::ui::EditorCanvas::FoldLevel(foldDoc, 2);
+            assert(foldDoc.foldedLines.count(0) == 0 && foldDoc.foldedLines.count(1) > 0);
+            phide::ui::EditorCanvas::UnfoldAll(foldDoc);
+            assert(foldDoc.foldedLines.empty());
+
+            size_t jL = 0, jC = 0;
+            assert(phide::ui::EditorCanvas::FindMatchingBracket(foldDoc.buffer, 1, 15, jL, jC));
+            assert(jL == 5 && jC == 0);
+            // HTML <button> -> </button> jump
+            assert(phide::ui::EditorCanvas::FindMatchingBracket(foldDoc.buffer, 7, 11, jL, jC));
+            assert(jL == 7 && jC == 21);
+        }
+        std::cout << "  Passed: Code folding (#region/levels/all) and bracket + HTML tag jump" << std::endl;
+
+        // 125.6 FormatRange Selection Formatting (preserving outside lines)
+        {
+            std::wstring raw = L"const untouchable = 1;\nfunction demo() {\nconst   messy=[1,2];\n}\nconst after = 2;";
+            std::wstring out = phide::editor::FormatEngine::FormatRange(raw, 1, 0, 3, 1, L".php", 4);
+            assert(out.find(L"const untouchable = 1;") == 0);
+            assert(out.find(L"const after = 2;") != std::wstring::npos);
+        }
+        std::cout << "  Passed: Range formatting preserves surrounding unselected lines" << std::endl;
+
+        // 125.7 Box / Column Rectangular Selection & Virtual Space
+        {
+            phide::editor::OpenDocument boxDoc;
+            boxDoc.buffer.SetText(L"a\nabc\nabcde");
+            boxDoc.SetColumnSelection(0, 3, 2, 3);
+            assert(boxDoc.isColumnSelection);
+            assert(boxDoc.secondarySelections.size() == 2);
+            boxDoc.MultiCursorTypeChar(L'X');
+            // Lines padded cleanly to col 3 when inserting at virtual column!
+            assert(boxDoc.buffer.GetLine(0) == L"a  X");
+            assert(boxDoc.buffer.GetLine(1) == L"abcX");
+            assert(boxDoc.buffer.GetLine(2) == L"abcXde");
+
+            boxDoc.SetColumnSelection(0, 0, 2, 3);
+            assert(boxDoc.GetMultiCursorCopyText() == L"a  \r\nabc\r\nabc");
+        }
+        std::cout << "  Passed: Box/Column rectangular selection, virtual space padding & rectangular copy" << std::endl;
+
+        // 125.8 Encoding (UTF-8, UTF-8 BOM, UTF-16 LE, UTF-16 BE, Windows-1252) & EOL Disk Roundtrips
+        {
+            std::filesystem::path tmpEncDir = std::filesystem::temp_directory_path() / L"phide_test_enc_125";
+            std::error_code ec125;
+            std::filesystem::create_directories(tmpEncDir, ec125);
+
+            const phide::editor::TextEncoding encs[] = {
+                phide::editor::TextEncoding::UTF8,
+                phide::editor::TextEncoding::UTF8_BOM,
+                phide::editor::TextEncoding::UTF16_LE,
+                phide::editor::TextEncoding::UTF16_BE,
+                phide::editor::TextEncoding::Windows1252
+            };
+            const std::wstring sample = L"caf\u00E9 = 1\nnext = 2";
+            for (int i = 0; i < 5; ++i) {
+                std::wstring fPath = (tmpEncDir / (L"enc_" + std::to_wstring(i) + L".txt")).wstring();
+                phide::editor::Buffer bSave;
+                bSave.SetText(sample);
+                bSave.ConvertLineEnding(i % 2 == 0 ? L"\n" : L"\r\n");
+                bSave.ConvertEncoding(encs[i]);
+                assert(bSave.SaveToFile(fPath));
+
+                phide::editor::Buffer bLoad;
+                assert(bLoad.LoadFromFile(fPath));
+                assert(bLoad.GetText() == sample);
+                assert(bLoad.GetLineEnding() == (i % 2 == 0 ? L"\n" : L"\r\n"));
+                assert(bLoad.GetLineEndingDisplayName() == (i % 2 == 0 ? L"LF" : L"CRLF"));
+                assert(bLoad.GetEncoding() == encs[i]);
+            }
+            std::filesystem::remove_all(tmpEncDir, ec125);
+        }
+        std::cout << "  Passed: Encoding (UTF-8/BOM/UTF-16LE/BE/Windows-1252) & CRLF/LF disk roundtrips" << std::endl;
+
+        // 125.9 Bounded Undo Memory Budget (diff-based UndoHunk avoids full-buffer OOM)
+        {
+            phide::editor::Buffer bigBuf;
+            std::wstring bigContent;
+            for (int i = 0; i < 2000; ++i) bigContent += L"const lineDataValue = 1234567890;\n";
+            bigBuf.SetText(bigContent);
+            for (int step = 0; step < 250; ++step) {
+                bigBuf.SetCursor(static_cast<size_t>(step % 100), 0);
+                bigBuf.PushUndo();
+                bigBuf.InsertChar(L'A' + (step % 26));
+            }
+            assert(bigBuf.GetUndoCount() <= 200);
+            assert(bigBuf.GetUndoMemoryBytes() <= 32ULL * 1024ULL * 1024ULL);
+            assert(bigBuf.Undo());
+            assert(bigBuf.Redo());
+        }
+        std::cout << "  Passed: Memory-bounded compact diff Undo/Redo stress verified (count <= 200, mem <= 32MB)" << std::endl;
+        std::cout << "  Passed: All [TEST 125] verification checks passed!" << std::endl;
+
+        if (targetTest == 125) {
+            std::cout << "Target test 125 finished successfully." << std::endl;
             return 0;
         }
     }

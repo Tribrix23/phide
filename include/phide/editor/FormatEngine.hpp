@@ -18,9 +18,30 @@ public:
      * @param src Unformatted source code string.
      * @param ext File extension including leading dot (e.g. L".php", L".html", L".css", L".json", L".js").
      * @param tabSize Number of spaces per indentation level (default: 4).
+     * @param filePath Optional real file path so Prettier/Clang-Format/Ruff discover local project configs.
+     * @param insertSpaces True for space indentation, false for tab indentation when no local config overrides it.
      * @return Formatted code string.
      */
-    static std::wstring FormatDocument(const std::wstring& src, const std::wstring& ext, int tabSize = 4);
+    static std::wstring FormatDocument(
+        const std::wstring& src,
+        const std::wstring& ext,
+        int tabSize = 4,
+        const std::wstring& filePath = L"",
+        bool insertSpaces = true);
+
+    /**
+     * @brief Formats only the selected line/column range within a document, preserving surrounding lines.
+     */
+    static std::wstring FormatRange(
+        const std::wstring& src,
+        size_t startLine,
+        size_t startCol,
+        size_t endLine,
+        size_t endCol,
+        const std::wstring& ext,
+        int tabSize = 4,
+        const std::wstring& filePath = L"",
+        bool insertSpaces = true);
 
     /**
      * @brief Formats HTML source code, including DOCTYPE, tags, attributes, and embedded CSS/JS.

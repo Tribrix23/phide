@@ -1598,9 +1598,152 @@ void EditorCanvas::DrawVenvTag(ID2D1RenderTarget* pRT, Theme& theme, const app::
     }
 }
 
+namespace {
+
+std::wstring TrimLeftLowerAscii(const std::wstring& s) {
+    size_t i = 0;
+    while (i < s.size() && (s[i] == L' ' || s[i] == L'\t' || s[i] == L'\r')) ++i;
+    std::wstring out;
+    out.reserve(s.size() - i);
+    for (; i < s.size(); ++i) {
+        out.push_back(static_cast<wchar_t>(towlower(s[i])));
+    }
+    return out;
+}
+
+bool MatchRegionKeyword(const std::wstring& line, const wchar_t* keyword) {
+    std::wstring t = TrimLeftLowerAscii(line);
+    if (t.empty()) return false;
+    // Strip common comment prefixes: //, #, /*, <!--
+    if (t.rfind(L"//", 0) == 0) t = t.substr(2);
+    else if (t.rfind(L"/*", 0) == 0) t = t.substr(2);
+    else if (t.rfind(L"<!--", 0) == 0) t = t.substr(4);
+    else if (t[0] == L'#') {
+        // Handle both "#region" and "# region"
+        if (t.rfind(keyword, 0) == 0) {
+            size_t klen = wcslen(keyword);
+            return (t.size() == klen || !iswalnum(t[klen]));
+        }
+        t = t.substr(1);
+    } else {
+        return false;
+    }
+    t = TrimLeftLowerAscii(t);
+    size_t klen = wcslen(keyword);
+    if (t.rfind(keyword, 0) != 0) return false;
+    return (t.size() == klen || !iswalnum(t[klen]));
+}
+
+bool IsHtmlVoidTagLower(const std::wstring& tagLower) {
+    return (tagLower == L"area" || tagLower == L"base" || tagLower == L"br" ||
+            tagLower == L"col" || tagLower == L"embed" || tagLower == L"hr" ||
+            tagLower == L"img" || tagLower == L"input" || tagLower == L"link" ||
+            tagLower == L"meta" || tagLower == L"param" || tagLower == L"source" ||
+            tagLower == L"track" || tagLower == L"wbr");
+}
+
+bool IsTagNameCharW(wchar_t ch) {
+    return iswalnum(ch) || ch == L'_' || ch == L'-' || ch == L':' || ch == L'.';
+}
+
+struct ParsedTagToken {
+    bool isClosing = false;
+    bool isSelfClosing = false;
+    size_t openBracketCol = 0;
+    size_t closeBracketCol = 0;
+    size_t nameCol = 0;
+    size_t nameLen = 0;
+    std::wstring nameLower;
+};
+
+bool ParseHtmlTagAtLine(const std::wstring& lineStr, size_t openBracketCol, ParsedTagToken& out) {
+    if (openBracketCol >= lineStr.size() || lineStr[openBracketCol] != L'<') return false;
+    size_t n = lineStr.size();
+    size_t pos = openBracketCol + 1;
+    if (pos >= n) return false;
+    if (lineStr[pos] == L'!' || lineStr[pos] == L'?') return false;
+
+    bool isClosing = false;
+    if (lineStr[pos] == L'/') {
+        isClosing = true;
+        ++pos;
+    }
+    if (pos >= n || (!iswalpha(lineStr[pos]) && lineStr[pos] != L'_')) return false;
+
+    size_t nameStart = pos;
+    while (pos < n && IsTagNameCharW(lineStr[pos])) ++pos;
+    size_t nameEnd = pos;
+    if (nameEnd <= nameStart) return false;
+
+    // Locate closing '>' respecting quoted attributes on the same line
+    bool inStr = false;
+    wchar_t strCh = 0;
+    size_t closeCol = std::wstring::npos;
+    for (size_t k = nameEnd; k < n; ++k) {
+        wchar_t c = lineStr[k];
+        if (inStr) {
+            if (c == strCh) inStr = false;
+            continue;
+        }
+        if (c == L'"' || c == L'\'') {
+            inStr = true;
+            strCh = c;
+            continue;
+        }
+        if (c == L'<') break;
+        if (c == L'>') {
+            closeCol = k;
+            break;
+        }
+    }
+    if (closeCol == std::wstring::npos) return false;
+
+    bool isSelfClosing = false;
+    if (!isClosing && closeCol > nameEnd) {
+        size_t back = closeCol - 1;
+        while (back > nameEnd && (lineStr[back] == L' ' || lineStr[back] == L'\t')) --back;
+        if (lineStr[back] == L'/') isSelfClosing = true;
+    }
+
+    std::wstring nameLower;
+    nameLower.reserve(nameEnd - nameStart);
+    for (size_t k = nameStart; k < nameEnd; ++k) {
+        nameLower.push_back(static_cast<wchar_t>(towlower(lineStr[k])));
+    }
+
+    out.isClosing = isClosing;
+    out.isSelfClosing = isSelfClosing || (!isClosing && IsHtmlVoidTagLower(nameLower));
+    out.openBracketCol = openBracketCol;
+    out.closeBracketCol = closeCol;
+    out.nameCol = nameStart;
+    out.nameLen = nameEnd - nameStart;
+    out.nameLower = std::move(nameLower);
+    return true;
+}
+
+} // namespace
+
 bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine) {
     if (startLine >= buffer.GetLineCount()) return false;
     const std::wstring& line = buffer.GetLine(startLine);
+
+    // 0. Explicit #region / #endregion markers
+    if (MatchRegionKeyword(line, L"#region")) {
+        int regionDepth = 1;
+        for (size_t l = startLine + 1; l < buffer.GetLineCount(); ++l) {
+            const std::wstring& nextLine = buffer.GetLine(l);
+            if (MatchRegionKeyword(nextLine, L"#region")) {
+                ++regionDepth;
+            } else if (MatchRegionKeyword(nextLine, L"#endregion")) {
+                --regionDepth;
+                if (regionDepth == 0) {
+                    outEndLine = l;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     // 1. Multiline comment /* or /** (Image 2 & 3)
     size_t commentStart = line.find(L"/*");
@@ -1665,6 +1808,192 @@ bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, 
             outEndLine = lastIndented;
             return true;
         }
+    }
+
+    return false;
+}
+
+void EditorCanvas::FoldAll(editor::OpenDocument& doc) {
+    const size_t total = doc.buffer.GetLineCount();
+    for (size_t l = 0; l < total; ++l) {
+        size_t endLine = 0;
+        if (GetFoldRange(doc.buffer, l, endLine) && endLine > l) {
+            doc.foldedLines.insert(l);
+        }
+    }
+}
+
+void EditorCanvas::UnfoldAll(editor::OpenDocument& doc) {
+    doc.foldedLines.clear();
+}
+
+void EditorCanvas::FoldLevel(editor::OpenDocument& doc, int level) {
+    if (level <= 0) {
+        UnfoldAll(doc);
+        return;
+    }
+    doc.foldedLines.clear();
+    const size_t total = doc.buffer.GetLineCount();
+    int blockDepth = 0;
+    for (size_t l = 0; l < total; ++l) {
+        const std::wstring& ln = doc.buffer.GetLine(l);
+        if (MatchRegionKeyword(ln, L"#endregion")) {
+            if (blockDepth > 0) --blockDepth;
+        }
+        size_t endLine = 0;
+        bool foldable = GetFoldRange(doc.buffer, l, endLine) && endLine > l;
+        if (foldable && (blockDepth + 1) >= level) {
+            doc.foldedLines.insert(l);
+        }
+        if (MatchRegionKeyword(ln, L"#region")) {
+            ++blockDepth;
+        } else {
+            for (wchar_t ch : ln) {
+                if (ch == L'{') ++blockDepth;
+                else if (ch == L'}' && blockDepth > 0) --blockDepth;
+            }
+        }
+    }
+}
+
+bool EditorCanvas::FindMatchingHtmlTag(
+    const editor::Buffer& buffer, size_t line, size_t col,
+    size_t& outOpenLine, size_t& outOpenCol, size_t& outOpenLen,
+    size_t& outCloseLine, size_t& outCloseCol, size_t& outCloseLen,
+    bool& outInClosingTag)
+{
+    if (line >= buffer.GetLineCount()) return false;
+    const std::wstring& curLine = buffer.GetLine(line);
+    if (curLine.empty()) return false;
+
+    size_t probe = (std::min)(col, curLine.size());
+    size_t openBracket = std::wstring::npos;
+    for (size_t pos = probe; pos > 0; --pos) {
+        wchar_t ch = curLine[pos - 1];
+        if (ch == L'<') {
+            openBracket = pos - 1;
+            break;
+        }
+        if (ch == L'>' && pos < probe) break;
+    }
+    if (openBracket == std::wstring::npos && probe < curLine.size() && curLine[probe] == L'<') {
+        openBracket = probe;
+    }
+    if (openBracket == std::wstring::npos) return false;
+
+    ParsedTagToken curTag;
+    if (!ParseHtmlTagAtLine(curLine, openBracket, curTag)) return false;
+    if (probe > curTag.closeBracketCol + 1) return false;
+    if (curTag.isSelfClosing && !curTag.isClosing) return false;
+
+    constexpr size_t kMaxTagScanLines = 2000;
+    const size_t totalLines = buffer.GetLineCount();
+
+    if (!curTag.isClosing) {
+        int depth = 1;
+        size_t maxLine = (std::min)(totalLines, line + kMaxTagScanLines);
+        for (size_t l = line; l < maxLine; ++l) {
+            const std::wstring& scan = buffer.GetLine(l);
+            size_t searchFrom = (l == line) ? (curTag.closeBracketCol + 1) : 0;
+            size_t pos = searchFrom;
+            while (pos < scan.size()) {
+                size_t lt = scan.find(L'<', pos);
+                if (lt == std::wstring::npos) break;
+                ParsedTagToken tok;
+                if (ParseHtmlTagAtLine(scan, lt, tok) && tok.nameLower == curTag.nameLower) {
+                    if (!tok.isClosing && !tok.isSelfClosing) {
+                        ++depth;
+                    } else if (tok.isClosing) {
+                        --depth;
+                        if (depth == 0) {
+                            outOpenLine = line;
+                            outOpenCol = curTag.nameCol;
+                            outOpenLen = curTag.nameLen;
+                            outCloseLine = l;
+                            outCloseCol = tok.nameCol;
+                            outCloseLen = tok.nameLen;
+                            outInClosingTag = false;
+                            return true;
+                        }
+                    }
+                    pos = tok.closeBracketCol + 1;
+                } else {
+                    pos = lt + 1;
+                }
+            }
+        }
+    } else {
+        int depth = 1;
+        size_t minLine = (line > kMaxTagScanLines) ? (line - kMaxTagScanLines) : 0;
+        for (size_t l = line + 1; l > minLine; --l) {
+            size_t lineIdx = l - 1;
+            const std::wstring& scan = buffer.GetLine(lineIdx);
+            size_t limit = (lineIdx == line) ? curTag.openBracketCol : scan.size();
+            std::vector<ParsedTagToken> lineTags;
+            size_t pos = 0;
+            while (pos < limit) {
+                size_t lt = scan.find(L'<', pos);
+                if (lt == std::wstring::npos || lt >= limit) break;
+                ParsedTagToken tok;
+                if (ParseHtmlTagAtLine(scan, lt, tok) && tok.nameLower == curTag.nameLower) {
+                    lineTags.push_back(std::move(tok));
+                    pos = lineTags.back().closeBracketCol + 1;
+                } else {
+                    pos = lt + 1;
+                }
+            }
+            for (auto it = lineTags.rbegin(); it != lineTags.rend(); ++it) {
+                if (it->isClosing) {
+                    ++depth;
+                } else if (!it->isSelfClosing) {
+                    --depth;
+                    if (depth == 0) {
+                        outOpenLine = lineIdx;
+                        outOpenCol = it->nameCol;
+                        outOpenLen = it->nameLen;
+                        outCloseLine = line;
+                        outCloseCol = curTag.nameCol;
+                        outCloseLen = curTag.nameLen;
+                        outInClosingTag = true;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+bool EditorCanvas::FindMatchingBracket(const editor::Buffer& buffer, size_t line, size_t col,
+                                       size_t& outLine, size_t& outCol) {
+    if (line >= buffer.GetLineCount()) return false;
+    auto analysis = editor::BracketPairAnalyzer::Analyze(buffer, line, col);
+    for (const auto& pair : analysis.pairs) {
+        if (pair.openLine == line && (pair.openCol == col || (col > 0 && pair.openCol + 1 == col))) {
+            outLine = pair.closeLine;
+            outCol = pair.closeCol;
+            return true;
+        }
+        if (pair.closeLine == line && (pair.closeCol == col || (col > 0 && pair.closeCol + 1 == col))) {
+            outLine = pair.openLine;
+            outCol = pair.openCol;
+            return true;
+        }
+    }
+
+    // Fallback: jump between PHP <?php / ?> delimiters or HTML <tag> / </tag>
+    size_t openL = 0, openC = 0, openLen = 0, closeL = 0, closeC = 0, closeLen = 0;
+    bool inClose = false;
+    if (FindMatchingHtmlTag(buffer, line, col, openL, openC, openLen, closeL, closeC, closeLen, inClose)) {
+        if (inClose) {
+            outLine = openL;
+            outCol = openC;
+        } else {
+            outLine = closeL;
+            outCol = closeC;
+        }
+        return true;
     }
 
     return false;
@@ -2428,6 +2757,76 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
+    size_t htmlOpenL = 0, htmlOpenC = 0, htmlOpenLen = 0;
+    size_t htmlCloseL = 0, htmlCloseC = 0, htmlCloseLen = 0;
+    bool htmlInClose = false;
+    bool hasMatchedHtmlTag = false;
+    if (cursor.line < buffer.GetLineCount() && buffer.GetLine(cursor.line).find(L'<') != std::wstring::npos) {
+        hasMatchedHtmlTag = FindMatchingHtmlTag(buffer, cursor.line, cursor.col,
+                                                htmlOpenL, htmlOpenC, htmlOpenLen,
+                                                htmlCloseL, htmlCloseC, htmlCloseLen, htmlInClose);
+    }
+
+    bool hasMatchedPhpTag = false;
+    size_t phpOpenL = 0, phpOpenC = 0, phpOpenLen = 0;
+    size_t phpCloseL = 0, phpCloseC = 0;
+    if (cursor.line < buffer.GetLineCount()) {
+        const auto& cLn = buffer.GetLine(cursor.line);
+        size_t pOpen = cLn.find(L"<?");
+        size_t pClose = cLn.find(L"?>");
+        bool onPhpOpen = (pOpen != std::wstring::npos && cursor.col >= pOpen && cursor.col <= pOpen + 5);
+        bool onPhpClose = (pClose != std::wstring::npos && cursor.col >= pClose && cursor.col <= pClose + 2);
+        if (onPhpOpen) {
+            phpOpenLen = (cLn.compare(pOpen, 5, L"<?php") == 0) ? 5 : ((cLn.compare(pOpen, 3, L"<?=") == 0) ? 3 : 2);
+            phpOpenL = cursor.line;
+            phpOpenC = pOpen;
+            size_t maxL = (std::min)(buffer.GetLineCount(), cursor.line + 1000);
+            for (size_t l = cursor.line; l < maxL; ++l) {
+                size_t searchFrom = (l == cursor.line) ? (pOpen + phpOpenLen) : 0;
+                size_t f = buffer.GetLine(l).find(L"?>", searchFrom);
+                if (f != std::wstring::npos) {
+                    phpCloseL = l;
+                    phpCloseC = f;
+                    hasMatchedPhpTag = true;
+                    break;
+                }
+            }
+        } else if (onPhpClose) {
+            phpCloseL = cursor.line;
+            phpCloseC = pClose;
+            size_t minL = (cursor.line > 1000) ? (cursor.line - 1000) : 0;
+            for (size_t l = cursor.line + 1; l > minL; --l) {
+                size_t li = l - 1;
+                size_t limit = (li == cursor.line) ? pClose : buffer.GetLine(li).size();
+                size_t f = buffer.GetLine(li).rfind(L"<?", limit > 0 ? limit - 1 : 0);
+                if (f != std::wstring::npos && f < limit) {
+                    phpOpenL = li;
+                    phpOpenC = f;
+                    phpOpenLen = (buffer.GetLine(li).compare(f, 5, L"<?php") == 0) ? 5
+                               : ((buffer.GetLine(li).compare(f, 3, L"<?=") == 0) ? 3 : 2);
+                    hasMatchedPhpTag = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> scopeGuideBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.65f, 0.70f, 0.78f, 0.14f) : D2D1::ColorF(0.25f, 0.28f, 0.35f, 0.14f),
+        &scopeGuideBrush);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> htmlMatchFillBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> htmlMatchBorderBrush;
+    if (hasMatchedHtmlTag || hasMatchedPhpTag) {
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.35f, 0.65f, 0.95f, 0.18f) : D2D1::ColorF(0.20f, 0.50f, 0.85f, 0.16f),
+            &htmlMatchFillBrush);
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(0.45f, 0.75f, 1.0f, 0.55f) : D2D1::ColorF(0.20f, 0.50f, 0.85f, 0.55f),
+            &htmlMatchBorderBrush);
+    }
+
     size_t startV = doc.scrollLine;
     size_t endV = (std::min)(visualLines.size(), startV + visibleCount + 2);
     m_activeCodeLensActions.clear();
@@ -2700,6 +3099,81 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         auto getColVisualX = [&](size_t col) -> float {
             return codeLeft - scrollX + GetColumnVisualOffset(lineStr, lineColors, col, charW, swatchSpan, config.tabSize);
         };
+        auto getVirtualColVisualX = [&](size_t col) -> float {
+            if (col <= lineStr.length()) return getColVisualX(col);
+            float baseEnd = getColVisualX(lineStr.length());
+            return baseEnd + static_cast<float>(col - lineStr.length()) * charW;
+        };
+
+        // Indentation / Scope Guide Lines across visible code lines
+        if (scopeGuideBrush && charW > 0.0f) {
+            const size_t safeTab = static_cast<size_t>((std::max)(1, config.tabSize));
+            auto countVisualLeadCols = [&](const std::wstring& s) -> size_t {
+                size_t cols = 0;
+                for (wchar_t ch : s) {
+                    if (ch == L' ') ++cols;
+                    else if (ch == L'\t') cols += safeTab - (cols % safeTab);
+                    else break;
+                }
+                return cols;
+            };
+            bool isBlankLine = (lineStr.find_first_not_of(L" \t\r\n") == std::wstring::npos);
+            size_t guideLimitCols = 0;
+            if (!isBlankLine) {
+                guideLimitCols = countVisualLeadCols(lineStr);
+            } else {
+                size_t prevLead = 0, nextLead = 0;
+                for (size_t back = 1; back <= 8 && vl.bufferLine >= back; ++back) {
+                    const auto& pl = buffer.GetLine(vl.bufferLine - back);
+                    if (pl.find_first_not_of(L" \t\r\n") != std::wstring::npos) {
+                        prevLead = countVisualLeadCols(pl);
+                        break;
+                    }
+                }
+                for (size_t fwd = 1; fwd <= 8 && vl.bufferLine + fwd < buffer.GetLineCount(); ++fwd) {
+                    const auto& nl = buffer.GetLine(vl.bufferLine + fwd);
+                    if (nl.find_first_not_of(L" \t\r\n") != std::wstring::npos) {
+                        nextLead = countVisualLeadCols(nl);
+                        break;
+                    }
+                }
+                guideLimitCols = (std::min)(prevLead, nextLead);
+            }
+            for (size_t step = safeTab; step < guideLimitCols; step += safeTab) {
+                float gx = codeLeft - scrollX + static_cast<float>(step) * charW;
+                pRT->DrawLine(D2D1::Point2F(gx, lineY), D2D1::Point2F(gx, lineY + lineH), scopeGuideBrush.Get(), 1.0f);
+            }
+        }
+
+        // Matching HTML / PHP Block Delimiter Highlight
+        if (hasMatchedHtmlTag && htmlMatchFillBrush) {
+            auto drawTagHighlight = [&](size_t colStart, size_t len) {
+                float hx1 = getColVisualX(colStart) - config.ScaleF(1.0f);
+                float hx2 = getColVisualX(colStart + len) + config.ScaleF(1.0f);
+                D2D1_RECT_F rcTag = D2D1::RectF(hx1, lineY + config.ScaleF(2.0f), hx2, lineY + lineH - config.ScaleF(2.0f));
+                D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, config.ScaleF(2.0f), config.ScaleF(2.0f));
+                pRT->FillRoundedRectangle(&rrcTag, htmlMatchFillBrush.Get());
+                if (htmlMatchBorderBrush) {
+                    pRT->DrawLine(D2D1::Point2F(hx1, rcTag.bottom), D2D1::Point2F(hx2, rcTag.bottom), htmlMatchBorderBrush.Get(), 1.2f);
+                }
+            };
+            if (vl.bufferLine == htmlOpenL) drawTagHighlight(htmlOpenC, htmlOpenLen);
+            if (vl.bufferLine == htmlCloseL) drawTagHighlight(htmlCloseC, htmlCloseLen);
+        }
+        if (hasMatchedPhpTag && htmlMatchFillBrush) {
+            auto drawTagHighlight = [&](size_t colStart, size_t len) {
+                float hx1 = getColVisualX(colStart) - config.ScaleF(1.0f);
+                float hx2 = getColVisualX(colStart + len) + config.ScaleF(1.0f);
+                D2D1_RECT_F rcTag = D2D1::RectF(hx1, lineY + config.ScaleF(2.0f), hx2, lineY + lineH - config.ScaleF(2.0f));
+                D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(rcTag, config.ScaleF(2.0f), config.ScaleF(2.0f));
+                pRT->FillRoundedRectangle(&rrcTag, htmlMatchFillBrush.Get());
+                if (htmlMatchBorderBrush) {
+                    pRT->DrawLine(D2D1::Point2F(hx1, rcTag.bottom), D2D1::Point2F(hx2, rcTag.bottom), htmlMatchBorderBrush.Get(), 1.2f);
+                }
+            };
+            if (vl.bufferLine == phpOpenL) drawTagHighlight(phpOpenC, phpOpenLen);
+            if (vl.bufferLine == phpCloseL) drawTagHighlight(phpCloseC, 2);
+        }
 
         // Active Text Selection Background on Code Line (Images 3 & 4)
         if (doc.HasSelection()) {
@@ -2732,7 +3206,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // Secondary Text Selections Background (Ctrl+D multi-cursor)
+        // Secondary Text Selections Background (Ctrl+D / Alt+Click multi-cursor)
         for (const auto& sec : doc.secondarySelections) {
             size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
             sec.GetRange(sLine, sCol, eLine, eCol);
@@ -2759,6 +3233,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.38f, 0.68f, 0.48f), &selBrush);
                     if (selBrush) pRT->FillRoundedRectangle(&rrcSel, selBrush.Get());
+                }
+            }
+        }
+
+        // Box / Column Rectangular Selection Background (Shift+Alt+Drag/Arrow)
+        if (doc.isColumnSelection) {
+            size_t topL = (std::min)(doc.boxAnchorLine, doc.boxActiveLine);
+            size_t botL = (std::max)(doc.boxAnchorLine, doc.boxActiveLine);
+            size_t leftC = (std::min)(doc.boxAnchorCol, doc.boxActiveCol);
+            size_t rightC = (std::max)(doc.boxAnchorCol, doc.boxActiveCol);
+            if (vl.bufferLine >= topL && vl.bufferLine <= botL) {
+                float boxX1 = getVirtualColVisualX(leftC);
+                float boxX2 = (rightC > leftC) ? getVirtualColVisualX(rightC) : (boxX1 + config.ScaleF(2.0f));
+                if (boxX2 > boxX1) {
+                    D2D1_RECT_F rcBox = D2D1::RectF(boxX1, lineY + 0.5f, boxX2, lineY + lineH - 0.5f);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> boxBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.38f, 0.68f, 0.44f), &boxBrush);
+                    if (boxBrush) pRT->FillRectangle(rcBox, boxBrush.Get());
                 }
             }
         }
@@ -3319,51 +3811,37 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_lastCaretX = caretX;
             m_lastCaretY = caretY;
         }
+        auto drawStyledCaret = [&](float cx, float cy) {
+            ID2D1Brush* caretBrush = theme.IsDarkMode()
+                ? theme.brushTextWhite.Get()
+                : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+            const std::wstring& style = config.cursorStyle;
+            if (style == L"block") {
+                D2D1_RECT_F rcBlock = D2D1::RectF(cx, cy + config.ScaleF(1.0f), cx + charW, cy + lineH - config.ScaleF(1.0f));
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
+                    &blockFill
+                );
+                pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
+                pRT->DrawRectangle(rcBlock, caretBrush, 1.0f);
+            } else if (style == L"underline") {
+                float underY = cy + lineH - config.ScaleF(2.5f);
+                pRT->DrawLine(D2D1::Point2F(cx, underY), D2D1::Point2F(cx + charW, underY), caretBrush, 2.5f);
+            } else {
+                pRT->DrawLine(D2D1::Point2F(cx, cy + config.ScaleF(2.0f)),
+                              D2D1::Point2F(cx, cy + lineH - config.ScaleF(2.0f)), caretBrush, 2.0f);
+            }
+        };
+
         if (isFocused && !isRenaming && m_caretVisible) {
             if (caretY >= topY && caretY + lineH <= clientHeight) {
-                // In Light Mode: #1E1E1E Deep Black/Charcoal. In Dark Mode: #FFFFFF Pure White.
-                ID2D1Brush* caretBrush = theme.IsDarkMode()
-                    ? theme.brushTextWhite.Get()
-                    : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
-
-                const std::wstring& style = config.cursorStyle;
-                if (style == L"block") {
-                    // Full character block cursor with semi-transparent fill and crisp border
-                    D2D1_RECT_F rcBlock = D2D1::RectF(caretX, caretY + config.ScaleF(1.0f), caretX + charW, caretY + lineH - config.ScaleF(1.0f));
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
-                    pRT->CreateSolidColorBrush(
-                        theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
-                        &blockFill
-                    );
-                    pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
-                    pRT->DrawRectangle(rcBlock, caretBrush, 1.0f);
-                } else if (style == L"underline") {
-                    // Horizontal underline cursor at bottom of line
-                    float underY = caretY + lineH - config.ScaleF(2.5f);
-                    pRT->DrawLine(
-                        D2D1::Point2F(caretX, underY),
-                        D2D1::Point2F(caretX + charW, underY),
-                        caretBrush,
-                        2.5f
-                    );
-                } else {
-                    // Default "line": crisp vertical line
-                    pRT->DrawLine(
-                        D2D1::Point2F(caretX, caretY + config.ScaleF(2.0f)),
-                        D2D1::Point2F(caretX, caretY + lineH - config.ScaleF(2.0f)),
-                        caretBrush,
-                        2.0f // Crisp 2.0px stroke
-                    );
-                }
+                drawStyledCaret(caretX, caretY);
             }
         }
 
-        // 4-sec. Secondary Carets (Multi-Cursor Ctrl+D)
+        // 4-sec. Secondary Carets (Multi-Cursor Ctrl+D / Alt+Click / Box Selection)
         if (isFocused && !isRenaming && m_caretVisible && !doc.secondarySelections.empty()) {
-            ID2D1Brush* secCaretBrush = theme.IsDarkMode()
-                ? theme.brushTextWhite.Get()
-                : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
-
             for (const auto& sec : doc.secondarySelections) {
                 size_t secVisualIdx = 0;
                 bool foundSec = false;
@@ -3375,20 +3853,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     }
                 }
                 if (foundSec && secVisualIdx >= doc.scrollLine) {
-                    float secCaretX = codeLeft - scrollX + sec.cursor.col * charW;
+                    float secCaretX = codeLeft - scrollX + static_cast<float>(sec.cursor.col) * charW;
                     if (sec.cursor.line < buffer.GetLineCount()) {
                         const auto& sLineStr = buffer.GetLine(sec.cursor.line);
                         auto sColors = ScanLineColors(sLineStr, isTailwind);
-                        secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sLineStr, sColors, sec.cursor.col, charW, swatchSpan, config.tabSize);
+                        if (sec.cursor.col <= sLineStr.length()) {
+                            secCaretX = codeLeft - scrollX + GetColumnVisualOffset(sLineStr, sColors, sec.cursor.col, charW, swatchSpan, config.tabSize);
+                        } else {
+                            float endX = codeLeft - scrollX + GetColumnVisualOffset(sLineStr, sColors, sLineStr.length(), charW, swatchSpan, config.tabSize);
+                            secCaretX = endX + static_cast<float>(sec.cursor.col - sLineStr.length()) * charW;
+                        }
                     }
                     float secCaretY = topY + config.ScaleF(6.0f) + (secVisualIdx - doc.scrollLine) * lineH;
                     if (secCaretY >= topY && secCaretY + lineH <= clientHeight) {
-                        pRT->DrawLine(
-                            D2D1::Point2F(secCaretX, secCaretY + config.ScaleF(2.0f)),
-                            D2D1::Point2F(secCaretX, secCaretY + lineH - config.ScaleF(2.0f)),
-                            secCaretBrush,
-                            2.0f
-                        );
+                        drawStyledCaret(secCaretX, secCaretY);
                     }
                 }
             }
@@ -3818,7 +4296,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             if (!canFold && vl.bufferLine + 1 < buffer.GetLineCount()) {
                 const auto& curLn = buffer.GetLine(vl.bufferLine);
                 if (!curLn.empty() && curLn.find_first_not_of(L" \t\r\n") != std::wstring::npos) {
-                    if (curLn.find(L"/*") != std::wstring::npos && curLn.find(L"*/") == std::wstring::npos) {
+                    if (MatchRegionKeyword(curLn, L"#region")) {
+                        canFold = true;
+                    } else if (curLn.find(L"/*") != std::wstring::npos && curLn.find(L"*/") == std::wstring::npos) {
                         canFold = true;
                     } else {
                         int netBraces = 0;
@@ -4843,7 +5323,8 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
 }
 
 bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
-                                   float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const {
+                                   float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol,
+                                   bool clampToLineEnd) const {
     float paneTop = config.ScaleF(static_cast<float>(config.headerHeight));
     float paneRight = canvasLeft + 99999.0f;
     float paneBottom = clientHeight;
@@ -4966,10 +5447,18 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         }
     }
 
+    if (!clampToLineEnd && charW > 0.0f) {
+        float lineEndX = GetColumnVisualOffset(lineStr, lineColors, lineStr.length(), charW, swatchSpan, config.tabSize);
+        if (relX > lineEndX) {
+            size_t extraCols = static_cast<size_t>(std::round((relX - lineEndX) / charW));
+            col = lineStr.length() + extraCols;
+        }
+    }
+
     if (mappedLine >= buffer.GetLineCount()) {
         mappedLine = buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0;
     }
-    if (col > lineStr.length()) {
+    if (clampToLineEnd && col > lineStr.length()) {
         col = lineStr.length();
     }
 

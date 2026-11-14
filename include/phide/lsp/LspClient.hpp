@@ -55,6 +55,18 @@ struct Location {
 };
 
 /**
+ * @struct LspTextEdit
+ * @brief Text edit range returned by textDocument/formatting and rangeFormatting.
+ */
+struct LspTextEdit {
+    size_t startLine = 0;
+    size_t startCol = 0;
+    size_t endLine = 0;
+    size_t endCol = 0;
+    std::wstring newText;
+};
+
+/**
  * @class LspClient
  * @brief Orchestrates language server process lifecycle and JSON-RPC 2.0 request/response dispatch.
  */
@@ -118,6 +130,18 @@ public:
      * @brief Requests go-to-definition target location for the symbol at the given 0-based position.
      */
     bool RequestDefinition(const std::wstring& fileUri, size_t line, size_t col, Location& outLocation);
+
+    /**
+     * @brief Requests whole-document formatting edits via textDocument/formatting.
+     */
+    bool RequestFormatting(const std::wstring& fileUri, int tabSize, bool insertSpaces, std::vector<LspTextEdit>& outEdits);
+
+    /**
+     * @brief Requests range formatting edits via textDocument/rangeFormatting.
+     */
+    bool RequestRangeFormatting(const std::wstring& fileUri, size_t startLine, size_t startCol,
+                                size_t endLine, size_t endCol, int tabSize, bool insertSpaces,
+                                std::vector<LspTextEdit>& outEdits);
 
     /**
      * @brief Registers a callback invoked on background reader thread when textDocument/publishDiagnostics arrives.

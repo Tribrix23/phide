@@ -220,6 +220,14 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     // 4. Imports & Source Actions
     m_items.push_back({ MenuActionId::CodeOrganizeImports,  L"Organize Imports",             L"Shift+Alt+O", false, false, false, hasDoc, {}, {} });
 
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                 L"",                             L"",            true,  false, false, false, {}, {} });
+
+    // 5. Folding & Bracket Navigation
+    m_items.push_back({ MenuActionId::CodeJumpToBracket,    L"Jump to Matching Bracket",     L"Ctrl+Shift+\\", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeFoldAll,          L"Fold All",                     L"Ctrl+K Ctrl+0", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeUnfoldAll,        L"Unfold All",                   L"Ctrl+K Ctrl+J", false, false, false, hasDoc, {}, {} });
+
     const float codeMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(295.0f));
     LayoutMenu(m_items, x, y, codeMenuW, config, m_mainMenuBounds);
 }
@@ -362,6 +370,52 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
+void PopupMenu::OpenEncodingMenu(float x, float y, const app::AppConfig& config,
+                                 int currentEncoding, bool isCRLF, bool hasDoc,
+                                 float clientW, float clientH) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+    m_items.push_back({ MenuActionId::StatusEolCRLF, L"Line Ending: CRLF (Windows)", L"", false, isCRLF,  false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusEolLF,   L"Line Ending: LF (Unix)",      L"", false, !isCRLF, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::StatusSaveUtf8,    L"Save as UTF-8",           L"", false, currentEncoding == 0, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusSaveUtf8Bom, L"Save as UTF-8 with BOM",  L"", false, currentEncoding == 1, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusSaveUtf16Le, L"Save as UTF-16 LE",       L"", false, currentEncoding == 2, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusSaveUtf16Be, L"Save as UTF-16 BE",       L"", false, currentEncoding == 3, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusSaveWin1252, L"Save as Windows-1252",    L"", false, currentEncoding == 4, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::StatusReopenUtf8,    L"Reopen with UTF-8",        L"", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusReopenUtf16Le, L"Reopen with UTF-16 LE",    L"", false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::StatusReopenWin1252, L"Reopen with Windows-1252", L"", false, false, false, hasDoc, {}, {} });
+
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(240.0f));
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
+}
+
+void PopupMenu::OpenIndentationMenu(float x, float y, const app::AppConfig& config,
+                                    bool insertSpaces, int tabSize,
+                                    float clientW, float clientH) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+    m_items.push_back({ MenuActionId::StatusIndentSpaces, L"Indent Using Spaces", L"", false, insertSpaces,  false, true, {}, {} });
+    m_items.push_back({ MenuActionId::StatusIndentTabs,   L"Indent Using Tabs",   L"", false, !insertSpaces, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::StatusTabSize2,     L"Tab Size: 2",         L"", false, tabSize == 2,  false, true, {}, {} });
+    m_items.push_back({ MenuActionId::StatusTabSize4,     L"Tab Size: 4",         L"", false, tabSize == 4,  false, true, {}, {} });
+    m_items.push_back({ MenuActionId::StatusTabSize8,     L"Tab Size: 8",         L"", false, tabSize == 8,  false, true, {}, {} });
+
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(200.0f));
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
+}
+
 void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection) {
     (void)hasSelection;
     m_items.clear();
@@ -414,6 +468,19 @@ void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection
     m_items.push_back({ MenuActionId::CodeFormatDocument, L"Format Document", L"Shift+Alt+F", false, false, false, true, {}, {} });
     // 14. Format Selection (Ctrl+K Ctrl+F)
     m_items.push_back({ MenuActionId::CodeFormatSelection, L"Format Selection", L"Ctrl+K Ctrl+F", false, false, false, true, {}, {} });
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
+
+    // 15. Multi-Cursor & Line Manipulation
+    m_items.push_back({ MenuActionId::EditorSelectAllOccurrences, L"Select All Occurrences", L"Ctrl+Shift+L", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditMoveLineUp,             L"Move Line Up",           L"Alt+Up",       false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditMoveLineDown,           L"Move Line Down",         L"Alt+Down",     false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditDuplicateLineDown,      L"Copy Line Down",         L"Shift+Alt+Down", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditJoinLines,              L"Join Lines",             L"Ctrl+J",       false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditSortLinesAsc,           L"Sort Lines Ascending",   L"",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditSortLinesDesc,          L"Sort Lines Descending",  L"",             false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditTrimTrailingWhitespace, L"Trim Trailing Whitespace", L"",           false, false, false, true, {}, {} });
 }
 
 void PopupMenu::Close() {

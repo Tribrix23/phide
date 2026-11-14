@@ -627,45 +627,197 @@ struct UndoCoalesceState {
 static std::unordered_map<const Buffer*, UndoCoalesceState> s_undoCoalesceMap;
 } // namespace
 
-void Buffer::PushUndo() {
-    s_undoCoalesceMap.erase(this);
-    if (!m_undoStack.empty() && m_undoStack.back().lines == m_lines) {
-        m_undoStack.back().cursor = m_cursor;
-        return;
+size_t Buffer::UndoHunk::EstimateBytes() const noexcept {
+    size_t total = sizeof(UndoHunk) + beforeLineEnding.capacity() * sizeof(wchar_t) + afterLineEnding.capacity() * sizeof(wchar_t);
+    for (const auto& s : beforeLines) {
+        total += sizeof(std::wstring) + (s.capacity() + 1) * sizeof(wchar_t);
     }
-    m_undoStack.push_back({ m_lines, m_cursor });
-    if (m_undoStack.size() > 200) {
+    return total;
+}
+
+void Buffer::EnforceUndoBudget() {
+    const size_t pendingSlot = m_hasPendingUndo ? 1 : 0;
+    const size_t maxCommitted = (kMaxUndoCount > pendingSlot) ? (kMaxUndoCount - pendingSlot) : 0;
+    while (m_undoStack.size() > maxCommitted ||
+           (m_undoStack.size() > kMinRetainedUndo && m_undoMemoryBytes > kMaxUndoMemoryBytes)) {
+        m_undoMemoryBytes -= (std::min)(m_undoMemoryBytes, m_undoStack.front().EstimateBytes());
         m_undoStack.erase(m_undoStack.begin());
     }
+    while (m_redoStack.size() > kMaxUndoCount ||
+           (m_redoStack.size() > kMinRetainedUndo && m_redoMemoryBytes > kMaxUndoMemoryBytes)) {
+        m_redoMemoryBytes -= (std::min)(m_redoMemoryBytes, m_redoStack.front().EstimateBytes());
+        m_redoStack.erase(m_redoStack.begin());
+    }
+}
+
+void Buffer::CommitPendingUndo() {
+    if (!m_hasPendingUndo) return;
+    m_hasPendingUndo = false;
+
+    const size_t oldN = m_pendingUndoLines.size();
+    const size_t newN = m_lines.size();
+
+    size_t prefix = 0;
+    while (prefix < oldN && prefix < newN && m_pendingUndoLines[prefix] == m_lines[prefix]) {
+        ++prefix;
+    }
+
+    size_t suffix = 0;
+    while (suffix < (oldN - prefix) && suffix < (newN - prefix) &&
+           m_pendingUndoLines[oldN - 1 - suffix] == m_lines[newN - 1 - suffix]) {
+        ++suffix;
+    }
+
+    const bool linesDiffer = !(prefix == oldN && oldN == newN);
+    const bool eolDiffers = (m_pendingUndoLineEnding != m_lineEnding);
+    if (linesDiffer || eolDiffers) {
+        UndoHunk h;
+        h.startLine = prefix;
+        h.afterCount = newN - prefix - suffix;
+        h.beforeLines.assign(m_pendingUndoLines.begin() + prefix, m_pendingUndoLines.begin() + (oldN - suffix));
+        h.beforeCursor = m_pendingUndoCursor;
+        h.afterCursor = m_cursor;
+        h.beforeLineEnding = m_pendingUndoLineEnding;
+        h.afterLineEnding = m_lineEnding;
+        m_undoMemoryBytes += h.EstimateBytes();
+        m_undoStack.push_back(std::move(h));
+        EnforceUndoBudget();
+    }
+
+    std::vector<std::wstring>().swap(m_pendingUndoLines);
+}
+
+void Buffer::PushUndo() {
+    s_undoCoalesceMap.erase(this);
+    CommitPendingUndo();
+    m_pendingUndoLines = m_lines;
+    m_pendingUndoCursor = m_cursor;
+    m_pendingUndoLineEnding = m_lineEnding;
+    m_pendingUndoVersion = m_version;
+    m_hasPendingUndo = true;
     m_redoStack.clear();
-    ++m_version;
+    m_redoMemoryBytes = 0;
+    EnforceUndoBudget();
+}
+
+size_t Buffer::GetUndoCount() const noexcept {
+    size_t pending = (m_hasPendingUndo && (m_version != m_pendingUndoVersion || m_lineEnding != m_pendingUndoLineEnding)) ? 1 : 0;
+    return m_undoStack.size() + pending;
+}
+
+size_t Buffer::GetUndoMemoryBytes() const noexcept {
+    size_t pending = 0;
+    if (m_hasPendingUndo) {
+        pending += sizeof(m_pendingUndoLines);
+        for (const auto& l : m_pendingUndoLines) {
+            pending += sizeof(std::wstring) + (l.capacity() + 1) * sizeof(wchar_t);
+        }
+    }
+    return m_undoMemoryBytes + m_redoMemoryBytes + pending;
+}
+
+bool Buffer::CanUndo() const noexcept {
+    return !m_undoStack.empty() ||
+           (m_hasPendingUndo && (m_version != m_pendingUndoVersion || m_lineEnding != m_pendingUndoLineEnding));
+}
+
+void Buffer::RunGarbageCollection() {
+    s_undoCoalesceMap.erase(this);
+    CommitPendingUndo();
+    EnforceUndoBudget();
+    m_lines.shrink_to_fit();
+    for (auto& l : m_lines) l.shrink_to_fit();
+    m_undoStack.shrink_to_fit();
+    for (auto& h : m_undoStack) {
+        h.beforeLines.shrink_to_fit();
+        for (auto& l : h.beforeLines) l.shrink_to_fit();
+    }
+    m_redoStack.shrink_to_fit();
+    for (auto& h : m_redoStack) {
+        h.beforeLines.shrink_to_fit();
+        for (auto& l : h.beforeLines) l.shrink_to_fit();
+    }
+    m_tokenCache.clear();
+    m_lineEntryStates.shrink_to_fit();
 }
 
 bool Buffer::Undo() {
     s_undoCoalesceMap.erase(this);
+    CommitPendingUndo();
     if (m_undoStack.empty()) return false;
-    m_redoStack.push_back({ m_lines, m_cursor });
-    auto last = m_undoStack.back();
+
+    UndoHunk h = std::move(m_undoStack.back());
     m_undoStack.pop_back();
-    m_lines = last.lines;
-    m_cursor = last.cursor;
+    m_undoMemoryBytes -= (std::min)(m_undoMemoryBytes, h.EstimateBytes());
+
+    size_t startLine = (std::min)(h.startLine, m_lines.size());
+    size_t afterCount = (std::min)(h.afterCount, m_lines.size() - startLine);
+
+    UndoHunk redo;
+    redo.startLine = startLine;
+    redo.afterCount = h.beforeLines.size();
+    redo.beforeLines.assign(m_lines.begin() + startLine, m_lines.begin() + startLine + afterCount);
+    redo.beforeCursor = m_cursor;
+    redo.afterCursor = h.beforeCursor;
+    redo.beforeLineEnding = m_lineEnding;
+    redo.afterLineEnding = h.beforeLineEnding;
+    m_redoMemoryBytes += redo.EstimateBytes();
+    m_redoStack.push_back(std::move(redo));
+
+    m_lines.erase(m_lines.begin() + startLine, m_lines.begin() + startLine + afterCount);
+    m_lines.insert(m_lines.begin() + startLine,
+                   std::make_move_iterator(h.beforeLines.begin()),
+                   std::make_move_iterator(h.beforeLines.end()));
+    if (m_lines.empty()) m_lines.push_back(L"");
+
+    m_cursor = h.beforeCursor;
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    if (m_cursor.col > m_lines[m_cursor.line].length()) m_cursor.col = m_lines[m_cursor.line].length();
+    m_lineEnding = h.beforeLineEnding;
     m_isModified = true;
     m_tokenCache.clear();
     ++m_version;
+    EnforceUndoBudget();
     return true;
 }
 
 bool Buffer::Redo() {
     s_undoCoalesceMap.erase(this);
+    CommitPendingUndo();
     if (m_redoStack.empty()) return false;
-    m_undoStack.push_back({ m_lines, m_cursor });
-    auto next = m_redoStack.back();
+
+    UndoHunk h = std::move(m_redoStack.back());
     m_redoStack.pop_back();
-    m_lines = next.lines;
-    m_cursor = next.cursor;
+    m_redoMemoryBytes -= (std::min)(m_redoMemoryBytes, h.EstimateBytes());
+
+    size_t startLine = (std::min)(h.startLine, m_lines.size());
+    size_t afterCount = (std::min)(h.afterCount, m_lines.size() - startLine);
+
+    UndoHunk undo;
+    undo.startLine = startLine;
+    undo.afterCount = h.beforeLines.size();
+    undo.beforeLines.assign(m_lines.begin() + startLine, m_lines.begin() + startLine + afterCount);
+    undo.beforeCursor = m_cursor;
+    undo.afterCursor = h.beforeCursor;
+    undo.beforeLineEnding = m_lineEnding;
+    undo.afterLineEnding = h.beforeLineEnding;
+    m_undoMemoryBytes += undo.EstimateBytes();
+    m_undoStack.push_back(std::move(undo));
+
+    m_lines.erase(m_lines.begin() + startLine, m_lines.begin() + startLine + afterCount);
+    m_lines.insert(m_lines.begin() + startLine,
+                   std::make_move_iterator(h.beforeLines.begin()),
+                   std::make_move_iterator(h.beforeLines.end()));
+    if (m_lines.empty()) m_lines.push_back(L"");
+
+    m_cursor = h.beforeCursor;
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    if (m_cursor.col > m_lines[m_cursor.line].length()) m_cursor.col = m_lines[m_cursor.line].length();
+    m_lineEnding = h.beforeLineEnding;
     m_isModified = true;
     m_tokenCache.clear();
     ++m_version;
+    EnforceUndoBudget();
     return true;
 }
 
@@ -693,6 +845,7 @@ void Buffer::InsertText(const std::wstring& text) {
     }
     m_tokenCache.clear();
     m_isModified = true;
+    ++m_version;
 }
 
 void Buffer::LoadDefaultSample() {
@@ -892,7 +1045,7 @@ void Buffer::InsertChar(wchar_t ch) {
     bool isWordBoundary = isNewline || ch == L' ' || ch == L'\t';
     auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (!isWordBoundary &&
-                        !m_undoStack.empty() &&
+                        (!m_undoStack.empty() || m_hasPendingUndo) &&
                         itCoal != s_undoCoalesceMap.end() &&
                         itCoal->second.lastOp == 1 &&
                         itCoal->second.line == m_cursor.line &&
@@ -902,7 +1055,7 @@ void Buffer::InsertChar(wchar_t ch) {
         PushUndo();
     } else {
         m_redoStack.clear();
-        ++m_version;
+        m_redoMemoryBytes = 0;
     }
 
     auto& line = m_lines[m_cursor.line];
@@ -924,6 +1077,7 @@ void Buffer::InsertChar(wchar_t ch) {
         s_undoCoalesceMap[this] = { 1, m_cursor.line, m_cursor.col, now };
     }
     m_isModified = true;
+    ++m_version;
 }
 
 void Buffer::Backspace() {
@@ -934,7 +1088,7 @@ void Buffer::Backspace() {
     ULONGLONG now = GetTickCount64();
     auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (m_cursor.col > 0 &&
-                        !m_undoStack.empty() &&
+                        (!m_undoStack.empty() || m_hasPendingUndo) &&
                         itCoal != s_undoCoalesceMap.end() &&
                         itCoal->second.lastOp == 2 &&
                         itCoal->second.line == m_cursor.line &&
@@ -944,6 +1098,7 @@ void Buffer::Backspace() {
         PushUndo();
     } else {
         m_redoStack.clear();
+        m_redoMemoryBytes = 0;
     }
 
     auto& line = m_lines[m_cursor.line];
@@ -979,7 +1134,7 @@ void Buffer::DeleteForward() {
     ULONGLONG now = GetTickCount64();
     auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (m_cursor.col < line.length() &&
-                        !m_undoStack.empty() &&
+                        (!m_undoStack.empty() || m_hasPendingUndo) &&
                         itCoal != s_undoCoalesceMap.end() &&
                         itCoal->second.lastOp == 3 &&
                         itCoal->second.line == m_cursor.line &&
@@ -989,6 +1144,7 @@ void Buffer::DeleteForward() {
         PushUndo();
     } else {
         m_redoStack.clear();
+        m_redoMemoryBytes = 0;
     }
 
     if (m_cursor.col < line.length()) {
@@ -1117,6 +1273,17 @@ void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
     }
 }
 
+void Buffer::ReplaceLineSlice(size_t startLine, size_t removeCount, const std::vector<std::wstring>& insertLines) {
+    if (startLine > m_lines.size()) startLine = m_lines.size();
+    if (removeCount > m_lines.size() - startLine) removeCount = m_lines.size() - startLine;
+    m_lines.erase(m_lines.begin() + startLine, m_lines.begin() + startLine + removeCount);
+    m_lines.insert(m_lines.begin() + startLine, insertLines.begin(), insertLines.end());
+    if (m_lines.empty()) m_lines.push_back(L"");
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+}
+
 void Buffer::SetText(const std::wstring& text) {
     m_lines.clear();
     std::wstring cleanText = text;
@@ -1135,6 +1302,160 @@ void Buffer::SetText(const std::wstring& text) {
     ++m_version;
 }
 
+bool Buffer::LoadBytesWithEncoding(const std::string& bytes, TextEncoding enc, std::wstring& outText) {
+    outText.clear();
+    if (bytes.empty()) return true;
+
+    std::string view = bytes;
+    if (enc == TextEncoding::UTF8 || enc == TextEncoding::UTF8_BOM) {
+        if (view.size() >= 3 &&
+            static_cast<unsigned char>(view[0]) == 0xEF &&
+            static_cast<unsigned char>(view[1]) == 0xBB &&
+            static_cast<unsigned char>(view[2]) == 0xBF) {
+            view.erase(0, 3);
+        }
+        if (view.empty()) return true;
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, view.data(), static_cast<int>(view.size()), nullptr, 0);
+        if (wlen <= 0) return false;
+        outText.resize(wlen);
+        MultiByteToWideChar(CP_UTF8, 0, view.data(), static_cast<int>(view.size()), &outText[0], wlen);
+        return true;
+    }
+
+    if (enc == TextEncoding::UTF16_LE || enc == TextEncoding::UTF16_BE) {
+        size_t offset = 0;
+        if (bytes.size() >= 2) {
+            unsigned char b0 = static_cast<unsigned char>(bytes[0]);
+            unsigned char b1 = static_cast<unsigned char>(bytes[1]);
+            if ((enc == TextEncoding::UTF16_LE && b0 == 0xFF && b1 == 0xFE) ||
+                (enc == TextEncoding::UTF16_BE && b0 == 0xFE && b1 == 0xFF)) {
+                offset = 2;
+            }
+        }
+        size_t avail = (bytes.size() > offset) ? ((bytes.size() - offset) / 2) : 0;
+        outText.resize(avail);
+        for (size_t i = 0; i < avail; ++i) {
+            unsigned char c0 = static_cast<unsigned char>(bytes[offset + i * 2]);
+            unsigned char c1 = static_cast<unsigned char>(bytes[offset + i * 2 + 1]);
+            wchar_t wc = (enc == TextEncoding::UTF16_LE)
+                ? static_cast<wchar_t>(c0 | (c1 << 8))
+                : static_cast<wchar_t>((c0 << 8) | c1);
+            outText[i] = wc;
+        }
+        return true;
+    }
+
+    // Windows-1252 / ISO-8859-1 fallback
+    int wlen = MultiByteToWideChar(1252, 0, view.data(), static_cast<int>(view.size()), nullptr, 0);
+    if (wlen <= 0) return false;
+    outText.resize(wlen);
+    MultiByteToWideChar(1252, 0, view.data(), static_cast<int>(view.size()), &outText[0], wlen);
+    return true;
+}
+
+bool Buffer::EncodeTextBytes(const std::wstring& text, TextEncoding enc, std::string& outBytes) {
+    outBytes.clear();
+    if (enc == TextEncoding::UTF8_BOM) {
+        outBytes.push_back(static_cast<char>(0xEF));
+        outBytes.push_back(static_cast<char>(0xBB));
+        outBytes.push_back(static_cast<char>(0xBF));
+    } else if (enc == TextEncoding::UTF16_LE) {
+        outBytes.push_back(static_cast<char>(0xFF));
+        outBytes.push_back(static_cast<char>(0xFE));
+        outBytes.reserve(2 + text.size() * 2);
+        for (wchar_t wc : text) {
+            uint16_t u = static_cast<uint16_t>(wc);
+            outBytes.push_back(static_cast<char>(u & 0xFF));
+            outBytes.push_back(static_cast<char>((u >> 8) & 0xFF));
+        }
+        return true;
+    } else if (enc == TextEncoding::UTF16_BE) {
+        outBytes.push_back(static_cast<char>(0xFE));
+        outBytes.push_back(static_cast<char>(0xFF));
+        outBytes.reserve(2 + text.size() * 2);
+        for (wchar_t wc : text) {
+            uint16_t u = static_cast<uint16_t>(wc);
+            outBytes.push_back(static_cast<char>((u >> 8) & 0xFF));
+            outBytes.push_back(static_cast<char>(u & 0xFF));
+        }
+        return true;
+    }
+
+    if (text.empty()) return true;
+    UINT cp = (enc == TextEncoding::Windows1252) ? 1252u : CP_UTF8;
+    int ulen = WideCharToMultiByte(cp, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (ulen <= 0) return false;
+    size_t prefixLen = outBytes.size();
+    outBytes.resize(prefixLen + static_cast<size_t>(ulen));
+    WideCharToMultiByte(cp, 0, text.data(), static_cast<int>(text.size()), &outBytes[prefixLen], ulen, nullptr, nullptr);
+    return true;
+}
+
+std::wstring Buffer::GetEncodingDisplayName() const {
+    switch (m_encoding) {
+        case TextEncoding::UTF8:        return L"UTF-8";
+        case TextEncoding::UTF8_BOM:    return L"UTF-8 with BOM";
+        case TextEncoding::UTF16_LE:    return L"UTF-16 LE";
+        case TextEncoding::UTF16_BE:    return L"UTF-16 BE";
+        case TextEncoding::Windows1252: return L"Windows 1252";
+    }
+    return L"UTF-8";
+}
+
+std::wstring Buffer::GetLineEndingDisplayName() const {
+    return (m_lineEnding == L"\r\n") ? L"CRLF" : L"LF";
+}
+
+bool Buffer::ConvertLineEnding(const std::wstring& le) {
+    std::wstring norm = le;
+    if (norm == L"CRLF" || norm == L"crlf") norm = L"\r\n";
+    else if (norm == L"LF" || norm == L"lf") norm = L"\n";
+    if (norm != L"\n" && norm != L"\r\n") return false;
+    if (m_lineEnding == norm) return false;
+    PushUndo();
+    m_lineEnding = norm;
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::ConvertEncoding(TextEncoding newEnc) {
+    if (m_encoding == newEnc) return false;
+    m_encoding = newEnc;
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::ReopenWithEncoding(TextEncoding enc) {
+    if (m_filePath.empty()) {
+        return ConvertEncoding(enc);
+    }
+    std::ifstream file(std::filesystem::path(m_filePath), std::ios::binary);
+    if (!file.is_open()) return false;
+    std::stringstream ss;
+    ss << file.rdbuf();
+    std::string bytes = ss.str();
+
+    std::wstring wide;
+    if (!LoadBytesWithEncoding(bytes, enc, wide)) return false;
+
+    if (!wide.empty()) {
+        m_hasTrailingNewline = (wide.back() == L'\n' || wide.back() == L'\r');
+        m_lineEnding = (wide.find(L"\r\n") != std::wstring::npos) ? L"\r\n" : L"\n";
+    } else {
+        m_hasTrailingNewline = false;
+        m_lineEnding = L"\n";
+    }
+
+    PushUndo();
+    SetText(wide);
+    m_encoding = enc;
+    m_isModified = false;
+    ++m_version;
+    return true;
+}
+
 bool Buffer::LoadFromFile(const std::wstring& path) {
     std::ifstream file(std::filesystem::path(path), std::ios::binary);
     if (!file.is_open()) return false;
@@ -1143,41 +1464,57 @@ bool Buffer::LoadFromFile(const std::wstring& path) {
     buffer << file.rdbuf();
     std::string bytes = buffer.str();
 
-    // Strip UTF-8 BOM (EF BB BF) if present so PHP header() calls never fail due to BOM output
+    TextEncoding detectedEnc = TextEncoding::UTF8;
+    std::wstring wide;
+
     if (bytes.size() >= 3 &&
         static_cast<unsigned char>(bytes[0]) == 0xEF &&
         static_cast<unsigned char>(bytes[1]) == 0xBB &&
         static_cast<unsigned char>(bytes[2]) == 0xBF) {
-        bytes.erase(0, 3);
+        detectedEnc = TextEncoding::UTF8_BOM;
+        LoadBytesWithEncoding(bytes, detectedEnc, wide);
+    } else if (bytes.size() >= 2 &&
+               static_cast<unsigned char>(bytes[0]) == 0xFF &&
+               static_cast<unsigned char>(bytes[1]) == 0xFE) {
+        detectedEnc = TextEncoding::UTF16_LE;
+        LoadBytesWithEncoding(bytes, detectedEnc, wide);
+    } else if (bytes.size() >= 2 &&
+               static_cast<unsigned char>(bytes[0]) == 0xFE &&
+               static_cast<unsigned char>(bytes[1]) == 0xFF) {
+        detectedEnc = TextEncoding::UTF16_BE;
+        LoadBytesWithEncoding(bytes, detectedEnc, wide);
+    } else if (!bytes.empty()) {
+        int strictLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+        if (strictLen > 0) {
+            detectedEnc = TextEncoding::UTF8;
+            wide.resize(strictLen);
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), &wide[0], strictLen);
+        } else {
+            detectedEnc = TextEncoding::Windows1252;
+            LoadBytesWithEncoding(bytes, detectedEnc, wide);
+        }
     }
 
-    // Detect original line endings and trailing newline
-    if (!bytes.empty()) {
-        m_hasTrailingNewline = (bytes.back() == '\n' || bytes.back() == '\r');
-        if (bytes.find("\r\n") != std::string::npos) {
-            m_lineEnding = L"\r\n";
-        } else {
-            m_lineEnding = L"\n";
-        }
+    if (!wide.empty()) {
+        m_hasTrailingNewline = (wide.back() == L'\n' || wide.back() == L'\r');
+        m_lineEnding = (wide.find(L"\r\n") != std::wstring::npos) ? L"\r\n" : L"\n";
     } else {
         m_hasTrailingNewline = false;
         m_lineEnding = L"\n";
     }
 
-    // Convert UTF-8 to wstring
-    std::wstring wide;
-    if (!bytes.empty()) {
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
-        if (wlen > 0) {
-            wide.resize(wlen);
-            MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), &wide[0], wlen);
-        }
-    }
+    s_undoCoalesceMap.erase(this);
+    m_undoStack.clear();
+    m_redoStack.clear();
+    m_undoMemoryBytes = 0;
+    m_redoMemoryBytes = 0;
+    m_hasPendingUndo = false;
+    std::vector<std::wstring>().swap(m_pendingUndoLines);
 
     SetText(wide);
+    m_encoding = detectedEnc;
     m_filePath = path;
 
-    // Extract filename from path
     auto pos = path.find_last_of(L"\\/");
     if (pos != std::wstring::npos) {
         m_fileName = path.substr(pos + 1);
@@ -1193,8 +1530,10 @@ bool Buffer::SaveToFile(const std::wstring& path) {
     std::ofstream file(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
     if (!file.is_open()) return false;
 
-    // Concatenate lines with detected line endings
     std::wstring combined;
+    size_t reserveHint = 0;
+    for (const auto& l : m_lines) reserveHint += l.size() + m_lineEnding.size();
+    combined.reserve(reserveHint);
     for (size_t i = 0; i < m_lines.size(); ++i) {
         combined += m_lines[i];
         if (i + 1 < m_lines.size()) combined += m_lineEnding;
@@ -1203,14 +1542,9 @@ bool Buffer::SaveToFile(const std::wstring& path) {
         combined += m_lineEnding;
     }
 
-    // Convert wstring to UTF-8
-    if (!combined.empty()) {
-        int ulen = WideCharToMultiByte(CP_UTF8, 0, combined.data(), static_cast<int>(combined.size()), nullptr, 0, nullptr, nullptr);
-        if (ulen > 0) {
-            std::string u8(ulen, 0);
-            WideCharToMultiByte(CP_UTF8, 0, combined.data(), static_cast<int>(combined.size()), &u8[0], ulen, nullptr, nullptr);
-            file.write(u8.data(), u8.size());
-        }
+    std::string encoded;
+    if (EncodeTextBytes(combined, m_encoding, encoded) && !encoded.empty()) {
+        file.write(encoded.data(), encoded.size());
     }
 
     m_filePath = path;
@@ -1225,73 +1559,425 @@ bool Buffer::SaveToFile(const std::wstring& path) {
     return true;
 }
 
+namespace {
+std::wstring ResolveLowerExt(const std::wstring& explicitExt, const std::wstring& filePath, const std::wstring& fileName) {
+    std::wstring ext = explicitExt;
+    if (ext.empty()) {
+        std::wstring src = !filePath.empty() ? filePath : fileName;
+        auto dot = src.find_last_of(L'.');
+        if (dot != std::wstring::npos) ext = src.substr(dot + 1);
+    }
+    if (!ext.empty() && ext[0] == L'.') ext = ext.substr(1);
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    return ext;
+}
+
+bool IsInsidePhpBlockAtLine(const std::vector<std::wstring>& lines, size_t targetLine) {
+    bool inPhp = false;
+    for (size_t i = 0; i <= targetLine && i < lines.size(); ++i) {
+        const auto& ln = lines[i];
+        size_t pos = 0;
+        while (pos < ln.size()) {
+            if (!inPhp) {
+                size_t open = ln.find(L"<?", pos);
+                if (open == std::wstring::npos) break;
+                inPhp = true;
+                pos = open + 2;
+            } else {
+                size_t close = ln.find(L"?>", pos);
+                if (close == std::wstring::npos) break;
+                inPhp = false;
+                pos = close + 2;
+            }
+        }
+        if (i == targetLine) {
+            size_t firstNonWs = ln.find_first_not_of(L" \t");
+            if (firstNonWs != std::wstring::npos && ln[firstNonWs] == L'<' &&
+                ln.compare(firstNonWs, 2, L"<?") != 0 && !inPhp) {
+                return false;
+            }
+        }
+    }
+    return inPhp;
+}
+} // namespace
+
+bool Buffer::MoveLinesUp(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine) {
+    if (m_lines.empty() || sLine == 0 || sLine > eLine || eLine >= m_lines.size()) return false;
+    PushUndo();
+    std::wstring above = std::move(m_lines[sLine - 1]);
+    for (size_t l = sLine; l <= eLine; ++l) {
+        m_lines[l - 1] = std::move(m_lines[l]);
+    }
+    m_lines[eLine] = std::move(above);
+    outNewSLine = sLine - 1;
+    outNewELine = eLine - 1;
+    if (m_cursor.line > 0) m_cursor.line--;
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::MoveLinesDown(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine) {
+    if (m_lines.empty() || sLine > eLine || eLine + 1 >= m_lines.size()) return false;
+    PushUndo();
+    std::wstring below = std::move(m_lines[eLine + 1]);
+    for (size_t l = eLine + 1; l > sLine; --l) {
+        m_lines[l] = std::move(m_lines[l - 1]);
+    }
+    m_lines[sLine] = std::move(below);
+    outNewSLine = sLine + 1;
+    outNewELine = eLine + 1;
+    if (m_cursor.line + 1 < m_lines.size()) m_cursor.line++;
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::DuplicateLines(size_t sLine, size_t eLine, bool up, size_t& outNewSLine, size_t& outNewELine) {
+    if (m_lines.empty() || sLine > eLine || eLine >= m_lines.size()) return false;
+    PushUndo();
+    std::vector<std::wstring> copySlice(m_lines.begin() + sLine, m_lines.begin() + eLine + 1);
+    const size_t count = copySlice.size();
+    if (up) {
+        m_lines.insert(m_lines.begin() + sLine, copySlice.begin(), copySlice.end());
+        outNewSLine = sLine;
+        outNewELine = eLine;
+    } else {
+        m_lines.insert(m_lines.begin() + eLine + 1, copySlice.begin(), copySlice.end());
+        outNewSLine = eLine + 1;
+        outNewELine = eLine + count;
+        m_cursor.line += count;
+    }
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::JoinLines(size_t sLine, size_t eLine, bool hasSel, CursorPosition& outCursor) {
+    if (m_lines.empty()) return false;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (!hasSel || sLine == eLine) {
+        if (sLine + 1 >= m_lines.size()) return false;
+        eLine = sLine + 1;
+    }
+    if (sLine >= eLine) return false;
+
+    PushUndo();
+    std::wstring joined = m_lines[sLine];
+    size_t seamCol = joined.length();
+    for (size_t l = sLine + 1; l <= eLine; ++l) {
+        const auto& nextLine = m_lines[l];
+        size_t firstNonWs = nextLine.find_first_not_of(L" \t");
+        std::wstring trimmedNext = (firstNonWs == std::wstring::npos) ? L"" : nextLine.substr(firstNonWs);
+        if (!joined.empty() && !trimmedNext.empty()) {
+            wchar_t lastCh = joined.back();
+            if (lastCh != L' ' && lastCh != L'\t') {
+                joined += L' ';
+            }
+        }
+        seamCol = joined.length();
+        joined += trimmedNext;
+    }
+    m_lines[sLine] = std::move(joined);
+    m_lines.erase(m_lines.begin() + sLine + 1, m_lines.begin() + eLine + 1);
+    m_cursor = { sLine, seamCol };
+    outCursor = m_cursor;
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::SortLines(size_t sLine, size_t eLine, bool ascending, bool caseSensitive) {
+    if (m_lines.size() < 2) return false;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (sLine >= eLine) return false;
+
+    PushUndo();
+    auto comp = [ascending, caseSensitive](const std::wstring& a, const std::wstring& b) {
+        if (caseSensitive) {
+            return ascending ? (a < b) : (a > b);
+        }
+        std::wstring al = a, bl = b;
+        for (auto& c : al) c = static_cast<wchar_t>(towlower(c));
+        for (auto& c : bl) c = static_cast<wchar_t>(towlower(c));
+        if (al != bl) return ascending ? (al < bl) : (al > bl);
+        return ascending ? (a < b) : (a > b);
+    };
+    std::stable_sort(m_lines.begin() + sLine, m_lines.begin() + eLine + 1, comp);
+    m_tokenCache.clear();
+    m_isModified = true;
+    ++m_version;
+    return true;
+}
+
+bool Buffer::TrimTrailingWhitespace(size_t sLine, size_t eLine) {
+    if (m_lines.empty()) return false;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (sLine > eLine) return false;
+
+    bool anyChanged = false;
+    for (size_t l = sLine; l <= eLine; ++l) {
+        size_t endPos = m_lines[l].find_last_not_of(L" \t");
+        size_t newLen = (endPos == std::wstring::npos) ? 0 : (endPos + 1);
+        if (newLen < m_lines[l].length()) {
+            if (!anyChanged) {
+                PushUndo();
+                anyChanged = true;
+            }
+            m_lines[l].resize(newLen);
+            m_tokenCache.erase(l);
+        }
+    }
+    if (anyChanged) {
+        if (m_cursor.line < m_lines.size() && m_cursor.col > m_lines[m_cursor.line].length()) {
+            m_cursor.col = m_lines[m_cursor.line].length();
+        }
+        m_isModified = true;
+        ++m_version;
+    }
+    return anyChanged;
+}
+
 void Buffer::ToggleLineComment() {
     if (m_lines.empty()) return;
-    PushUndo();
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
-    auto& line = m_lines[m_cursor.line];
-
-    size_t firstNonWs = 0;
-    while (firstNonWs < line.length() && (line[firstNonWs] == L' ' || line[firstNonWs] == L'\t')) {
-        ++firstNonWs;
+    std::vector<int> deltas;
+    if (ToggleLineCommentRange(m_cursor.line, m_cursor.line, L"", &deltas) && !deltas.empty()) {
+        int d = deltas[0];
+        if (d > 0) m_cursor.col += static_cast<size_t>(d);
+        else if (d < 0) {
+            size_t sub = static_cast<size_t>(-d);
+            m_cursor.col = (m_cursor.col >= sub) ? (m_cursor.col - sub) : 0;
+        }
+        if (m_cursor.col > m_lines[m_cursor.line].length()) m_cursor.col = m_lines[m_cursor.line].length();
     }
+}
 
-    bool isPython = (m_filePath.ends_with(L".py") || m_fileName.ends_with(L".py"));
-    bool isShell = (m_filePath.ends_with(L".sh") || m_fileName.ends_with(L".sh") || m_filePath.ends_with(L".bash"));
-    bool useHash = isPython || isShell;
+bool Buffer::ToggleLineCommentRange(size_t sLine, size_t eLine, const std::wstring& explicitExt, std::vector<int>* outLineColDeltas) {
+    if (m_lines.empty()) return false;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (sLine > eLine) std::swap(sLine, eLine);
 
-    if (useHash) {
-        if (firstNonWs < line.length() && line[firstNonWs] == L'#') {
-            size_t removeLen = (firstNonWs + 1 < line.length() && line[firstNonWs + 1] == L' ') ? 2 : 1;
-            line.erase(firstNonWs, removeLen);
-            if (m_cursor.col > firstNonWs) {
-                m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
-            }
-        } else {
-            line.insert(firstNonWs, L"# ");
-            if (m_cursor.col >= firstNonWs) {
-                m_cursor.col += 2;
+    if (outLineColDeltas) outLineColDeltas->assign(eLine - sLine + 1, 0);
+
+    std::wstring ext = ResolveLowerExt(explicitExt, m_filePath, m_fileName);
+    bool useXml = (ext == L"html" || ext == L"htm" || ext == L"xml" || ext == L"svg" || ext == L"md" || ext == L"xhtml" || ext == L"vue");
+    bool useBlockAsLine = (ext == L"css" || ext == L"scss" || ext == L"less");
+    bool useHash = (ext == L"py" || ext == L"sh" || ext == L"bash" || ext == L"yml" || ext == L"yaml" ||
+                    ext == L"toml" || ext == L"env" || ext == L"rb" || ext == L"pl" || ext == L"ini");
+    bool useDash = (ext == L"sql" || ext == L"lua");
+    if ((ext == L"php" || ext == L"phtml" || ext == L"php8" || ext == L"php7") && !IsInsidePhpBlockAtLine(m_lines, sLine)) {
+        // Selected markup lines in a mixed PHP/HTML template outside <?php ... ?>
+        bool looksLikeHtml = false;
+        for (size_t l = sLine; l <= eLine; ++l) {
+            size_t fnw = m_lines[l].find_first_not_of(L" \t");
+            if (fnw != std::wstring::npos && m_lines[l][fnw] == L'<') {
+                looksLikeHtml = true;
+                break;
             }
         }
-    } else {
-        if (firstNonWs + 1 < line.length() && line[firstNonWs] == L'/' && line[firstNonWs + 1] == L'/') {
-            size_t removeLen = (firstNonWs + 2 < line.length() && line[firstNonWs + 2] == L' ') ? 3 : 2;
-            line.erase(firstNonWs, removeLen);
-            if (m_cursor.col > firstNonWs) {
-                m_cursor.col = (m_cursor.col >= firstNonWs + removeLen) ? (m_cursor.col - removeLen) : firstNonWs;
-            }
-        } else {
-            line.insert(firstNonWs, L"// ");
-            if (m_cursor.col >= firstNonWs) {
-                m_cursor.col += 3;
+        if (looksLikeHtml) useXml = true;
+    }
+
+    PushUndo();
+
+    if (useXml || useBlockAsLine) {
+        const std::wstring openTok = useXml ? L"<!--" : L"/*";
+        const std::wstring closeTok = useXml ? L"-->" : L"*/";
+        bool allCommented = true;
+        bool hasNonBlank = false;
+        for (size_t l = sLine; l <= eLine; ++l) {
+            const auto& ln = m_lines[l];
+            size_t firstNonWs = ln.find_first_not_of(L" \t");
+            if (firstNonWs == std::wstring::npos) continue;
+            hasNonBlank = true;
+            size_t lastNonWs = ln.find_last_not_of(L" \t");
+            std::wstring trimmed = ln.substr(firstNonWs, lastNonWs - firstNonWs + 1);
+            if (trimmed.rfind(openTok, 0) != 0 || trimmed.size() < openTok.size() + closeTok.size() ||
+                trimmed.compare(trimmed.size() - closeTok.size(), closeTok.size(), closeTok) != 0) {
+                allCommented = false;
+                break;
             }
         }
+        if (!hasNonBlank) return false;
+        for (size_t l = sLine; l <= eLine; ++l) {
+            auto& ln = m_lines[l];
+            size_t firstNonWs = ln.find_first_not_of(L" \t");
+            if (firstNonWs == std::wstring::npos) continue;
+            size_t lastNonWs = ln.find_last_not_of(L" \t");
+            if (allCommented) {
+                size_t closePos = lastNonWs + 1 - closeTok.size();
+                size_t closeErasePos = (closePos > firstNonWs + openTok.size() && ln[closePos - 1] == L' ') ? (closePos - 1) : closePos;
+                size_t closeEraseLen = closeTok.size() + (closePos - closeErasePos);
+                ln.erase(closeErasePos, closeEraseLen);
+                size_t openEraseLen = openTok.size() + ((firstNonWs + openTok.size() < ln.size() && ln[firstNonWs + openTok.size()] == L' ') ? 1 : 0);
+                ln.erase(firstNonWs, openEraseLen);
+                if (outLineColDeltas) (*outLineColDeltas)[l - sLine] = -static_cast<int>(openEraseLen);
+            } else {
+                std::wstring body = ln.substr(firstNonWs, lastNonWs - firstNonWs + 1);
+                ln = ln.substr(0, firstNonWs) + openTok + L" " + body + L" " + closeTok;
+                if (outLineColDeltas) (*outLineColDeltas)[l - sLine] = static_cast<int>(openTok.size() + 1);
+            }
+            m_tokenCache.erase(l);
+        }
+        m_isModified = true;
+        ++m_version;
+        return true;
     }
+
+    const std::wstring prefix = useHash ? L"#" : (useDash ? L"--" : L"//");
+    bool allCommented = true;
+    bool hasNonBlank = false;
+    size_t minIndent = (std::numeric_limits<size_t>::max)();
+    for (size_t l = sLine; l <= eLine; ++l) {
+        const auto& ln = m_lines[l];
+        size_t firstNonWs = ln.find_first_not_of(L" \t");
+        if (firstNonWs == std::wstring::npos) continue;
+        hasNonBlank = true;
+        if (firstNonWs < minIndent) minIndent = firstNonWs;
+        if (ln.compare(firstNonWs, prefix.length(), prefix) != 0) {
+            allCommented = false;
+        }
+    }
+    if (!hasNonBlank) {
+        minIndent = 0;
+        allCommented = false;
+    }
+
+    for (size_t l = sLine; l <= eLine; ++l) {
+        auto& ln = m_lines[l];
+        size_t firstNonWs = ln.find_first_not_of(L" \t");
+        if (hasNonBlank && firstNonWs == std::wstring::npos) continue;
+        if (allCommented) {
+            size_t removeLen = prefix.length();
+            if (firstNonWs + removeLen < ln.length() && ln[firstNonWs + removeLen] == L' ') {
+                removeLen++;
+            }
+            ln.erase(firstNonWs, removeLen);
+            if (outLineColDeltas) (*outLineColDeltas)[l - sLine] = -static_cast<int>(removeLen);
+        } else {
+            size_t insertPos = (std::min)(minIndent, ln.length());
+            std::wstring tok = prefix + L" ";
+            ln.insert(insertPos, tok);
+            if (outLineColDeltas) (*outLineColDeltas)[l - sLine] = static_cast<int>(tok.length());
+        }
+        m_tokenCache.erase(l);
+    }
+
     m_isModified = true;
+    ++m_version;
+    return true;
 }
 
 void Buffer::ToggleBlockComment() {
     if (m_lines.empty()) return;
-    PushUndo();
+    CursorPosition outA{}, outC{};
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
-    auto& line = m_lines[m_cursor.line];
+    ToggleBlockCommentRange(m_cursor.line, m_cursor.col, m_cursor.line, m_cursor.col, false, L"", outA, outC);
+    m_cursor = outC;
+}
 
-    size_t openPos = line.find(L"/*");
-    size_t closePos = line.rfind(L"*/");
-    if (openPos != std::wstring::npos && closePos != std::wstring::npos && closePos >= openPos + 2) {
-        // Erase closing tag (and preceding space if present)
-        size_t closeStart = (closePos > 0 && line[closePos - 1] == L' ') ? (closePos - 1) : closePos;
-        size_t closeLen = (closePos > 0 && line[closePos - 1] == L' ') ? 3 : 2;
-        line.erase(closeStart, closeLen);
-
-        // Erase opening tag (and following space if present)
-        size_t openLen = (openPos + 2 < line.length() && line[openPos + 2] == L' ') ? 3 : 2;
-        line.erase(openPos, openLen);
-    } else {
-        line = L"/* " + line + L" */";
-        m_cursor.col += 3;
+bool Buffer::ToggleBlockCommentRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol, bool hasSel, const std::wstring& explicitExt,
+                                     CursorPosition& outAnchor, CursorPosition& outCursor) {
+    if (m_lines.empty()) return false;
+    if (sLine >= m_lines.size()) sLine = m_lines.size() - 1;
+    if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
+    if (sLine > eLine || (sLine == eLine && sCol > eCol)) {
+        std::swap(sLine, eLine);
+        std::swap(sCol, eCol);
     }
+
+    std::wstring ext = ResolveLowerExt(explicitExt, m_filePath, m_fileName);
+    bool useXml = (ext == L"html" || ext == L"htm" || ext == L"xml" || ext == L"svg" || ext == L"md" || ext == L"xhtml" || ext == L"vue");
+    if ((ext == L"php" || ext == L"phtml" || ext == L"php8" || ext == L"php7") && !IsInsidePhpBlockAtLine(m_lines, sLine)) {
+        size_t fnw = m_lines[sLine].find_first_not_of(L" \t");
+        if (fnw != std::wstring::npos && m_lines[sLine][fnw] == L'<') useXml = true;
+    }
+    const std::wstring openTok = useXml ? L"<!--" : L"/*";
+    const std::wstring closeTok = useXml ? L"-->" : L"*/";
+
+    PushUndo();
+
+    if (!hasSel || (sLine == eLine && sCol == eCol)) {
+        auto& line = m_lines[sLine];
+        size_t openPos = line.find(openTok);
+        size_t closePos = line.rfind(closeTok);
+        if (openPos != std::wstring::npos && closePos != std::wstring::npos && closePos >= openPos + openTok.size()) {
+            size_t closeStart = (closePos > 0 && line[closePos - 1] == L' ') ? (closePos - 1) : closePos;
+            size_t closeLen = closeTok.size() + (closePos - closeStart);
+            line.erase(closeStart, closeLen);
+            size_t openLen = openTok.size() + ((openPos + openTok.size() < line.length() && line[openPos + openTok.size()] == L' ') ? 1 : 0);
+            line.erase(openPos, openLen);
+            outCursor = { sLine, (m_cursor.col > openPos) ? (m_cursor.col >= openLen ? m_cursor.col - openLen : openPos) : m_cursor.col };
+        } else {
+            line = openTok + L" " + line + L" " + closeTok;
+            outCursor = { sLine, m_cursor.col + openTok.size() + 1 };
+        }
+        outAnchor = outCursor;
+        m_tokenCache.erase(sLine);
+        m_isModified = true;
+        ++m_version;
+        return true;
+    }
+
+    sCol = (std::min)(sCol, m_lines[sLine].length());
+    eCol = (std::min)(eCol, m_lines[eLine].length());
+
+    if (sLine == eLine) {
+        auto& line = m_lines[sLine];
+        std::wstring sel = line.substr(sCol, eCol - sCol);
+        if (sel.size() >= openTok.size() + closeTok.size() &&
+            sel.rfind(openTok, 0) == 0 &&
+            sel.compare(sel.size() - closeTok.size(), closeTok.size(), closeTok) == 0) {
+            std::wstring inner = sel.substr(openTok.size(), sel.size() - openTok.size() - closeTok.size());
+            if (!inner.empty() && inner.front() == L' ') inner.erase(0, 1);
+            if (!inner.empty() && inner.back() == L' ') inner.pop_back();
+            line.replace(sCol, eCol - sCol, inner);
+            outAnchor = { sLine, sCol };
+            outCursor = { sLine, sCol + inner.size() };
+        } else {
+            std::wstring wrapped = openTok + L" " + sel + L" " + closeTok;
+            line.replace(sCol, eCol - sCol, wrapped);
+            outAnchor = { sLine, sCol };
+            outCursor = { sLine, sCol + wrapped.size() };
+        }
+        m_tokenCache.erase(sLine);
+    } else {
+        std::wstring firstSeg = m_lines[sLine].substr(sCol);
+        std::wstring lastSeg = m_lines[eLine].substr(0, eCol);
+        bool firstHasOpen = (firstSeg.rfind(openTok, 0) == 0);
+        bool lastHasClose = (lastSeg.size() >= closeTok.size() && lastSeg.compare(lastSeg.size() - closeTok.size(), closeTok.size(), closeTok) == 0);
+        if (firstHasOpen && lastHasClose) {
+            size_t openStrip = openTok.size() + ((openTok.size() < firstSeg.size() && firstSeg[openTok.size()] == L' ') ? 1 : 0);
+            m_lines[sLine].erase(sCol, openStrip);
+            size_t closePos = eCol - closeTok.size();
+            size_t closeStrip = closeTok.size() + ((closePos > 0 && m_lines[eLine][closePos - 1] == L' ') ? 1 : 0);
+            size_t eraseAt = eCol - closeStrip;
+            m_lines[eLine].erase(eraseAt, closeStrip);
+            outAnchor = { sLine, sCol };
+            outCursor = { eLine, eraseAt };
+        } else {
+            m_lines[sLine].insert(sCol, openTok + L" ");
+            m_lines[eLine].insert(eCol, L" " + closeTok);
+            outAnchor = { sLine, sCol };
+            outCursor = { eLine, eCol + 1 + closeTok.size() };
+        }
+        m_tokenCache.clear();
+    }
+
+    m_cursor = outCursor;
     m_isModified = true;
+    ++m_version;
+    return true;
 }
 
 bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
@@ -1410,7 +2096,9 @@ bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
         }
     }
 
+    m_tokenCache.clear();
     m_isModified = true;
+    ++m_version;
     return true;
 }
 
@@ -1461,7 +2149,9 @@ bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::w
         }
     }
 
+    m_tokenCache.clear();
     m_isModified = true;
+    ++m_version;
     return true;
 }
 

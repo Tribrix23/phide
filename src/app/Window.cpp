@@ -832,6 +832,26 @@ void Window::SaveSessionState() {
     for (const auto& r : m_recentPaths) {
         out << L"    \"" << EscapeJson(r) << L"\"" << (++count < m_recentPaths.size() ? L"," : L"") << L"\n";
     }
+    out << L"  ],\n";
+    out << L"  \"foldedDocs\": [\n";
+    std::vector<std::wstring> foldedEntries;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.isSpecialView && !doc.filePath.empty() && !doc.foldedLines.empty()) {
+                std::wstring entry = doc.filePath + L"|";
+                bool firstFold = true;
+                for (size_t fl : doc.foldedLines) {
+                    if (!firstFold) entry += L",";
+                    entry += std::to_wstring(fl);
+                    firstFold = false;
+                }
+                foldedEntries.push_back(std::move(entry));
+            }
+        }
+    }
+    for (size_t fi = 0; fi < foldedEntries.size(); ++fi) {
+        out << L"    \"" << EscapeJson(foldedEntries[fi]) << L"\"" << (fi + 1 < foldedEntries.size() ? L"," : L"") << L"\n";
+    }
     out << L"  ]\n";
     out << L"}\n";
     out.flush();
@@ -1093,6 +1113,7 @@ void Window::LoadSessionState() {
     std::set<std::wstring> expandedDirs;
     std::vector<std::wstring> recentPaths;
     std::vector<std::wstring> openDocPaths;
+    std::unordered_map<std::wstring, std::set<size_t>> savedFoldedDocs;
 
     struct SavedGroup {
         int activeDocIdx = 0;
@@ -1323,6 +1344,8 @@ void Window::LoadSessionState() {
             currentArray = L"expandedDirs";
         } else if (line.find(L"\"recentPaths\"") != std::wstring::npos) {
             currentArray = L"recentPaths";
+        } else if (line.find(L"\"foldedDocs\"") != std::wstring::npos) {
+            currentArray = L"foldedDocs";
         } else if (line.find(L"]") != std::wstring::npos) {
             currentArray.clear();
         } else if (!currentArray.empty()) {
@@ -1336,6 +1359,21 @@ void Window::LoadSessionState() {
                     expandedDirs.insert(val);
                 } else if (currentArray == L"recentPaths") {
                     recentPaths.push_back(val);
+                } else if (currentArray == L"foldedDocs") {
+                    size_t pipe = val.rfind(L'|');
+                    if (pipe != std::wstring::npos && pipe > 0) {
+                        std::wstring fPath = val.substr(0, pipe);
+                        std::wstring listStr = val.substr(pipe + 1);
+                        std::set<size_t> folds;
+                        std::wstringstream fs(listStr);
+                        std::wstring tok;
+                        while (std::getline(fs, tok, L',')) {
+                            if (!tok.empty()) folds.insert(static_cast<size_t>(_wcstoui64(tok.c_str(), nullptr, 10)));
+                        }
+                        if (!folds.empty()) {
+                            savedFoldedDocs[fPath] = std::move(folds);
+                        }
+                    }
                 }
             }
         }
@@ -1446,6 +1484,16 @@ void Window::LoadSessionState() {
                 }
             } else if (!p.empty() && std::filesystem::exists(p, ec)) {
                 OpenFileDocument(p, false);
+                auto fit = savedFoldedDocs.find(p);
+                if (fit != savedFoldedDocs.end()) {
+                    if (auto* openedDoc = GetActiveDoc()) {
+                        for (size_t fl : fit->second) {
+                            if (fl < openedDoc->buffer.GetLineCount()) {
+                                openedDoc->foldedLines.insert(fl);
+                            }
+                        }
+                    }
+                }
             }
         };
 
@@ -3717,6 +3765,73 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     if (actionCmd == L"cmd_cut") { DoCut(); return; }
     if (actionCmd == L"cmd_copy") { DoCopy(); return; }
     if (actionCmd == L"cmd_paste") { DoPaste(); return; }
+    if (actionCmd == L"cmd_toggle_line_comment") { DoToggleLineComment(); return; }
+    if (actionCmd == L"cmd_toggle_block_comment") { DoToggleBlockComment(); return; }
+    if (actionCmd == L"cmd_select_all_occurrences") { DoChangeAllOccurrences(); return; }
+    if (actionCmd == L"cmd_add_cursor_up" || actionCmd == L"cmd_add_cursor_down") {
+        if (auto* pDoc = GetActiveDoc()) {
+            if (!pDoc->isSpecialView && pDoc->AddCursorVertical(actionCmd == L"cmd_add_cursor_up")) {
+                EnsureCursorVisible();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_move_line_up") { DoMoveLines(true); return; }
+    if (actionCmd == L"cmd_move_line_down") { DoMoveLines(false); return; }
+    if (actionCmd == L"cmd_duplicate_line_up") { DoDuplicateLines(true); return; }
+    if (actionCmd == L"cmd_duplicate_line_down") { DoDuplicateLines(false); return; }
+    if (actionCmd == L"cmd_delete_line") {
+        if (auto* pDoc = GetActiveDoc()) {
+            if (!pDoc->isSpecialView) {
+                pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);
+                pDoc->ClearSelection();
+                EnsureCursorVisible();
+                MarkDocumentModified(pDoc);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_join_lines") { DoJoinLines(); return; }
+    if (actionCmd == L"cmd_sort_lines_asc") { DoSortLines(true); return; }
+    if (actionCmd == L"cmd_sort_lines_desc") { DoSortLines(false); return; }
+    if (actionCmd == L"cmd_trim_trailing_whitespace") { DoTrimTrailingWhitespace(); return; }
+    if (actionCmd == L"cmd_format_document") { DoFormatDocument(true); return; }
+    if (actionCmd == L"cmd_format_selection") { DoFormatSelection(); return; }
+    if (actionCmd == L"cmd_jump_to_bracket") { DoJumpToMatchingBracket(); return; }
+    if (actionCmd == L"cmd_fold_all") { DoFoldAll(); return; }
+    if (actionCmd == L"cmd_unfold_all") { DoUnfoldAll(); return; }
+    if (actionCmd == L"cmd_fold_level_1") { DoFoldLevel(1); return; }
+    if (actionCmd == L"cmd_fold_level_2") { DoFoldLevel(2); return; }
+    if (actionCmd == L"cmd_fold_level_3") { DoFoldLevel(3); return; }
+    if (actionCmd == L"cmd_toggle_eol") {
+        if (auto* pDoc = GetActiveDoc()) {
+            if (!pDoc->isSpecialView) {
+                std::wstring nextEol = (pDoc->buffer.GetLineEnding() == L"\r\n") ? L"\n" : L"\r\n";
+                if (pDoc->buffer.ConvertLineEnding(nextEol)) {
+                    MarkDocumentModified(pDoc);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+            }
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_encoding_utf8" || actionCmd == L"cmd_encoding_utf8_bom" ||
+        actionCmd == L"cmd_encoding_utf16le" || actionCmd == L"cmd_encoding_win1252") {
+        if (auto* pDoc = GetActiveDoc()) {
+            if (!pDoc->isSpecialView) {
+                auto target = editor::TextEncoding::UTF8;
+                if (actionCmd == L"cmd_encoding_utf8_bom") target = editor::TextEncoding::UTF8_BOM;
+                else if (actionCmd == L"cmd_encoding_utf16le") target = editor::TextEncoding::UTF16_LE;
+                else if (actionCmd == L"cmd_encoding_win1252") target = editor::TextEncoding::Windows1252;
+                pDoc->buffer.ConvertEncoding(target);
+                MarkDocumentModified(pDoc);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
+        return;
+    }
     if (actionCmd == L"cmd_find_in_files") {
         m_config.activeRailTab = 1;
         m_config.isDrawerOpen = true;
@@ -4564,8 +4679,11 @@ void Window::FlushPendingAutoSaves() {
 void Window::DoCut() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
         DoCopy();
-        if (pDoc->HasSelection()) {
+        if (pDoc->HasAnyMultiCursor()) {
+            pDoc->MultiCursorCut();
+        } else if (pDoc->HasSelection()) {
             pDoc->DeleteSelection();
         } else {
             pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);
@@ -4584,20 +4702,32 @@ void Window::DoCopy() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         std::wstring textToCopy;
-        if (pDoc->HasSelection()) {
+        if (pDoc->HasAnyMultiCursor()) {
+            textToCopy = pDoc->GetMultiCursorCopyText();
+        } else if (pDoc->HasSelection()) {
             textToCopy = pDoc->GetSelectedText();
         } else {
             auto cursor = pDoc->buffer.GetCursor();
             textToCopy = pDoc->buffer.GetLine(cursor.line) + L"\r\n";
         }
-        if (!textToCopy.empty() && OpenClipboard(m_hwnd)) {
+        // Normalize bare \n to \r\n for Windows clipboard interoperability
+        std::wstring winClip;
+        winClip.reserve(textToCopy.size() + 16);
+        for (size_t i = 0; i < textToCopy.size(); ++i) {
+            if (textToCopy[i] == L'\n' && (i == 0 || textToCopy[i - 1] != L'\r')) {
+                winClip += L"\r\n";
+            } else {
+                winClip += textToCopy[i];
+            }
+        }
+        if (!winClip.empty() && OpenClipboard(m_hwnd)) {
             EmptyClipboard();
-            size_t bytes = (textToCopy.length() + 1) * sizeof(wchar_t);
+            size_t bytes = (winClip.length() + 1) * sizeof(wchar_t);
             HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
             if (hMem) {
                 void* pMem = GlobalLock(hMem);
                 if (pMem) {
-                    memcpy(pMem, textToCopy.c_str(), bytes);
+                    memcpy(pMem, winClip.c_str(), bytes);
                     GlobalUnlock(hMem);
                     SetClipboardData(CF_UNICODETEXT, hMem);
                 }
@@ -4610,6 +4740,7 @@ void Window::DoCopy() {
 void Window::DoPaste() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
+        if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
         if (OpenClipboard(m_hwnd)) {
             HANDLE hData = GetClipboardData(CF_UNICODETEXT);
             if (hData) {
@@ -4618,10 +4749,14 @@ void Window::DoPaste() {
                     std::wstring clip(pText);
                     GlobalUnlock(hData);
                     CloseClipboard();
-                    if (pDoc->HasSelection()) {
-                        pDoc->DeleteSelection();
+                    if (pDoc->HasAnyMultiCursor()) {
+                        pDoc->MultiCursorPaste(clip);
+                    } else {
+                        if (pDoc->HasSelection()) {
+                            pDoc->DeleteSelection();
+                        }
+                        pDoc->buffer.InsertText(clip);
                     }
-                    pDoc->buffer.InsertText(clip);
                     EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
                     if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
@@ -4723,35 +4858,8 @@ void Window::DoChangeAllOccurrences() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
 
-    auto cursor = pDoc->buffer.GetCursor();
-    const auto& line = pDoc->buffer.GetLine(cursor.line);
-    if (line.empty()) return;
-
-    size_t col = (cursor.col < line.size()) ? cursor.col : (line.empty() ? 0 : line.size() - 1);
-    if (!iswalnum(line[col]) && line[col] != L'_') {
-        if (col > 0 && (iswalnum(line[col - 1]) || line[col - 1] == L'_')) {
-            --col;
-        }
-    }
-    if (!iswalnum(line[col]) && line[col] != L'_') return;
-
-    size_t start = col;
-    while (start > 0 && (iswalnum(line[start - 1]) || line[start - 1] == L'_')) {
-        --start;
-    }
-    size_t end = col;
-    while (end < line.size() && (iswalnum(line[end]) || line[end] == L'_')) {
-        ++end;
-    }
-
-    std::wstring word = line.substr(start, end - start);
-    if (!word.empty()) {
-        m_config.activeRailTab = 1; // Switch to Search tab
-        if (m_drawerAnimProgress < 0.1f) {
-            ToggleSidebar();
-        }
-        m_drawer.SetSearchQuery(word);
-        m_drawer.ExecuteSearch(true);
+    if (pDoc->SelectAllOccurrences()) {
+        EnsureCursorVisible();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -5029,20 +5137,131 @@ void Window::DoReplace() {
     DoShowReplace();
 }
 
+static std::wstring GetDocumentLowerExtension(const editor::OpenDocument* pDoc) {
+    if (!pDoc) return L"";
+    std::wstring ext;
+    if (!pDoc->filePath.empty()) {
+        ext = std::filesystem::path(pDoc->filePath).extension().wstring();
+    } else if (!pDoc->fileName.empty()) {
+        ext = std::filesystem::path(pDoc->fileName).extension().wstring();
+    }
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    return ext;
+}
+
 void Window::DoToggleLineComment() {
     auto* pDoc = GetActiveDoc();
-    if (pDoc && !pDoc->isSpecialView) {
-        pDoc->buffer.ToggleLineComment();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    std::wstring ext = GetDocumentLowerExtension(pDoc);
+    if (!pDoc->HasSelection() && !pDoc->HasAnyMultiCursor()) {
+        auto cur = pDoc->buffer.GetCursor();
+        std::vector<int> deltas;
+        if (pDoc->buffer.ToggleLineCommentRange(cur.line, cur.line, ext, &deltas)) {
+            if (!deltas.empty()) {
+                int newCol = static_cast<int>(cur.col) + deltas[0];
+                pDoc->buffer.SetCursor(cur.line, static_cast<size_t>((std::max)(0, newCol)));
+            }
+            MarkDocumentModified(pDoc);
+            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    std::vector<std::pair<size_t, size_t>> intervals;
+    if (pDoc->isColumnSelection) {
+        size_t topL = (std::min)(pDoc->boxAnchorLine, pDoc->boxActiveLine);
+        size_t botL = (std::max)(pDoc->boxAnchorLine, pDoc->boxActiveLine);
+        intervals.push_back({ topL, botL });
+    } else {
+        auto addSelInterval = [&](size_t sL, size_t eL, size_t eC) {
+            if (eL > sL && eC == 0) --eL;
+            intervals.push_back({ sL, eL });
+        };
+        if (pDoc->HasSelection()) {
+            size_t sL, sC, eL, eC;
+            pDoc->GetSelectionRange(sL, sC, eL, eC);
+            addSelInterval(sL, eL, eC);
+        } else {
+            auto c = pDoc->buffer.GetCursor();
+            addSelInterval(c.line, c.line, c.col);
+        }
+        for (const auto& sec : pDoc->secondarySelections) {
+            size_t sL, sC, eL, eC;
+            sec.GetRange(sL, sC, eL, eC);
+            addSelInterval(sL, eL, eC);
+        }
+    }
+    if (intervals.empty()) return;
+    std::sort(intervals.begin(), intervals.end());
+    std::vector<std::pair<size_t, size_t>> merged;
+    for (const auto& iv : intervals) {
+        if (merged.empty() || iv.first > merged.back().second + 1) {
+            merged.push_back(iv);
+        } else {
+            merged.back().second = (std::max)(merged.back().second, iv.second);
+        }
+    }
+
+    bool anyChanged = false;
+    pDoc->buffer.PushUndo();
+    for (const auto& iv : merged) {
+        std::vector<int> deltas;
+        if (pDoc->buffer.ToggleLineCommentRange(iv.first, iv.second, ext, &deltas)) {
+            anyChanged = true;
+            auto applyLineDelta = [&](editor::CursorPosition& pos) {
+                if (pos.line >= iv.first && pos.line <= iv.second) {
+                    size_t idx = pos.line - iv.first;
+                    if (idx < deltas.size()) {
+                        int nc = static_cast<int>(pos.col) + deltas[idx];
+                        pos.col = static_cast<size_t>((std::max)(0, nc));
+                    }
+                }
+            };
+            auto c = pDoc->buffer.GetCursor();
+            applyLineDelta(c);
+            pDoc->buffer.SetCursor(c.line, c.col);
+            applyLineDelta(pDoc->selAnchor);
+            applyLineDelta(pDoc->selEnd);
+            for (auto& sec : pDoc->secondarySelections) {
+                applyLineDelta(sec.anchor);
+                applyLineDelta(sec.cursor);
+            }
+        }
+    }
+    if (anyChanged) {
         MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoToggleBlockComment() {
     auto* pDoc = GetActiveDoc();
-    if (pDoc && !pDoc->isSpecialView) {
-        pDoc->buffer.ToggleBlockComment();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    std::wstring ext = GetDocumentLowerExtension(pDoc);
+    size_t sL = 0, sC = 0, eL = 0, eC = 0;
+    bool hasSel = pDoc->HasSelection();
+    if (hasSel) {
+        pDoc->GetSelectionRange(sL, sC, eL, eC);
+    } else {
+        auto c = pDoc->buffer.GetCursor();
+        sL = eL = c.line;
+        sC = eC = c.col;
+    }
+    editor::CursorPosition newAnchor, newCursor;
+    if (pDoc->buffer.ToggleBlockCommentRange(sL, sC, eL, eC, hasSel, ext, newAnchor, newCursor)) {
+        if (hasSel) {
+            pDoc->selAnchor = newAnchor;
+            pDoc->selEnd = newCursor;
+            pDoc->hasSelection = (newAnchor.line != newCursor.line || newAnchor.col != newCursor.col);
+        }
         MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -5696,23 +5915,62 @@ static std::wstring FormatBracesNative(const std::wstring& src) {
     return out;
 }
 
+static std::wstring ApplyLspTextEdits(const std::wstring& src, std::vector<lsp::LspTextEdit> edits) {
+    if (edits.empty()) return L"";
+    std::vector<size_t> lineStarts;
+    lineStarts.push_back(0);
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (src[i] == L'\n') lineStarts.push_back(i + 1);
+    }
+    auto toOffset = [&](size_t line, size_t col) -> size_t {
+        if (line >= lineStarts.size()) return src.size();
+        size_t start = lineStarts[line];
+        size_t limit = (line + 1 < lineStarts.size()) ? (lineStarts[line + 1] - 1) : src.size();
+        if (limit > start && src[limit - 1] == L'\r') --limit;
+        return (std::min)(start + col, limit);
+    };
+
+    std::sort(edits.begin(), edits.end(), [](const lsp::LspTextEdit& a, const lsp::LspTextEdit& b) {
+        if (a.startLine != b.startLine) return a.startLine > b.startLine;
+        return a.startCol > b.startCol;
+    });
+
+    std::wstring result = src;
+    for (const auto& ed : edits) {
+        size_t sOff = toOffset(ed.startLine, ed.startCol);
+        size_t eOff = toOffset(ed.endLine, ed.endCol);
+        if (eOff >= sOff && eOff <= result.size()) {
+            std::wstring cleanNew;
+            cleanNew.reserve(ed.newText.size());
+            for (wchar_t ch : ed.newText) {
+                if (ch != L'\r') cleanNew.push_back(ch);
+            }
+            result.replace(sOff, eOff - sOff, cleanNew);
+        }
+    }
+    return result;
+}
+
 void Window::DoFormatDocument(bool showFeedback) {
+    (void)showFeedback;
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return;
 
-    std::wstring ext;
-    if (!pDoc->filePath.empty()) {
-        ext = std::filesystem::path(pDoc->filePath).extension().wstring();
-    } else if (!pDoc->fileName.empty()) {
-        ext = std::filesystem::path(pDoc->fileName).extension().wstring();
-    }
-    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-
+    std::wstring ext = GetDocumentLowerExtension(pDoc);
     std::wstring rawText = pDoc->buffer.GetText();
     if (rawText.empty()) return;
 
     int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-    std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
+    std::wstring formatted;
+    if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
+        std::vector<lsp::LspTextEdit> lspEdits;
+        if (m_lsp.RequestFormatting(pDoc->filePath, tabSize, m_config.insertSpaces, lspEdits)) {
+            formatted = ApplyLspTextEdits(rawText, std::move(lspEdits));
+        }
+    }
+    if (formatted.empty()) {
+        formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize, pDoc->filePath, m_config.insertSpaces);
+    }
 
     if (!formatted.empty() && formatted != rawText) {
         pDoc->buffer.PushUndo();
@@ -5722,6 +5980,7 @@ void Window::DoFormatDocument(bool showFeedback) {
         size_t origCol = curPos.col;
 
         pDoc->buffer.SetText(formatted);
+        pDoc->ClearSelection();
 
         size_t newLineCount = pDoc->buffer.GetLineCount();
         size_t clampedLine = (std::min)(origLine, newLineCount > 0 ? newLineCount - 1 : 0);
@@ -5733,16 +5992,7 @@ void Window::DoFormatDocument(bool showFeedback) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     } else {
         size_t lineCount = pDoc->buffer.GetLineCount();
-        bool modified = false;
-        for (size_t i = 0; i < lineCount; ++i) {
-            std::wstring line = pDoc->buffer.GetLine(i);
-            size_t end = line.find_last_not_of(L" \t\r\n");
-            if (end != std::wstring::npos && end + 1 < line.length()) {
-                pDoc->buffer.SetLine(i, line.substr(0, end + 1));
-                modified = true;
-            }
-        }
-        if (modified) {
+        if (lineCount > 0 && pDoc->buffer.TrimTrailingWhitespace(0, lineCount - 1)) {
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
@@ -5751,22 +6001,253 @@ void Window::DoFormatDocument(bool showFeedback) {
 
 void Window::DoFormatSelection() {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || !pDoc->HasSelection()) return;
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return;
+
     size_t startLine = 0, startCol = 0, endLine = 0, endCol = 0;
-    pDoc->GetSelectionRange(startLine, startCol, endLine, endCol);
-    bool modified = false;
-    for (size_t i = startLine; i <= endLine && i < pDoc->buffer.GetLineCount(); ++i) {
-        std::wstring line = pDoc->buffer.GetLine(i);
-        size_t end = line.find_last_not_of(L" \t\r\n");
-        if (end != std::wstring::npos && end + 1 < line.length()) {
-            pDoc->buffer.SetLine(i, line.substr(0, end + 1));
-            modified = true;
+    if (pDoc->HasSelection()) {
+        pDoc->GetSelectionRange(startLine, startCol, endLine, endCol);
+    } else {
+        auto cur = pDoc->buffer.GetCursor();
+        startLine = endLine = cur.line;
+        startCol = 0;
+        endCol = pDoc->buffer.GetLine(cur.line).length();
+    }
+
+    std::wstring ext = GetDocumentLowerExtension(pDoc);
+    std::wstring rawText = pDoc->buffer.GetText();
+    if (rawText.empty()) return;
+
+    int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+    std::wstring formatted;
+    if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
+        std::vector<lsp::LspTextEdit> lspEdits;
+        if (m_lsp.RequestRangeFormatting(pDoc->filePath, startLine, startCol, endLine, endCol,
+                                         tabSize, m_config.insertSpaces, lspEdits)) {
+            formatted = ApplyLspTextEdits(rawText, std::move(lspEdits));
         }
     }
-    if (modified) {
+    if (formatted.empty()) {
+        formatted = editor::FormatEngine::FormatRange(
+            rawText, startLine, startCol, endLine, endCol, ext, tabSize, pDoc->filePath, m_config.insertSpaces);
+    }
+
+    if (!formatted.empty() && formatted != rawText) {
+        pDoc->buffer.PushUndo();
+        auto curPos = pDoc->buffer.GetCursor();
+        pDoc->buffer.SetText(formatted);
+        pDoc->ClearSelection();
+
+        size_t newLineCount = pDoc->buffer.GetLineCount();
+        size_t clampedLine = (std::min)(curPos.line, newLineCount > 0 ? newLineCount - 1 : 0);
+        size_t lineLen = pDoc->buffer.GetLine(clampedLine).length();
+        size_t clampedCol = (std::min)(curPos.col, lineLen);
+        pDoc->buffer.SetCursor(clampedLine, clampedCol);
+
         MarkDocumentModified(pDoc);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
+}
+
+void Window::DoMoveLines(bool up) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+    bool hasSel = pDoc->HasSelection();
+    if (hasSel) {
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (eLine > sLine && eCol == 0) --eLine;
+    } else {
+        sLine = eLine = pDoc->buffer.GetCursor().line;
+    }
+
+    size_t newS = 0, newE = 0;
+    bool moved = up
+        ? pDoc->buffer.MoveLinesUp(sLine, eLine, newS, newE)
+        : pDoc->buffer.MoveLinesDown(sLine, eLine, newS, newE);
+    if (!moved) {
+        return;
+    }
+
+    int delta = up ? -1 : 1;
+    if (hasSel) {
+        pDoc->selAnchor.line = static_cast<size_t>(static_cast<int>(pDoc->selAnchor.line) + delta);
+        pDoc->selEnd.line = static_cast<size_t>(static_cast<int>(pDoc->selEnd.line) + delta);
+    }
+    pDoc->secondarySelections.clear();
+    pDoc->isColumnSelection = false;
+    EnsureCursorVisible();
+    MarkDocumentModified(pDoc);
+    if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoDuplicateLines(bool up) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+    bool hasSel = pDoc->HasSelection();
+    if (hasSel) {
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (eLine > sLine && eCol == 0) --eLine;
+    } else {
+        sLine = eLine = pDoc->buffer.GetCursor().line;
+    }
+
+    size_t newS = 0, newE = 0;
+    if (pDoc->buffer.DuplicateLines(sLine, eLine, up, newS, newE)) {
+        if (hasSel) {
+            int lineShift = up ? 0 : static_cast<int>(eLine - sLine + 1);
+            pDoc->selAnchor.line += static_cast<size_t>(lineShift);
+            pDoc->selEnd.line += static_cast<size_t>(lineShift);
+        }
+        pDoc->secondarySelections.clear();
+        pDoc->isColumnSelection = false;
+        EnsureCursorVisible();
+        MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoJoinLines() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+    bool hasSel = pDoc->HasSelection();
+    if (hasSel) {
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (eLine > sLine && eCol == 0) --eLine;
+    } else {
+        sLine = eLine = pDoc->buffer.GetCursor().line;
+    }
+    editor::CursorPosition outCur{};
+    if (pDoc->buffer.JoinLines(sLine, eLine, hasSel, outCur)) {
+        pDoc->ClearSelection();
+        EnsureCursorVisible();
+        MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoSortLines(bool ascending) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    size_t sLine = 0, eLine = 0;
+    if (pDoc->HasSelection()) {
+        size_t sCol = 0, eCol = 0;
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (eLine > sLine && eCol == 0) --eLine;
+    } else {
+        sLine = 0;
+        eLine = pDoc->buffer.GetLineCount() > 0 ? pDoc->buffer.GetLineCount() - 1 : 0;
+    }
+    if (pDoc->buffer.SortLines(sLine, eLine, ascending)) {
+        MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoTrimTrailingWhitespace() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+
+    size_t sLine = 0, eLine = 0;
+    if (pDoc->HasSelection()) {
+        size_t sCol = 0, eCol = 0;
+        pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+        if (eLine > sLine && eCol == 0) --eLine;
+    } else {
+        sLine = 0;
+        eLine = pDoc->buffer.GetLineCount() > 0 ? pDoc->buffer.GetLineCount() - 1 : 0;
+    }
+    if (pDoc->buffer.TrimTrailingWhitespace(sLine, eLine)) {
+        MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoFoldAll() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    ui::EditorCanvas::FoldAll(*pDoc);
+    EnsureCursorVisible();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoUnfoldAll() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    ui::EditorCanvas::UnfoldAll(*pDoc);
+    EnsureCursorVisible();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoFoldLevel(int level) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    ui::EditorCanvas::FoldLevel(*pDoc, level);
+    EnsureCursorVisible();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoJumpToMatchingBracket() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    auto cur = pDoc->buffer.GetCursor();
+    size_t targetL = 0, targetC = 0;
+    if (ui::EditorCanvas::FindMatchingBracket(pDoc->buffer, cur.line, cur.col, targetL, targetC)) {
+        pDoc->ClearSelection();
+        pDoc->buffer.SetCursor(targetL, targetC);
+        EnsureCursorVisible();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::OpenStatusBarEncodingPopup() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    RECT rc{};
+    if (m_hwnd) GetClientRect(m_hwnd, &rc);
+    float clientW = static_cast<float>(rc.right - rc.left);
+    float clientH = static_cast<float>(rc.bottom - rc.top);
+    float x = (m_rcStatusBarEncoding.right > m_rcStatusBarEncoding.left) ? m_rcStatusBarEncoding.left : (clientW - m_config.ScaleF(260.0f));
+    float y = (m_rcStatusBarEncoding.top > 0.0f) ? (m_rcStatusBarEncoding.top - m_config.ScaleF(4.0f)) : (clientH - m_config.ScaleF(26.0f));
+    m_popupMenu.OpenEncodingMenu(
+        x, y, m_config,
+        static_cast<int>(pDoc->buffer.GetEncoding()),
+        pDoc->buffer.GetLineEnding() == L"\r\n",
+        true, clientW, clientH);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::OpenStatusBarIndentationPopup() {
+    RECT rc{};
+    if (m_hwnd) GetClientRect(m_hwnd, &rc);
+    float clientW = static_cast<float>(rc.right - rc.left);
+    float clientH = static_cast<float>(rc.bottom - rc.top);
+    float x = (m_rcStatusBarSpaces.right > m_rcStatusBarSpaces.left) ? m_rcStatusBarSpaces.left : (clientW - m_config.ScaleF(360.0f));
+    float y = (m_rcStatusBarSpaces.top > 0.0f) ? (m_rcStatusBarSpaces.top - m_config.ScaleF(4.0f)) : (clientH - m_config.ScaleF(26.0f));
+    m_popupMenu.OpenIndentationMenu(
+        x, y, m_config,
+        m_config.insertSpaces,
+        (m_config.tabSize > 0) ? m_config.tabSize : 4,
+        clientW, clientH);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoOrganizeImports() {
@@ -10654,8 +11135,8 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
     // 1. Only show document metrics (Encoding, Indentation, Ln/Col) when an active document is open
     if (hasActiveDoc) {
-        // UTF-8 & CRLF
-        std::wstring encStr = L"UTF-8   CRLF";
+        // Dynamic Encoding & Line Ending (e.g. "UTF-8   CRLF" or "UTF-16 LE   LF")
+        std::wstring encStr = curDoc->buffer.GetEncodingDisplayName() + L"   " + curDoc->buffer.GetLineEndingDisplayName();
         float encW = measureStatusPillWidth(encStr, m_config.ScaleF(95.0f));
         curRightX -= encW;
         m_rcStatusBarEncoding = D2D1::RectF(curRightX, itemY, curRightX + encW, itemY + itemH);
@@ -10693,10 +11174,13 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
         curRightX -= rightPillGap;
 
-        // Ln, Col
+        // Ln, Col (and active multi-cursor / column selection indicator)
         size_t curLine = curDoc->buffer.GetCursor().line + 1;
         size_t curCol = curDoc->buffer.GetCursor().col + 1;
         std::wstring lnColStr = L"Ln " + std::to_wstring(curLine) + L", Col " + std::to_wstring(curCol);
+        if (!curDoc->secondarySelections.empty()) {
+            lnColStr += L" (" + std::to_wstring(1 + curDoc->secondarySelections.size()) + L" sel)";
+        }
         float lnColW = measureStatusPillWidth(lnColStr, m_config.ScaleF(110.0f));
         curRightX -= lnColW;
         m_rcStatusBarLnCol = D2D1::RectF(curRightX, itemY, curRightX + lnColW, itemY + itemH);
@@ -10963,7 +11447,10 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             : L"Screen-Share Privacy Mask is OFF (Click to mask .env values & secret literals)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarPrivacyMask, clientW);
     } else if (m_isHoveredStatusBarEncoding && hasActiveDoc) {
-        RenderFloatingTooltip(m_pRenderTarget.Get(), L"Encoding: UTF-8, End of Line: CRLF", m_rcStatusBarEncoding, clientW);
+        std::wstring encTip = L"Encoding: " + curDoc->buffer.GetEncodingDisplayName() +
+                               L", End of Line: " + curDoc->buffer.GetLineEndingDisplayName() +
+                               L" (Click to change)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), encTip, m_rcStatusBarEncoding, clientW);
     }
 }
 
@@ -11724,15 +12211,21 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (static_cast<float>(testPt.x) > codeRight - 2.0f) testPt.x = static_cast<LONG>(codeRight - 2.0f);
 
             size_t line = 0, col = 0;
-            if (m_editor.HitTestCodeArea(testPt, m_config, *pActiveDoc, paneCanvasLeft, grpBounds.bottom, line, col)) {
-                pActiveDoc->selEnd = { line, col };
-                pActiveDoc->buffer.SetCursor(line, col);
-                if (pActiveDoc->selAnchor.line != pActiveDoc->selEnd.line || pActiveDoc->selAnchor.col != pActiveDoc->selEnd.col) {
-                    pActiveDoc->hasSelection = true;
-                    pActiveDoc->selectedWord = pActiveDoc->GetSelectedText();
+            bool hitOk = m_editor.HitTestCodeArea(testPt, m_config, *pActiveDoc, paneCanvasLeft, grpBounds.bottom,
+                                                  line, col, !m_isColumnSelecting);
+            if (hitOk) {
+                if (m_isColumnSelecting) {
+                    pActiveDoc->SetColumnSelection(pActiveDoc->boxAnchorLine, pActiveDoc->boxAnchorCol, line, col);
                 } else {
-                    pActiveDoc->hasSelection = false;
-                    pActiveDoc->selectedWord.clear();
+                    pActiveDoc->selEnd = { line, col };
+                    pActiveDoc->buffer.SetCursor(line, col);
+                    if (pActiveDoc->selAnchor.line != pActiveDoc->selEnd.line || pActiveDoc->selAnchor.col != pActiveDoc->selEnd.col) {
+                        pActiveDoc->hasSelection = true;
+                        pActiveDoc->selectedWord = pActiveDoc->GetSelectedText();
+                    } else {
+                        pActiveDoc->hasSelection = false;
+                        pActiveDoc->selectedWord.clear();
+                    }
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
@@ -12978,6 +13471,116 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::MoreRunDebug:
                         DoDebugActiveDocument();
                         break;
+                    case ui::MenuActionId::EditorSelectAllOccurrences:
+                        DoChangeAllOccurrences();
+                        break;
+                    case ui::MenuActionId::EditMoveLineUp:
+                        DoMoveLines(true);
+                        break;
+                    case ui::MenuActionId::EditMoveLineDown:
+                        DoMoveLines(false);
+                        break;
+                    case ui::MenuActionId::EditDuplicateLineUp:
+                        DoDuplicateLines(true);
+                        break;
+                    case ui::MenuActionId::EditDuplicateLineDown:
+                        DoDuplicateLines(false);
+                        break;
+                    case ui::MenuActionId::EditJoinLines:
+                        DoJoinLines();
+                        break;
+                    case ui::MenuActionId::EditSortLinesAsc:
+                        DoSortLines(true);
+                        break;
+                    case ui::MenuActionId::EditSortLinesDesc:
+                        DoSortLines(false);
+                        break;
+                    case ui::MenuActionId::EditTrimTrailingWhitespace:
+                        DoTrimTrailingWhitespace();
+                        break;
+                    case ui::MenuActionId::CodeFoldAll:
+                        DoFoldAll();
+                        break;
+                    case ui::MenuActionId::CodeUnfoldAll:
+                        DoUnfoldAll();
+                        break;
+                    case ui::MenuActionId::CodeFoldLevel1:
+                        DoFoldLevel(1);
+                        break;
+                    case ui::MenuActionId::CodeFoldLevel2:
+                        DoFoldLevel(2);
+                        break;
+                    case ui::MenuActionId::CodeFoldLevel3:
+                        DoFoldLevel(3);
+                        break;
+                    case ui::MenuActionId::CodeJumpToBracket:
+                        DoJumpToMatchingBracket();
+                        break;
+                    case ui::MenuActionId::StatusEolCRLF:
+                    case ui::MenuActionId::StatusEolLF: {
+                        if (auto* pDoc = GetActiveDoc()) {
+                            if (!pDoc->isSpecialView &&
+                                pDoc->buffer.ConvertLineEnding(action == ui::MenuActionId::StatusEolCRLF ? L"\r\n" : L"\n")) {
+                                MarkDocumentModified(pDoc);
+                            }
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::StatusSaveUtf8:
+                    case ui::MenuActionId::StatusSaveUtf8Bom:
+                    case ui::MenuActionId::StatusSaveUtf16Le:
+                    case ui::MenuActionId::StatusSaveUtf16Be:
+                    case ui::MenuActionId::StatusSaveWin1252: {
+                        if (auto* pDoc = GetActiveDoc()) {
+                            if (!pDoc->isSpecialView) {
+                                auto enc = editor::TextEncoding::UTF8;
+                                if (action == ui::MenuActionId::StatusSaveUtf8Bom) enc = editor::TextEncoding::UTF8_BOM;
+                                else if (action == ui::MenuActionId::StatusSaveUtf16Le) enc = editor::TextEncoding::UTF16_LE;
+                                else if (action == ui::MenuActionId::StatusSaveUtf16Be) enc = editor::TextEncoding::UTF16_BE;
+                                else if (action == ui::MenuActionId::StatusSaveWin1252) enc = editor::TextEncoding::Windows1252;
+                                pDoc->buffer.ConvertEncoding(enc);
+                                MarkDocumentModified(pDoc);
+                            }
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::StatusReopenUtf8:
+                    case ui::MenuActionId::StatusReopenUtf16Le:
+                    case ui::MenuActionId::StatusReopenWin1252: {
+                        if (auto* pDoc = GetActiveDoc()) {
+                            if (!pDoc->isSpecialView && !pDoc->filePath.empty()) {
+                                auto enc = editor::TextEncoding::UTF8;
+                                if (action == ui::MenuActionId::StatusReopenUtf16Le) enc = editor::TextEncoding::UTF16_LE;
+                                else if (action == ui::MenuActionId::StatusReopenWin1252) enc = editor::TextEncoding::Windows1252;
+                                pDoc->buffer.SetFilePath(pDoc->filePath);
+                                if (pDoc->buffer.ReopenWithEncoding(enc)) {
+                                    pDoc->ClearSelection();
+                                    pDoc->isDirty = false;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case ui::MenuActionId::StatusIndentSpaces:
+                        m_config.insertSpaces = true;
+                        SaveSessionState();
+                        break;
+                    case ui::MenuActionId::StatusIndentTabs:
+                        m_config.insertSpaces = false;
+                        SaveSessionState();
+                        break;
+                    case ui::MenuActionId::StatusTabSize2:
+                        m_config.tabSize = 2;
+                        SaveSessionState();
+                        break;
+                    case ui::MenuActionId::StatusTabSize4:
+                        m_config.tabSize = 4;
+                        SaveSessionState();
+                        break;
+                    case ui::MenuActionId::StatusTabSize8:
+                        m_config.tabSize = 8;
+                        SaveSessionState();
+                        break;
                     case ui::MenuActionId::MoreTraceCode:
                     case ui::MenuActionId::MoreDependencyGraph:
                     case ui::MenuActionId::MoreCallHierarchy:
@@ -13073,9 +13676,6 @@ void Window::HandleLButtonDown(POINT clientPt) {
     if (pActiveDoc) {
         if (pActiveDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
             pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
-        }
-        if (!pActiveDoc->secondarySelections.empty()) {
-            pActiveDoc->secondarySelections.clear();
         }
     }
     if (m_drawer.IsGitHubLoginModalOpen()) {
@@ -14566,22 +15166,67 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             }
                         }
 
+                        bool altClick = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                        bool shiftClick = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                         size_t line = 0, col = 0;
-                        if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, paneBottom, line, col)) {
-                            doc.buffer.SetCursor(line, col);
-                            UpdatePrediction();
-                            UpdateCssPeekHover(clientPt);
+                        if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, paneBottom,
+                                                     line, col, !(altClick && shiftClick))) {
                             doc.targetHighlightLine = static_cast<size_t>(-1);
                             doc.targetHighlightLen = 0;
-                            // Start drag text selection (Images 2, 3, 4)
-                            doc.selAnchor = { line, col };
-                            doc.selEnd = { line, col };
-                            doc.hasSelection = false;
-                            doc.isSelecting = true;
-                            doc.selectedWord.clear();
-                            SetCapture(m_hwnd);
-                            InvalidateRect(m_hwnd, nullptr, FALSE);
-                            return;
+                            if (altClick && shiftClick) {
+                                // Shift+Alt+Click / Drag: Box / Column rectangular selection
+                                m_isColumnSelecting = true;
+                                doc.isSelecting = true;
+                                doc.SetColumnSelection(line, col, line, col);
+                                UpdatePrediction();
+                                UpdateCssPeekHover(clientPt);
+                                SetCapture(m_hwnd);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            } else if (altClick) {
+                                // Alt+Click: Add or toggle arbitrary cursor
+                                m_isColumnSelecting = false;
+                                doc.AddCursorAt(line, col);
+                                EnsureCursorVisible();
+                                UpdatePrediction();
+                                UpdateCssPeekHover(clientPt);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            } else if (shiftClick) {
+                                // Shift+Click: Extend primary selection
+                                m_isColumnSelecting = false;
+                                doc.secondarySelections.clear();
+                                doc.isColumnSelection = false;
+                                if (!doc.hasSelection) {
+                                    doc.selAnchor = doc.buffer.GetCursor();
+                                }
+                                doc.buffer.SetCursor(line, col);
+                                doc.selEnd = { line, col };
+                                doc.hasSelection = (doc.selAnchor.line != line || doc.selAnchor.col != col);
+                                doc.selectedWord = doc.hasSelection ? doc.GetSelectedText() : L"";
+                                doc.isSelecting = true;
+                                UpdatePrediction();
+                                UpdateCssPeekHover(clientPt);
+                                SetCapture(m_hwnd);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            } else {
+                                doc.secondarySelections.clear();
+                                doc.isColumnSelection = false;
+                                m_isColumnSelecting = false;
+                                doc.buffer.SetCursor(line, col);
+                                UpdatePrediction();
+                                UpdateCssPeekHover(clientPt);
+                                // Start drag text selection (Images 2, 3, 4)
+                                doc.selAnchor = { line, col };
+                                doc.selEnd = { line, col };
+                                doc.hasSelection = false;
+                                doc.isSelecting = true;
+                                doc.selectedWord.clear();
+                                SetCapture(m_hwnd);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
                         }
                     }
                 }
@@ -14946,6 +15591,31 @@ void Window::HandleLButtonDown(POINT clientPt) {
         clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
         clientPt.y >= m_rcStatusBarGraphView.top && clientPt.y <= m_rcStatusBarGraphView.bottom) {
         m_config.isGraphColored = !m_config.isGraphColored;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Status Bar clicks: Encoding / Line Ending Switcher & Indentation Switcher & Go-to-Line
+    if (m_config.showStatusBar &&
+        m_rcStatusBarEncoding.right > m_rcStatusBarEncoding.left &&
+        clientPt.x >= m_rcStatusBarEncoding.left && clientPt.x <= m_rcStatusBarEncoding.right &&
+        clientPt.y >= m_rcStatusBarEncoding.top && clientPt.y <= m_rcStatusBarEncoding.bottom) {
+        OpenStatusBarEncodingPopup();
+        return;
+    }
+    if (m_config.showStatusBar &&
+        m_rcStatusBarSpaces.right > m_rcStatusBarSpaces.left &&
+        clientPt.x >= m_rcStatusBarSpaces.left && clientPt.x <= m_rcStatusBarSpaces.right &&
+        clientPt.y >= m_rcStatusBarSpaces.top && clientPt.y <= m_rcStatusBarSpaces.bottom) {
+        OpenStatusBarIndentationPopup();
+        return;
+    }
+    if (m_config.showStatusBar &&
+        m_rcStatusBarLnCol.right > m_rcStatusBarLnCol.left &&
+        clientPt.x >= m_rcStatusBarLnCol.left && clientPt.x <= m_rcStatusBarLnCol.right &&
+        clientPt.y >= m_rcStatusBarLnCol.top && clientPt.y <= m_rcStatusBarLnCol.bottom) {
+        DoCommandPalette();
+        m_quickOpen.SetQuery(L":");
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -15766,6 +16436,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
+    m_isColumnSelecting = false;
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             doc.isDraggingScrollbar = false;
@@ -15773,7 +16444,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
             doc.isDraggingMinimap = false;
             if (doc.isSelecting) {
                 doc.isSelecting = false;
-                if (doc.selAnchor.line == doc.selEnd.line && doc.selAnchor.col == doc.selEnd.col) {
+                if (!doc.isColumnSelection && doc.selAnchor.line == doc.selEnd.line && doc.selAnchor.col == doc.selEnd.col) {
                     doc.hasSelection = false;
                     doc.selectedWord.clear();
                 }
@@ -16578,6 +17249,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             float paneCanvasLeft = group.bounds.left;
                             size_t line = 0, col = 0;
                             if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
+                                if ((GetKeyState(VK_MENU) & 0x8000) == 0) {
+                                    doc.secondarySelections.clear();
+                                    doc.isColumnSelection = false;
+                                }
+                                m_isColumnSelecting = false;
                                 doc.SelectWordAt(line, col);
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return 0;
@@ -16962,53 +17638,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                         m_explorerHasFocus = false;
 
-                        // Multi-Cursor simultaneous typing (Ctrl+D occurrence editing)
-                        if (!pDoc->secondarySelections.empty()) {
-                            pDoc->buffer.PushUndo();
-                            struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
-                            std::vector<SelItem> allSels;
-                            if (pDoc->HasSelection()) {
-                                size_t sl, sc, el, ec;
-                                pDoc->GetSelectionRange(sl, sc, el, ec);
-                                allSels.push_back({ sl, sc, el, ec, true, 0 });
-                            } else {
-                                auto c = pDoc->buffer.GetCursor();
-                                allSels.push_back({ c.line, c.col, c.line, c.col, true, 0 });
+                        // Multi-Cursor / Column-Selection simultaneous typing with cumulative column delta tracking
+                        if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
+                            if (pDoc->MultiCursorTypeChar(ch)) {
+                                MarkDocumentModified(pDoc);
+                                if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                                m_editor.DismissAutocomplete();
+                                m_editor.ClearGhostText();
+                                m_editor.ClearPrediction();
+                                EnsureCursorVisible();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
                             }
-                            for (size_t si = 0; si < pDoc->secondarySelections.size(); ++si) {
-                                size_t sl, sc, el, ec;
-                                pDoc->secondarySelections[si].GetRange(sl, sc, el, ec);
-                                allSels.push_back({ sl, sc, el, ec, false, si });
-                            }
-                            std::sort(allSels.begin(), allSels.end(), [](const SelItem& a, const SelItem& b) {
-                                if (a.sLine != b.sLine) return a.sLine > b.sLine;
-                                return a.sCol > b.sCol;
-                            });
-
-                            for (const auto& item : allSels) {
-                                if (item.sLine == item.eLine && item.sLine < pDoc->buffer.GetLineCount()) {
-                                    const auto& line = pDoc->buffer.GetLine(item.sLine);
-                                    std::wstring newLine = line.substr(0, item.sCol) + ch;
-                                    if (item.eCol < line.length()) newLine += line.substr(item.eCol);
-                                    pDoc->buffer.SetLine(item.sLine, newLine);
-                                    if (item.isPrimary) {
-                                        pDoc->buffer.SetCursor(item.sLine, item.sCol + 1);
-                                        pDoc->selAnchor = { item.sLine, item.sCol + 1 };
-                                        pDoc->selEnd = { item.sLine, item.sCol + 1 };
-                                    } else {
-                                        pDoc->secondarySelections[item.secIdx].anchor = { item.sLine, item.sCol + 1 };
-                                        pDoc->secondarySelections[item.secIdx].cursor = { item.sLine, item.sCol + 1 };
-                                    }
-                                }
-                            }
-                            pDoc->hasSelection = false;
-                            pDoc->selectedWord.clear();
-                            MarkDocumentModified(pDoc);
-                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
-                            m_editor.DismissAutocomplete();
-                            m_editor.ClearGhostText();
-                            EnsureCursorVisible();
-                            InvalidateRect(m_hwnd, nullptr, FALSE);
                             return 0;
                         }
 
@@ -17411,6 +18051,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_drawer.SetUseRegex(!m_drawer.GetUseRegex());
                     m_drawer.LaunchAsyncSearch();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            if ((GetKeyState(VK_MENU) & 0x8000) != 0 &&
+                wParam != VK_F4 && wParam != VK_SPACE && wParam != VK_TAB && wParam != VK_MENU) {
+                if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT ||
+                    wParam == VK_HOME || wParam == VK_END || wParam == 'A' || wParam == 'F') {
+                    HandleMessage(WM_KEYDOWN, wParam, lParam);
                     return 0;
                 }
             }
@@ -17904,8 +18552,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 m_drawer.DismissCommitCard();
                 auto* pCurDoc = GetActiveDoc();
-                if (pCurDoc && (pCurDoc->HasSelection() || !pCurDoc->secondarySelections.empty())) {
+                if (pCurDoc && (pCurDoc->HasSelection() || pCurDoc->HasAnyMultiCursor())) {
                     pCurDoc->ClearSelection();
+                    m_isColumnSelecting = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -18013,15 +18662,48 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Shift+Alt+A: Toggle Block Comment (VS Code standard)
-            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && wParam == 'A') {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'A') {
                 DoToggleBlockComment();
                 return 0;
             }
 
             // Shift+Alt+F: Format Document
-            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && (wParam == 'F' || wParam == 'f')) {
+            if ((GetKeyState(VK_SHIFT) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 'F' || wParam == 'f')) {
                 DoFormatDocument(true);
                 return 0;
+            }
+
+            // Box/Column Selection keyboard (Shift+Alt+Left/Right/Home/End, Ctrl+Shift+Alt+Arrow, or Shift+Alt+Up/Down when already in box mode),
+            // Duplicate Line Up/Down (Shift+Alt+Up/Down), Add Cursor Above/Below (Ctrl+Alt+Up/Down), Move Line Up/Down (Alt+Up/Down)
+            if ((GetKeyState(VK_MENU) & 0x8000) &&
+                (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_HOME || wParam == VK_END)) {
+                bool ctrlAlt = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shiftAlt = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                auto* pEdDoc = GetActiveDoc();
+                if (pEdDoc && !pEdDoc->isSpecialView) {
+                    if (ctrlAlt && !shiftAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
+                        if (pEdDoc->AddCursorVertical(wParam == VK_UP)) {
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                        return 0;
+                    }
+                    if (shiftAlt && (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_HOME || wParam == VK_END ||
+                                     ((ctrlAlt || pEdDoc->isColumnSelection) && (wParam == VK_UP || wParam == VK_DOWN)))) {
+                        pEdDoc->MoveColumnSelection(static_cast<int>(wParam));
+                        EnsureCursorVisible();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (shiftAlt && !ctrlAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
+                        DoDuplicateLines(wParam == VK_UP);
+                        return 0;
+                    }
+                    if (!ctrlAlt && !shiftAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
+                        DoMoveLines(wParam == VK_UP);
+                        return 0;
+                    }
+                }
             }
 
             // F12: Go to Definition
@@ -18048,6 +18730,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altDown   = (GetKeyState(VK_MENU) & 0x8000) != 0;
 
+                // Ctrl+Shift+L: Select All Occurrences of Current Selection / Word
+                if ((wParam == 'L' || wParam == 'l') && shiftDown && !altDown) {
+                    DoChangeAllOccurrences();
+                    return 0;
+                }
+
                 // Ctrl+D: Add Selection To Next Find Match (Multi-Cursor Occurrence Selection)
                 if (wParam == 'D' || wParam == 'd') {
                     auto* pDoc = GetActiveDoc();
@@ -18070,9 +18758,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DoZoomOut();
                     return 0;
                 }
-                // Reset Zoom: Ctrl+0 ('0' or VK_NUMPAD0)
+                // Ctrl+K -> Ctrl+0..3 (Folding) or Reset Zoom (Ctrl+0)
                 if (wParam == '0' || wParam == VK_NUMPAD0) {
-                    DoResetZoom();
+                    if (m_chordCtrlK) {
+                        m_chordCtrlK = false;
+                        DoFoldAll();
+                    } else {
+                        DoResetZoom();
+                    }
+                    return 0;
+                }
+                if (m_chordCtrlK && (wParam == '1' || wParam == '2' || wParam == '3')) {
+                    int lvl = static_cast<int>(wParam - '0');
+                    m_chordCtrlK = false;
+                    DoFoldLevel(lvl);
                     return 0;
                 }
 
@@ -18082,8 +18781,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
 
-                if (wParam == VK_OEM_5) { // Ctrl+\ (Split Editor Right, Images 3 & 4)
-                    ToggleSplitEditor();
+                if (wParam == VK_OEM_5) {
+                    if (shiftDown) { // Ctrl+Shift+\ (Jump to Matching Bracket)
+                        DoJumpToMatchingBracket();
+                    } else {         // Ctrl+\ (Split Editor Right, Images 3 & 4)
+                        ToggleSplitEditor();
+                    }
                     return 0;
                 }
                 if (wParam == VK_F2) {
@@ -18146,8 +18849,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == 'F') {
                     if (m_chordCtrlK) {
-                        DoCloseFolder();
                         m_chordCtrlK = false;
+                        if (pDoc && !pDoc->isSpecialView && pDoc->HasSelection()) {
+                            DoFormatSelection();
+                        } else {
+                            DoCloseFolder();
+                        }
                         return 0;
                     } else if (shiftDown) {
                         DoShowSearch();
@@ -18178,8 +18885,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
                 if (wParam == 'J') {
-                    if (shiftDown) {
+                    if (m_chordCtrlK) {
+                        m_chordCtrlK = false;
+                        DoUnfoldAll();
+                        return 0;
+                    } else if (shiftDown) {
                         OpenNotebookView();
+                        return 0;
+                    } else {
+                        DoJoinLines();
                         return 0;
                     }
                 }
@@ -18269,7 +18983,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
                     m_chordCtrlK = true;
-                    DoQuickOpenFileSearch();
                     return 0;
                 }
             } else {
@@ -18318,64 +19031,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 if (wParam == VK_BACK || wParam == VK_DELETE) {
                     m_explorerHasFocus = false;
-                    if (!pDoc->secondarySelections.empty()) {
-                        pDoc->buffer.PushUndo();
-                        struct SelItem { size_t sLine, sCol, eLine, eCol; bool isPrimary; size_t secIdx; };
-                        std::vector<SelItem> allSels;
-                        if (pDoc->HasSelection()) {
-                            size_t sl, sc, el, ec;
-                            pDoc->GetSelectionRange(sl, sc, el, ec);
-                            allSels.push_back({ sl, sc, el, ec, true, 0 });
-                        } else {
-                            auto c = pDoc->buffer.GetCursor();
-                            if (wParam == VK_BACK && c.col > 0) {
-                                allSels.push_back({ c.line, c.col - 1, c.line, c.col, true, 0 });
-                            } else if (wParam == VK_DELETE) {
-                                allSels.push_back({ c.line, c.col, c.line, c.col + 1, true, 0 });
-                            }
+                    if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
+                        bool modified = (wParam == VK_BACK)
+                            ? pDoc->MultiCursorBackspace()
+                            : pDoc->MultiCursorDeleteForward();
+                        if (modified) {
+                            MarkDocumentModified(pDoc);
+                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                            m_editor.ClearPrediction();
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
-                        for (size_t si = 0; si < pDoc->secondarySelections.size(); ++si) {
-                            size_t sl, sc, el, ec;
-                            pDoc->secondarySelections[si].GetRange(sl, sc, el, ec);
-                            if (sl != el || sc != ec) {
-                                allSels.push_back({ sl, sc, el, ec, false, si });
-                            } else {
-                                auto c = pDoc->secondarySelections[si].cursor;
-                                if (wParam == VK_BACK && c.col > 0) {
-                                    allSels.push_back({ c.line, c.col - 1, c.line, c.col, false, si });
-                                } else if (wParam == VK_DELETE) {
-                                    allSels.push_back({ c.line, c.col, c.line, c.col + 1, false, si });
-                                }
-                            }
-                        }
-                        std::sort(allSels.begin(), allSels.end(), [](const SelItem& a, const SelItem& b) {
-                            if (a.sLine != b.sLine) return a.sLine > b.sLine;
-                            return a.sCol > b.sCol;
-                        });
-                        for (const auto& item : allSels) {
-                            if (item.sLine == item.eLine && item.sLine < pDoc->buffer.GetLineCount()) {
-                                const auto& line = pDoc->buffer.GetLine(item.sLine);
-                                std::wstring newLine = line.substr(0, item.sCol);
-                                if (item.eCol < line.length()) newLine += line.substr(item.eCol);
-                                pDoc->buffer.SetLine(item.sLine, newLine);
-                                if (item.isPrimary) {
-                                    pDoc->buffer.SetCursor(item.sLine, item.sCol);
-                                    pDoc->selAnchor = { item.sLine, item.sCol };
-                                    pDoc->selEnd = { item.sLine, item.sCol };
-                                } else {
-                                    pDoc->secondarySelections[item.secIdx].anchor = { item.sLine, item.sCol };
-                                    pDoc->secondarySelections[item.secIdx].cursor = { item.sLine, item.sCol };
-                                }
-                            }
-                        }
-                        pDoc->hasSelection = false;
-                        pDoc->selectedWord.clear();
-                        MarkDocumentModified(pDoc);
-                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
-                        m_editor.DismissAutocomplete();
-                        m_editor.ClearGhostText();
-                        EnsureCursorVisible();
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     } else if (pDoc->HasSelection()) {
                         pDoc->DeleteSelection();
@@ -18444,129 +19112,132 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     EnsureCursorVisible();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
-                } else if (wParam == VK_LEFT) {
+                } else if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_HOME || wParam == VK_END ||
+                           wParam == VK_UP || wParam == VK_DOWN) {
                     bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                    if (pDoc->HasAnyMultiCursor()) {
+                        pDoc->MultiCursorMove(static_cast<int>(wParam), isShift);
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_LEFT) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
-                    }
-                    pDoc->buffer.MoveCursorLeft();
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_RIGHT) {
-                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                        pDoc->buffer.MoveCursorLeft();
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
-                    }
-                    pDoc->buffer.MoveCursorRight();
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_HOME) {
-                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_RIGHT) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
-                    }
-                    auto cur = pDoc->buffer.GetCursor();
-                    pDoc->buffer.SetCursor(cur.line, 0);
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_END) {
-                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                        pDoc->buffer.MoveCursorRight();
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
-                    }
-                    auto cur = pDoc->buffer.GetCursor();
-                    size_t lineLen = pDoc->buffer.GetLine(cur.line).length();
-                    pDoc->buffer.SetCursor(cur.line, lineLen);
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_UP) {
-                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_HOME) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
-                    }
-                    pDoc->buffer.MoveCursorUp();
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    size_t curLine = pDoc->buffer.GetCursor().line;
-                    if (curLine < pDoc->scrollLine) {
-                        pDoc->scrollLine = curLine;
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_DOWN) {
-                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                    if (isShift) {
-                        if (!pDoc->hasSelection) {
-                            pDoc->selAnchor = pDoc->buffer.GetCursor();
-                            pDoc->hasSelection = true;
+                        auto cur = pDoc->buffer.GetCursor();
+                        pDoc->buffer.SetCursor(cur.line, 0);
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
                         }
-                    } else if (pDoc->HasSelection()) {
-                        pDoc->ClearSelection();
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_END) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
+                        }
+                        auto cur = pDoc->buffer.GetCursor();
+                        size_t lineLen = pDoc->buffer.GetLine(cur.line).length();
+                        pDoc->buffer.SetCursor(cur.line, lineLen);
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
+                        }
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_UP) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
+                        }
+                        pDoc->buffer.MoveCursorUp();
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
+                        }
+                        size_t curLine = pDoc->buffer.GetCursor().line;
+                        if (curLine < pDoc->scrollLine) {
+                            pDoc->scrollLine = curLine;
+                        }
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_DOWN) {
+                        if (isShift) {
+                            if (!pDoc->hasSelection) {
+                                pDoc->selAnchor = pDoc->buffer.GetCursor();
+                                pDoc->hasSelection = true;
+                            }
+                        } else if (pDoc->HasSelection()) {
+                            pDoc->ClearSelection();
+                        }
+                        pDoc->buffer.MoveCursorDown();
+                        if (isShift) {
+                            pDoc->selEnd = pDoc->buffer.GetCursor();
+                            pDoc->selectedWord = pDoc->GetSelectedText();
+                        }
+                        size_t curLine = pDoc->buffer.GetCursor().line;
+                        RECT rc;
+                        GetClientRect(m_hwnd, &rc);
+                        float h = static_cast<float>(rc.bottom - rc.top);
+                        size_t visibleLines = static_cast<size_t>(h / m_config.ScaleF(20.0f));
+                        if (curLine >= pDoc->scrollLine + visibleLines - 4) {
+                            pDoc->scrollLine = (curLine + 4 > visibleLines) ? (curLine + 4 - visibleLines) : 0;
+                        }
+                        EnsureCursorVisible();
+                        UpdatePrediction();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
-                    pDoc->buffer.MoveCursorDown();
-                    if (isShift) {
-                        pDoc->selEnd = pDoc->buffer.GetCursor();
-                        pDoc->selectedWord = pDoc->GetSelectedText();
-                    }
-                    size_t curLine = pDoc->buffer.GetCursor().line;
-                    RECT rc;
-                    GetClientRect(m_hwnd, &rc);
-                    float h = static_cast<float>(rc.bottom - rc.top);
-                    size_t visibleLines = static_cast<size_t>(h / m_config.ScaleF(20.0f));
-                    if (curLine >= pDoc->scrollLine + visibleLines - 4) {
-                        pDoc->scrollLine = (curLine + 4 > visibleLines) ? (curLine + 4 - visibleLines) : 0;
-                    }
-                    EnsureCursorVisible();
-                    UpdatePrediction();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_PRIOR) { // Page Up
                     RECT rc;
                     GetClientRect(m_hwnd, &rc);
@@ -18590,6 +19261,72 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     int tSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
                     std::wstring indentStr = m_config.insertSpaces ? std::wstring(tSize, L' ') : L"\t";
+
+                    if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
+                        std::set<size_t> affectedLines;
+                        auto addRangeLines = [&](size_t sL, size_t eL, size_t eC) {
+                            if (eL > sL && eC == 0) --eL;
+                            for (size_t l = sL; l <= eL; ++l) affectedLines.insert(l);
+                        };
+                        if (pDoc->HasSelection()) {
+                            size_t sl, sc, el, ec;
+                            pDoc->GetSelectionRange(sl, sc, el, ec);
+                            addRangeLines(sl, el, ec);
+                        } else {
+                            affectedLines.insert(pDoc->buffer.GetCursor().line);
+                        }
+                        for (const auto& sec : pDoc->secondarySelections) {
+                            size_t sl, sc, el, ec;
+                            sec.GetRange(sl, sc, el, ec);
+                            addRangeLines(sl, el, ec);
+                        }
+
+                        pDoc->buffer.PushUndo();
+                        auto shiftPosForLine = [&](editor::CursorPosition& pos, size_t lineIdx, int delta) {
+                            if (pos.line == lineIdx) {
+                                int nc = static_cast<int>(pos.col) + delta;
+                                pos.col = static_cast<size_t>((std::max)(0, nc));
+                            }
+                        };
+                        for (size_t l : affectedLines) {
+                            if (l >= pDoc->buffer.GetLineCount()) continue;
+                            const std::wstring& line = pDoc->buffer.GetLine(l);
+                            int delta = 0;
+                            if (isShiftPressed) {
+                                size_t removeCount = 0;
+                                if (!line.empty() && line[0] == L'\t') {
+                                    removeCount = 1;
+                                } else {
+                                    while (removeCount < static_cast<size_t>(tSize) && removeCount < line.length() && line[removeCount] == L' ') {
+                                        removeCount++;
+                                    }
+                                }
+                                if (removeCount > 0) {
+                                    pDoc->buffer.SetLine(l, line.substr(removeCount));
+                                    delta = -static_cast<int>(removeCount);
+                                }
+                            } else {
+                                pDoc->buffer.SetLine(l, indentStr + line);
+                                delta = static_cast<int>(indentStr.length());
+                            }
+                            if (delta != 0) {
+                                auto cur = pDoc->buffer.GetCursor();
+                                shiftPosForLine(cur, l, delta);
+                                pDoc->buffer.SetCursor(cur.line, cur.col);
+                                shiftPosForLine(pDoc->selAnchor, l, delta);
+                                shiftPosForLine(pDoc->selEnd, l, delta);
+                                for (auto& sec : pDoc->secondarySelections) {
+                                    shiftPosForLine(sec.anchor, l, delta);
+                                    shiftPosForLine(sec.cursor, l, delta);
+                                }
+                            }
+                        }
+                        pDoc->buffer.IncrementVersion();
+                        MarkDocumentModified(pDoc);
+                        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
 
                     if (isShiftPressed) {
                         // === UNINDENT (Shift+Tab) ===
@@ -18689,6 +19426,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_RETURN) {
                     m_explorerHasFocus = false;
+                    if (!pDoc->secondarySelections.empty() || pDoc->isColumnSelection) {
+                        if (pDoc->MultiCursorInsertNewline()) {
+                            MarkDocumentModified(pDoc);
+                            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+                            m_editor.DismissAutocomplete();
+                            m_editor.ClearGhostText();
+                            m_editor.ClearPrediction();
+                            EnsureCursorVisible();
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                        return 0;
+                    }
                     std::wstring ext = L"";
                     if (!pDoc->filePath.empty()) {
                         std::filesystem::path p(pDoc->filePath);

@@ -251,9 +251,11 @@ public:
 
     /**
      * @brief Tests if mouse clicked inside the code area to position cursor.
+     * @param clampToLineEnd When false, returns virtual column coordinates past end-of-line (for box selection).
      */
     bool HitTestCodeArea(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
-                         float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol) const;
+                         float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol,
+                         bool clampToLineEnd = true) const;
 
     /**
      * @brief Computes whether a buffer line can be folded and returns its terminating line.
@@ -263,6 +265,35 @@ public:
      * @return True if startLine begins a foldable block.
      */
     static bool GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine);
+
+    /**
+     * @brief Folds all foldable blocks and #region markers in the document.
+     */
+    static void FoldAll(editor::OpenDocument& doc);
+
+    /**
+     * @brief Expands all folded regions in the document.
+     */
+    static void UnfoldAll(editor::OpenDocument& doc);
+
+    /**
+     * @brief Folds blocks at or deeper than the requested 1-based nesting level (level 1 = top-level blocks).
+     */
+    static void FoldLevel(editor::OpenDocument& doc, int level);
+
+    /**
+     * @brief Finds the matching bracket or HTML/PHP block delimiter for (line, col).
+     */
+    static bool FindMatchingBracket(const editor::Buffer& buffer, size_t line, size_t col,
+                                    size_t& outLine, size_t& outCol);
+
+    /**
+     * @brief Finds matching opening/closing HTML/JSX/PHP tag names if the cursor is inside a tag.
+     */
+    static bool FindMatchingHtmlTag(const editor::Buffer& buffer, size_t line, size_t col,
+                                    size_t& outOpenLine, size_t& outOpenCol, size_t& outOpenLen,
+                                    size_t& outCloseLine, size_t& outCloseCol, size_t& outCloseLen,
+                                    bool& outInClosingTag);
 
     /**
      * @brief Accesses the embedded keyboard shortcuts interactive view.

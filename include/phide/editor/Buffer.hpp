@@ -14,6 +14,18 @@
 namespace phide::editor {
 
 /**
+ * @enum TextEncoding
+ * @brief Character encoding used when reading/writing a buffer from/to disk.
+ */
+enum class TextEncoding {
+    UTF8 = 0,
+    UTF8_BOM = 1,
+    UTF16_LE = 2,
+    UTF16_BE = 3,
+    Windows1252 = 4
+};
+
+/**
  * @struct CursorPosition
  * @brief Zero-based line and column coordinates of the editor caret.
  */
@@ -115,6 +127,7 @@ public:
     void SetLines(const std::vector<std::wstring>& lines);
     void SetText(const std::wstring& text);
     void SetLine(size_t lineIdx, const std::wstring& text);
+    void ReplaceLineSlice(size_t startLine, size_t removeCount, const std::vector<std::wstring>& insertLines);
 
     /**
      * @brief Loads text file from disk into buffer lines.
@@ -129,19 +142,29 @@ public:
     [[nodiscard]] bool HasTrailingNewline() const noexcept { return m_hasTrailingNewline; }
     void SetHasTrailingNewline(bool v) noexcept { m_hasTrailingNewline = v; }
     [[nodiscard]] const std::wstring& GetLineEnding() const noexcept { return m_lineEnding; }
+    [[nodiscard]] std::wstring GetLineEndingDisplayName() const;
     void SetLineEnding(const std::wstring& le) { m_lineEnding = le; }
+    bool ConvertLineEnding(const std::wstring& le);
+
+    [[nodiscard]] TextEncoding GetEncoding() const noexcept { return m_encoding; }
+    void SetEncoding(TextEncoding enc) noexcept { m_encoding = enc; }
+    [[nodiscard]] std::wstring GetEncodingDisplayName() const;
+    bool ConvertEncoding(TextEncoding newEnc);
+    bool ReopenWithEncoding(TextEncoding enc);
 
     /**
-     * @brief Performs undo and redo operations.
+     * @brief Performs undo and redo operations with compact line-delta history and memory budget.
      */
     bool Undo();
     bool Redo();
     void PushUndo();
+    [[nodiscard]] size_t GetUndoCount() const noexcept;
+    [[nodiscard]] size_t GetUndoMemoryBytes() const noexcept;
 
     /**
      * @brief Checks if there are actions available to undo or redo.
      */
-    [[nodiscard]] bool CanUndo() const noexcept { return !m_undoStack.empty(); }
+    [[nodiscard]] bool CanUndo() const noexcept;
     [[nodiscard]] bool CanRedo() const noexcept { return !m_redoStack.empty(); }
 
     /**
@@ -150,14 +173,27 @@ public:
     void InsertText(const std::wstring& text);
 
     /**
-     * @brief Toggles single-line comment (//) on the current line.
+     * @brief Line manipulation commands (Move Up/Down, Duplicate, Join, Sort, Trim).
      */
-    void ToggleLineComment();
+    bool MoveLinesUp(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine);
+    bool MoveLinesDown(size_t sLine, size_t eLine, size_t& outNewSLine, size_t& outNewELine);
+    bool DuplicateLines(size_t sLine, size_t eLine, bool up, size_t& outNewSLine, size_t& outNewELine);
+    bool JoinLines(size_t sLine, size_t eLine, bool hasSel, CursorPosition& outCursor);
+    bool SortLines(size_t sLine, size_t eLine, bool ascending, bool caseSensitive = false);
+    bool TrimTrailingWhitespace(size_t sLine, size_t eLine);
 
     /**
-     * @brief Toggles block comment (/* ... * /) on the current line.
+     * @brief Toggles single-line comment on the current line or a range of lines.
+     */
+    void ToggleLineComment();
+    bool ToggleLineCommentRange(size_t sLine, size_t eLine, const std::wstring& ext, std::vector<int>* outLineColDeltas = nullptr);
+
+    /**
+     * @brief Toggles block comment on the current line or an arbitrary multi-line selection.
      */
     void ToggleBlockComment();
+    bool ToggleBlockCommentRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol, bool hasSel, const std::wstring& ext,
+                                 CursorPosition& outAnchor, CursorPosition& outCursor);
 
     /**
      * @brief Expands Emmet-style HTML tag abbreviation at cursor (e.g. div -> <div></div>).
@@ -181,23 +217,8 @@ public:
     [[nodiscard]] uint64_t GetVersion() const noexcept { return m_version; }
     void IncrementVersion() noexcept { ++m_version; }
 
-    /** @brief Manual Garbage Collector: reclaims vector capacities and trims memory. */
-    void RunGarbageCollection() {
-        m_lines.shrink_to_fit();
-        for (auto& l : m_lines) l.shrink_to_fit();
-        m_undoStack.shrink_to_fit();
-        for (auto& s : m_undoStack) {
-            s.lines.shrink_to_fit();
-            for (auto& l : s.lines) l.shrink_to_fit();
-        }
-        m_redoStack.shrink_to_fit();
-        for (auto& s : m_redoStack) {
-            s.lines.shrink_to_fit();
-            for (auto& l : s.lines) l.shrink_to_fit();
-        }
-        m_tokenCache.clear();
-        m_lineEntryStates.shrink_to_fit();
-    }
+    /** @brief Manual Garbage Collector: compacts pending undo, reclaims vector capacities and trims memory. */
+    void RunGarbageCollection();
 
 private:
     std::vector<std::wstring> m_lines;
@@ -210,6 +231,7 @@ private:
     uint64_t m_version = 0;
     bool m_hasTrailingNewline = true;
     std::wstring m_lineEnding = L"\n";
+    TextEncoding m_encoding = TextEncoding::UTF8;
 
     // O(1) version-tracked per-line state and syntax token cache for large files
     mutable uint64_t m_cachedTokenVersion = UINT64_MAX;
@@ -217,12 +239,37 @@ private:
     mutable std::vector<uint8_t> m_lineEntryStates; // 0 = normal, 1 = blockComment, 2 = doubleQuote, 3 = singleQuote
     mutable std::unordered_map<size_t, std::vector<SyntaxToken>> m_tokenCache;
 
-    struct BufferSnapshot {
-        std::vector<std::wstring> lines;
-        CursorPosition cursor;
+    struct UndoHunk {
+        size_t startLine = 0;
+        size_t afterCount = 0;
+        std::vector<std::wstring> beforeLines;
+        CursorPosition beforeCursor{ 0, 0 };
+        CursorPosition afterCursor{ 0, 0 };
+        std::wstring beforeLineEnding = L"\n";
+        std::wstring afterLineEnding = L"\n";
+
+        [[nodiscard]] size_t EstimateBytes() const noexcept;
     };
-    std::vector<BufferSnapshot> m_undoStack;
-    std::vector<BufferSnapshot> m_redoStack;
+
+    static constexpr size_t kMaxUndoCount = 200;
+    static constexpr size_t kMinRetainedUndo = 15;
+    static constexpr size_t kMaxUndoMemoryBytes = 32ULL * 1024ULL * 1024ULL;
+
+    std::vector<UndoHunk> m_undoStack;
+    std::vector<UndoHunk> m_redoStack;
+    size_t m_undoMemoryBytes = 0;
+    size_t m_redoMemoryBytes = 0;
+
+    bool m_hasPendingUndo = false;
+    uint64_t m_pendingUndoVersion = 0;
+    std::vector<std::wstring> m_pendingUndoLines;
+    CursorPosition m_pendingUndoCursor{ 0, 0 };
+    std::wstring m_pendingUndoLineEnding = L"\n";
+
+    void CommitPendingUndo();
+    void EnforceUndoBudget();
+    static bool LoadBytesWithEncoding(const std::string& bytes, TextEncoding enc, std::wstring& outText);
+    static bool EncodeTextBytes(const std::wstring& text, TextEncoding enc, std::string& outBytes);
 
     void LoadDefaultSample();
 };

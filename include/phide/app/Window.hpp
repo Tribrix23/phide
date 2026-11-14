@@ -214,6 +214,9 @@ public:
     bool HandleBranchDropdownMouseMove(POINT pt);
     void SetStatusBarGitBranchBounds(const D2D1_RECT_F& r) noexcept { m_rcStatusBarGitBranch = r; }
 
+    /** @brief Executes a quick open palette action or command. */
+    void ExecuteQuickOpenAction(const std::wstring& actionCmd);
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -335,9 +338,6 @@ private:
 
     /** @brief Clones the active workspace into a duplicate configuration. */
     void DoDuplicateWorkspace();
-
-    /** @brief Executes a quick open palette action or command. */
-    void ExecuteQuickOpenAction(const std::wstring& actionCmd);
 
     /** @brief Jumps the active editor document cursor and viewport to the target 1-based line number. */
     void JumpToEditorLine(size_t targetLine);
@@ -480,6 +480,39 @@ private:
 
     /** @brief Opens Command Palette / Keybindings lookup (Ctrl+Shift+P). */
     void DoCommandPalette();
+
+    /** @brief Moves current line or selection up/down (Alt+Up / Alt+Down). */
+    void DoMoveLines(bool up);
+
+    /** @brief Duplicates current line or selection up/down (Shift+Alt+Up / Shift+Alt+Down). */
+    void DoDuplicateLines(bool up);
+
+    /** @brief Joins current line with the next line or joins selected lines (Ctrl+J). */
+    void DoJoinLines();
+
+    /** @brief Sorts selected lines (or all lines when no selection) alphabetically. */
+    void DoSortLines(bool ascending);
+
+    /** @brief Trims trailing spaces and tabs on selected lines or the whole document. */
+    void DoTrimTrailingWhitespace();
+
+    /** @brief Folds all foldable blocks and #region sections in the active editor. */
+    void DoFoldAll();
+
+    /** @brief Expands all folded regions in the active editor. */
+    void DoUnfoldAll();
+
+    /** @brief Folds code blocks at or deeper than 1-based nesting level. */
+    void DoFoldLevel(int level);
+
+    /** @brief Jumps cursor to matching bracket or HTML/PHP block delimiter (Ctrl+Shift+\). */
+    void DoJumpToMatchingBracket();
+
+    /** @brief Opens the clickable status-bar Encoding / End-of-Line switcher popup. */
+    void OpenStatusBarEncodingPopup();
+
+    /** @brief Opens the clickable status-bar Indentation switcher popup. */
+    void OpenStatusBarIndentationPopup();
 
     // --- View & Navigation Commands ---
 
@@ -928,6 +961,7 @@ private:
     bool m_isHoveredStatusBarEncoding = false;
     D2D1_RECT_F m_rcStatusBarPrivacyMask{};
     bool m_isHoveredStatusBarPrivacyMask = false;
+    bool m_isColumnSelecting = false;
 
     // Git Branch Switcher Dropdown (Status bar popup)
     bool m_showBranchDropdown = false;

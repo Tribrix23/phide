@@ -1123,4 +1123,73 @@ bool LspClient::RequestDefinition(const std::wstring& fileUri, size_t line, size
     return !outLocation.filePath.empty();
 }
 
+static bool ParseFormattingEditsResponse(const std::string& respJson, std::vector<LspTextEdit>& outEdits) {
+    outEdits.clear();
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array || result->arrVal.empty()) {
+        return false;
+    }
+
+    for (const auto& el : result->arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        const JsonValue* range = el.Get("range");
+        if (!range) continue;
+        const JsonValue* start = range->Get("start");
+        const JsonValue* end = range->Get("end");
+        if (!start || !end) continue;
+
+        LspTextEdit te;
+        te.startLine = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+        te.startCol  = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        te.endLine   = static_cast<size_t>((std::max)(0LL, end->GetInt("line", 0)));
+        te.endCol    = static_cast<size_t>((std::max)(0LL, end->GetInt("character", 0)));
+        te.newText   = Utf8ToWide(el.GetString("newText"));
+        outEdits.push_back(std::move(te));
+    }
+    return !outEdits.empty();
+}
+
+bool LspClient::RequestFormatting(const std::wstring& fileUri, int tabSize, bool insertSpaces, std::vector<LspTextEdit>& outEdits) {
+    outEdits.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"options\":{\"tabSize\":" << (tabSize > 0 ? tabSize : 4)
+           << ",\"insertSpaces\":" << (insertSpaces ? "true" : "false") << "}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/formatting", params.str(), respJson, 800)) {
+        return false;
+    }
+    return ParseFormattingEditsResponse(respJson, outEdits);
+}
+
+bool LspClient::RequestRangeFormatting(
+    const std::wstring& fileUri, size_t startLine, size_t startCol, size_t endLine, size_t endCol,
+    int tabSize, bool insertSpaces, std::vector<LspTextEdit>& outEdits)
+{
+    outEdits.clear();
+    if (!m_isRunning.load()) return false;
+
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::ostringstream params;
+    params << "{\"textDocument\":{\"uri\":" << EscapeJsonString(uri)
+           << "},\"range\":{\"start\":{\"line\":" << startLine << ",\"character\":" << startCol
+           << "},\"end\":{\"line\":" << endLine << ",\"character\":" << endCol
+           << "}},\"options\":{\"tabSize\":" << (tabSize > 0 ? tabSize : 4)
+           << ",\"insertSpaces\":" << (insertSpaces ? "true" : "false") << "}}";
+
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/rangeFormatting", params.str(), respJson, 800)) {
+        return false;
+    }
+    return ParseFormattingEditsResponse(respJson, outEdits);
+}
+
 } // namespace phide::lsp

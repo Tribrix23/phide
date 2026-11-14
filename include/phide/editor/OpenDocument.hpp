@@ -82,13 +82,25 @@ struct OpenDocument {
     };
     std::vector<SelectionRange> secondarySelections;
 
+    // Rectangular / Box (Column) Selection State (Shift+Alt+Drag / Shift+Alt+Arrow)
+    bool isColumnSelection = false;
+    size_t boxAnchorLine = 0;
+    size_t boxAnchorCol = 0;
+    size_t boxActiveLine = 0;
+    size_t boxActiveCol = 0;
+
     [[nodiscard]] bool HasSelection() const noexcept {
         return hasSelection && (selAnchor.line != selEnd.line || selAnchor.col != selEnd.col);
+    }
+
+    [[nodiscard]] bool HasAnyMultiCursor() const noexcept {
+        return !secondarySelections.empty();
     }
 
     void ClearSelection() noexcept {
         hasSelection = false;
         isSelecting = false;
+        isColumnSelection = false;
         selectedWord.clear();
         secondarySelections.clear();
     }
@@ -103,10 +115,11 @@ struct OpenDocument {
         }
     }
 
-    [[nodiscard]] std::wstring GetSelectedText() const {
-        if (!HasSelection()) return L"";
-        size_t sLine, sCol, eLine, eCol;
-        GetSelectionRange(sLine, sCol, eLine, eCol);
+    [[nodiscard]] std::wstring GetTextInRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) const {
+        if (buffer.GetLineCount() == 0) return L"";
+        sLine = (std::min)(sLine, buffer.GetLineCount() - 1);
+        eLine = (std::min)(eLine, buffer.GetLineCount() - 1);
+        if (sLine > eLine || (sLine == eLine && sCol >= eCol)) return L"";
         if (sLine == eLine) {
             const auto& line = buffer.GetLine(sLine);
             if (sCol < line.length()) {
@@ -128,6 +141,753 @@ struct OpenDocument {
             if (l < eLine) result += L"\n";
         }
         return result;
+    }
+
+    [[nodiscard]] std::wstring GetSelectedText() const {
+        if (!HasSelection()) return L"";
+        size_t sLine, sCol, eLine, eCol;
+        GetSelectionRange(sLine, sCol, eLine, eCol);
+        return GetTextInRange(sLine, sCol, eLine, eCol);
+    }
+
+    static wchar_t GetPairCloser(wchar_t opener) noexcept {
+        switch (opener) {
+            case L'(': return L')';
+            case L'[': return L']';
+            case L'{': return L'}';
+            case L'"': return L'"';
+            case L'\'': return L'\'';
+            case L'`': return L'`';
+            default: return 0;
+        }
+    }
+
+    static bool IsClosingPairChar(wchar_t ch) noexcept {
+        return ch == L')' || ch == L']' || ch == L'}' || ch == L'"' || ch == L'\'' || ch == L'`';
+    }
+
+    struct IndexedCursor {
+        size_t sLine = 0, sCol = 0;
+        size_t eLine = 0, eCol = 0;
+        bool isReversed = false;
+        bool isPrimary = false;
+    };
+
+    [[nodiscard]] std::vector<IndexedCursor> CollectNormalizedCursors() const {
+        std::vector<IndexedCursor> items;
+        if (buffer.GetLineCount() == 0) return items;
+        auto clampPos = [&](CursorPosition p) -> CursorPosition {
+            p.line = (std::min)(p.line, buffer.GetLineCount() - 1);
+            p.col = (std::min)(p.col, buffer.GetLine(p.line).length());
+            return p;
+        };
+        auto addEntry = [&](CursorPosition a, CursorPosition c, bool isPri) {
+            a = clampPos(a);
+            c = clampPos(c);
+            bool rev = (c.line < a.line || (c.line == a.line && c.col < a.col));
+            CursorPosition s = rev ? c : a;
+            CursorPosition e = rev ? a : c;
+            items.push_back({ s.line, s.col, e.line, e.col, rev, isPri });
+        };
+
+        if (HasSelection()) {
+            addEntry(selAnchor, selEnd, true);
+        } else {
+            auto cur = clampPos(buffer.GetCursor());
+            addEntry(cur, cur, true);
+        }
+        for (const auto& sec : secondarySelections) {
+            addEntry(sec.anchor, sec.cursor, false);
+        }
+
+        std::sort(items.begin(), items.end(), [](const IndexedCursor& a, const IndexedCursor& b) {
+            if (a.sLine != b.sLine) return a.sLine < b.sLine;
+            if (a.sCol != b.sCol) return a.sCol < b.sCol;
+            if (a.eLine != b.eLine) return a.eLine < b.eLine;
+            return a.eCol < b.eCol;
+        });
+
+        std::vector<IndexedCursor> merged;
+        merged.reserve(items.size());
+        for (const auto& it : items) {
+            if (merged.empty()) {
+                merged.push_back(it);
+                continue;
+            }
+            auto& prev = merged.back();
+            bool prevEmpty = (prev.sLine == prev.eLine && prev.sCol == prev.eCol);
+            bool curEmpty = (it.sLine == it.eLine && it.sCol == it.eCol);
+            bool overlaps = (it.sLine < prev.eLine) ||
+                            (it.sLine == prev.eLine && (it.sCol < prev.eCol || (it.sCol == prev.eCol && (prevEmpty || curEmpty))));
+            if (overlaps) {
+                if (it.eLine > prev.eLine || (it.eLine == prev.eLine && it.eCol > prev.eCol)) {
+                    prev.eLine = it.eLine;
+                    prev.eCol = it.eCol;
+                }
+                if (it.isPrimary) prev.isPrimary = true;
+            } else {
+                merged.push_back(it);
+            }
+        }
+        if (!merged.empty()) {
+            bool hasPri = false;
+            for (const auto& it : merged) if (it.isPrimary) { hasPri = true; break; }
+            if (!hasPri) merged.front().isPrimary = true;
+        }
+        return merged;
+    }
+
+    void ApplyCursorList(const std::vector<IndexedCursor>& items) {
+        secondarySelections.clear();
+        if (items.empty()) {
+            hasSelection = false;
+            selectedWord.clear();
+            return;
+        }
+        bool priSet = false;
+        for (const auto& it : items) {
+            CursorPosition anc = it.isReversed ? CursorPosition{ it.eLine, it.eCol } : CursorPosition{ it.sLine, it.sCol };
+            CursorPosition cur = it.isReversed ? CursorPosition{ it.sLine, it.sCol } : CursorPosition{ it.eLine, it.eCol };
+            if (it.isPrimary && !priSet) {
+                priSet = true;
+                selAnchor = anc;
+                selEnd = cur;
+                hasSelection = (it.sLine != it.eLine || it.sCol != it.eCol);
+                buffer.SetCursor(cur.line, cur.col);
+                selectedWord = hasSelection ? GetSelectedText() : L"";
+            } else {
+                secondarySelections.push_back({ anc, cur });
+            }
+        }
+    }
+
+    struct CursorEditOp {
+        size_t sLine = 0, sCol = 0;
+        size_t eLine = 0, eCol = 0;
+        bool isPrimary = false;
+        bool isReversed = false;
+        bool noTextChange = false;
+        size_t advanceColDelta = 0;
+        std::wstring replacement;
+        size_t selectStartOffset = 0;
+        size_t selectLength = 0;
+    };
+
+    bool ApplyMultiCursorEdits(const std::vector<CursorEditOp>& ops) {
+        if (ops.empty() || buffer.GetLineCount() == 0) return false;
+
+        bool anyBufferChange = false;
+        for (const auto& op : ops) {
+            if (!op.noTextChange) { anyBufferChange = true; break; }
+        }
+        if (anyBufferChange) {
+            buffer.PushUndo();
+            isColumnSelection = false;
+        }
+
+        int64_t lineShift = 0;
+        size_t lastOrigEndLine = SIZE_MAX;
+        int64_t sameLineColShift = 0;
+        size_t lastMutatedLine = SIZE_MAX;
+        size_t lastMutatedEndCol = 0;
+
+        std::vector<IndexedCursor> nextCursors;
+        nextCursors.reserve(ops.size());
+
+        for (const auto& op : ops) {
+            size_t totalLines = buffer.GetLineCount();
+            if (totalLines == 0) break;
+
+            int64_t rawSLine = static_cast<int64_t>(op.sLine) + lineShift;
+            size_t curSLine = (rawSLine < 0) ? 0 : (std::min)(static_cast<size_t>(rawSLine), totalLines - 1);
+            int64_t rawSCol = (op.sLine == lastOrigEndLine)
+                ? (static_cast<int64_t>(op.sCol) + sameLineColShift)
+                : static_cast<int64_t>(op.sCol);
+            size_t curSCol = (rawSCol < 0) ? 0 : (std::min)(static_cast<size_t>(rawSCol), buffer.GetLine(curSLine).length());
+
+            if (op.noTextChange) {
+                size_t nextCol = (std::min)(curSCol + op.advanceColDelta, buffer.GetLine(curSLine).length());
+                nextCursors.push_back({ curSLine, nextCol, curSLine, nextCol, false, op.isPrimary });
+                // Wait: does advancing past a char shift downstream cursors? No, buffer text didn't change!
+                continue;
+            }
+
+            size_t origSpan = (op.eLine >= op.sLine) ? (op.eLine - op.sLine) : 0;
+            size_t curELine = (std::min)(curSLine + origSpan, totalLines - 1);
+            int64_t rawECol = (op.eLine == lastOrigEndLine)
+                ? (static_cast<int64_t>(op.eCol) + sameLineColShift)
+                : static_cast<int64_t>(op.eCol);
+            size_t curECol = (rawECol < 0) ? 0 : (std::min)(static_cast<size_t>(rawECol), buffer.GetLine(curELine).length());
+
+            // Defensive disjoint guard on same mutated line
+            if (curSLine == lastMutatedLine && curSCol < lastMutatedEndCol) {
+                curSCol = lastMutatedEndCol;
+                if (curELine == curSLine && curECol < curSCol) curECol = curSCol;
+            }
+
+            std::vector<std::wstring> repLines;
+            {
+                std::wstring normalized;
+                normalized.reserve(op.replacement.size());
+                for (wchar_t rc : op.replacement) {
+                    if (rc != L'\r') normalized.push_back(rc);
+                }
+                size_t start = 0;
+                while (true) {
+                    size_t nl = normalized.find(L'\n', start);
+                    if (nl == std::wstring::npos) {
+                        repLines.push_back(normalized.substr(start));
+                        break;
+                    }
+                    repLines.push_back(normalized.substr(start, nl - start));
+                    start = nl + 1;
+                }
+            }
+            if (repLines.empty()) repLines.push_back(L"");
+
+            const std::wstring prefix = buffer.GetLine(curSLine).substr(0, curSCol);
+            const std::wstring& endLineStr = buffer.GetLine(curELine);
+            const std::wstring suffix = (curECol <= endLineStr.length()) ? endLineStr.substr(curECol) : L"";
+
+            const size_t R = repLines.size();
+            const size_t removedLinesCount = curELine - curSLine + 1;
+
+            auto offsetToPos = [&](size_t offset) -> CursorPosition {
+                size_t rem = offset;
+                for (size_t r = 0; r < R; ++r) {
+                    if (rem <= repLines[r].length()) {
+                        return { curSLine + r, (r == 0) ? (curSCol + rem) : rem };
+                    }
+                    rem -= (repLines[r].length() + 1);
+                }
+                size_t lastR = R - 1;
+                return { curSLine + lastR, (lastR == 0) ? (curSCol + repLines[0].length()) : repLines[lastR].length() };
+            };
+
+            CursorPosition newS = offsetToPos(op.selectStartOffset);
+            CursorPosition newE = offsetToPos(op.selectStartOffset + op.selectLength);
+            nextCursors.push_back({ newS.line, newS.col, newE.line, newE.col, op.isReversed, op.isPrimary });
+
+            if (R == 1 && removedLinesCount == 1) {
+                buffer.SetLine(curSLine, prefix + repLines[0] + suffix);
+                lastMutatedLine = curSLine;
+                lastMutatedEndCol = curSCol + repLines[0].length();
+            } else {
+                std::vector<std::wstring> sliceLines = repLines;
+                sliceLines[0] = prefix + sliceLines[0];
+                sliceLines.back() += suffix;
+                buffer.ReplaceLineSlice(curSLine, removedLinesCount, sliceLines);
+                lastMutatedLine = curSLine + R - 1;
+                lastMutatedEndCol = (R == 1) ? (curSCol + repLines[0].length()) : repLines.back().length();
+            }
+
+            int64_t addedLines = static_cast<int64_t>(R) - static_cast<int64_t>(removedLinesCount);
+            lineShift += addedLines;
+
+            if (R == 1 && origSpan == 0) {
+                int64_t localDelta = static_cast<int64_t>(repLines[0].length()) - static_cast<int64_t>(op.eCol - op.sCol);
+                if (op.sLine == lastOrigEndLine) {
+                    sameLineColShift += localDelta;
+                } else {
+                    sameLineColShift = localDelta;
+                }
+            } else {
+                size_t newEndPrefixLen = (R == 1) ? (curSCol + repLines[0].length()) : repLines.back().length();
+                sameLineColShift = static_cast<int64_t>(newEndPrefixLen) - static_cast<int64_t>(op.eCol);
+            }
+            lastOrigEndLine = op.eLine;
+        }
+
+        ApplyCursorList(nextCursors);
+        NormalizeMultiCursors();
+        if (anyBufferChange) isColumnSelection = false;
+        return anyBufferChange;
+    }
+
+    [[nodiscard]] size_t GetColumnVirtualPadLen(size_t line, size_t sCol, size_t eCol) const noexcept {
+        if (!isColumnSelection || sCol != eCol || line >= buffer.GetLineCount()) return 0;
+        size_t targetCol = (std::min)(boxAnchorCol, boxActiveCol);
+        size_t len = buffer.GetLine(line).length();
+        return (len < targetCol && sCol == len) ? (targetCol - len) : 0;
+    }
+
+    void NormalizeMultiCursors() {
+        auto merged = CollectNormalizedCursors();
+        ApplyCursorList(merged);
+    }
+
+    bool MultiCursorTypeChar(wchar_t ch) {
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+        wchar_t pairClose = GetPairCloser(ch);
+
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        for (const auto& c : cursors) {
+            CursorEditOp op;
+            op.sLine = c.sLine; op.sCol = c.sCol;
+            op.eLine = c.eLine; op.eCol = c.eCol;
+            op.isPrimary = c.isPrimary;
+            op.isReversed = c.isReversed;
+
+            bool hasSel = (c.sLine != c.eLine || c.sCol != c.eCol);
+            if (hasSel) {
+                if (pairClose != 0) {
+                    std::wstring inner = GetTextInRange(c.sLine, c.sCol, c.eLine, c.eCol);
+                    op.replacement = std::wstring(1, ch) + inner + pairClose;
+                    op.selectStartOffset = 1;
+                    op.selectLength = inner.length();
+                } else {
+                    op.replacement = std::wstring(1, ch);
+                    op.selectStartOffset = 1;
+                    op.selectLength = 0;
+                }
+            } else {
+                const auto& line = buffer.GetLine(c.sLine);
+                size_t padLen = GetColumnVirtualPadLen(c.sLine, c.sCol, c.eCol);
+                std::wstring pad(padLen, L' ');
+                if (IsClosingPairChar(ch) && c.sCol < line.length() && line[c.sCol] == ch) {
+                    op.noTextChange = true;
+                    op.advanceColDelta = 1;
+                } else if (pairClose != 0) {
+                    op.replacement = pad + ch + pairClose;
+                    op.selectStartOffset = padLen + 1;
+                    op.selectLength = 0;
+                } else {
+                    op.replacement = pad + ch;
+                    op.selectStartOffset = padLen + 1;
+                    op.selectLength = 0;
+                }
+            }
+            ops.push_back(std::move(op));
+        }
+
+        ApplyMultiCursorEdits(ops);
+        return true;
+    }
+
+    bool MultiCursorInsertNewline() {
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        for (const auto& c : cursors) {
+            CursorEditOp op;
+            op.sLine = c.sLine; op.sCol = c.sCol;
+            op.eLine = c.eLine; op.eCol = c.eCol;
+            op.isPrimary = c.isPrimary;
+            const auto& ln = buffer.GetLine(c.sLine);
+            size_t indLen = 0;
+            while (indLen < c.sCol && indLen < ln.length() && (ln[indLen] == L' ' || ln[indLen] == L'\t')) {
+                ++indLen;
+            }
+            std::wstring indent = ln.substr(0, indLen);
+            op.replacement = L"\n" + indent;
+            op.selectStartOffset = 1 + indent.length();
+            op.selectLength = 0;
+            ops.push_back(std::move(op));
+        }
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    bool MultiCursorBackspace() {
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        for (const auto& c : cursors) {
+            CursorEditOp op;
+            op.isPrimary = c.isPrimary;
+            if (c.sLine != c.eLine || c.sCol != c.eCol) {
+                op.sLine = c.sLine; op.sCol = c.sCol;
+                op.eLine = c.eLine; op.eCol = c.eCol;
+                op.replacement = L"";
+                op.selectStartOffset = 0;
+                op.selectLength = 0;
+            } else if (c.sCol > 0) {
+                const auto& ln = buffer.GetLine(c.sLine);
+                bool isPair = false;
+                if (c.sCol < ln.length()) {
+                    wchar_t lch = ln[c.sCol - 1];
+                    wchar_t rch = ln[c.sCol];
+                    if ((lch == L'(' && rch == L')') || (lch == L'[' && rch == L']') ||
+                        (lch == L'{' && rch == L'}') || (lch == L'"' && rch == L'"') ||
+                        (lch == L'\'' && rch == L'\'') || (lch == L'`' && rch == L'`')) {
+                        isPair = true;
+                    }
+                }
+                op.sLine = c.sLine;
+                op.sCol = c.sCol - 1;
+                op.eLine = c.sLine;
+                op.eCol = isPair ? (c.sCol + 1) : c.sCol;
+                op.replacement = L"";
+                op.selectStartOffset = 0;
+                op.selectLength = 0;
+            } else if (c.sLine > 0) {
+                size_t prevLen = buffer.GetLine(c.sLine - 1).length();
+                op.sLine = c.sLine - 1;
+                op.sCol = prevLen;
+                op.eLine = c.sLine;
+                op.eCol = 0;
+                op.replacement = L"";
+                op.selectStartOffset = 0;
+                op.selectLength = 0;
+            } else {
+                op.sLine = 0; op.sCol = 0; op.eLine = 0; op.eCol = 0;
+                op.noTextChange = true;
+            }
+            ops.push_back(std::move(op));
+        }
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    bool MultiCursorDeleteForward() {
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        size_t totalLines = buffer.GetLineCount();
+        for (const auto& c : cursors) {
+            CursorEditOp op;
+            op.isPrimary = c.isPrimary;
+            if (c.sLine != c.eLine || c.sCol != c.eCol) {
+                op.sLine = c.sLine; op.sCol = c.sCol;
+                op.eLine = c.eLine; op.eCol = c.eCol;
+                op.replacement = L"";
+            } else {
+                const auto& ln = buffer.GetLine(c.sLine);
+                if (c.sCol < ln.length()) {
+                    op.sLine = c.sLine; op.sCol = c.sCol;
+                    op.eLine = c.sLine; op.eCol = c.sCol + 1;
+                    op.replacement = L"";
+                } else if (c.sLine + 1 < totalLines) {
+                    op.sLine = c.sLine; op.sCol = c.sCol;
+                    op.eLine = c.sLine + 1; op.eCol = 0;
+                    op.replacement = L"";
+                } else {
+                    op.sLine = c.sLine; op.sCol = c.sCol;
+                    op.eLine = c.sLine; op.eCol = c.sCol;
+                    op.noTextChange = true;
+                }
+            }
+            ops.push_back(std::move(op));
+        }
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    void MultiCursorMove(int vkKey, bool shiftPressed) {
+        if (buffer.GetLineCount() == 0) return;
+        isColumnSelection = false;
+        auto moveOne = [&](CursorPosition anc, CursorPosition cur, bool hasSel) -> std::pair<CursorPosition, CursorPosition> {
+            if (!shiftPressed && hasSel) {
+                bool rev = (cur.line < anc.line || (cur.line == anc.line && cur.col < anc.col));
+                CursorPosition s = rev ? cur : anc;
+                CursorPosition e = rev ? anc : cur;
+                if (vkKey == VK_LEFT)  return { s, s };
+                if (vkKey == VK_RIGHT) return { e, e };
+            }
+            CursorPosition next = cur;
+            if (vkKey == VK_LEFT) {
+                if (next.col > 0) next.col--;
+                else if (next.line > 0) { next.line--; next.col = buffer.GetLine(next.line).length(); }
+            } else if (vkKey == VK_RIGHT) {
+                size_t len = buffer.GetLine(next.line).length();
+                if (next.col < len) next.col++;
+                else if (next.line + 1 < buffer.GetLineCount()) { next.line++; next.col = 0; }
+            } else if (vkKey == VK_HOME) {
+                next.col = 0;
+            } else if (vkKey == VK_END) {
+                next.col = buffer.GetLine(next.line).length();
+            } else if (vkKey == VK_UP) {
+                if (next.line > 0) { next.line--; next.col = (std::min)(next.col, buffer.GetLine(next.line).length()); }
+            } else if (vkKey == VK_DOWN) {
+                if (next.line + 1 < buffer.GetLineCount()) { next.line++; next.col = (std::min)(next.col, buffer.GetLine(next.line).length()); }
+            }
+            if (!shiftPressed) return { next, next };
+            return { anc, next };
+        };
+
+        auto priCur = buffer.GetCursor();
+        auto priAnc = HasSelection() ? selAnchor : priCur;
+        auto [newPriAnc, newPriCur] = moveOne(priAnc, priCur, HasSelection());
+        std::vector<SelectionRange> newSecs;
+        newSecs.reserve(secondarySelections.size());
+        for (const auto& s : secondarySelections) {
+            bool sHas = (s.anchor.line != s.cursor.line || s.anchor.col != s.cursor.col);
+            auto [na, nc] = moveOne(s.anchor, s.cursor, sHas);
+            newSecs.push_back({ na, nc });
+        }
+
+        selAnchor = newPriAnc;
+        selEnd = newPriCur;
+        hasSelection = shiftPressed && (newPriAnc.line != newPriCur.line || newPriAnc.col != newPriCur.col);
+        buffer.SetCursor(newPriCur.line, newPriCur.col);
+        secondarySelections = std::move(newSecs);
+        NormalizeMultiCursors();
+        selectedWord = hasSelection ? GetSelectedText() : L"";
+    }
+
+    void AddCursorAt(size_t line, size_t col) {
+        if (buffer.GetLineCount() == 0) return;
+        isColumnSelection = false;
+        line = (std::min)(line, buffer.GetLineCount() - 1);
+        col = (std::min)(col, buffer.GetLine(line).length());
+
+        // Toggle off existing secondary cursor if exact match
+        for (size_t i = 0; i < secondarySelections.size(); ++i) {
+            const auto& s = secondarySelections[i];
+            if (s.anchor.line == line && s.anchor.col == col && s.cursor.line == line && s.cursor.col == col) {
+                secondarySelections.erase(secondarySelections.begin() + i);
+                return;
+            }
+        }
+        // If clicked directly on primary cursor while secondaries exist, promote first secondary and drop this one
+        auto pri = buffer.GetCursor();
+        if (!HasSelection() && pri.line == line && pri.col == col && !secondarySelections.empty()) {
+            auto promo = secondarySelections.front();
+            secondarySelections.erase(secondarySelections.begin());
+            selAnchor = promo.anchor;
+            selEnd = promo.cursor;
+            hasSelection = (promo.anchor.line != promo.cursor.line || promo.anchor.col != promo.cursor.col);
+            buffer.SetCursor(promo.cursor.line, promo.cursor.col);
+            return;
+        }
+        secondarySelections.push_back({ { line, col }, { line, col } });
+        NormalizeMultiCursors();
+    }
+
+    bool AddCursorVertical(bool up) {
+        if (buffer.GetLineCount() == 0) return false;
+        isColumnSelection = false;
+        size_t extremeLine = buffer.GetCursor().line;
+        size_t targetCol = buffer.GetCursor().col;
+        for (const auto& s : secondarySelections) {
+            if (up) {
+                if (s.cursor.line < extremeLine) {
+                    extremeLine = s.cursor.line;
+                    targetCol = s.cursor.col;
+                }
+            } else {
+                if (s.cursor.line > extremeLine) {
+                    extremeLine = s.cursor.line;
+                    targetCol = s.cursor.col;
+                }
+            }
+        }
+        if (up) {
+            if (extremeLine == 0) return false;
+            size_t nl = extremeLine - 1;
+            size_t nc = (std::min)(targetCol, buffer.GetLine(nl).length());
+            secondarySelections.push_back({ { nl, nc }, { nl, nc } });
+        } else {
+            if (extremeLine + 1 >= buffer.GetLineCount()) return false;
+            size_t nl = extremeLine + 1;
+            size_t nc = (std::min)(targetCol, buffer.GetLine(nl).length());
+            secondarySelections.push_back({ { nl, nc }, { nl, nc } });
+        }
+        NormalizeMultiCursors();
+        return true;
+    }
+
+    void SetColumnSelection(size_t aLine, size_t aCol, size_t cLine, size_t cCol) {
+        if (buffer.GetLineCount() == 0) return;
+        size_t maxL = buffer.GetLineCount() - 1;
+        aLine = (std::min)(aLine, maxL);
+        cLine = (std::min)(cLine, maxL);
+
+        isColumnSelection = true;
+        boxAnchorLine = aLine;
+        boxAnchorCol = aCol;
+        boxActiveLine = cLine;
+        boxActiveCol = cCol;
+
+        size_t minL = (std::min)(aLine, cLine);
+        size_t maxLineSel = (std::max)(aLine, cLine);
+        size_t minC = (std::min)(aCol, cCol);
+        size_t maxC = (std::max)(aCol, cCol);
+
+        secondarySelections.clear();
+        hasSelection = false;
+
+        for (size_t l = minL; l <= maxLineSel; ++l) {
+            size_t len = buffer.GetLine(l).length();
+            size_t sc = (std::min)(minC, len);
+            size_t ec = (std::min)(maxC, len);
+            CursorPosition anc = (aCol <= cCol) ? CursorPosition{ l, sc } : CursorPosition{ l, ec };
+            CursorPosition cur = (aCol <= cCol) ? CursorPosition{ l, ec } : CursorPosition{ l, sc };
+            if (l == cLine) {
+                selAnchor = anc;
+                selEnd = cur;
+                hasSelection = (sc != ec);
+                buffer.SetCursor(cur.line, cur.col);
+            } else {
+                secondarySelections.push_back({ anc, cur });
+            }
+        }
+        selectedWord = hasSelection ? GetSelectedText() : L"";
+    }
+
+    void MoveColumnSelection(int vkKey) {
+        if (buffer.GetLineCount() == 0) return;
+        if (!isColumnSelection) {
+            boxAnchorLine = HasSelection() ? selAnchor.line : buffer.GetCursor().line;
+            boxAnchorCol = HasSelection() ? selAnchor.col : buffer.GetCursor().col;
+            boxActiveLine = buffer.GetCursor().line;
+            boxActiveCol = buffer.GetCursor().col;
+        }
+        if (vkKey == VK_UP) {
+            if (boxActiveLine > 0) boxActiveLine--;
+        } else if (vkKey == VK_DOWN) {
+            if (boxActiveLine + 1 < buffer.GetLineCount()) boxActiveLine++;
+        } else if (vkKey == VK_LEFT) {
+            if (boxActiveCol > 0) boxActiveCol--;
+        } else if (vkKey == VK_RIGHT) {
+            boxActiveCol++;
+        } else if (vkKey == VK_HOME) {
+            boxActiveCol = 0;
+        } else if (vkKey == VK_END) {
+            boxActiveCol = buffer.GetLine(boxActiveLine).length();
+        }
+        SetColumnSelection(boxAnchorLine, boxAnchorCol, boxActiveLine, boxActiveCol);
+    }
+
+    [[nodiscard]] std::wstring GetMultiCursorCopyText() const {
+        if (secondarySelections.empty()) {
+            if (HasSelection()) return GetSelectedText();
+            auto cur = buffer.GetCursor();
+            return buffer.GetLine(cur.line) + L"\r\n";
+        }
+        auto cursors = CollectNormalizedCursors();
+        bool anySel = false;
+        for (const auto& c : cursors) {
+            if (c.sLine != c.eLine || c.sCol != c.eCol) { anySel = true; break; }
+        }
+        std::wstring out;
+        if (anySel) {
+            for (size_t i = 0; i < cursors.size(); ++i) {
+                const auto& c = cursors[i];
+                out += GetTextInRange(c.sLine, c.sCol, c.eLine, c.eCol);
+                if (i + 1 < cursors.size()) out += L"\r\n";
+            }
+        } else {
+            size_t lastCopiedLine = SIZE_MAX;
+            for (const auto& c : cursors) {
+                if (c.sLine == lastCopiedLine) continue;
+                if (!out.empty()) out += L"\r\n";
+                out += buffer.GetLine(c.sLine);
+                lastCopiedLine = c.sLine;
+            }
+            out += L"\r\n";
+        }
+        return out;
+    }
+
+    bool MultiCursorCut() {
+        auto cursors = CollectNormalizedCursors();
+        bool anySel = false;
+        for (const auto& c : cursors) {
+            if (c.sLine != c.eLine || c.sCol != c.eCol) { anySel = true; break; }
+        }
+        if (anySel) {
+            std::vector<CursorEditOp> ops;
+            ops.reserve(cursors.size());
+            for (const auto& c : cursors) {
+                ops.push_back({ c.sLine, c.sCol, c.eLine, c.eCol, c.isPrimary, false, false, 0, L"", 0, 0 });
+            }
+            return ApplyMultiCursorEdits(ops);
+        }
+        // Cut unique whole lines cleanly from bottom to top
+        buffer.PushUndo();
+        std::vector<size_t> uniqueLines;
+        for (const auto& c : cursors) {
+            if (uniqueLines.empty() || uniqueLines.back() != c.sLine) uniqueLines.push_back(c.sLine);
+        }
+        size_t firstRemoved = uniqueLines.empty() ? 0 : uniqueLines.front();
+        for (auto it = uniqueLines.rbegin(); it != uniqueLines.rend(); ++it) {
+            if (buffer.GetLineCount() == 1) {
+                buffer.SetLine(0, L"");
+            } else {
+                buffer.ReplaceLineSlice(*it, 1, {});
+            }
+        }
+        ClearSelection();
+        size_t nl = (std::min)(firstRemoved, buffer.GetLineCount() > 0 ? buffer.GetLineCount() - 1 : 0);
+        buffer.SetCursor(nl, 0);
+        return true;
+    }
+
+    bool MultiCursorPaste(const std::wstring& clipText) {
+        if (clipText.empty()) return false;
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+
+        std::wstring normalized;
+        normalized.reserve(clipText.size());
+        for (wchar_t rc : clipText) {
+            if (rc != L'\r') normalized.push_back(rc);
+        }
+
+        std::vector<std::wstring> clipLines;
+        {
+            size_t start = 0;
+            while (true) {
+                size_t nl = normalized.find(L'\n', start);
+                if (nl == std::wstring::npos) {
+                    clipLines.push_back(normalized.substr(start));
+                    break;
+                }
+                clipLines.push_back(normalized.substr(start, nl - start));
+                start = nl + 1;
+            }
+        }
+
+        const bool distributePerCursor = (cursors.size() > 1 && clipLines.size() == cursors.size());
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        for (size_t i = 0; i < cursors.size(); ++i) {
+            const auto& c = cursors[i];
+            const std::wstring& text = distributePerCursor ? clipLines[i] : normalized;
+            size_t padLen = GetColumnVirtualPadLen(c.sLine, c.sCol, c.eCol);
+            std::wstring fullText = (padLen > 0) ? (std::wstring(padLen, L' ') + text) : text;
+            ops.push_back({ c.sLine, c.sCol, c.eLine, c.eCol, c.isPrimary, false, false, 0, fullText, fullText.length(), 0 });
+        }
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    size_t SelectAllOccurrences() {
+        if (buffer.GetLineCount() == 0) return 0;
+        if (!HasSelection()) {
+            SelectWordAt(buffer.GetCursor().line, buffer.GetCursor().col);
+        }
+        std::wstring needle = GetSelectedText();
+        if (needle.empty()) return 0;
+
+        // Single-line needle matching (most common identifier/literal case) or multiline fallback
+        size_t psL = 0, psC = 0, peL = 0, peC = 0;
+        GetSelectionRange(psL, psC, peL, peC);
+        secondarySelections.clear();
+        isColumnSelection = false;
+
+        if (needle.find(L'\n') == std::wstring::npos) {
+            size_t totalFound = 0;
+            const size_t nLen = needle.length();
+            const size_t totalLines = buffer.GetLineCount();
+            for (size_t l = 0; l < totalLines; ++l) {
+                const auto& line = buffer.GetLine(l);
+                size_t pos = line.find(needle, 0);
+                while (pos != std::wstring::npos) {
+                    ++totalFound;
+                    bool isPri = (l == psL && psL == peL && pos == psC);
+                    if (!isPri) {
+                        secondarySelections.push_back({ { l, pos }, { l, pos + nLen } });
+                    }
+                    pos = line.find(needle, pos + (std::max)(size_t(1), nLen));
+                }
+            }
+            NormalizeMultiCursors();
+            return totalFound;
+        }
+        return 1;
     }
 
     void SelectWordAt(size_t lineIdx, size_t colIdx) {
@@ -155,6 +915,7 @@ struct OpenDocument {
         selAnchor = { lineIdx, startCol };
         selEnd = { lineIdx, endCol };
         hasSelection = true;
+        isColumnSelection = false;
         buffer.SetCursor(lineIdx, endCol);
         selectedWord = line.substr(startCol, endCol - startCol);
     }
@@ -182,6 +943,18 @@ struct OpenDocument {
             searchCol = ec;
         }
 
+        auto isAlreadySelectedAt = [&](size_t l, size_t pos, size_t len) -> bool {
+            size_t psL, psC, peL, peC;
+            GetSelectionRange(psL, psC, peL, peC);
+            if (psL == peL && l == psL && !(pos + len <= psC || pos >= peC)) return true;
+            for (const auto& sec : secondarySelections) {
+                size_t ssL, ssC, seL, seC;
+                sec.GetRange(ssL, ssC, seL, seC);
+                if (ssL == seL && l == ssL && !(pos + len <= ssC || pos >= seC)) return true;
+            }
+            return false;
+        };
+
         size_t totalLines = buffer.GetLineCount();
         bool found = false;
         size_t foundLine = 0, foundCol = 0;
@@ -192,10 +965,14 @@ struct OpenDocument {
             size_t startC = (l == searchLine) ? searchCol : 0;
             if (startC <= line.length()) {
                 size_t pos = line.find(text, startC);
-                if (pos != std::wstring::npos) {
-                    found = true;
-                    foundLine = l;
-                    foundCol = pos;
+                while (pos != std::wstring::npos) {
+                    if (!isAlreadySelectedAt(l, pos, text.length())) {
+                        found = true;
+                        foundLine = l;
+                        foundCol = pos;
+                        break;
+                    }
+                    pos = line.find(text, pos + 1);
                 }
             }
         }
@@ -207,16 +984,7 @@ struct OpenDocument {
                 size_t limit = (l == searchLine) ? searchCol : line.length();
                 size_t pos = line.find(text, 0);
                 while (pos != std::wstring::npos && pos < limit) {
-                    bool alreadySelected = false;
-                    size_t psL, psC, peL, peC;
-                    GetSelectionRange(psL, psC, peL, peC);
-                    if (l == psL && pos == psC) alreadySelected = true;
-                    for (const auto& sec : secondarySelections) {
-                        size_t ssL, ssC, seL, seC;
-                        sec.GetRange(ssL, ssC, seL, seC);
-                        if (l == ssL && pos == ssC) { alreadySelected = true; break; }
-                    }
-                    if (!alreadySelected) {
+                    if (!isAlreadySelectedAt(l, pos, text.length())) {
                         found = true;
                         foundLine = l;
                         foundCol = pos;

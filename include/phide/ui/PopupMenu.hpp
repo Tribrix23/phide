@@ -251,7 +251,39 @@ enum class MenuActionId {
     MoreCallHierarchy,
     MoreCodeHierarchy,
     MoreCodeMetrics,
-    MoreRunDebug
+    MoreRunDebug,
+
+    // Multi-cursor, Line Manipulation, Folding, Navigation & Status-Bar Switcher Actions
+    EditorSelectAllOccurrences,
+    EditMoveLineUp,
+    EditMoveLineDown,
+    EditDuplicateLineUp,
+    EditDuplicateLineDown,
+    EditJoinLines,
+    EditSortLinesAsc,
+    EditSortLinesDesc,
+    EditTrimTrailingWhitespace,
+    CodeFoldAll,
+    CodeUnfoldAll,
+    CodeFoldLevel1,
+    CodeFoldLevel2,
+    CodeFoldLevel3,
+    CodeJumpToBracket,
+    StatusEolCRLF,
+    StatusEolLF,
+    StatusSaveUtf8,
+    StatusSaveUtf8Bom,
+    StatusSaveUtf16Le,
+    StatusSaveUtf16Be,
+    StatusSaveWin1252,
+    StatusReopenUtf8,
+    StatusReopenUtf16Le,
+    StatusReopenWin1252,
+    StatusIndentSpaces,
+    StatusIndentTabs,
+    StatusTabSize2,
+    StatusTabSize4,
+    StatusTabSize8
 };
 
 /**
@@ -376,6 +408,20 @@ public:
      * @param config Application metrics.
      */
     void OpenMoreActionsMenu(float x, float y, const app::AppConfig& config, float clientW = 0.0f, float clientH = 0.0f);
+
+    /**
+     * @brief Opens the Encoding & Line Ending switcher popup above the status bar.
+     */
+    void OpenEncodingMenu(float x, float y, const app::AppConfig& config,
+                          int currentEncoding, bool isCRLF, bool hasDoc,
+                          float clientW = 0.0f, float clientH = 0.0f);
+
+    /**
+     * @brief Opens the Indentation (Spaces / Tabs & Tab Size) popup above the status bar.
+     */
+    void OpenIndentationMenu(float x, float y, const app::AppConfig& config,
+                             bool insertSpaces, int tabSize,
+                             float clientW = 0.0f, float clientH = 0.0f);
 
     /**
      * @brief Opens the custom explorer context menu for a file or folder (matching Images 4 & 5).
