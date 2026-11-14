@@ -543,6 +543,14 @@ private:
     size_t m_autocompleteScrollOffset = 0;
     D2D1_RECT_F m_autocompleteBounds{};
     std::wstring m_ghostText;
+
+    struct StickyScopeLine {
+        size_t bufferLine = 0;
+        std::wstring text;
+        D2D1_RECT_F bounds{};
+    };
+    std::vector<StickyScopeLine> m_visibleStickyLines;
+    int m_hoveredStickyIdx = -1;
     editor::CodePrediction m_prediction{};
     D2D1_RECT_F m_crossFilePillBounds{ 0, 0, 0, 0 };
     bool m_crossFilePillHovered = false;
@@ -790,6 +798,9 @@ public:
         m_visibleColorSwatches.shrink_to_fit();
         m_scratchTabWidths.shrink_to_fit();
         m_visibleTodoCheckboxes.shrink_to_fit();
+        m_visibleStickyLines.clear();
+        m_visibleStickyLines.shrink_to_fit();
+        m_hoveredStickyIdx = -1;
         m_autocompleteItems.shrink_to_fit();
         m_cachedBracketAnalysis.brackets.shrink_to_fit();
         m_cachedBracketAnalysis.pairs.shrink_to_fit();
@@ -803,6 +814,10 @@ public:
         m_notebookView.RunGarbageCollection();
     }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
+
+    [[nodiscard]] int HitTestStickyHeader(POINT pt) const noexcept;
+    [[nodiscard]] const std::vector<StickyScopeLine>& GetVisibleStickyLines() const noexcept { return m_visibleStickyLines; }
+    bool SetHoveredStickyIndex(int idx) noexcept;
 
 
     [[nodiscard]] bool HitTestTodoCheckbox(POINT pt, TodoCheckboxHit& outHit) const noexcept;

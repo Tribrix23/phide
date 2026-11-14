@@ -1672,6 +1672,373 @@ bool EditorCanvas::GetFoldRange(const editor::Buffer& buffer, size_t startLine, 
     return false;
 }
 
+namespace {
+
+std::wstring ToLowerAsciiCopy(const std::wstring& s) {
+    std::wstring out = s;
+    for (wchar_t& c : out) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    return out;
+}
+
+void MaskRangePreserveLen(std::wstring& s, size_t start, size_t end) {
+    end = (std::min)(end, s.size());
+    for (size_t i = start; i < end; ++i) {
+        if (s[i] != L'\t' && s[i] != L'\r' && s[i] != L'\n') {
+            s[i] = L'\u2022';
+        }
+    }
+}
+
+std::wstring MaskSecretsForDisplay(const std::wstring& lineStr, const std::wstring& docExt, bool isEnvFile) {
+    if (lineStr.empty()) return lineStr;
+    std::wstring masked = lineStr;
+
+    if (isEnvFile) {
+        size_t firstNonWs = masked.find_first_not_of(L" \t");
+        if (firstNonWs == std::wstring::npos || masked[firstNonWs] == L'#') {
+            return masked;
+        }
+        size_t eqPos = masked.find(L'=', firstNonWs);
+        if (eqPos == std::wstring::npos) {
+            return masked;
+        }
+        size_t valStart = eqPos + 1;
+        while (valStart < masked.size() && (masked[valStart] == L' ' || masked[valStart] == L'\t')) {
+            ++valStart;
+        }
+        if (valStart >= masked.size()) return masked;
+
+        size_t valEnd = masked.size();
+        wchar_t q = masked[valStart];
+        if (q == L'"' || q == L'\'' || q == L'`') {
+            size_t closeQ = valStart + 1;
+            while (closeQ < masked.size()) {
+                if (masked[closeQ] == q && (closeQ == valStart + 1 || masked[closeQ - 1] != L'\\')) {
+                    break;
+                }
+                ++closeQ;
+            }
+            valStart += 1;
+            valEnd = closeQ;
+        } else {
+            size_t hashComment = masked.find(L" #", valStart);
+            if (hashComment != std::wstring::npos) {
+                valEnd = hashComment;
+            }
+            while (valEnd > valStart && (masked[valEnd - 1] == L' ' || masked[valEnd - 1] == L'\t')) {
+                --valEnd;
+            }
+        }
+        MaskRangePreserveLen(masked, valStart, valEnd);
+        return masked;
+    }
+
+    (void)docExt;
+    const std::wstring lower = ToLowerAsciiCopy(lineStr);
+
+    static const wchar_t* kSensitiveKeys[] = {
+        L"password", L"passwd", L"secret", L"api_key", L"apikey",
+        L"access_token", L"auth_token", L"private_key", L"client_secret",
+        L"db_pass", L"jwt_secret", L"encryption_key", L"bearer",
+        L"mysqli_connect", L"new pdo"
+    };
+    bool hasSensitiveContext = false;
+    for (const wchar_t* kw : kSensitiveKeys) {
+        if (lower.find(kw) != std::wstring::npos) {
+            hasSensitiveContext = true;
+            break;
+        }
+    }
+
+    static const wchar_t* kTokenPrefixes[] = {
+        L"ghp_", L"github_pat_", L"gho_", L"glpat-", L"sk-", L"sk_live_",
+        L"sk_test_", L"rk_live_", L"AKIA", L"AIza", L"xoxb-", L"xoxp-",
+        L"xoxa-", L"npm_", L"hf_", L"-----BEGIN "
+    };
+
+    // Scan string literals on this line; mask literal interior if it contains a secret token
+    // or appears in a sensitive credential context (skipping short SQL/label tokens without '=' if PDO args index >= 2)
+    size_t i = 0;
+    size_t n = lineStr.size();
+    while (i < n) {
+        wchar_t ch = lineStr[i];
+        if (ch == L'"' || ch == L'\'' || ch == L'`') {
+            size_t qStart = i + 1;
+            size_t qEnd = qStart;
+            while (qEnd < n) {
+                if (lineStr[qEnd] == L'\\' && qEnd + 1 < n) {
+                    qEnd += 2;
+                    continue;
+                }
+                if (lineStr[qEnd] == ch) break;
+                ++qEnd;
+            }
+            if (qEnd > qStart) {
+                std::wstring lit = lineStr.substr(qStart, qEnd - qStart);
+                bool maskThisLiteral = false;
+                for (const wchar_t* pref : kTokenPrefixes) {
+                    if (lit.find(pref) != std::wstring::npos) {
+                        maskThisLiteral = true;
+                        break;
+                    }
+                }
+                if (!maskThisLiteral && hasSensitiveContext) {
+                    std::wstring litLower = ToLowerAsciiCopy(lit);
+                    // Avoid masking pure key name when key appears as 'api_key' => 'secretValue'
+                    bool isKeyOnlyName = false;
+                    for (const wchar_t* kw : kSensitiveKeys) {
+                        if (litLower == kw) {
+                            isKeyOnlyName = true;
+                            break;
+                        }
+                    }
+                    // Check if there is an assignment/separator before or a URL credential user:pass@ inside
+                    size_t colonAt = lit.find(L"://");
+                    if (colonAt != std::wstring::npos) {
+                        size_t atPos = lit.find(L'@', colonAt + 3);
+                        size_t userColon = lit.find(L':', colonAt + 3);
+                        if (atPos != std::wstring::npos && userColon != std::wstring::npos && userColon < atPos) {
+                            MaskRangePreserveLen(masked, qStart + userColon + 1, qStart + atPos);
+                        }
+                    } else if (!isKeyOnlyName) {
+                        // Look backward for =, =>, :, or , (PDO/mysqli password arg)
+                        size_t back = (i > 0) ? i - 1 : 0;
+                        while (back > 0 && (lineStr[back] == L' ' || lineStr[back] == L'\t')) --back;
+                        if (lineStr[back] == L'=' || lineStr[back] == L'>' || lineStr[back] == L':' || lineStr[back] == L',') {
+                            maskThisLiteral = true;
+                        }
+                    }
+                }
+                if (maskThisLiteral) {
+                    MaskRangePreserveLen(masked, qStart, qEnd);
+                }
+            }
+            i = (qEnd < n) ? (qEnd + 1) : n;
+            continue;
+        }
+        ++i;
+    }
+
+    return masked;
+}
+
+bool IsCommentOrEmptyLine(const std::wstring& trimmed, const std::wstring& docExt) {
+    if (trimmed.empty()) return true;
+    if (trimmed.rfind(L"//", 0) == 0 || trimmed.rfind(L"/*", 0) == 0 ||
+        trimmed.front() == L'*' || trimmed.rfind(L"<!--", 0) == 0) {
+        return true;
+    }
+    if ((docExt == L".py" || docExt == L".sh" || docExt == L".yaml" || docExt == L".yml" || docExt == L".env") &&
+        trimmed.front() == L'#') {
+        return true;
+    }
+    if (docExt == L".sql" && trimmed.rfind(L"--", 0) == 0) {
+        return true;
+    }
+    return false;
+}
+
+struct StickyScopeEntry {
+    size_t bufferLine = 0;
+    size_t indent = 0;
+    int braceDepthOpen = 0;
+    bool isBraceScope = false;
+};
+
+std::vector<std::pair<size_t, std::wstring>> ComputeStickyScopeLines(
+    const editor::Buffer& buffer, size_t topBufferLine, const std::wstring& docExt, int tabSize) {
+    std::vector<std::pair<size_t, std::wstring>> result;
+    if (topBufferLine == 0 || buffer.GetLineCount() == 0) return result;
+
+    struct CacheKey {
+        const editor::Buffer* buf = nullptr;
+        uint64_t version = UINT64_MAX;
+        size_t topLine = SIZE_MAX;
+        std::wstring ext;
+        std::vector<std::pair<size_t, std::wstring>> items;
+    };
+    static CacheKey s_cache;
+    if (s_cache.buf == &buffer && s_cache.version == buffer.GetVersion() &&
+        s_cache.topLine == topBufferLine && s_cache.ext == docExt) {
+        return s_cache.items;
+    }
+
+    const size_t limit = (std::min)(topBufferLine, buffer.GetLineCount() - 1);
+    const bool indentOnlyLang = (docExt == L".py" || docExt == L".yaml" || docExt == L".yml" ||
+                                 docExt == L".html" || docExt == L".htm" || docExt == L".xml");
+
+    std::vector<StickyScopeEntry> stack;
+    int braceDepth = 0;
+    bool inBlockComment = false;
+    size_t prevCodeLine = SIZE_MAX;
+
+    auto measureIndent = [&](const std::wstring& s, size_t& outFirstNonWs) -> size_t {
+        size_t cols = 0;
+        size_t p = 0;
+        const size_t step = static_cast<size_t>((std::max)(1, tabSize));
+        while (p < s.size() && (s[p] == L' ' || s[p] == L'\t')) {
+            cols += (s[p] == L'\t') ? step : 1;
+            ++p;
+        }
+        outFirstNonWs = p;
+        return cols;
+    };
+
+    for (size_t b = 0; b <= limit; ++b) {
+        const std::wstring& ln = buffer.GetLine(b);
+        size_t firstNonWs = 0;
+        size_t indent = measureIndent(ln, firstNonWs);
+        if (firstNonWs >= ln.size()) continue;
+        std::wstring trimmed = ln.substr(firstNonWs);
+        while (!trimmed.empty() && (trimmed.back() == L' ' || trimmed.back() == L'\t' || trimmed.back() == L'\r')) {
+            trimmed.pop_back();
+        }
+        if (trimmed.empty()) continue;
+
+        if (inBlockComment) {
+            size_t endC = ln.find(L"*/", firstNonWs);
+            if (endC == std::wstring::npos) continue;
+            inBlockComment = false;
+        }
+
+        if (IsCommentOrEmptyLine(trimmed, docExt)) {
+            if (trimmed.rfind(L"/*", 0) == 0 && trimmed.find(L"*/", 2) == std::wstring::npos) {
+                inBlockComment = true;
+            }
+            continue;
+        }
+
+        // At topBufferLine itself: apply closing braces/dedent so a closing brace '}' does not stay under its own header
+        if (indentOnlyLang) {
+            while (!stack.empty() && !stack.back().isBraceScope && stack.back().indent >= indent) {
+                stack.pop_back();
+            }
+            if (b < topBufferLine) {
+                bool opensBlock = false;
+                if (docExt == L".py" || docExt == L".yaml" || docExt == L".yml") {
+                    if (trimmed.back() == L':') opensBlock = true;
+                } else {
+                    // HTML/XML opening element: `<tag...` without `</` or `/>` or matching `</tag>` on same line
+                    if (trimmed.front() == L'<' && trimmed.size() >= 2 && trimmed[1] != L'/' && trimmed[1] != L'!') {
+                        if (trimmed.find(L"</") == std::wstring::npos && trimmed.find(L"/>") == std::wstring::npos) {
+                            opensBlock = true;
+                        }
+                    }
+                }
+                if (opensBlock) {
+                    stack.push_back({b, indent, braceDepth, false});
+                }
+            }
+            prevCodeLine = b;
+            continue;
+        }
+
+        // Brace-based scope scan (ignoring string literals and // / /* */ comments)
+        int opensOnLine = 0;
+        int closesBeforeFirstOpen = 0;
+        bool seenOpenOnLine = false;
+        wchar_t inQuote = 0;
+        for (size_t i = firstNonWs; i < ln.size(); ++i) {
+            wchar_t c = ln[i];
+            if (inBlockComment) {
+                if (c == L'*' && i + 1 < ln.size() && ln[i + 1] == L'/') {
+                    inBlockComment = false;
+                    ++i;
+                }
+                continue;
+            }
+            if (inQuote != 0) {
+                if (c == L'\\' && i + 1 < ln.size()) {
+                    ++i;
+                    continue;
+                }
+                if (c == inQuote) inQuote = 0;
+                continue;
+            }
+            if (c == L'/' && i + 1 < ln.size()) {
+                if (ln[i + 1] == L'/') break;
+                if (ln[i + 1] == L'*') {
+                    inBlockComment = true;
+                    ++i;
+                    continue;
+                }
+            }
+            if (c == L'"' || c == L'\'' || c == L'`') {
+                inQuote = c;
+                continue;
+            }
+            if (c == L'{') {
+                ++braceDepth;
+                ++opensOnLine;
+                seenOpenOnLine = true;
+            } else if (c == L'}') {
+                --braceDepth;
+                if (braceDepth < 0) braceDepth = 0;
+                if (!seenOpenOnLine) ++closesBeforeFirstOpen;
+                while (!stack.empty() && stack.back().isBraceScope && braceDepth <= stack.back().braceDepthOpen) {
+                    stack.pop_back();
+                }
+            }
+        }
+
+        if (b < topBufferLine && seenOpenOnLine) {
+            // Check whether this line stayed open past EOL (e.g. `if (x) {` vs inline `fn() { return 1; }`)
+            int netOpens = braceDepth;
+            int prevDepth = braceDepth - opensOnLine + closesBeforeFirstOpen;
+            (void)prevDepth;
+            size_t headerLine = b;
+            if (trimmed == L"{" && prevCodeLine != SIZE_MAX) {
+                headerLine = prevCodeLine;
+            }
+            // Push if the brace opened on this line was NOT balanced before EOL
+            // Check stack top: only push if current braceDepth > previous stack depth
+            int stackDepthTop = stack.empty() ? 0 : (stack.back().braceDepthOpen + 1);
+            if (netOpens >= stackDepthTop) {
+                bool dup = (!stack.empty() && stack.back().bufferLine == headerLine);
+                if (!dup) {
+                    stack.push_back({headerLine, indent, stackDepthTop - 1, true});
+                }
+            }
+        }
+
+        // Mixed HTML/PHP files can also have outer HTML container indentation outside <?php
+        if (!seenOpenOnLine && closesBeforeFirstOpen == 0 && b < topBufferLine &&
+            (docExt == L".php" || docExt == L".phtml" || docExt == L".jsx" || docExt == L".tsx")) {
+            if (trimmed.front() == L'<' && trimmed.size() >= 2 && trimmed[1] != L'/' && trimmed[1] != L'!' && trimmed[1] != L'?') {
+                if (trimmed.find(L"</") == std::wstring::npos && trimmed.find(L"/>") == std::wstring::npos) {
+                    stack.push_back({b, indent, braceDepth, false});
+                }
+            } else if (trimmed.rfind(L"</", 0) == 0) {
+                if (!stack.empty() && !stack.back().isBraceScope) {
+                    stack.pop_back();
+                }
+            }
+        }
+
+        prevCodeLine = b;
+    }
+
+    // Keep up to 4 most-relevant enclosing scopes (preserve outer-to-inner hierarchy)
+    const size_t startIdx = (stack.size() > 4) ? (stack.size() - 4) : 0;
+    for (size_t i = startIdx; i < stack.size(); ++i) {
+        size_t lnIdx = stack[i].bufferLine;
+        if (lnIdx < buffer.GetLineCount()) {
+            result.emplace_back(lnIdx, buffer.GetLine(lnIdx));
+        }
+    }
+
+    s_cache.buf = &buffer;
+    s_cache.version = buffer.GetVersion();
+    s_cache.topLine = topBufferLine;
+    s_cache.ext = docExt;
+    s_cache.items = result;
+    return result;
+}
+
+} // namespace
+
 void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                               float topY, float clientHeight, bool isFocused,
@@ -1705,6 +2072,68 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     const float scrollbarW = config.ScaleF(14.0f);
     const float minimapW = config.ScaleF(88.0f);
     const float canvasRight = canvasLeft + canvasWidth;
+
+    doc.conflictBannerBounds = {};
+    doc.conflictReloadBtnBounds = {};
+    doc.conflictDiffBtnBounds = {};
+    doc.conflictOverwriteBtnBounds = {};
+    if (doc.hasExternalDiskConflict) {
+        const float bannerH = config.ScaleF(34.0f);
+        D2D1_RECT_F rcBanner = D2D1::RectF(canvasLeft, topY, canvasRight, topY + bannerH);
+        doc.conflictBannerBounds = rcBanner;
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> banBg, banBorder, banText, btnPrimary, btnGhost, btnWarn, whiteBrush;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.18f, 0.08f, 1.0f) : D2D1::ColorF(1.0f, 0.96f, 0.85f, 1.0f), &banBg);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.92f, 0.66f, 0.18f, 0.85f) : D2D1::ColorF(0.82f, 0.54f, 0.08f, 0.85f), &banBorder);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.98f, 0.90f, 0.72f, 1.0f) : D2D1::ColorF(0.38f, 0.24f, 0.04f, 1.0f), &banText);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.54f, 0.92f, 1.0f), &btnPrimary);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.25f, 0.27f, 0.32f, 1.0f) : D2D1::ColorF(0.86f, 0.88f, 0.92f, 1.0f), &btnGhost);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.34f, 0.22f, 1.0f), &btnWarn);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &whiteBrush);
+
+        if (banBg) pRT->FillRectangle(rcBanner, banBg.Get());
+        if (banBorder) {
+            pRT->DrawLine(D2D1::Point2F(rcBanner.left, rcBanner.bottom - 0.5f),
+                          D2D1::Point2F(rcBanner.right, rcBanner.bottom - 0.5f), banBorder.Get(), 1.2f);
+        }
+
+        IDWriteTextFormat* fmtBan = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+        const DWRITE_TEXT_ALIGNMENT origHAlign = fmtBan ? fmtBan->GetTextAlignment() : DWRITE_TEXT_ALIGNMENT_LEADING;
+        const DWRITE_PARAGRAPH_ALIGNMENT origVAlign = fmtBan ? fmtBan->GetParagraphAlignment() : DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
+        const float btnH = config.ScaleF(22.0f);
+        const float btnY = topY + (bannerH - btnH) * 0.5f;
+        const float padBtn = config.ScaleF(10.0f);
+        const float gapBtn = config.ScaleF(8.0f);
+        float rightEdge = canvasRight - config.ScaleF(12.0f);
+
+        auto drawBannerBtn = [&](const wchar_t* label, float w, ID2D1Brush* bgB, ID2D1Brush* fgB, D2D1_RECT_F& outRc) {
+            outRc = D2D1::RectF(rightEdge - w, btnY, rightEdge, btnY + btnH);
+            D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(outRc, config.ScaleF(4.0f), config.ScaleF(4.0f));
+            if (bgB) pRT->FillRoundedRectangle(rrc, bgB);
+            if (fmtBan && fgB) {
+                fmtBan->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                fmtBan->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRT->DrawText(label, static_cast<UINT32>(wcslen(label)), fmtBan, outRc, fgB);
+                fmtBan->SetTextAlignment(origHAlign);
+                fmtBan->SetParagraphAlignment(origVAlign);
+            }
+            rightEdge -= (w + gapBtn);
+        };
+
+        drawBannerBtn(L"Overwrite", config.ScaleF(78.0f), btnWarn.Get(), whiteBrush.Get(), doc.conflictOverwriteBtnBounds);
+        drawBannerBtn(L"Compare Diff", config.ScaleF(98.0f), btnGhost.Get(),
+                      theme.brushTextPrimary ? theme.brushTextPrimary.Get() : whiteBrush.Get(), doc.conflictDiffBtnBounds);
+        drawBannerBtn(L"Reload", config.ScaleF(68.0f), btnPrimary.Get(), whiteBrush.Get(), doc.conflictReloadBtnBounds);
+
+        D2D1_RECT_F rcMsg = D2D1::RectF(canvasLeft + config.ScaleF(12.0f), topY, (std::max)(canvasLeft + config.ScaleF(40.0f), rightEdge - padBtn), topY + bannerH);
+        const wchar_t* warnMsg = L"External file modification detected on disk. Unsaved changes in this buffer differ from disk.";
+        if (fmtBan && banText) {
+            pRT->DrawText(warnMsg, static_cast<UINT32>(wcslen(warnMsg)), fmtBan, rcMsg, banText.Get());
+        }
+
+        topY += bannerH;
+    }
+
     const float codeAreaH = clientHeight - topY;
     const float codeRight = config.showMinimap ? (canvasRight - minimapW - config.ScaleF(6.0f)) : (canvasRight - scrollbarW);
     const float swatchSpan = config.ScaleF(14.0f);
@@ -1717,6 +2146,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         docExt = pathToExtract.substr(dotPos);
         for (auto& c : docExt) c = towlower(c);
     }
+    size_t sepPos = pathToExtract.find_last_of(L"\\/");
+    std::wstring docBaseNameLower = (sepPos == std::wstring::npos) ? pathToExtract : pathToExtract.substr(sepPos + 1);
+    for (auto& c : docBaseNameLower) c = static_cast<wchar_t>(towlower(c));
+    const bool isEnvPrivacyFile = (docExt == L".env" || docBaseNameLower.rfind(L".env", 0) == 0);
 
     // Determine if Tailwind is connected to this document or workspace
     bool isTailwind = false;
@@ -2184,7 +2617,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // Code Content
-        const auto& lineStr = buffer.GetLine(vl.bufferLine);
+        const auto& rawLineStr = buffer.GetLine(vl.bufferLine);
+        std::wstring maskedLineStorage;
+        const std::wstring& lineStr = config.enablePrivacyMask
+            ? (maskedLineStorage = MaskSecretsForDisplay(rawLineStr, docExt, isEnvPrivacyFile))
+            : rawLineStr;
         float curCodeEndX = codeLeft;
 
         /**
@@ -3510,6 +3947,117 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         pRT->PopAxisAlignedClip();
     }
 
+    // 4.5. Sticky Scroll Enclosing Scope Header (rendered pinned at top over gutter + code area)
+    std::erase_if(m_visibleStickyLines, [&](const StickyScopeLine& s) {
+        return s.bounds.left >= canvasLeft - 2.0f && s.bounds.right <= codeRight + 2.0f;
+    });
+    if (config.enableStickyScroll && !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary &&
+        doc.scrollLine > 0 && doc.scrollLine < visualLines.size() && codeRight > canvasLeft + gutterW + 20.0f) {
+        size_t topBufLine = visualLines[doc.scrollLine].bufferLine;
+        auto scopes = ComputeStickyScopeLines(buffer, topBufLine, docExt, config.tabSize);
+        if (!scopes.empty()) {
+            const float availStickyW = (std::max)(2000.0f, codeRight - (codeLeft - scrollX) + 500.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stickyBgBrush, stickyHoverBrush, stickySepBrush, stickyShadowBrush;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.115f, 0.120f, 0.135f, 0.98f) : D2D1::ColorF(0.955f, 0.960f, 0.975f, 0.98f),
+                &stickyBgBrush);
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.165f, 0.178f, 0.210f, 0.98f) : D2D1::ColorF(0.895f, 0.915f, 0.955f, 0.98f),
+                &stickyHoverBrush);
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.24f, 0.26f, 0.30f, 0.90f) : D2D1::ColorF(0.78f, 0.80f, 0.85f, 0.90f),
+                &stickySepBrush);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, theme.IsDarkMode() ? 0.28f : 0.10f), &stickyShadowBrush);
+
+            D2D1_RECT_F fullClip = D2D1::RectF(canvasLeft, topY, codeRight, clientHeight);
+            pRT->PushAxisAlignedClip(fullClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            for (size_t si = 0; si < scopes.size(); ++si) {
+                const size_t sLine = scopes[si].first;
+                float rowTop = topY + static_cast<float>(si) * lineH;
+                if (rowTop + lineH > clientHeight) break;
+
+                D2D1_RECT_F rcRow = D2D1::RectF(canvasLeft, rowTop, codeRight, rowTop + lineH);
+                const bool isRowHovered = (static_cast<int>(si) == m_hoveredStickyIdx);
+                if (isRowHovered && stickyHoverBrush) {
+                    pRT->FillRectangle(rcRow, stickyHoverBrush.Get());
+                } else if (stickyBgBrush) {
+                    pRT->FillRectangle(rcRow, stickyBgBrush.Get());
+                }
+
+                // Gutter number & divider
+                if (config.showLineNumbers) {
+                    std::wstring numStr = std::to_wstring(sLine + 1);
+                    D2D1_RECT_F rcNum = D2D1::RectF(
+                        canvasLeft + config.ScaleF(4.0f), rowTop,
+                        canvasLeft + gutterW - config.ScaleF(16.0f), rowTop + lineH);
+                    IDWriteTextFormat* numFmt = theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get();
+                    ID2D1Brush* numBrush = isRowHovered
+                        ? (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get())
+                        : theme.brushLineNumber.Get();
+                    if (numFmt && numBrush) {
+                        pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.length()), numFmt, rcNum, numBrush);
+                    }
+                    if (theme.brushBorderSubtle) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(canvasLeft + gutterW - 0.5f, rowTop),
+                            D2D1::Point2F(canvasLeft + gutterW - 0.5f, rowTop + lineH),
+                            theme.brushBorderSubtle.Get(), 1.0f);
+                    }
+                }
+
+                const std::wstring& displaySticky = config.enablePrivacyMask
+                    ? MaskSecretsForDisplay(scopes[si].second, docExt, isEnvPrivacyFile)
+                    : scopes[si].second;
+
+                // Syntax-highlighted code line
+                D2D1_RECT_F rcStickyCodeClip = D2D1::RectF(canvasLeft + gutterW, rowTop, codeRight, rowTop + lineH);
+                pRT->PushAxisAlignedClip(rcStickyCodeClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                if (theme.dwriteFactory && theme.fontCode && !displaySticky.empty()) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pStickyLayout;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            displaySticky.c_str(), static_cast<UINT32>(displaySticky.length()),
+                            theme.fontCode.Get(), availStickyW, lineH, &pStickyLayout))) {
+                        pStickyLayout->SetIncrementalTabStop(charW * static_cast<float>(config.tabSize > 0 ? config.tabSize : 4));
+                        auto tokens = buffer.GetTokensForLine(sLine, docExt);
+                        for (const auto& tok : tokens) {
+                            if (tok.startCol + tok.length > displaySticky.length()) continue;
+                            ID2D1Brush* brush = theme.brushTextPrimary.Get();
+                            switch (tok.type) {
+                                case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                                case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                                case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                                case editor::TokenType::Comment:   brush = theme.brushSyntaxComment.Get(); break;
+                                case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                                case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                                case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                                case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                                default: brush = theme.brushTextPrimary.Get(); break;
+                            }
+                            DWRITE_TEXT_RANGE range = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tok.length) };
+                            pStickyLayout->SetDrawingEffect(brush, range);
+                        }
+                        pRT->DrawTextLayout(D2D1::Point2F(codeLeft - scrollX, rowTop), pStickyLayout.Get(), theme.brushTextPrimary.Get());
+                    }
+                }
+                pRT->PopAxisAlignedClip();
+
+                m_visibleStickyLines.push_back(StickyScopeLine{ sLine, displaySticky, rcRow });
+            }
+
+            if (!m_visibleStickyLines.empty()) {
+                float bottomEdge = m_visibleStickyLines.back().bounds.bottom;
+                if (stickySepBrush) {
+                    pRT->DrawLine(D2D1::Point2F(canvasLeft, bottomEdge), D2D1::Point2F(codeRight, bottomEdge), stickySepBrush.Get(), 1.0f);
+                }
+                if (stickyShadowBrush) {
+                    pRT->FillRectangle(D2D1::RectF(canvasLeft, bottomEdge + 1.0f, codeRight, bottomEdge + config.ScaleF(3.0f)), stickyShadowBrush.Get());
+                }
+            }
+            pRT->PopAxisAlignedClip();
+        }
+    }
+
     // 5. Code Minimap (Image 5: scaled miniature code preview with syntax highlighting, search ticks, and viewport slider)
     if (config.showMinimap && !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
         doc.minimapTrack = D2D1::RectF(canvasRight - minimapW, topY, canvasRight, clientHeight);
@@ -4174,6 +4722,24 @@ int EditorCanvas::HitTestFoldChevron(POINT pt) const {
     return -1;
 }
 
+int EditorCanvas::HitTestStickyHeader(POINT pt) const noexcept {
+    const float px = static_cast<float>(pt.x);
+    const float py = static_cast<float>(pt.y);
+    for (size_t i = 0; i < m_visibleStickyLines.size(); ++i) {
+        const auto& r = m_visibleStickyLines[i].bounds;
+        if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool EditorCanvas::SetHoveredStickyIndex(int idx) noexcept {
+    if (m_hoveredStickyIdx == idx) return false;
+    m_hoveredStickyIdx = idx;
+    return true;
+}
+
 bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                                  float canvasLeft, float clientHeight, size_t& outLine) const {
     if (!config.showLineNumbers) {
@@ -4194,7 +4760,8 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     }
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
-    const float topY    = paneTop + tabH + breadcrumbH;
+    float topY    = paneTop + tabH + breadcrumbH;
+    if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
@@ -4296,7 +4863,8 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     }
     const float tabH    = config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
-    const float topY    = paneTop + tabH + breadcrumbH;
+    float topY    = paneTop + tabH + breadcrumbH;
+    if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);
     const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);

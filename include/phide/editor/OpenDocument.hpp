@@ -537,6 +537,15 @@ struct OpenDocument {
     // Import Cost annotations cache (line index -> annotation text e.g. "   71.7 KB (gzipped: 25.9 KB)")
     std::unordered_map<size_t, std::wstring> importCostMap;
     bool importCostCalculated = false;
+
+    // External Disk-Change Detector state
+    std::filesystem::file_time_type lastDiskWriteTime{};
+    bool hasLastDiskWriteTime = false;
+    bool hasExternalDiskConflict = false;
+    D2D1_RECT_F conflictBannerBounds{};
+    D2D1_RECT_F conflictReloadBtnBounds{};
+    D2D1_RECT_F conflictDiffBtnBounds{};
+    D2D1_RECT_F conflictOverwriteBtnBounds{};
 };
 
 /**

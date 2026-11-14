@@ -139,6 +139,9 @@ struct ApiResponseData {
     std::vector<std::pair<std::wstring, std::wstring>> headers;
     std::vector<std::wstring> cookies;
     std::wstring errorMessage;
+    std::wstring errorFilePath;
+    size_t errorLine = 0;
+    std::wstring errorDetail;
 
     // Streaming response data (SSE / chunked)
     bool isStream = false;
@@ -239,6 +242,10 @@ public:
     ~ApiTesterView() = default;
 
     void SetHwnd(HWND hwnd) noexcept { m_hwnd = hwnd; }
+    void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
+    void SetOnJumpToErrorLocation(std::function<void(const std::wstring&, size_t)> cb) {
+        m_onJumpToErrorLocation = std::move(cb);
+    }
     void DiscardDeviceResources();
 
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -266,6 +273,9 @@ public:
     void SaveSessionsToDisk();
     void LoadSessionsFromDisk();
     void SendCurrentRequest();
+    bool TryImportCurlCommand(const std::wstring& rawText, ApiRequestSession& s);
+    void ExtractPhpOrNginxErrorLocation(const std::wstring& responseBody, int statusCode,
+                                        std::wstring& outFile, size_t& outLine, std::wstring& outDetail) const;
 
 private:
     void EnsureDefaultData(ApiRequestSession& session);
@@ -439,6 +449,11 @@ private:
     // Toast notification
     std::wstring m_toastMessage;
     DWORD m_toastExpiry = 0;
+
+    // PHP / Nginx Error Jump banner & callback
+    std::wstring m_workspaceRoot;
+    D2D1_RECT_F m_rcErrorJumpBanner{};
+    std::function<void(const std::wstring&, size_t)> m_onJumpToErrorLocation;
 };
 
 } // namespace phide::ui

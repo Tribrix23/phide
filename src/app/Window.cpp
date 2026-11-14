@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <regex>
+#include <iterator>
 #include <tlhelp32.h>
 #include <iphlpapi.h>
 
@@ -58,6 +60,7 @@ static bool AreRecentPathsEqual(const std::wstring& a, const std::wstring& b) {
 }
 
 static bool IsPortListening(int port);
+static ULONGLONG s_lastInternalAutoSaveTick = 0;
 
 static std::wstring RunCmdCapture(const std::wstring& cmd) {
     std::wstring result;
@@ -334,6 +337,13 @@ Window::Window() {
 }
 
 Window::~Window() {
+    m_isDestroying.store(true);
+    m_lsp.SetDiagnosticsCallback(nullptr);
+    m_lsp.Shutdown();
+    {
+        std::unique_lock<std::mutex> lk(m_bgWorkersMutex);
+        m_bgWorkersCv.wait(lk, [this]() { return m_activeBgWorkers == 0; });
+    }
     StopPhpServer();
     StopNginxServer();
     StopPmaServer();
@@ -377,6 +387,37 @@ static std::wstring UnescapeJson(const std::wstring& s) {
         }
     }
     return out;
+}
+
+static std::string WideToUtf8Str(const std::wstring& w) {
+    if (w.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring Utf8ToWideStr(const std::string& s) {
+    if (s.empty()) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring out(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), len);
+    return out;
+}
+
+static std::filesystem::path GetRecoveryDirPath() {
+    wchar_t* pAppData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&pAppData, &len, L"APPDATA") == 0 && pAppData) {
+        std::filesystem::path dir = std::filesystem::path(pAppData) / L"phide" / L"recovery";
+        free(pAppData);
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return dir;
+    }
+    return {};
 }
 
 std::wstring Window::GetSessionFilePath() const {
@@ -453,7 +494,7 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                 buffer.data(),
                 static_cast<DWORD>(buffer.size()),
                 TRUE,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
                 nullptr,
                 &ov,
                 nullptr
@@ -496,6 +537,7 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                                    relName.starts_with(L"venv") ||
                                    relName.starts_with(L"__pycache__") ||
                                    relName.starts_with(L".cache") ||
+                                   relName.starts_with(L".phide") ||
                                    relName.find(L"session_state.json") != std::wstring::npos) {
                             isIgnored = true;
                         }
@@ -649,6 +691,212 @@ void Window::SaveSessionState() {
     }
     out << L"  ]\n";
     out << L"}\n";
+    out.flush();
+    SaveDirtyBuffersRecovery();
+}
+
+void Window::ClearDirtyBuffersRecovery() {
+    auto recDir = GetRecoveryDirPath();
+    if (recDir.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(recDir / L"manifest.txt", ec);
+    for (const auto& entry : std::filesystem::directory_iterator(recDir, ec)) {
+        if (entry.is_regular_file(ec)) {
+            auto name = entry.path().filename().wstring();
+            if (name.rfind(L"buffer_", 0) == 0 && name.ends_with(L".bak")) {
+                std::filesystem::remove(entry.path(), ec);
+            }
+        }
+    }
+}
+
+void Window::SaveDirtyBuffersRecovery() {
+    if (m_isRestoringSession) return;
+    if (m_isCleanNewWindow && !m_drawer.HasOpenFolder() && GetActiveGroup().docs.empty()) {
+        return;
+    }
+    auto recDir = GetRecoveryDirPath();
+    if (recDir.empty()) return;
+
+    struct RecoveryItem {
+        int groupIdx = 0;
+        size_t cursorLine = 0;
+        size_t cursorCol = 0;
+        size_t scrollLine = 0;
+        float scrollOffsetX = 0.0f;
+        std::wstring fileName;
+        std::wstring filePath;
+        std::wstring bakFileName;
+        std::string utf8Content;
+    };
+    std::vector<RecoveryItem> items;
+    int bakCounter = 0;
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        for (const auto& doc : m_editorGroups[g].docs) {
+            if (doc.isSpecialView || doc.isFolderView || doc.isImageView || doc.isUnsupportedBinary || doc.isDiffView) {
+                continue;
+            }
+            bool isUntitled = doc.filePath.empty();
+            if (!doc.isDirty && !isUntitled) continue;
+            // Skip completely empty newly created untitled buffers with no edits
+            if (isUntitled && !doc.isDirty && doc.buffer.GetLineCount() <= 1 && doc.buffer.GetLine(0).empty()) {
+                continue;
+            }
+            RecoveryItem item;
+            item.groupIdx = static_cast<int>(g);
+            auto cur = doc.buffer.GetCursor();
+            item.cursorLine = cur.line;
+            item.cursorCol = cur.col;
+            item.scrollLine = doc.scrollLine;
+            item.scrollOffsetX = doc.scrollOffsetX;
+            item.fileName = doc.fileName;
+            item.filePath = doc.filePath;
+            item.bakFileName = L"buffer_" + std::to_wstring(bakCounter++) + L".bak";
+            item.utf8Content = WideToUtf8Str(doc.buffer.GetText());
+            items.push_back(std::move(item));
+        }
+    }
+
+    if (items.empty()) {
+        ClearDirtyBuffersRecovery();
+        return;
+    }
+
+    std::error_code ec;
+    std::unordered_set<std::wstring> keepNames;
+    keepNames.insert(L"manifest.txt");
+
+    std::wstring manifestText;
+    for (const auto& it : items) {
+        keepNames.insert(it.bakFileName);
+        std::ofstream bakOut(recDir / it.bakFileName, std::ios::binary | std::ios::trunc);
+        if (bakOut.is_open()) {
+            bakOut.write(it.utf8Content.data(), static_cast<std::streamsize>(it.utf8Content.size()));
+            bakOut.flush();
+        }
+        manifestText += std::to_wstring(it.groupIdx) + L"\t"
+                      + std::to_wstring(it.cursorLine) + L"\t"
+                      + std::to_wstring(it.cursorCol) + L"\t"
+                      + std::to_wstring(it.scrollLine) + L"\t"
+                      + std::to_wstring(it.scrollOffsetX) + L"\t"
+                      + EscapeJson(it.fileName) + L"\t"
+                      + EscapeJson(it.filePath) + L"\t"
+                      + EscapeJson(it.bakFileName) + L"\n";
+    }
+
+    std::string manifestUtf8 = WideToUtf8Str(manifestText);
+    std::ofstream manOut(recDir / L"manifest.txt", std::ios::binary | std::ios::trunc);
+    if (manOut.is_open()) {
+        manOut.write(manifestUtf8.data(), static_cast<std::streamsize>(manifestUtf8.size()));
+        manOut.flush();
+    }
+
+    // Prune stale recovery files
+    for (const auto& entry : std::filesystem::directory_iterator(recDir, ec)) {
+        if (entry.is_regular_file(ec)) {
+            auto name = entry.path().filename().wstring();
+            if (keepNames.find(name) == keepNames.end()) {
+                std::filesystem::remove(entry.path(), ec);
+            }
+        }
+    }
+}
+
+void Window::RestoreDirtyBuffersRecovery() {
+    auto recDir = GetRecoveryDirPath();
+    if (recDir.empty()) return;
+    std::error_code ec;
+    auto manPath = recDir / L"manifest.txt";
+    if (!std::filesystem::exists(manPath, ec)) return;
+
+    std::ifstream manIn(manPath, std::ios::binary);
+    if (!manIn.is_open()) return;
+    std::string rawMan((std::istreambuf_iterator<char>(manIn)), std::istreambuf_iterator<char>());
+    std::wstring manWide = Utf8ToWideStr(rawMan);
+    if (manWide.empty()) return;
+
+    bool anyRestored = false;
+    m_isRestoringSession = true;
+    size_t pos = 0;
+    while (pos < manWide.size()) {
+        size_t eol = manWide.find(L'\n', pos);
+        std::wstring line = (eol == std::wstring::npos) ? manWide.substr(pos) : manWide.substr(pos, eol - pos);
+        pos = (eol == std::wstring::npos) ? manWide.size() : (eol + 1);
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n')) line.pop_back();
+        if (line.empty()) continue;
+
+        std::vector<std::wstring> parts;
+        size_t start = 0;
+        while (start <= line.size()) {
+            size_t tab = line.find(L'\t', start);
+            if (tab == std::wstring::npos) {
+                parts.push_back(line.substr(start));
+                break;
+            }
+            parts.push_back(line.substr(start, tab - start));
+            start = tab + 1;
+        }
+        if (parts.size() < 8) continue;
+
+        int groupIdx = _wtoi(parts[0].c_str());
+        size_t cursorLine = static_cast<size_t>(_wtoi64(parts[1].c_str()));
+        size_t cursorCol = static_cast<size_t>(_wtoi64(parts[2].c_str()));
+        size_t scrollLine = static_cast<size_t>(_wtoi64(parts[3].c_str()));
+        float scrollOffsetX = static_cast<float>(_wtof(parts[4].c_str()));
+        std::wstring fileName = UnescapeJson(parts[5]);
+        std::wstring filePath = UnescapeJson(parts[6]);
+        std::wstring bakFile = UnescapeJson(parts[7]);
+
+        auto bakPath = recDir / bakFile;
+        if (!std::filesystem::exists(bakPath, ec)) continue;
+        std::ifstream bakIn(bakPath, std::ios::binary);
+        if (!bakIn.is_open()) continue;
+        std::string rawContent((std::istreambuf_iterator<char>(bakIn)), std::istreambuf_iterator<char>());
+        std::wstring recoveredText = Utf8ToWideStr(rawContent);
+
+        if (m_editorGroups.empty()) m_editorGroups.push_back(editor::EditorGroup{});
+        int targetGroup = (groupIdx >= 0 && groupIdx < static_cast<int>(m_editorGroups.size())) ? groupIdx : 0;
+        m_focusedGroupIdx = targetGroup;
+
+        if (!filePath.empty()) {
+            OpenFileDocument(filePath, false);
+            if (auto* pDoc = GetActiveDoc()) {
+                if (pDoc->buffer.GetText() != recoveredText) {
+                    pDoc->buffer.SetText(recoveredText);
+                    pDoc->isDirty = true;
+                    pDoc->diagnostics = editor::SyntaxValidator::Validate(
+                        pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+                }
+                pDoc->buffer.SetCursor(cursorLine, cursorCol);
+                pDoc->scrollLine = scrollLine;
+                pDoc->scrollOffsetX = scrollOffsetX;
+                anyRestored = true;
+            }
+        } else {
+            // Restore untitled scratch buffer
+            editor::OpenDocument untitledDoc;
+            m_untitledCounter++;
+            untitledDoc.fileName = fileName.empty() ? (L"Untitled-" + std::to_wstring(m_untitledCounter)) : fileName;
+            untitledDoc.isDirty = true;
+            untitledDoc.isPreview = false;
+            untitledDoc.buffer.SetText(recoveredText);
+            untitledDoc.buffer.SetCursor(cursorLine, cursorCol);
+            untitledDoc.scrollLine = scrollLine;
+            untitledDoc.scrollOffsetX = scrollOffsetX;
+            untitledDoc.diagnostics = editor::SyntaxValidator::Validate(untitledDoc.fileName, untitledDoc.buffer);
+            m_editorGroups[targetGroup].docs.push_back(std::move(untitledDoc));
+            m_editorGroups[targetGroup].activeDocIdx = static_cast<int>(m_editorGroups[targetGroup].docs.size()) - 1;
+            anyRestored = true;
+        }
+    }
+
+    m_isRestoringSession = false;
+    if (anyRestored) {
+        UpdateDrawerDirtyFiles();
+        UpdateDrawerErrorFiles();
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
 }
 
 void Window::LoadSessionState() {
@@ -659,6 +907,7 @@ void Window::LoadSessionState() {
     if (!std::filesystem::exists(filePath, ec)) {
         // First-time entry into the IDE: open Welcome Walkthrough tab
         OpenSpecialView(L"welcome", L"Welcome");
+        RestoreDirtyBuffersRecovery();
         return;
     }
 
@@ -1001,6 +1250,9 @@ void Window::LoadSessionState() {
             m_drawer.RefreshGitState(true, false);
             m_editor.GetPackageManagerView().ScanInstalledPackages(lastOpenFolder);
             m_editor.GetGraphView().RefreshFromWorkspace(lastOpenFolder);
+            m_editor.GetApiTesterView().SetWorkspaceRoot(lastOpenFolder);
+            RefreshWorkspaceEnvVars();
+            RefreshDatabaseSchemaAsync();
         }
 
         auto openDocIntoGroup = [&](const std::wstring& p) {
@@ -1123,6 +1375,10 @@ void Window::LoadSessionState() {
             m_terminalAnimProgress = 1.0f;
             m_isTerminalAnimating = false;
         }
+    }
+
+    if (!isNewWindowClean) {
+        RestoreDirtyBuffersRecovery();
     }
 }
 
@@ -2015,6 +2271,12 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     } else {
         newDoc.buffer.LoadFromFile(resolvedPath);
         newDoc.originalDiskText = newDoc.buffer.GetText();
+        {
+            std::error_code writeEc;
+            newDoc.lastDiskWriteTime = std::filesystem::last_write_time(resolvedPath, writeEc);
+            newDoc.hasLastDiskWriteTime = !writeEc;
+            newDoc.hasExternalDiskConflict = false;
+        }
 
         // Compute Git diff highlights against HEAD if inside a git repository (Images 1, 2, 3)
         bool isInsideOpenRepo = false;
@@ -2064,6 +2326,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     SaveSessionState();
 
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
+    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
+        StartLspForDocumentAsync(resolvedPath, newDoc.buffer.GetText());
+    }
 
     if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
         OpenMarkdownPreviewSplit(resolvedPath);
@@ -2901,20 +3166,40 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     }
 
     auto& closingDoc = group.docs[docIdx];
-    if (!closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty) {
-        closingDoc.buffer.SaveToFile(closingDoc.filePath);
-        closingDoc.isDirty = false;
-        closingDoc.originalDiskText = closingDoc.buffer.GetText();
+    if (m_autoSave && !closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty && !closingDoc.hasExternalDiskConflict) {
+        s_lastInternalAutoSaveTick = GetTickCount64();
+        if (closingDoc.buffer.SaveToFile(closingDoc.filePath)) {
+            s_lastInternalAutoSaveTick = GetTickCount64();
+            closingDoc.isDirty = false;
+            OnDocumentDiskSaved(closingDoc, true);
+        }
     }
 
-    if (!group.docs[docIdx].filePath.empty()) {
-        m_lastClosedFilePath = group.docs[docIdx].filePath;
+    if (!group.docs[docIdx].filePath.empty() && !group.docs[docIdx].isSpecialView) {
+        const auto& cDoc = group.docs[docIdx];
+        std::wstring closedPath = cDoc.filePath;
+        std::erase_if(m_closedTabHistory, [&closedPath](const ClosedTabEntry& e) {
+            return _wcsicmp(e.filePath.c_str(), closedPath.c_str()) == 0;
+        });
+        auto cPos = cDoc.buffer.GetCursor();
+        m_closedTabHistory.push_back(ClosedTabEntry{
+            closedPath,
+            groupIdx,
+            cPos.line,
+            cPos.col,
+            cDoc.scrollLine,
+            cDoc.scrollOffsetX
+        });
+        if (m_closedTabHistory.size() > 25) {
+            m_closedTabHistory.erase(m_closedTabHistory.begin());
+        }
     }
 
     // Hook for temporary COMMIT_EDITMSG tab (Images 4 & 5)
     std::wstring closingPath = group.docs[docIdx].filePath;
     if (!closingPath.empty()) {
         phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentClose", closingPath);
+        m_lsp.NotifyDidClose(closingPath);
     }
     bool wasMarkdownSource = (!closingPath.empty() && IsMarkdownFile(closingPath) && !group.docs[docIdx].isSpecialView);
     if (closingPath.ends_with(L"COMMIT_EDITMSG")) {
@@ -3048,6 +3333,9 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_drawer.RefreshGitState(true, false);
     m_editor.GetPackageManagerView().ScanInstalledPackages(path);
     m_editor.GetGraphView().RefreshFromWorkspace(path);
+    m_editor.GetApiTesterView().SetWorkspaceRoot(path);
+    RefreshWorkspaceEnvVars();
+    RefreshDatabaseSchemaAsync();
     StartWorkspaceWatcher(path);
     phide::plugin::PluginManager::Instance().LoadWorkspacePlugins(path);
     phide::plugin::PluginManager::Instance().ApplyAppConfigMods(m_config);
@@ -3361,10 +3649,11 @@ void Window::DoSaveAll() {
                             }
                         }
                     }
-                    doc.buffer.SaveToFile(doc.filePath);
-                    doc.isDirty = false;
-                    doc.originalDiskText = doc.buffer.GetText();
-                    anySaved = true;
+                    if (doc.buffer.SaveToFile(doc.filePath)) {
+                        doc.isDirty = false;
+                        OnDocumentDiskSaved(doc, true);
+                        anySaved = true;
+                    }
                 }
                 SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
@@ -3491,7 +3780,19 @@ void Window::DoRevertFile() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->filePath.empty() && std::filesystem::exists(pDoc->filePath)) {
         pDoc->buffer.LoadFromFile(pDoc->filePath);
+        pDoc->originalDiskText = pDoc->buffer.GetText();
         pDoc->isDirty = false;
+        pDoc->hasExternalDiskConflict = false;
+        std::error_code writeEc;
+        pDoc->lastDiskWriteTime = std::filesystem::last_write_time(pDoc->filePath, writeEc);
+        pDoc->hasLastDiskWriteTime = !writeEc;
+        pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath, pDoc->buffer);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        if (m_lsp.IsRunning()) {
+            m_lsp.NotifyDidChange(pDoc->filePath, pDoc->originalDiskText);
+        }
+        UpdateDrawerDirtyFiles();
+        UpdateDrawerErrorFiles();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
@@ -3521,8 +3822,29 @@ void Window::DoCloseFolder() {
 }
 
 void Window::DoReopenClosedEditor() {
-    if (!m_lastClosedFilePath.empty() && std::filesystem::exists(m_lastClosedFilePath)) {
-        OpenFileDocument(m_lastClosedFilePath, false);
+    std::error_code ec;
+    while (!m_closedTabHistory.empty()) {
+        ClosedTabEntry entry = std::move(m_closedTabHistory.back());
+        m_closedTabHistory.pop_back();
+        if (entry.filePath.empty() || !std::filesystem::exists(entry.filePath, ec)) {
+            continue;
+        }
+        if (m_editorGroups.empty()) {
+            m_editorGroups.push_back(editor::EditorGroup{});
+        }
+        int maxGrp = static_cast<int>(m_editorGroups.size()) - 1;
+        m_focusedGroupIdx = (std::clamp)(entry.groupIdx, 0, maxGrp);
+        OpenFileDocument(entry.filePath, false);
+        if (auto* pDoc = GetActiveDoc()) {
+            size_t lineCount = pDoc->buffer.GetLineCount();
+            size_t clampedLine = (lineCount > 0) ? (std::min)(entry.cursorLine, lineCount - 1) : 0;
+            pDoc->buffer.SetCursor(clampedLine, entry.cursorCol);
+            pDoc->scrollLine = (lineCount > 0) ? (std::min)(entry.scrollLine, lineCount - 1) : 0;
+            pDoc->scrollOffsetX = (std::max)(0.0f, entry.scrollOffsetX);
+            EnsureCursorVisible();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
     }
 }
 
@@ -3953,7 +4275,6 @@ void Window::CommitAutocompleteSelection() {
 namespace {
 static bool s_editDebouncePending = false;
 static ULONGLONG s_editDebounceTargetTime = 0;
-static ULONGLONG s_lastInternalAutoSaveTick = 0;
 static std::unordered_set<std::wstring> s_pendingModifiedKeys;
 } // namespace
 
@@ -3984,14 +4305,15 @@ void Window::FlushPendingAutoSaves() {
                     doc.notebookDoc->SaveToFile(doc.filePath);
                     doc.isDirty = false;
                     anySaved = true;
-                } else if (!doc.isSpecialView) {
+                } else if (!doc.isSpecialView && !doc.hasExternalDiskConflict) {
                     s_lastInternalAutoSaveTick = GetTickCount64();
-                    doc.buffer.SaveToFile(doc.filePath);
-                    s_lastInternalAutoSaveTick = GetTickCount64();
-                    doc.isDirty = false;
-                    doc.originalDiskText = doc.buffer.GetText();
-                    anySaved = true;
-                    SyncRemoteDocumentIfNeeded(doc);
+                    if (doc.buffer.SaveToFile(doc.filePath)) {
+                        s_lastInternalAutoSaveTick = GetTickCount64();
+                        doc.isDirty = false;
+                        OnDocumentDiskSaved(doc, true);
+                        anySaved = true;
+                        SyncRemoteDocumentIfNeeded(doc);
+                    }
                 }
                 SyncDocumentBuffers(&doc);
                 if (doc.filePath == m_snippetManager.GetSnippetsFilePath()) {
@@ -5247,7 +5569,151 @@ void Window::DoOrganizeImports() {
 void Window::DoGoToDefinition() {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
-    m_editor.ShowRefactorPopup(L"Definition lookup active");
+
+    auto pos = pDoc->buffer.GetCursor();
+    if (pos.line >= pDoc->buffer.GetLineCount()) return;
+    const auto& curLine = pDoc->buffer.GetLine(pos.line);
+    if (curLine.empty()) return;
+
+    auto isSymChar = [](wchar_t ch) {
+        return iswalnum(ch) || ch == L'_';
+    };
+    size_t probe = (pos.col < curLine.length()) ? pos.col : (curLine.length() - 1);
+    if (!isSymChar(curLine[probe]) && probe > 0 && isSymChar(curLine[probe - 1])) {
+        probe--;
+    }
+    if (!isSymChar(curLine[probe])) return;
+
+    size_t sStart = probe;
+    while (sStart > 0 && isSymChar(curLine[sStart - 1])) sStart--;
+    size_t sEnd = probe + 1;
+    while (sEnd < curLine.length() && isSymChar(curLine[sEnd])) sEnd++;
+    std::wstring sym = curLine.substr(sStart, sEnd - sStart);
+    if (sym.empty()) return;
+
+    auto jumpToLocation = [&](const std::wstring& targetFile, size_t targetLine, size_t targetCol) {
+        if (!targetFile.empty() && _wcsicmp(targetFile.c_str(), pDoc->filePath.c_str()) != 0) {
+            OpenFileDocument(targetFile, false);
+        }
+        auto* pDest = GetActiveDoc();
+        if (pDest && !pDest->isSpecialView && pDest->buffer.GetLineCount() > 0) {
+            size_t clampedLine = (std::min)(targetLine, pDest->buffer.GetLineCount() - 1);
+            size_t lineLen = pDest->buffer.GetLine(clampedLine).length();
+            size_t clampedCol = (std::min)(targetCol, lineLen);
+            pDest->buffer.SetCursor(clampedLine, clampedCol);
+            pDest->selAnchor = { clampedLine, clampedCol };
+            pDest->selEnd = { clampedLine, clampedCol };
+            pDest->hasSelection = false;
+            EnsureCursorVisible();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    };
+
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        lsp::Location loc;
+        if (m_lsp.RequestDefinition(pDoc->filePath, pos.line, pos.col, loc) && !loc.filePath.empty()) {
+            jumpToLocation(loc.filePath, loc.line, loc.col);
+            return;
+        }
+    }
+
+    auto findDefInLines = [&](const std::vector<std::wstring>& lines, const std::wstring& filePath,
+                              size_t& outLine, size_t& outCol) -> bool {
+        static const wchar_t* const prefixes[] = {
+            L"function ", L"class ", L"interface ", L"trait ", L"struct ",
+            L"enum ", L"def ", L"async def ", L"async function ", L"fn ",
+            L"func ", L"const ", L"let ", L"var ", L"type "
+        };
+        for (size_t li = 0; li < lines.size(); ++li) {
+            const auto& ln = lines[li];
+            if (ln.find(sym) == std::wstring::npos) continue;
+            for (const auto* kw : prefixes) {
+                size_t kwLen = wcslen(kw);
+                size_t kPos = ln.find(kw);
+                if (kPos != std::wstring::npos) {
+                    if (kPos > 0 && isSymChar(ln[kPos - 1])) continue;
+                    size_t namePos = kPos + kwLen;
+                    while (namePos < ln.length() && (ln[namePos] == L' ' || ln[namePos] == L'\t' || ln[namePos] == L'&')) {
+                        namePos++;
+                    }
+                    if (ln.compare(namePos, sym.length(), sym) == 0) {
+                        size_t after = namePos + sym.length();
+                        bool boundaryOk = (after >= ln.length() || !isSymChar(ln[after]));
+                        if (boundaryOk && (_wcsicmp(filePath.c_str(), pDoc->filePath.c_str()) != 0 || li != pos.line)) {
+                            outLine = li;
+                            outCol = namePos;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    size_t foundL = 0, foundC = 0;
+    if (findDefInLines(pDoc->buffer.GetLines(), pDoc->filePath, foundL, foundC)) {
+        jumpToLocation(pDoc->filePath, foundL, foundC);
+        return;
+    }
+
+    std::vector<std::wstring> checkedFiles;
+    if (!pDoc->filePath.empty()) checkedFiles.push_back(pDoc->filePath);
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& d : grp.docs) {
+            if (d.isSpecialView || d.filePath.empty()) continue;
+            checkedFiles.push_back(d.filePath);
+            if (findDefInLines(d.buffer.GetLines(), d.filePath, foundL, foundC)) {
+                jumpToLocation(d.filePath, foundL, foundC);
+                return;
+            }
+        }
+    }
+
+    if (m_drawer.HasOpenFolder()) {
+        std::error_code ec;
+        int scanned = 0;
+        std::filesystem::path wsRoot(m_drawer.GetOpenFolderPath());
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 wsRoot, std::filesystem::directory_options::skip_permission_denied, ec);
+             it != std::filesystem::recursive_directory_iterator() && !ec && scanned < 150;
+             it.increment(ec)) {
+            if (it->is_directory(ec)) {
+                std::wstring dn = it->path().filename().wstring();
+                for (auto& ch : dn) ch = static_cast<wchar_t>(towlower(ch));
+                if (dn == L".git" || dn == L"node_modules" || dn == L"vendor" || dn == L".phide" || dn == L".venv" || dn == L"venv") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+            if (!it->is_regular_file(ec)) continue;
+            std::wstring ext = it->path().extension().wstring();
+            for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+            if (ext != L".php" && ext != L".py" && ext != L".js" && ext != L".jsx" &&
+                ext != L".ts" && ext != L".tsx" && ext != L".cpp" && ext != L".hpp" &&
+                ext != L".c" && ext != L".h" && ext != L".go" && ext != L".rs") {
+                continue;
+            }
+            std::wstring cand = it->path().wstring();
+            bool alreadyChecked = false;
+            for (const auto& cf : checkedFiles) {
+                if (_wcsicmp(cf.c_str(), cand.c_str()) == 0) { alreadyChecked = true; break; }
+            }
+            if (alreadyChecked) continue;
+            if (it->file_size(ec) > 512 * 1024) continue;
+
+            scanned++;
+            editor::Buffer tmpBuf;
+            if (tmpBuf.LoadFromFile(cand)) {
+                if (findDefInLines(tmpBuf.GetLines(), cand, foundL, foundC)) {
+                    jumpToLocation(cand, foundL, foundC);
+                    return;
+                }
+            }
+        }
+    }
+
+    m_editor.ShowRefactorPopup(L"No definition found for \"" + sym + L"\"");
 }
 
 void Window::DoRenameSymbol() {
@@ -5611,9 +6077,27 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
     m_terminal.TerminateServerSession(projectRoot);
     StopLiveServer(projectRoot, /*closeTab=*/false);
 
-    // 2. If a port is specified (e.g. Next.js 3000), free it asynchronously without UI freeze or popping console
+    // 2. Check if another non-Phide process owns the requested dev port before launching
     if (decision.port > 0) {
-        CleanupPortProcessesAsync(decision.port);
+        if (!CheckPortBeforeServerStart(decision.port, decision.title, nullptr,
+                [this, projectRoot, decision](int chosenPort) {
+                    ProjectDecision updated = decision;
+                    if (chosenPort != updated.port) {
+                        std::wstring oldPortStr = std::to_wstring(updated.port);
+                        std::wstring newPortStr = std::to_wstring(chosenPort);
+                        updated.port = chosenPort;
+                        size_t urlPos = updated.customUrl.find(L":" + oldPortStr);
+                        if (urlPos != std::wstring::npos) {
+                            updated.customUrl.replace(urlPos + 1, oldPortStr.length(), newPortStr);
+                        }
+                        if (!updated.command.empty()) {
+                            updated.command = L"set PORT=" + newPortStr + L" && " + updated.command;
+                        }
+                    }
+                    RunProjectDevServer(projectRoot, updated);
+                })) {
+            return;
+        }
     }
 
     m_isProjectRunning = true;
@@ -6107,35 +6591,41 @@ void Window::DoRunActiveDocument() {
         auto* srv = FindLiveServer(filePath);
         if (!srv) {
             int port = GetNextAvailableLiveServerPort();
-            auto serverInst = std::make_unique<server::LiveServer>();
-            if (serverInst->Start(folder, fileName, port)) {
-                int actualPort = serverInst->GetPort();
-                std::wstring localUrl = serverInst->GetLocalUrl(fileName);
-                std::wstring networkUrl = serverInst->GetNetworkUrl(fileName);
+            auto startLiveOnPort = [this, folder, filePath, fileName](int targetPort) {
+                auto serverInst = std::make_unique<server::LiveServer>();
+                if (serverInst->Start(folder, fileName, targetPort)) {
+                    int actualPort = serverInst->GetPort();
+                    std::wstring localUrl = serverInst->GetLocalUrl(fileName);
+                    std::wstring networkUrl = serverInst->GetNetworkUrl(fileName);
 
-                ActiveLiveServer entry;
-                entry.filePath = filePath;
-                entry.fileName = fileName;
-                entry.rootDir = folder;
-                entry.port = actualPort;
-                entry.framework = L"Live Server";
-                entry.title = L"Live Server";
-                entry.customUrl = localUrl;
-                entry.server = std::move(serverInst);
-                entry.progress = 0.05f;
-                entry.progressDurationMs = 2200.0f; // ~2.2 seconds progression before auto-opening browser
-                entry.elapsedMs = 0.0f;
-                entry.browserOpened = false;
-                entry.isStarting = true;
-                m_activeLiveServers.push_back(std::move(entry));
+                    ActiveLiveServer entry;
+                    entry.filePath = filePath;
+                    entry.fileName = fileName;
+                    entry.rootDir = folder;
+                    entry.port = actualPort;
+                    entry.framework = L"Live Server";
+                    entry.title = L"Live Server";
+                    entry.customUrl = localUrl;
+                    entry.server = std::move(serverInst);
+                    entry.progress = 0.05f;
+                    entry.progressDurationMs = 2200.0f; // ~2.2 seconds progression before auto-opening browser
+                    entry.elapsedMs = 0.0f;
+                    entry.browserOpened = false;
+                    entry.isStarting = true;
+                    m_activeLiveServers.push_back(std::move(entry));
 
-                m_terminal.Open(folder);
-                AnimateTerminalOpen();
-                m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
-                m_isTerminalFocused = false;
+                    m_terminal.Open(folder);
+                    AnimateTerminalOpen();
+                    m_terminal.StartLiveServerSession(localUrl, networkUrl, filePath, fileName);
+                    m_isTerminalFocused = false;
 
-                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                }
+            };
+            if (!CheckPortBeforeServerStart(port, L"Live Server", nullptr, startLiveOnPort)) {
+                return;
             }
+            startLiveOnPort(port);
         } else {
             // Server already running for this file - restart progression then open browser
             srv->progress = 0.05f;
@@ -6394,6 +6884,10 @@ void Window::DoOpenErrorLog() {
 
 void Window::StartPhpServer(const std::wstring& rootDir, int port) {
     StopPhpServer();
+    if (!CheckPortBeforeServerStart(port, L"PHP Server", m_hPhpServerProcess,
+            [this, rootDir](int chosenPort) { StartPhpServer(rootDir, chosenPort); })) {
+        return;
+    }
     std::wstring phpExe = L"php.exe";
     std::wstring phpIni;
     wchar_t szLocalApp[MAX_PATH] = { 0 };
@@ -6466,6 +6960,45 @@ void Window::StartNginxServer() {
     std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
     if (!std::filesystem::exists(nginxExe)) {
         m_header.SetServerState(ui::ServerState::Failed);
+        return;
+    }
+    int nginxPort = 80;
+    try {
+        int parsed = std::stoi(m_dbSettingsModal.GetNginxPort());
+        if (parsed > 0 && parsed < 65536) nginxPort = parsed;
+    } catch (...) {}
+    std::filesystem::path nginxConf = nginxDir / L"conf" / L"nginx.conf";
+    {
+        std::ifstream confIn(nginxConf, std::ios::binary);
+        if (confIn.is_open()) {
+            std::string confText((std::istreambuf_iterator<char>(confIn)), std::istreambuf_iterator<char>());
+            std::smatch lm;
+            std::regex listenRe(R"(\blisten\s+(?:\*:|127\.0\.0\.1:|0\.0\.0\.0:)?(\d{1,5})\s*;)");
+            if (std::regex_search(confText, lm, listenRe) && lm.size() >= 2) {
+                int parsedConf = std::atoi(lm[1].str().c_str());
+                if (parsedConf > 0 && parsedConf < 65536) nginxPort = parsedConf;
+            }
+        }
+    }
+    if (!CheckPortBeforeServerStart(nginxPort, L"Nginx Web Server", m_hNginxProcess,
+            [this, nginxConf, nginxPort](int chosenPort) {
+                if (chosenPort != nginxPort) {
+                    std::ifstream confIn(nginxConf, std::ios::binary);
+                    if (confIn.is_open()) {
+                        std::string confText((std::istreambuf_iterator<char>(confIn)), std::istreambuf_iterator<char>());
+                        confIn.close();
+                        std::regex listenRe(R"((\blisten\s+(?:\*:|127\.0\.0\.1:|0\.0\.0\.0:)?)\d{1,5}(\s*;))");
+                        std::string replaced = std::regex_replace(confText, listenRe, "${1}" + std::to_string(chosenPort) + "${2}", std::regex_constants::format_first_only);
+                        std::ofstream confOut(nginxConf, std::ios::binary | std::ios::trunc);
+                        if (confOut.is_open()) {
+                            confOut << replaced;
+                            confOut.close();
+                        }
+                    }
+                    m_dbSettingsModal.SetNginxPort(std::to_wstring(chosenPort));
+                }
+                StartNginxServer();
+            })) {
         return;
     }
     std::error_code ec;
@@ -6585,14 +7118,25 @@ void Window::StartMysqlServer() {
         m_hMysqlProcess = nullptr;
     }
 
-    // 1. Dynamic port discovery:
-    // If target port (default 3306) is taken by another service/application,
-    // automatically find the next available listening port (3306 -> 3307 -> 3308 ...)
+    // 1. Check for external port conflict first before falling back or launching mysqld.exe
     int targetPort = 3306;
     try {
         int parsed = std::stoi(m_dbSettingsModal.GetPort());
         if (parsed > 0 && parsed < 65536) targetPort = parsed;
     } catch (...) {}
+
+    if (!CheckPortBeforeServerStart(targetPort, L"MySQL Database", m_hMysqlProcess,
+            [this](int chosenPort) {
+                m_dbSettingsModal.SetPort(std::to_wstring(chosenPort));
+                m_mysqlPort = chosenPort;
+                StartMysqlServer();
+    if (m_portConflictModal.isOpen) {
+        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+        return;
+    }
+            })) {
+        return;
+    }
 
     while (IsPortListening(targetPort) && targetPort < 65535) {
         targetPort++;
@@ -6672,6 +7216,9 @@ void Window::StartMysqlServer() {
                 Sleep(50);
                 if (IsPortListening(m_mysqlPort)) break;
             }
+            if (IsPortListening(m_mysqlPort)) {
+                RefreshDatabaseSchemaAsync();
+            }
         }
     }
 }
@@ -6723,6 +7270,10 @@ void Window::StartPmaServer() {
     srvDb.phpMyAdminEnabled = true;
     srvDb.dontRunDatabase = false;
     StartMysqlServer();
+    if (m_portConflictModal.isOpen) {
+        m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+        return;
+    }
     std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
     if (!std::filesystem::exists(pmaDir)) {
         m_header.SetDatabaseState(ui::DatabaseState::Failed);
@@ -6892,6 +7443,10 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
     // Only start MySQL if phpMyAdmin is enabled and database is not suppressed
     if (!srvCfg.dontRunDatabase && srvCfg.phpMyAdminEnabled) {
         StartMysqlServer();
+        if (m_portConflictModal.isOpen) {
+            m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+            return;
+        }
     }
 
     // 1. Check Server (nginx)
@@ -6900,6 +7455,10 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
         m_header.SetServerState(ui::ServerState::Starting);
         m_header.SetServerLogOpened(false);
         StartNginxServer();
+        if (m_portConflictModal.isOpen) {
+            m_header.SetServerState(ui::ServerState::Stopped);
+            return;
+        }
         if (m_header.GetServerState() != ui::ServerState::Running) {
             m_header.SetServerState(ui::ServerState::Failed);
             m_header.SetRunErrorStopped(true);
@@ -6963,6 +7522,7 @@ void Window::DoRunPhpApplication(const std::wstring& filePath, const std::wstrin
 
     // 3. Open terminal tab for PHP Server and launch PHP process
     StartPhpServer(folder, 8080);
+    if (m_portConflictModal.isOpen) return;
     for (int attempt = 0; attempt < 25; ++attempt) {
         if (IsPortListening(8080)) break;
         Sleep(40);
@@ -7090,9 +7650,8 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 pDoc->fileName = baseName;
             }
             pDoc->isDirty = false;
-            pDoc->originalDiskText = pDoc->buffer.GetText();
             pDoc->isPreview = false;
-            phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentSave", path);
+            OnDocumentDiskSaved(*pDoc, true);
             SyncRemoteDocumentIfNeeded(*pDoc);
             if (m_drawer.IsGitRepo()) {
                 std::wstring relPath = path;
@@ -7702,6 +8261,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         DoSaveAll();
     });
 
+    // Scan staged/changed files for leaked secrets, unignored .env, node_modules, or >10MB bloat before commit/publish
+    m_drawer.SetOnPreCommitValidator([this](const std::wstring& commitMsg) -> bool {
+        return RunPreCommitSecretAndBloatCheck(commitMsg);
+    });
+
     // Register callback for reactive git state updates (dispatched safely to UI thread via WM_USER + 206)
     m_drawer.SetOnGitStateChanged([this]() {
         if (m_hwnd) {
@@ -7770,6 +8334,27 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Wire Package Manager HWND for embedded WebView2 and Install Package callback
     m_editor.GetPackageManagerView().SetHwnd(m_hwnd);
     m_editor.GetApiTesterView().SetHwnd(m_hwnd);
+    m_editor.GetApiTesterView().SetOnJumpToErrorLocation([this](const std::wstring& targetPath, size_t line1Based) {
+        if (targetPath.empty()) return;
+        OpenFileDocument(targetPath, false);
+        auto* pDest = GetActiveDoc();
+        if (pDest && !pDest->isSpecialView && pDest->buffer.GetLineCount() > 0) {
+            size_t zLine = (line1Based > 0) ? (line1Based - 1) : 0;
+            size_t clamped = (std::min)(zLine, pDest->buffer.GetLineCount() - 1);
+            pDest->buffer.SetCursor(clamped, 0);
+            EnsureCursorVisible();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+    });
+    m_lsp.SetDiagnosticsCallback([this](const std::wstring& filePath, std::vector<lsp::Diagnostic> diags) {
+        {
+            std::lock_guard<std::mutex> lock(m_pendingLspDiagMutex);
+            m_pendingLspDiags.push_back(PendingLspDiagUpdate{ filePath, std::move(diags) });
+        }
+        if (m_hwnd) {
+            PostMessageW(m_hwnd, WM_USER + 210, 0, 0);
+        }
+    });
     m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
         bool isUninstall = (cmd.find(L"uninstall") != std::wstring::npos || cmd.find(L"remove") != std::wstring::npos);
         std::wstring taskTitle = isUninstall ? (L"Uninstalling package " + pkgName) : (L"Installing package " + pkgName);
@@ -8820,6 +9405,14 @@ void Window::OnPaint() {
         m_drawer.RenderGitHubLoginModal(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
     }
 
+    // 12.5 Render Port Conflict Detector & Pre-Commit Secret/Bloat Guard Modals
+    if (m_portConflictModal.isOpen) {
+        RenderPortConflictModal(clientW, clientH);
+    }
+    if (m_preCommitModal.isOpen) {
+        RenderPreCommitGuardModal(clientW, clientH);
+    }
+
     // 13. Render Git Branch Switcher Dropdown (Status Bar Popup)
     if (m_showBranchDropdown) {
         RenderBranchDropdown(m_pRenderTarget.Get(), clientW, clientH);
@@ -9773,6 +10366,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     m_rcStatusBarLnCol = {};
     m_rcStatusBarVenvTag = {};
     m_rcStatusBarGraphView = {};
+    m_rcStatusBarPrivacyMask = {};
     m_currentStatusBarRuntimeId.clear();
 
     auto* curDoc = GetActiveDoc();
@@ -10019,6 +10613,32 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
+    // Screen-Share Privacy Mask Pill (.env & Secret Masking Toggle)
+    {
+        std::wstring maskText = m_config.enablePrivacyMask ? L"Mask: ON" : L"Mask: OFF";
+        float maskW = measureStatusPillWidth(maskText, m_config.ScaleF(64.0f));
+        curRightX -= (maskW + m_config.ScaleF(8.0f));
+        m_rcStatusBarPrivacyMask = D2D1::RectF(curRightX, itemY, curRightX + maskW, itemY + itemH);
+        D2D1_ROUNDED_RECT rrcMask = D2D1::RoundedRect(m_rcStatusBarPrivacyMask, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+        if (m_config.enablePrivacyMask || m_isHoveredStatusBarPrivacyMask) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> maskBg;
+            D2D1_COLOR_F bgCol = m_config.enablePrivacyMask
+                ? D2D1::ColorF(0.16f, 0.52f, 0.34f, m_isHoveredStatusBarPrivacyMask ? 0.95f : 0.80f)
+                : (m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f));
+            m_pRenderTarget->CreateSolidColorBrush(bgCol, &maskBg);
+            if (maskBg) m_pRenderTarget->FillRoundedRectangle(rrcMask, maskBg.Get());
+        }
+        ID2D1Brush* maskTextBrush = m_config.enablePrivacyMask
+            ? (m_theme.brushTextWhite ? static_cast<ID2D1Brush*>(m_theme.brushTextWhite.Get()) : static_cast<ID2D1Brush*>(textBrush))
+            : static_cast<ID2D1Brush*>(textBrush);
+        D2D1_RECT_F rcMaskText = D2D1::RectF(
+            m_rcStatusBarPrivacyMask.left + padX, itemY,
+            m_rcStatusBarPrivacyMask.right - padX, itemY + itemH);
+        if (pFmt && maskTextBrush) {
+            m_pRenderTarget->DrawText(maskText.c_str(), static_cast<UINT32>(maskText.length()), pFmt, rcMaskText, maskTextBrush);
+        }
+    }
+
     // Plugin & Extension Status Bar Items (left-aligned and right-aligned contributions)
     auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
     const phide::plugin::PluginStatusBarItem* hoveredPluginItem = nullptr;
@@ -10086,6 +10706,11 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         int indentSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
         std::wstring indentTip = L"Indentation: " + std::to_wstring(indentSize) + (m_config.insertSpaces ? L" Spaces" : L" Tab Size");
         RenderFloatingTooltip(m_pRenderTarget.Get(), indentTip, m_rcStatusBarSpaces, clientW);
+    } else if (m_isHoveredStatusBarPrivacyMask) {
+        std::wstring tip = m_config.enablePrivacyMask
+            ? L"Screen-Share Privacy Mask is ON (.env values & secrets masked - Click to reveal)"
+            : L"Screen-Share Privacy Mask is OFF (Click to mask .env values & secret literals)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarPrivacyMask, clientW);
     } else if (m_isHoveredStatusBarEncoding && hasActiveDoc) {
         RenderFloatingTooltip(m_pRenderTarget.Get(), L"Encoding: UTF-8, End of Line: CRLF", m_rcStatusBarEncoding, clientW);
     }
@@ -10906,6 +11531,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    {
+        int stickyHit = (pActiveDoc && !pActiveDoc->isSpecialView && !pActiveDoc->isDiffView)
+            ? m_editor.HitTestStickyHeader(clientPt)
+            : -1;
+        if (m_editor.SetHoveredStickyIndex(stickyHit)) {
+            needRepaint = true;
+        }
+    }
+
     UpdateCssPeekHover(clientPt);
 
     // Check Popup Menu hover first if open
@@ -11335,6 +11969,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             needRepaint = true;
         }
 
+        bool inPrivacyMask = (m_rcStatusBarPrivacyMask.right > m_rcStatusBarPrivacyMask.left &&
+                              clientPt.x >= m_rcStatusBarPrivacyMask.left && clientPt.x <= m_rcStatusBarPrivacyMask.right &&
+                              clientPt.y >= m_rcStatusBarPrivacyMask.top && clientPt.y <= m_rcStatusBarPrivacyMask.bottom);
+        if (inPrivacyMask != m_isHoveredStatusBarPrivacyMask) {
+            m_isHoveredStatusBarPrivacyMask = inPrivacyMask;
+            needRepaint = true;
+        }
+
         auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
         for (auto& pItem : pluginStatusItems) {
             bool inPluginItem = (clientPt.x >= pItem.bounds.left && clientPt.x <= pItem.bounds.right &&
@@ -11701,9 +12343,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::CtxOpenTimeline:
                         if (!m_contextTargetPath.empty()) {
-                            std::wstring dir = std::filesystem::path(m_contextTargetPath).parent_path().wstring();
-                            std::wstring gitCmd = L"/k git log -p -- \"" + m_contextTargetPath + L"\"";
-                            ShellExecuteW(nullptr, L"open", L"cmd.exe", gitCmd.c_str(), dir.c_str(), SW_SHOWNORMAL);
+                            OpenLocalTimelineForFile(m_contextTargetPath);
                         }
                         break;
                     case ui::MenuActionId::CtxUndo:
@@ -12206,6 +12846,111 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    auto inModalRect = [](POINT pt, const D2D1_RECT_F& rc) noexcept -> bool {
+        return rc.right > rc.left &&
+               static_cast<float>(pt.x) >= rc.left && static_cast<float>(pt.x) <= rc.right &&
+               static_cast<float>(pt.y) >= rc.top && static_cast<float>(pt.y) <= rc.bottom;
+    };
+
+    if (m_portConflictModal.isOpen) {
+        if (inModalRect(clientPt, m_portConflictModal.rcKillStartBtn)) {
+            DWORD targetPid = m_portConflictModal.pid;
+            int targetPort = m_portConflictModal.port;
+            auto proceedCb = m_portConflictModal.onProceedWithPort;
+            m_portConflictModal.isOpen = false;
+            m_portConflictModal.onProceedWithPort = nullptr;
+            if (targetPid > 4 && targetPid != GetCurrentProcessId()) {
+                KillProcessTree(targetPid);
+                Sleep(150);
+            }
+            m_skipNextPortPrompt = true;
+            if (proceedCb) {
+                proceedCb(targetPort);
+            }
+        } else if (inModalRect(clientPt, m_portConflictModal.rcSwitchPortBtn)) {
+            int altPort = m_portConflictModal.port + 1;
+            while (altPort < 65535 && IsPortListening(altPort)) {
+                altPort++;
+            }
+            auto proceedCb = m_portConflictModal.onProceedWithPort;
+            m_portConflictModal.isOpen = false;
+            m_portConflictModal.onProceedWithPort = nullptr;
+            m_skipNextPortPrompt = true;
+            if (proceedCb) {
+                proceedCb(altPort);
+            }
+        } else if (inModalRect(clientPt, m_portConflictModal.rcCancelBtn)) {
+            m_portConflictModal.isOpen = false;
+            m_portConflictModal.onProceedWithPort = nullptr;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (m_preCommitModal.isOpen) {
+        if (inModalRect(clientPt, m_preCommitModal.rcIgnoreUnstageBtn)) {
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+            if (!wsRoot.empty()) {
+                std::filesystem::path gitIgnorePath = std::filesystem::path(wsRoot) / L".gitignore";
+                std::string diskBefore;
+                {
+                    std::ifstream igIn(gitIgnorePath, std::ios::binary);
+                    if (igIn.is_open()) {
+                        diskBefore.assign((std::istreambuf_iterator<char>(igIn)), std::istreambuf_iterator<char>());
+                    }
+                }
+                std::string existingIgnore = diskBefore;
+                std::vector<std::string> toAppend;
+                for (const auto& f : m_preCommitModal.findings) {
+                    std::string relUtf8 = WideToUtf8Str(f.relPath);
+                    for (char& ch : relUtf8) if (ch == '\\') ch = '/';
+                    if (f.canAddGitignore && !relUtf8.empty()) {
+                        if (existingIgnore.find(relUtf8) == std::string::npos) {
+                            toAppend.push_back(relUtf8);
+                            existingIgnore += "\n" + relUtf8 + "\n";
+                        }
+                    }
+                    if (!relUtf8.empty()) {
+                        std::wstring unstageCmd = L"git -C \"" + wsRoot + L"\" reset HEAD -- \"" + f.relPath + L"\"";
+                        RunCmdCapture(unstageCmd);
+                    }
+                }
+                if (!toAppend.empty()) {
+                    bool needsNewline = (!diskBefore.empty() && diskBefore.back() != '\n');
+                    std::ofstream igOut(gitIgnorePath, std::ios::binary | std::ios::app);
+                    if (igOut.is_open()) {
+                        if (needsNewline) igOut << "\n";
+                        for (const auto& entry : toAppend) {
+                            igOut << entry << "\n";
+                        }
+                    }
+                    m_drawer.ReloadIgnoreFiles();
+                }
+                m_drawer.RefreshGitState(true, false);
+                m_drawer.RefreshTree();
+                m_drawer.ShowGitNotification(L"Added blocked paths to .gitignore & unstaged");
+            }
+            m_preCommitModal.isOpen = false;
+            m_preCommitModal.findings.clear();
+        } else if (inModalRect(clientPt, m_preCommitModal.rcCommitAnywayBtn)) {
+            std::wstring commitMsg = m_preCommitModal.commitMessage;
+            bool pubFlow = m_preCommitModal.isPublishFlow;
+            int pubChoice = m_drawer.GetPublishRepoSelectedChoice();
+            m_preCommitModal.isOpen = false;
+            m_preCommitModal.findings.clear();
+            if (pubFlow) {
+                m_drawer.ConfirmPublishRepo(pubChoice, true);
+            } else {
+                m_drawer.CommitChangesAsync(commitMsg, true);
+            }
+        } else if (inModalRect(clientPt, m_preCommitModal.rcCancelBtn)) {
+            m_preCommitModal.isOpen = false;
+            m_preCommitModal.findings.clear();
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // Check Database & phpMyAdmin / Nginx Settings Modal Clicks (Images 3 & 4)
     if (m_dbSettingsModal.IsOpen()) {
         m_dbSettingsModal.HandleClick(clientPt);
@@ -12308,6 +13053,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
             case ui::DatabaseModalAction::ImportSql: {
                 StartMysqlServer();
+                if (m_portConflictModal.isOpen) {
+                    m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
                 std::wstring sqlFile = m_dbSettingsModal.GetSqlFileName();
                 std::wstring activeDocPath;
                 if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < (int)m_editorGroups.size()) {
@@ -12342,6 +13092,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         CloseHandle(pi.hProcess);
                         CloseHandle(pi.hThread);
                         m_dbSettingsModal.SetCopiedFeedback(L"imported " + sqlFile + L"!");
+                        RefreshDatabaseSchemaAsync();
                     }
                 }
                 break;
@@ -13402,6 +14153,88 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             return;
                         }
                     } else {
+                        if (doc.hasExternalDiskConflict) {
+                            auto inConflictBtn = [&](const D2D1_RECT_F& r) noexcept -> bool {
+                                return r.right > r.left &&
+                                       static_cast<float>(clientPt.x) >= r.left && static_cast<float>(clientPt.x) <= r.right &&
+                                       static_cast<float>(clientPt.y) >= r.top && static_cast<float>(clientPt.y) <= r.bottom;
+                            };
+                            if (inConflictBtn(doc.conflictReloadBtnBounds) && !doc.filePath.empty()) {
+                                doc.buffer.LoadFromFile(doc.filePath);
+                                doc.originalDiskText = doc.buffer.GetText();
+                                doc.isDirty = false;
+                                doc.hasExternalDiskConflict = false;
+                                std::error_code writeEc;
+                                doc.lastDiskWriteTime = std::filesystem::last_write_time(doc.filePath, writeEc);
+                                doc.hasLastDiskWriteTime = !writeEc;
+                                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                                if (doc.isDiffView) ComputeDiffHunks(doc);
+                                if (m_lsp.IsRunning()) {
+                                    m_lsp.NotifyDidChange(doc.filePath, doc.originalDiskText);
+                                }
+                                UpdateDrawerDirtyFiles();
+                                UpdateDrawerErrorFiles();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inConflictBtn(doc.conflictDiffBtnBounds) && !doc.filePath.empty()) {
+                                editor::Buffer diskBuf;
+                                if (diskBuf.LoadFromFile(doc.filePath)) {
+                                    editor::OpenDocument diffDoc;
+                                    diffDoc.filePath = L"";
+                                    diffDoc.fileName = doc.fileName + L" (Disk vs Editor)";
+                                    diffDoc.diffOriginalTitle = doc.fileName + L" (Modified on Disk)";
+                                    diffDoc.diffWorkingTitle = doc.fileName + L" (Unsaved Editor Buffer)";
+                                    diffDoc.isDiffView = true;
+                                    diffDoc.isDiffLeftReadOnly = true;
+                                    diffDoc.isDiffRightReadOnly = true;
+                                    diffDoc.diffActivePane = 1;
+                                    diffDoc.diffOriginalBuffer.SetText(diskBuf.GetText());
+                                    diffDoc.buffer.SetText(doc.buffer.GetText());
+                                    diffDoc.originalDiskText = diffDoc.buffer.GetText();
+                                    ComputeDiffHunks(diffDoc);
+                                    auto& activeGrp = GetActiveGroup();
+                                    activeGrp.docs.push_back(std::move(diffDoc));
+                                    activeGrp.activeDocIdx = static_cast<int>(activeGrp.docs.size() - 1);
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                    return;
+                                }
+                            }
+                            if (inConflictBtn(doc.conflictOverwriteBtnBounds) && !doc.filePath.empty()) {
+                                doc.hasExternalDiskConflict = false;
+                                s_lastInternalAutoSaveTick = GetTickCount64();
+                                if (doc.buffer.SaveToFile(doc.filePath)) {
+                                    s_lastInternalAutoSaveTick = GetTickCount64();
+                                    doc.isDirty = false;
+                                    OnDocumentDiskSaved(doc, true);
+                                    UpdateDrawerDirtyFiles();
+                                    UpdateDrawerErrorFiles();
+                                    m_drawer.RefreshGitStatusOnly(true);
+                                }
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                        }
+
+                        // Sticky Scroll enclosing scope header click-to-jump
+                        if (!doc.isSpecialView) {
+                            int stickyHitIdx = m_editor.HitTestStickyHeader(clientPt);
+                            const auto& stickyLines = m_editor.GetVisibleStickyLines();
+                            if (stickyHitIdx >= 0 && stickyHitIdx < static_cast<int>(stickyLines.size())) {
+                                size_t targetLine = stickyLines[stickyHitIdx].bufferLine;
+                                if (doc.buffer.GetLineCount() > 0) {
+                                    size_t clamped = (std::min)(targetLine, doc.buffer.GetLineCount() - 1);
+                                    doc.scrollLine = (clamped > 2) ? (clamped - 2) : 0;
+                                    doc.buffer.SetCursor(clamped, 0);
+                                    doc.selAnchor = { clamped, 0 };
+                                    doc.selEnd = { clamped, 0 };
+                                    doc.hasSelection = false;
+                                }
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                        }
+
                         // Check gutter click for breakpoint toggle (Image 4)
                         size_t clickedLine = 0;
                         if (m_editor.HitTestGutter(clientPt, m_config, doc, paneCanvasLeft, paneBottom, clickedLine)) {
@@ -13843,6 +14676,17 @@ void Window::HandleLButtonDown(POINT clientPt) {
         clientPt.x >= m_rcStatusBarGraphView.left && clientPt.x <= m_rcStatusBarGraphView.right &&
         clientPt.y >= m_rcStatusBarGraphView.top && clientPt.y <= m_rcStatusBarGraphView.bottom) {
         m_config.isGraphColored = !m_config.isGraphColored;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Status Bar clicks: Screen-Share Privacy Mask toggle (.env values & secret literals)
+    if (m_config.showStatusBar &&
+        m_rcStatusBarPrivacyMask.right > m_rcStatusBarPrivacyMask.left &&
+        clientPt.x >= m_rcStatusBarPrivacyMask.left && clientPt.x <= m_rcStatusBarPrivacyMask.right &&
+        clientPt.y >= m_rcStatusBarPrivacyMask.top && clientPt.y <= m_rcStatusBarPrivacyMask.bottom) {
+        m_config.enablePrivacyMask = !m_config.enablePrivacyMask;
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -14965,6 +15809,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             (m_rcStatusBarGraphView.right > m_rcStatusBarGraphView.left &&
                              pt.x >= m_rcStatusBarGraphView.left && pt.x <= m_rcStatusBarGraphView.right &&
                              pt.y >= m_rcStatusBarGraphView.top && pt.y <= m_rcStatusBarGraphView.bottom) ||
+                            (m_rcStatusBarPrivacyMask.right > m_rcStatusBarPrivacyMask.left &&
+                             pt.x >= m_rcStatusBarPrivacyMask.left && pt.x <= m_rcStatusBarPrivacyMask.right &&
+                             pt.y >= m_rcStatusBarPrivacyMask.top && pt.y <= m_rcStatusBarPrivacyMask.bottom) ||
                             (m_rcStatusBarGitBranch.right > m_rcStatusBarGitBranch.left &&
                              pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
                              pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
@@ -14977,6 +15824,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         SetCursor(LoadCursor(nullptr, IDC_ARROW));
                         return TRUE;
                     }
+                }
+
+                if (m_portConflictModal.isOpen) {
+                    auto inM = [&](const D2D1_RECT_F& r) noexcept {
+                        return r.right > r.left &&
+                               static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
+                               static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
+                    };
+                    bool overBtn = inM(m_portConflictModal.rcKillStartBtn) ||
+                                   inM(m_portConflictModal.rcSwitchPortBtn) ||
+                                   inM(m_portConflictModal.rcCancelBtn);
+                    SetCursor(LoadCursor(nullptr, overBtn ? IDC_HAND : IDC_ARROW));
+                    return TRUE;
+                }
+
+                if (m_preCommitModal.isOpen) {
+                    auto inM = [&](const D2D1_RECT_F& r) noexcept {
+                        return r.right > r.left &&
+                               static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
+                               static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
+                    };
+                    bool overBtn = inM(m_preCommitModal.rcIgnoreUnstageBtn) ||
+                                   inM(m_preCommitModal.rcCommitAnywayBtn) ||
+                                   inM(m_preCommitModal.rcCancelBtn);
+                    SetCursor(LoadCursor(nullptr, overBtn ? IDC_HAND : IDC_ARROW));
+                    return TRUE;
                 }
 
                 // 0c. Theme Picker Catalog Modal
@@ -15225,6 +16098,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float bottomEditorY = clientH - statusBarH - termH;
 
                     if (m_editor.HasHoveredCodeLens()) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+
+                    if (pCurDoc->hasExternalDiskConflict) {
+                        auto inCurBtn = [&](const D2D1_RECT_F& r) noexcept -> bool {
+                            return r.right > r.left &&
+                                   static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
+                                   static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
+                        };
+                        if (inCurBtn(pCurDoc->conflictReloadBtnBounds) || inCurBtn(pCurDoc->conflictDiffBtnBounds) || inCurBtn(pCurDoc->conflictOverwriteBtnBounds)) {
+                            SetCursor(LoadCursor(nullptr, IDC_HAND));
+                            return TRUE;
+                        }
+                    }
+
+                    if (!pCurDoc->isSpecialView && !pCurDoc->isDiffView && m_editor.HitTestStickyHeader(pt) >= 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -15906,7 +16796,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                     m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                                     m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                                 }
-                                auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, &pDoc->buffer.GetLines());
+                                auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
                                 if (!items.empty()) {
                                     m_editor.ShowAutocomplete(items);
                                 } else {
@@ -16111,7 +17001,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                                 m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                             }
-                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
+                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
                                 std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, pos.col);
@@ -16149,6 +17039,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (m_autoSave) {
                     FlushPendingAutoSaves();
                 }
+            } else {
+                CheckOpenDocumentsDiskChanges();
             }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
         }
@@ -16394,7 +17286,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                         m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
                     }
-                    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, pDoc ? &pDoc->buffer.GetLines() : nullptr);
+                    auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
                     if (!items.empty()) {
                         m_editor.ShowAutocomplete(items);
                     }
@@ -17257,7 +18149,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             auto pos = pDoc->buffer.GetCursor();
                             const auto& lineText = pDoc->buffer.GetLine(pos.line);
                             std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-                            auto items = m_intelliSense.QueryCompletions(docTarget, lineText, pos.col, &pDoc->buffer.GetLines());
+                            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col); (void)docTarget;
                             if (!items.empty()) {
                                 m_editor.ShowAutocomplete(items);
                             } else {
@@ -17681,6 +18573,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->diagnostics = editor::SyntaxValidator::Validate(
                             pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
                         CalculateImportCosts(*pDoc);
+                        if (!pDoc->filePath.empty() && m_lsp.IsRunning()) {
+                            m_lsp.NotifyDidChange(pDoc->filePath, pDoc->buffer.GetText());
+                        }
 
                         if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
                             pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
@@ -17698,15 +18593,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             }
                         }
 
-                        if (m_autoSave && !pDoc->filePath.empty()) {
+                        if (m_autoSave && !pDoc->filePath.empty() && !pDoc->hasExternalDiskConflict) {
                             s_lastInternalAutoSaveTick = GetTickCount64();
-                            pDoc->buffer.SaveToFile(pDoc->filePath);
-                            s_lastInternalAutoSaveTick = GetTickCount64();
-                            pDoc->isDirty = false;
-                            pDoc->originalDiskText = pDoc->buffer.GetText();
-                            SyncDocumentBuffers(pDoc);
-                            SyncRemoteDocumentIfNeeded(*pDoc);
-                            TriggerDebouncedGitRefresh(300);
+                            if (pDoc->buffer.SaveToFile(pDoc->filePath)) {
+                                s_lastInternalAutoSaveTick = GetTickCount64();
+                                pDoc->isDirty = false;
+                                OnDocumentDiskSaved(*pDoc, true);
+                                SyncDocumentBuffers(pDoc);
+                                SyncRemoteDocumentIfNeeded(*pDoc);
+                                TriggerDebouncedGitRefresh(300);
+                            }
                         } else {
                             bool dirtyDroppedToClean = (pDoc->isDirty && !isActuallyDirty);
                             pDoc->isDirty = isActuallyDirty;
@@ -17722,6 +18618,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (anyProcessed) {
                         UpdateDrawerErrorFiles();
                         UpdateDrawerDirtyFiles();
+                        SaveDirtyBuffersRecovery();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 }
@@ -17938,6 +18835,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
+            CheckOpenDocumentsDiskChanges();
+            RefreshWorkspaceEnvVars();
             m_drawer.RefreshTree();
             NotifyGraphViewFilesystemChanged();
             TriggerDebouncedGitRefresh(350);
@@ -18064,13 +18963,55 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_USER + 210: {
+            std::vector<PendingLspDiagUpdate> updates;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingLspDiagMutex);
+                updates.swap(m_pendingLspDiags);
+            }
+            if (!updates.empty()) {
+                bool changed = false;
+                for (const auto& u : updates) {
+                    for (auto& grp : m_editorGroups) {
+                        for (auto& doc : grp.docs) {
+                            if (doc.isSpecialView || doc.filePath.empty()) continue;
+                            if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0) {
+                                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                                for (const auto& ld : u.diags) {
+                                    bool dup = false;
+                                    for (const auto& existing : doc.diagnostics) {
+                                        if (existing.line == ld.line && existing.message == ld.message) {
+                                            dup = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!dup) doc.diagnostics.push_back(ld);
+                                }
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                if (changed) {
+                    UpdateDrawerErrorFiles();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+
         case WM_CLOSE: {
-            for (auto& grp : m_editorGroups) {
-                for (auto& d : grp.docs) {
-                    if (!d.isSpecialView && !d.filePath.empty() && d.isDirty) {
-                        d.buffer.SaveToFile(d.filePath);
-                        d.isDirty = false;
-                        d.originalDiskText = d.buffer.GetText();
+            if (m_autoSave) {
+                for (auto& grp : m_editorGroups) {
+                    for (auto& d : grp.docs) {
+                        if (!d.isSpecialView && !d.filePath.empty() && d.isDirty && !d.hasExternalDiskConflict) {
+                            s_lastInternalAutoSaveTick = GetTickCount64();
+                            if (d.buffer.SaveToFile(d.filePath)) {
+                                s_lastInternalAutoSaveTick = GetTickCount64();
+                                d.isDirty = false;
+                                OnDocumentDiskSaved(d, false);
+                            }
+                        }
                     }
                 }
             }
@@ -18083,20 +19024,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
-            for (auto& grp : m_editorGroups) {
-                for (auto& d : grp.docs) {
-                    if (!d.isSpecialView && !d.filePath.empty() && d.isDirty) {
-                        d.buffer.SaveToFile(d.filePath);
-                        d.isDirty = false;
-                        d.originalDiskText = d.buffer.GetText();
+            if (m_autoSave) {
+                for (auto& grp : m_editorGroups) {
+                    for (auto& d : grp.docs) {
+                        if (!d.isSpecialView && !d.filePath.empty() && d.isDirty && !d.hasExternalDiskConflict) {
+                            s_lastInternalAutoSaveTick = GetTickCount64();
+                            if (d.buffer.SaveToFile(d.filePath)) {
+                                s_lastInternalAutoSaveTick = GetTickCount64();
+                                d.isDirty = false;
+                                OnDocumentDiskSaved(d, false);
+                            }
+                        }
                     }
                 }
             }
             phide::plugin::PluginManager::Instance().DispatchEvent(L"onShutdown");
+            m_isDestroying.store(true);
             StopWorkspaceWatcher();
+            m_lsp.SetDiagnosticsCallback(nullptr);
+            m_lsp.Shutdown();
             m_explorerUndo.CleanupTrash();
             UpdateDrawerErrorFiles();
-    SaveSessionState();
+            SaveSessionState();
             PostQuitMessage(0);
             return 0;
         }
@@ -19252,6 +20201,1103 @@ void Window::OpenOrCreateDevContainerConfig() {
     }
     OpenFileDocument(cfgPath, false);
     m_drawer.RefreshRemoteTargetsAsync();
+}
+
+// =============================================================================
+// Disk-Change Detector, Local Timeline, .env/DB Schema IntelliSense,
+// Real LSP Bridge, Port Conflict Detector & Pre-Commit Secret/Bloat Guard
+// =============================================================================
+
+static std::filesystem::path ComputeLocalHistoryDir(const std::wstring& wsRoot, const std::wstring& filePath) {
+    std::wstring norm = filePath;
+    for (auto& c : norm) {
+        if (c == L'/') c = L'\\';
+        c = static_cast<wchar_t>(towlower(c));
+    }
+    uint64_t hash = 14695981039346656037ULL;
+    for (wchar_t ch : norm) {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    wchar_t hexBuf[32] = { 0 };
+    swprintf_s(hexBuf, L"%016llx", static_cast<unsigned long long>(hash));
+
+    std::wstring safeBase = std::filesystem::path(filePath).filename().wstring();
+    for (auto& c : safeBase) {
+        if (!iswalnum(c) && c != L'.' && c != L'_' && c != L'-') c = L'_';
+    }
+    if (safeBase.empty()) safeBase = L"file";
+
+    std::filesystem::path baseDir;
+    if (!wsRoot.empty()) {
+        baseDir = std::filesystem::path(wsRoot) / L".phide" / L"history";
+    } else {
+        auto rec = GetRecoveryDirPath();
+        baseDir = rec.empty() ? std::filesystem::path() : (rec.parent_path() / L"history");
+    }
+    if (baseDir.empty()) return {};
+    return baseDir / (std::wstring(hexBuf) + L"_" + safeBase);
+}
+
+static void DrawOverlayModalCardShell(ID2D1RenderTarget* pRT, ui::Theme& theme, const app::AppConfig& config,
+                                      float clientW, float clientH, float cardW, float cardH,
+                                      const std::wstring& title, D2D1_COLOR_F accentBorderColor,
+                                      D2D1_RECT_F& outCardRc) {
+    if (!pRT) return;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backdropBrush, cardBg, borderBrush, titleBrush, accentBarBrush;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.56f), &backdropBrush);
+    D2D1_COLOR_F cardCol = theme.IsDarkMode() ? D2D1::ColorF(0.118f, 0.125f, 0.145f, 0.99f) : D2D1::ColorF(0.985f, 0.985f, 0.992f, 0.99f);
+    pRT->CreateSolidColorBrush(cardCol, &cardBg);
+    pRT->CreateSolidColorBrush(accentBorderColor, &borderBrush);
+    pRT->CreateSolidColorBrush(accentBorderColor, &accentBarBrush);
+    pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.94f, 0.95f, 0.97f, 1.0f) : D2D1::ColorF(0.10f, 0.11f, 0.14f, 1.0f), &titleBrush);
+
+    if (backdropBrush) {
+        pRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, clientW, clientH), backdropBrush.Get());
+    }
+    float left = (clientW - cardW) * 0.5f;
+    float top = (clientH - cardH) * 0.5f;
+    outCardRc = D2D1::RectF(left, top, left + cardW, top + cardH);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(outCardRc, config.ScaleF(8.0f), config.ScaleF(8.0f));
+    if (cardBg) pRT->FillRoundedRectangle(rrc, cardBg.Get());
+    if (borderBrush) pRT->DrawRoundedRectangle(rrc, borderBrush.Get(), 1.5f);
+
+    if (accentBarBrush) {
+        D2D1_RECT_F topBar = D2D1::RectF(left + 1.0f, top + 1.0f, left + cardW - 1.0f, top + config.ScaleF(4.0f));
+        pRT->FillRectangle(topBar, accentBarBrush.Get());
+    }
+
+    if (theme.fontTitle && titleBrush) {
+        D2D1_RECT_F rcTitle = D2D1::RectF(
+            left + config.ScaleF(20.0f), top + config.ScaleF(14.0f),
+            left + cardW - config.ScaleF(20.0f), top + config.ScaleF(42.0f));
+        pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), theme.fontTitle.Get(), rcTitle, titleBrush.Get());
+    }
+}
+
+static void DrawModalActionButton(ID2D1RenderTarget* pRT, ui::Theme& theme, const app::AppConfig& config,
+                                  const D2D1_RECT_F& rc, const std::wstring& label,
+                                  D2D1_COLOR_F bgCol, D2D1_COLOR_F borderCol, D2D1_COLOR_F textCol) {
+    if (!pRT) return;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, bdBrush, txtBrush;
+    pRT->CreateSolidColorBrush(bgCol, &bgBrush);
+    pRT->CreateSolidColorBrush(borderCol, &bdBrush);
+    pRT->CreateSolidColorBrush(textCol, &txtBrush);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, config.ScaleF(5.0f), config.ScaleF(5.0f));
+    if (bgBrush) pRT->FillRoundedRectangle(rrc, bgBrush.Get());
+    if (bdBrush) pRT->DrawRoundedRectangle(rrc, bdBrush.Get(), 1.0f);
+    IDWriteTextFormat* fmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get();
+    if (fmt && txtBrush) {
+        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()), fmt, rc, txtBrush.Get());
+    }
+}
+
+void Window::OnDocumentDiskSaved(editor::OpenDocument& doc, bool writeHistory) {
+    doc.originalDiskText = doc.buffer.GetText();
+    doc.hasExternalDiskConflict = false;
+    if (!doc.filePath.empty()) {
+        std::error_code ec;
+        doc.lastDiskWriteTime = std::filesystem::last_write_time(doc.filePath, ec);
+        doc.hasLastDiskWriteTime = !ec;
+
+        phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentSave", doc.filePath);
+        if (writeHistory && !doc.isSpecialView && !doc.isDiffView) {
+            WriteLocalHistorySnapshot(doc.filePath, doc.originalDiskText);
+        }
+        if (m_lsp.IsRunning() && !doc.isSpecialView) {
+            m_lsp.NotifyDidSave(doc.filePath, doc.originalDiskText);
+        }
+        std::filesystem::path p(doc.filePath);
+        std::wstring fname = p.filename().wstring();
+        std::wstring ext = p.extension().wstring();
+        for (auto& c : fname) c = static_cast<wchar_t>(towlower(c));
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        if (fname == L".env" || fname.rfind(L".env.", 0) == 0) {
+            RefreshWorkspaceEnvVars();
+        } else if (ext == L".sql") {
+            RefreshDatabaseSchemaAsync();
+        }
+    }
+}
+
+void Window::CheckOpenDocumentsDiskChanges() {
+    if (GetTickCount64() - s_lastInternalAutoSaveTick < 900) {
+        return;
+    }
+    bool anyUpdated = false;
+    for (auto& grp : m_editorGroups) {
+        for (auto& doc : grp.docs) {
+            if (doc.isSpecialView || doc.isFolderView || doc.isImageView || doc.isUnsupportedBinary || doc.isDiffView || doc.filePath.empty()) {
+                continue;
+            }
+            std::error_code ec;
+            if (!std::filesystem::exists(doc.filePath, ec)) {
+                continue;
+            }
+            auto diskTime = std::filesystem::last_write_time(doc.filePath, ec);
+            if (ec) continue;
+            if (!doc.hasLastDiskWriteTime) {
+                doc.lastDiskWriteTime = diskTime;
+                doc.hasLastDiskWriteTime = true;
+                continue;
+            }
+            if (diskTime == doc.lastDiskWriteTime) {
+                continue;
+            }
+
+            editor::Buffer diskBuf;
+            if (!diskBuf.LoadFromFile(doc.filePath)) {
+                continue;
+            }
+            std::wstring diskText = diskBuf.GetText();
+            doc.lastDiskWriteTime = diskTime;
+            doc.hasLastDiskWriteTime = true;
+
+            if (diskText == doc.buffer.GetText()) {
+                doc.originalDiskText = diskText;
+                doc.hasExternalDiskConflict = false;
+                anyUpdated = true;
+                continue;
+            }
+
+            if (!doc.isDirty) {
+                auto prevCur = doc.buffer.GetCursor();
+                doc.buffer.PushUndo();
+                doc.buffer.SetText(diskText);
+                if (doc.buffer.GetLineCount() > 0) {
+                    size_t clampedLine = (std::min)(prevCur.line, doc.buffer.GetLineCount() - 1);
+                    size_t clampedCol = (std::min)(prevCur.col, doc.buffer.GetLine(clampedLine).length());
+                    doc.buffer.SetCursor(clampedLine, clampedCol);
+                }
+                doc.originalDiskText = diskText;
+                doc.hasExternalDiskConflict = false;
+                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                if (m_lsp.IsRunning()) {
+                    m_lsp.NotifyDidChange(doc.filePath, diskText);
+                }
+                anyUpdated = true;
+            } else {
+                doc.hasExternalDiskConflict = true;
+                anyUpdated = true;
+            }
+        }
+    }
+    if (anyUpdated) {
+        UpdateDrawerErrorFiles();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::WriteLocalHistorySnapshot(const std::wstring& filePath, const std::wstring& content) {
+    if (filePath.empty()) return;
+    std::wstring lower = filePath;
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+    if (lower.find(L"\\.phide\\") != std::wstring::npos || lower.find(L"/.phide/") != std::wstring::npos) {
+        return;
+    }
+
+    std::string utf8 = WideToUtf8Str(content);
+    if (utf8.size() > 4 * 1024 * 1024) {
+        return; // Keep snapshots lightweight
+    }
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::filesystem::path histDir = ComputeLocalHistoryDir(wsRoot, filePath);
+    if (histDir.empty()) return;
+
+    std::error_code ec;
+    std::filesystem::create_directories(histDir, ec);
+    if (ec) return;
+
+    std::vector<std::filesystem::path> existingSnaps;
+    for (const auto& entry : std::filesystem::directory_iterator(histDir, ec)) {
+        if (entry.is_regular_file(ec) && entry.path().extension() == L".snap") {
+            existingSnaps.push_back(entry.path());
+        }
+    }
+    std::sort(existingSnaps.begin(), existingSnaps.end(), [](const auto& a, const auto& b) {
+        return a.filename().wstring() > b.filename().wstring();
+    });
+
+    if (!existingSnaps.empty()) {
+        std::ifstream latestIn(existingSnaps.front(), std::ios::binary);
+        if (latestIn.is_open()) {
+            std::string latestBytes((std::istreambuf_iterator<char>(latestIn)), std::istreambuf_iterator<char>());
+            if (latestBytes == utf8) {
+                return; // Identical to most recent snapshot
+            }
+        }
+    }
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t nameBuf[64] = { 0 };
+    swprintf_s(nameBuf, L"%04u%02u%02u_%02u%02u%02u_%03u.snap",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+
+    std::ofstream snapOut(histDir / nameBuf, std::ios::binary | std::ios::trunc);
+    if (snapOut.is_open()) {
+        snapOut.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+        snapOut.flush();
+    }
+
+    if (!std::filesystem::exists(histDir / L"meta.txt", ec)) {
+        std::string pathUtf8 = WideToUtf8Str(filePath);
+        std::ofstream metaOut(histDir / L"meta.txt", std::ios::binary | std::ios::trunc);
+        if (metaOut.is_open()) {
+            metaOut.write(pathUtf8.data(), static_cast<std::streamsize>(pathUtf8.size()));
+        }
+    }
+
+    // Keep at most 25 snapshots per file
+    for (size_t i = 24; i < existingSnaps.size(); ++i) {
+        std::filesystem::remove(existingSnaps[i], ec);
+    }
+}
+
+void Window::OpenLocalTimelineForFile(const std::wstring& filePath) {
+    if (filePath.empty()) return;
+    std::error_code ec;
+    if (std::filesystem::is_directory(filePath, ec)) {
+        MessageBoxW(m_hwnd, L"Select a file (not a folder) to inspect Local Timeline snapshots.", L"Local Timeline", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring currentText;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& d : grp.docs) {
+            if (!d.isSpecialView && !d.isDiffView && _wcsicmp(d.filePath.c_str(), filePath.c_str()) == 0) {
+                currentText = d.buffer.GetText();
+                break;
+            }
+        }
+        if (!currentText.empty()) break;
+    }
+    if (currentText.empty() && std::filesystem::exists(filePath, ec)) {
+        editor::Buffer diskBuf;
+        if (diskBuf.LoadFromFile(filePath)) {
+            currentText = diskBuf.GetText();
+        }
+    }
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::filesystem::path histDir = ComputeLocalHistoryDir(wsRoot, filePath);
+    if (histDir.empty()) return;
+
+    auto collectSnaps = [&]() {
+        std::vector<std::filesystem::path> snaps;
+        std::error_code dec;
+        if (std::filesystem::exists(histDir, dec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(histDir, dec)) {
+                if (entry.is_regular_file(dec) && entry.path().extension() == L".snap") {
+                    snaps.push_back(entry.path());
+                }
+            }
+        }
+        std::sort(snaps.begin(), snaps.end(), [](const auto& a, const auto& b) {
+            return a.filename().wstring() > b.filename().wstring();
+        });
+        return snaps;
+    };
+
+    auto snaps = collectSnaps();
+    if (snaps.empty()) {
+        WriteLocalHistorySnapshot(filePath, currentText);
+        snaps = collectSnaps();
+    }
+    if (snaps.empty()) {
+        MessageBoxW(m_hwnd, L"No local history snapshots could be created for this file.", L"Local Timeline", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    auto formatSnapTime = [](const std::wstring& stem) -> std::wstring {
+        // YYYYMMDD_HHMMSS_mmm
+        if (stem.length() >= 15 && stem[8] == L'_') {
+            return stem.substr(0, 4) + L"-" + stem.substr(4, 2) + L"-" + stem.substr(6, 2) + L" " +
+                   stem.substr(9, 2) + L":" + stem.substr(11, 2) + L":" + stem.substr(13, 2);
+        }
+        return stem;
+    };
+
+    std::vector<std::pair<std::wstring, std::wstring>> snapContents;
+    for (const auto& sp : snaps) {
+        std::ifstream in(sp, std::ios::binary);
+        if (!in.is_open()) continue;
+        std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        snapContents.emplace_back(formatSnapTime(sp.stem().wstring()), Utf8ToWideStr(raw));
+    }
+    if (snapContents.empty()) return;
+
+    std::wstring baseFileName = std::filesystem::path(filePath).filename().wstring();
+    std::wstring timelineKey = L"TIMELINE:" + filePath;
+
+    auto& group = GetActiveGroup();
+    for (size_t i = 0; i < group.docs.size(); ++i) {
+        if (group.docs[i].isMultiFileDiff && _wcsicmp(group.docs[i].commitHash.c_str(), timelineKey.c_str()) == 0) {
+            group.activeDocIdx = static_cast<int>(i);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
+    editor::OpenDocument newDoc;
+    newDoc.filePath = L"";
+    newDoc.fileName = L"Timeline: " + baseFileName + L" (" + std::to_wstring(snapContents.size()) + L" snapshots)";
+    newDoc.diffOriginalTitle = L"Snapshot (" + snapContents.front().first + L")";
+    newDoc.diffWorkingTitle = baseFileName + L" (Current)";
+    newDoc.isPreview = false;
+    newDoc.isDirty = false;
+    newDoc.isSpecialView = false;
+    newDoc.isDiffView = true;
+    newDoc.isMultiFileDiff = true;
+    newDoc.isDiffLeftReadOnly = true;
+    newDoc.isDiffRightReadOnly = true;
+    newDoc.commitHash = timelineKey;
+    newDoc.commitAuthor = L"Local Timeline";
+    newDoc.commitDate = snapContents.front().first;
+    newDoc.commitMessage = L"Local Shadow History for " + filePath;
+
+    auto makeEntry = [&](const std::wstring& title, const std::wstring& subtitle,
+                         const std::wstring& status, const std::wstring& leftText,
+                         const std::wstring& rightText, bool collapsed) {
+        editor::OpenDocument::MultiFileDiffEntry entry;
+        entry.filePath = filePath;
+        entry.fileName = title;
+        entry.relDir = subtitle;
+        entry.status = status;
+        entry.isBinary = false;
+        entry.isCollapsed = collapsed;
+        entry.originalBuffer.SetText(leftText);
+        entry.workingBuffer.SetText(rightText);
+
+        editor::OpenDocument tempDoc;
+        tempDoc.diffOriginalBuffer.SetText(leftText);
+        tempDoc.buffer.SetText(rightText);
+        ComputeDiffHunks(tempDoc);
+        entry.addedLines = std::move(tempDoc.diffAddedLines);
+        entry.modifiedLines = std::move(tempDoc.diffModifiedLines);
+        entry.deletedLines = std::move(tempDoc.diffDeletedLines);
+        entry.hunks = std::move(tempDoc.diffHunks);
+        return entry;
+    };
+
+    newDoc.multiFileDiffs.push_back(makeEntry(
+        baseFileName + L"  [" + snapContents[0].first + L" -> Current]",
+        filePath, L"H", snapContents[0].second, currentText, false));
+
+    for (size_t i = 0; i + 1 < snapContents.size(); ++i) {
+        newDoc.multiFileDiffs.push_back(makeEntry(
+            baseFileName + L"  [" + snapContents[i + 1].first + L" -> " + snapContents[i].first + L"]",
+            filePath, L"M", snapContents[i + 1].second, snapContents[i].second, true));
+    }
+
+    group.docs.push_back(std::move(newDoc));
+    group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
+    UpdateDrawerErrorFiles();
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::RefreshWorkspaceEnvVars() {
+    if (!m_drawer.HasOpenFolder()) {
+        m_intelliSense.SetWorkspaceEnvVars({});
+        return;
+    }
+    std::filesystem::path wsRoot(m_drawer.GetOpenFolderPath());
+    std::error_code ec;
+    if (!std::filesystem::exists(wsRoot, ec)) {
+        m_intelliSense.SetWorkspaceEnvVars({});
+        return;
+    }
+
+    std::vector<std::filesystem::path> envFiles;
+    auto collectInDir = [&](const std::filesystem::path& dir) {
+        std::error_code dec;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, dec)) {
+            if (!entry.is_regular_file(dec)) continue;
+            std::wstring fn = entry.path().filename().wstring();
+            std::wstring fnLower = fn;
+            for (auto& c : fnLower) c = static_cast<wchar_t>(towlower(c));
+            if (fnLower == L".env" || fnLower.rfind(L".env.", 0) == 0) {
+                envFiles.push_back(entry.path());
+            }
+        }
+    };
+    collectInDir(wsRoot);
+    for (const auto& sub : std::filesystem::directory_iterator(wsRoot, ec)) {
+        if (!sub.is_directory(ec)) continue;
+        std::wstring dn = sub.path().filename().wstring();
+        for (auto& c : dn) c = static_cast<wchar_t>(towlower(c));
+        if (dn == L".git" || dn == L"node_modules" || dn == L"vendor" || dn == L".phide" || dn == L".venv" || dn == L"venv") {
+            continue;
+        }
+        collectInDir(sub.path());
+    }
+
+    std::vector<editor::IntelliSenseEngine::EnvVarEntry> vars;
+    std::unordered_set<std::wstring> seenKeys;
+    for (const auto& ef : envFiles) {
+        editor::Buffer envBuf;
+        if (!envBuf.LoadFromFile(ef.wstring())) continue;
+        std::wstring srcName = ef.filename().wstring();
+        for (const auto& rawLine : envBuf.GetLines()) {
+            std::wstring line = rawLine;
+            size_t s = 0;
+            while (s < line.length() && (line[s] == L' ' || line[s] == L'\t')) s++;
+            if (s >= line.length() || line[s] == L'#') continue;
+            if (line.compare(s, 7, L"export ") == 0) s += 7;
+            while (s < line.length() && (line[s] == L' ' || line[s] == L'\t')) s++;
+            size_t eq = line.find(L'=', s);
+            if (eq == std::wstring::npos || eq == s) continue;
+
+            std::wstring key = line.substr(s, eq - s);
+            while (!key.empty() && (key.back() == L' ' || key.back() == L'\t')) key.pop_back();
+            if (key.empty() || !seenKeys.insert(key).second) continue;
+
+            std::wstring val = line.substr(eq + 1);
+            size_t vs = 0;
+            while (vs < val.length() && (val[vs] == L' ' || val[vs] == L'\t')) vs++;
+            val = val.substr(vs);
+            if (val.length() >= 2 && ((val.front() == L'"' && val.back() == L'"') || (val.front() == L'\'' && val.back() == L'\''))) {
+                val = val.substr(1, val.length() - 2);
+            } else {
+                size_t hashPos = val.find(L" #");
+                if (hashPos != std::wstring::npos) val = val.substr(0, hashPos);
+                while (!val.empty() && (val.back() == L' ' || val.back() == L'\t')) val.pop_back();
+            }
+
+            std::wstring keyUpper = key;
+            for (auto& c : keyUpper) c = static_cast<wchar_t>(towupper(c));
+            bool sensitive = (keyUpper.find(L"SECRET") != std::wstring::npos ||
+                              keyUpper.find(L"TOKEN") != std::wstring::npos ||
+                              keyUpper.find(L"PASS") != std::wstring::npos ||
+                              keyUpper.find(L"KEY") != std::wstring::npos ||
+                              keyUpper.find(L"PWD") != std::wstring::npos);
+            std::wstring preview = (sensitive && !val.empty()) ? L"********" : val;
+            if (preview.length() > 40) preview = preview.substr(0, 37) + L"...";
+            vars.push_back(editor::IntelliSenseEngine::EnvVarEntry{ key, preview, srcName });
+        }
+    }
+    m_intelliSense.SetWorkspaceEnvVars(std::move(vars));
+}
+
+struct BgWorkerGuard {
+    std::mutex& mtx;
+    std::condition_variable& cv;
+    size_t& count;
+    ~BgWorkerGuard() {
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            if (count > 0) --count;
+        }
+        cv.notify_all();
+    }
+};
+
+void Window::RefreshDatabaseSchemaAsync() {
+    if (m_isDestroying.load() || m_isRefreshingDbSchema.exchange(true)) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) {
+            m_isRefreshingDbSchema.store(false);
+            return;
+        }
+        ++m_activeBgWorkers;
+    }
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::wstring dbHost = m_dbSettingsModal.GetHost();
+    if (dbHost.empty()) dbHost = L"127.0.0.1";
+    int dbPort = m_mysqlPort > 0 ? m_mysqlPort : 3306;
+    std::wstring dbUser = m_dbSettingsModal.GetUser();
+    if (dbUser.empty()) dbUser = L"root";
+    std::wstring dbPass = m_dbSettingsModal.GetPass();
+    std::wstring defaultDb = m_dbSettingsModal.GetDefaultDb();
+
+    std::filesystem::path mysqlExe = GetPhideRoot() / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe";
+    std::error_code fec;
+    if (!std::filesystem::exists(mysqlExe, fec)) {
+        mysqlExe = L"C:\\xampp\\mysql\\bin\\mysql.exe";
+    }
+    std::wstring mysqlExeStr = std::filesystem::exists(mysqlExe, fec) ? mysqlExe.wstring() : L"";
+
+    std::thread([this, wsRoot, dbHost, dbPort, dbUser, dbPass, defaultDb, mysqlExeStr]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        struct RefreshGuard {
+            std::atomic<bool>& flag;
+            ~RefreshGuard() { flag.store(false); }
+        } guard{ m_isRefreshingDbSchema };
+
+        if (m_isDestroying.load()) return;
+
+        std::vector<editor::IntelliSenseEngine::DbSchemaColumn> cols;
+        std::unordered_set<std::wstring> seen;
+        auto addCol = [&](const std::wstring& tbl, const std::wstring& col, const std::wstring& dtype, const std::wstring& keyType) {
+            if (tbl.empty() || col.empty()) return;
+            std::wstring k = tbl + L"." + col;
+            for (auto& c : k) c = static_cast<wchar_t>(towlower(c));
+            if (seen.insert(k).second) {
+                cols.push_back(editor::IntelliSenseEngine::DbSchemaColumn{ tbl, col, dtype, keyType });
+            }
+        };
+
+        // 1. Parse local workspace .sql DDL files (CREATE TABLE ...)
+        if (!wsRoot.empty()) {
+            std::error_code ec;
+            int sqlScanned = 0;
+            for (auto it = std::filesystem::recursive_directory_iterator(
+                     wsRoot, std::filesystem::directory_options::skip_permission_denied, ec);
+                 it != std::filesystem::recursive_directory_iterator() && !ec && sqlScanned < 40;
+                 it.increment(ec)) {
+                if (it->is_directory(ec)) {
+                    std::wstring dn = it->path().filename().wstring();
+                    for (auto& c : dn) c = static_cast<wchar_t>(towlower(c));
+                    if (dn == L".git" || dn == L"node_modules" || dn == L"vendor" || dn == L".phide") {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
+                if (!it->is_regular_file(ec)) continue;
+                std::wstring ext = it->path().extension().wstring();
+                for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                if (ext != L".sql" || it->file_size(ec) > 2 * 1024 * 1024) continue;
+                sqlScanned++;
+
+                std::ifstream sqlIn(it->path(), std::ios::binary);
+                if (!sqlIn.is_open()) continue;
+                std::string sqlUtf8((std::istreambuf_iterator<char>(sqlIn)), std::istreambuf_iterator<char>());
+                std::string curTable;
+                int parenDepth = 0;
+                std::istringstream ss(sqlUtf8);
+                std::string line;
+                std::regex createTblRe(R"(CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"\[]?[A-Za-z0-9_]+[`"\]]?\.)?[`"\[]?([A-Za-z0-9_]+)[`"\]]?)",
+                                       std::regex_constants::icase);
+                std::regex colDefRe(R"(^\s*[`"\[]?([A-Za-z_][A-Za-z0-9_]*)[`"\]]?\s+([A-Za-z]+(?:\s*\([^)]+\))?))");
+                while (std::getline(ss, line)) {
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    std::smatch tm;
+                    if (std::regex_search(line, tm, createTblRe) && tm.size() >= 2) {
+                        curTable = tm[1].str();
+                        parenDepth = 0;
+                        for (char ch : line) {
+                            if (ch == '(') parenDepth++;
+                            else if (ch == ')') parenDepth--;
+                        }
+                        continue;
+                    }
+                    if (!curTable.empty()) {
+                        for (char ch : line) {
+                            if (ch == '(') parenDepth++;
+                            else if (ch == ')') parenDepth--;
+                        }
+                        std::string trimmed = line;
+                        size_t fs = trimmed.find_first_not_of(" \t");
+                        if (fs != std::string::npos) trimmed = trimmed.substr(fs);
+                        if (!trimmed.empty() && trimmed.rfind("--", 0) != 0 && trimmed.rfind("/*", 0) != 0) {
+                            std::string upper = trimmed.substr(0, (std::min<size_t>)(trimmed.size(), 16));
+                            for (char& c : upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+                            bool isConstraint = (upper.rfind("PRIMARY ", 0) == 0 || upper.rfind("KEY ", 0) == 0 ||
+                                                 upper.rfind("INDEX ", 0) == 0 || upper.rfind("UNIQUE ", 0) == 0 ||
+                                                 upper.rfind("CONSTRAINT ", 0) == 0 || upper.rfind("FOREIGN ", 0) == 0 ||
+                                                 upper.rfind("FULLTEXT ", 0) == 0 || upper[0] == ')');
+                            if (!isConstraint) {
+                                std::smatch cm;
+                                if (std::regex_search(trimmed, cm, colDefRe) && cm.size() >= 3) {
+                                    std::string colName = cm[1].str();
+                                    std::string dataType = cm[2].str();
+                                    std::string keyHint = (upper.find("PRIMARY KEY") != std::string::npos) ? "PRI" : "";
+                                    addCol(Utf8ToWideStr(curTable), Utf8ToWideStr(colName), Utf8ToWideStr(dataType), Utf8ToWideStr(keyHint));
+                                }
+                            }
+                        }
+                        if (parenDepth <= 0 && line.find(';') != std::string::npos) {
+                            curTable.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Query live MySQL/MariaDB information_schema.columns when DB server is running
+        std::wstring activeDbLabel = defaultDb;
+        if (!m_isDestroying.load() && !mysqlExeStr.empty() && IsPortListening(dbPort)) {
+            auto sanitizeArg = [](const std::wstring& s) {
+                std::wstring out;
+                for (wchar_t c : s) {
+                    if (iswalnum(c) || c == L'_' || c == L'-' || c == L'.') out.push_back(c);
+                }
+                return out;
+            };
+            std::wstring safeHost = sanitizeArg(dbHost);
+            std::wstring safeUser = sanitizeArg(dbUser);
+            std::wstring safeDb = sanitizeArg(defaultDb);
+            std::wstring cmd = L"\"" + mysqlExeStr + L"\" --connect-timeout=2 -N -B -h " + safeHost +
+                               L" -P " + std::to_wstring(dbPort) + L" -u " + safeUser;
+            if (!dbPass.empty()) {
+                cmd += L" \"-p" + dbPass + L"\"";
+            }
+            std::wstring whereClause = !safeDb.empty()
+                ? (L"TABLE_SCHEMA='" + safeDb + L"'")
+                : L"TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys')";
+            cmd += L" -e \"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY FROM information_schema.columns WHERE " +
+                   whereClause + L" ORDER BY TABLE_NAME, ORDINAL_POSITION LIMIT 1500;\"";
+
+            std::wstring output = RunCmdCapture(cmd);
+            if (output.empty() && !safeDb.empty()) {
+                std::wstring fallbackCmd = L"\"" + mysqlExeStr + L"\" --connect-timeout=2 -N -B -h " + safeHost +
+                                           L" -P " + std::to_wstring(dbPort) + L" -u " + safeUser +
+                                           (dbPass.empty() ? L"" : (L" \"-p" + dbPass + L"\"")) +
+                                           L" -e \"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY FROM information_schema.columns WHERE TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys') ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION LIMIT 1500;\"";
+                output = RunCmdCapture(fallbackCmd);
+            }
+
+            std::wstringstream wss(output);
+            std::wstring row;
+            while (std::getline(wss, row)) {
+                if (!row.empty() && row.back() == L'\r') row.pop_back();
+                if (row.empty()) continue;
+                std::vector<std::wstring> parts;
+                size_t start = 0;
+                while (start <= row.length()) {
+                    size_t tab = row.find(L'\t', start);
+                    if (tab == std::wstring::npos) {
+                        parts.push_back(row.substr(start));
+                        break;
+                    }
+                    parts.push_back(row.substr(start, tab - start));
+                    start = tab + 1;
+                }
+                if (parts.size() >= 4) {
+                    if (activeDbLabel.empty()) activeDbLabel = parts[0];
+                    addCol(parts[1], parts[2], parts[3], parts.size() >= 5 ? parts[4] : L"");
+                }
+            }
+        }
+
+        if (!m_isDestroying.load()) {
+            m_intelliSense.SetDatabaseSchema(std::move(cols), activeDbLabel);
+        }
+    }).detach();
+}
+
+static std::wstring DetectLspLanguageId(const std::wstring& filePath) {
+    std::wstring ext = std::filesystem::path(filePath).extension().wstring();
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    if (ext == L".php" || ext == L".phtml") return L"php";
+    if (ext == L".py" || ext == L".pyw") return L"python";
+    if (ext == L".ts") return L"typescript";
+    if (ext == L".tsx") return L"typescriptreact";
+    if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return L"javascript";
+    if (ext == L".jsx") return L"javascriptreact";
+    if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".hpp" || ext == L".hh") return L"cpp";
+    if (ext == L".c" || ext == L".h") return L"c";
+    return L"";
+}
+
+void Window::StartLspForDocumentAsync(const std::wstring& filePath, const std::wstring& text) {
+    if (m_isDestroying.load() || filePath.empty() || text.size() > 2 * 1024 * 1024) return;
+    std::wstring langId = DetectLspLanguageId(filePath);
+    if (langId.empty()) return;
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder()
+        ? m_drawer.GetOpenFolderPath()
+        : std::filesystem::path(filePath).parent_path().wstring();
+
+    std::thread([this, filePath, langId, text, wsRoot]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        if (m_isDestroying.load()) return;
+        if (m_lsp.EnsureServerForLanguage(langId, wsRoot) && !m_isDestroying.load()) {
+            m_lsp.NotifyDidOpen(filePath, langId, text);
+        }
+    }).detach();
+}
+
+std::vector<editor::IntelliSenseItem> Window::QueryCombinedCompletions(
+    const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col) {
+    if (!pDoc) return {};
+    std::wstring docTarget = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+    if (m_drawer.HasOpenFolder()) {
+        m_intelliSense.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+        m_editor.SetWorkspaceRoot(m_drawer.GetOpenFolderPath());
+    }
+    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, col, &pDoc->buffer.GetLines());
+    if (m_lsp.IsRunning() && !pDoc->filePath.empty()) {
+        auto pos = pDoc->buffer.GetCursor();
+        std::wstring lspLang = DetectLspLanguageId(pDoc->filePath);
+        if (!lspLang.empty() && lspLang == m_lsp.GetCurrentLanguageId()) {
+            auto lspItems = m_lsp.RequestCompletions(pDoc->filePath, pos.line, col);
+            if (!lspItems.empty()) {
+                std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, col);
+                std::unordered_set<std::wstring> existingLabels;
+                for (const auto& ex : items) {
+                    existingLabels.insert(ex.label);
+                }
+                auto mapLspKind = [](int k) -> editor::CompletionKind {
+                    switch (k) {
+                        case 2: case 4: return editor::CompletionKind::Method;
+                        case 3: return editor::CompletionKind::Function;
+                        case 5: case 10: return editor::CompletionKind::Property;
+                        case 6: return editor::CompletionKind::Variable;
+                        case 7: case 8: case 22: return editor::CompletionKind::Class;
+                        case 9: return editor::CompletionKind::Module;
+                        case 14: return editor::CompletionKind::Keyword;
+                        case 15: return editor::CompletionKind::Snippet;
+                        case 17: return editor::CompletionKind::File;
+                        case 19: return editor::CompletionKind::Folder;
+                        case 21: return editor::CompletionKind::Constant;
+                        default: return editor::CompletionKind::Function;
+                    }
+                };
+                std::vector<editor::IntelliSenseItem> merged;
+                merged.reserve(lspItems.size() + items.size());
+                for (const auto& li : lspItems) {
+                    if (li.label.empty() || !existingLabels.insert(li.label).second) continue;
+                    editor::IntelliSenseItem ci;
+                    ci.label = li.label;
+                    ci.detail = li.detail.empty() ? L"LSP" : li.detail;
+                    ci.insertText = li.insertText.empty() ? li.label : li.insertText;
+                    ci.kind = mapLspKind(li.kind);
+                    ci.score = 1200;
+                    ci.matchLen = prefix.length();
+                    ci.origin = L"lsp";
+                    merged.push_back(std::move(ci));
+                }
+                for (auto& base : items) {
+                    merged.push_back(std::move(base));
+                }
+                items.swap(merged);
+                if (items.size() > 64) items.resize(64);
+            }
+        }
+    }
+    return items;
+}
+
+bool Window::CheckPortBeforeServerStart(int port, const std::wstring& serverLabel, HANDLE ownServerHandle,
+                                        std::function<void(int)> onStartWithPort) {
+    if (port <= 0 || port >= 65536) return true;
+    if (m_skipNextPortPrompt) {
+        m_skipNextPortPrompt = false;
+        return true;
+    }
+
+    // Build set of Phide-owned PIDs (main process + managed servers + child worker trees)
+    std::unordered_set<DWORD> ownPids;
+    ownPids.insert(GetCurrentProcessId());
+    auto addHandlePid = [&](HANDLE h) {
+        if (h) {
+            DWORD pid = GetProcessId(h);
+            if (pid > 4) ownPids.insert(pid);
+        }
+    };
+    addHandlePid(ownServerHandle);
+    addHandlePid(m_hPhpServerProcess);
+    addHandlePid(m_hNginxProcess);
+    addHandlePid(m_hPmaProcess);
+    addHandlePid(m_hMysqlProcess);
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        std::vector<PROCESSENTRY32W> procs;
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnap, &pe)) {
+            do {
+                procs.push_back(pe);
+            } while (Process32NextW(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+        for (int pass = 0; pass < 3; ++pass) {
+            for (const auto& p : procs) {
+                if (ownPids.find(p.th32ParentProcessID) != ownPids.end()) {
+                    ownPids.insert(p.th32ProcessID);
+                }
+            }
+        }
+    }
+
+    DWORD conflictPid = 0;
+    auto scanTcpFamily = [&](ULONG family) {
+        if (conflictPid != 0) return;
+        DWORD size = 0;
+        if (GetExtendedTcpTable(nullptr, &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+            return;
+        }
+        std::vector<BYTE> buf(size);
+        if (GetExtendedTcpTable(buf.data(), &size, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) {
+            return;
+        }
+        if (family == AF_INET) {
+            auto* tbl = reinterpret_cast<MIB_TCPTABLE_OWNER_PID*>(buf.data());
+            for (DWORD i = 0; i < tbl->dwNumEntries; ++i) {
+                int lp = static_cast<int>(ntohs(static_cast<u_short>(tbl->table[i].dwLocalPort)));
+                if (lp == port) {
+                    DWORD pid = tbl->table[i].dwOwningPid;
+                    if (pid > 4 && ownPids.find(pid) == ownPids.end()) {
+                        conflictPid = pid;
+                        return;
+                    }
+                }
+            }
+        } else {
+            auto* tbl6 = reinterpret_cast<MIB_TCP6TABLE_OWNER_PID*>(buf.data());
+            for (DWORD i = 0; i < tbl6->dwNumEntries; ++i) {
+                int lp = static_cast<int>(ntohs(static_cast<u_short>(tbl6->table[i].dwLocalPort)));
+                if (lp == port) {
+                    DWORD pid = tbl6->table[i].dwOwningPid;
+                    if (pid > 4 && ownPids.find(pid) == ownPids.end()) {
+                        conflictPid = pid;
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    scanTcpFamily(AF_INET);
+    scanTcpFamily(AF_INET6);
+
+    if (conflictPid == 0) {
+        return true;
+    }
+
+    std::wstring procName = L"external process";
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, conflictPid);
+    if (hProc) {
+        wchar_t exePath[MAX_PATH] = { 0 };
+        DWORD len = MAX_PATH;
+        if (QueryFullProcessImageNameW(hProc, 0, exePath, &len) && len > 0) {
+            procName = std::filesystem::path(exePath).filename().wstring();
+        }
+        CloseHandle(hProc);
+    }
+
+    m_portConflictModal.isOpen = true;
+    m_portConflictModal.port = port;
+    m_portConflictModal.pid = conflictPid;
+    m_portConflictModal.processName = procName;
+    m_portConflictModal.serverLabel = serverLabel;
+    m_portConflictModal.onProceedWithPort = std::move(onStartWithPort);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    return false;
+}
+
+void Window::RenderPortConflictModal(float clientW, float clientH) {
+    if (!m_portConflictModal.isOpen || !m_pRenderTarget) return;
+    const float cardW = m_config.ScaleF(470.0f);
+    const float cardH = m_config.ScaleF(195.0f);
+    D2D1_RECT_F rcCard{};
+    DrawOverlayModalCardShell(
+        m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, cardW, cardH,
+        L"Port Conflict Detected (" + m_portConflictModal.serverLabel + L")",
+        D2D1::ColorF(0.95f, 0.65f, 0.22f, 1.0f), rcCard);
+
+    std::wstring msg = L"Port " + std::to_wstring(m_portConflictModal.port) +
+                       L" is already in use by " + m_portConflictModal.processName +
+                       L" (PID " + std::to_wstring(m_portConflictModal.pid) + L").\n\n" +
+                       L"Terminate the blocking process or switch to the next open port.";
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+    m_pRenderTarget->CreateSolidColorBrush(
+        m_theme.IsDarkMode() ? D2D1::ColorF(0.84f, 0.86f, 0.90f, 1.0f) : D2D1::ColorF(0.18f, 0.20f, 0.24f, 1.0f),
+        &textBrush);
+    if (m_theme.fontBody && textBrush) {
+        D2D1_RECT_F rcBody = D2D1::RectF(
+            rcCard.left + m_config.ScaleF(20.0f), rcCard.top + m_config.ScaleF(50.0f),
+            rcCard.right - m_config.ScaleF(20.0f), rcCard.bottom - m_config.ScaleF(64.0f));
+        m_pRenderTarget->DrawText(msg.c_str(), static_cast<UINT32>(msg.length()), m_theme.fontBody.Get(), rcBody, textBrush.Get());
+    }
+
+    const float btnH = m_config.ScaleF(32.0f);
+    const float btnY = rcCard.bottom - m_config.ScaleF(48.0f);
+    const float gap = m_config.ScaleF(10.0f);
+    float curX = rcCard.left + m_config.ScaleF(20.0f);
+    m_portConflictModal.rcKillStartBtn = D2D1::RectF(curX, btnY, curX + m_config.ScaleF(136.0f), btnY + btnH);
+    curX = m_portConflictModal.rcKillStartBtn.right + gap;
+    m_portConflictModal.rcSwitchPortBtn = D2D1::RectF(curX, btnY, curX + m_config.ScaleF(132.0f), btnY + btnH);
+    curX = m_portConflictModal.rcSwitchPortBtn.right + gap;
+    m_portConflictModal.rcCancelBtn = D2D1::RectF(curX, btnY, rcCard.right - m_config.ScaleF(20.0f), btnY + btnH);
+
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_portConflictModal.rcKillStartBtn,
+                          L"Kill & Start", D2D1::ColorF(0.76f, 0.20f, 0.22f, 1.0f), D2D1::ColorF(0.92f, 0.34f, 0.36f, 1.0f),
+                          D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_portConflictModal.rcSwitchPortBtn,
+                          L"Switch Port", D2D1::ColorF(0.10f, 0.45f, 0.78f, 1.0f), D2D1::ColorF(0.24f, 0.58f, 0.90f, 1.0f),
+                          D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_portConflictModal.rcCancelBtn,
+                          L"Cancel",
+                          m_theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.90f, 0.91f, 0.93f, 1.0f),
+                          D2D1::ColorF(0.38f, 0.40f, 0.44f, 1.0f),
+                          m_theme.IsDarkMode() ? D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f) : D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f));
+}
+
+bool Window::RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg) {
+    if (!m_drawer.HasOpenFolder()) return true;
+    std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    std::wstring statusOut = RunCmdCapture(L"git -C \"" + wsRoot + L"\" status --porcelain -uall");
+    if (statusOut.empty()) return true;
+
+    std::vector<std::wstring> candidateRelPaths;
+    bool isPublish = m_drawer.IsPublishRepoModalOpen();
+    std::wstringstream wss(statusOut);
+    std::wstring line;
+    while (std::getline(wss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.length() < 4) continue;
+        wchar_t x = line[0];
+        wchar_t y = line[1];
+        if (x == L'D' || (x == L' ' && y == L'D')) continue;
+        // Normal commits guard staged files, OR working-tree modified/untracked files during Publish/auto-stage
+        bool isRelevant = (x != L' ' && x != L'?') || isPublish || x == L'?' || y != L' ';
+        if (!isRelevant) continue;
+        std::wstring rel = line.substr(3);
+        size_t arrow = rel.find(L" -> ");
+        if (arrow != std::wstring::npos) rel = rel.substr(arrow + 4);
+        if (rel.size() >= 2 && rel.front() == L'"' && rel.back() == L'"') {
+            rel = rel.substr(1, rel.length() - 2);
+        }
+        if (!rel.empty()) candidateRelPaths.push_back(rel);
+    }
+    if (candidateRelPaths.empty()) return true;
+
+    static const std::regex secretPatterns[] = {
+        std::regex(R"(ghp_[A-Za-z0-9_]{16,})"),
+        std::regex(R"(github_pat_[A-Za-z0-9_]{20,})"),
+        std::regex(R"(glpat-[A-Za-z0-9_\-]{16,})"),
+        std::regex(R"(sk-(?:proj-|live-|test-)?[A-Za-z0-9_\-]{20,})"),
+        std::regex(R"(AKIA[0-9A-Z]{16})"),
+        std::regex(R"(AIza[0-9A-Za-z\-_]{35})"),
+        std::regex(R"(xox[baprs]-[0-9A-Za-z\-]{10,})"),
+        std::regex(R"(-----BEGIN [A-Z ]*PRIVATE KEY-----)"),
+        std::regex(R"((?:new\s+PDO|mysqli_connect|new\s+mysqli)\s*\([^;\r\n]{0,160},\s*['"][^'"]+['"]\s*,\s*['"][^'"]{4,}['"])", std::regex_constants::icase)
+    };
+
+    std::vector<PreCommitFinding> findings;
+    size_t filesChecked = 0;
+    for (const auto& rel : candidateRelPaths) {
+        if (filesChecked++ >= 250) break;
+        std::wstring relFwd = rel;
+        for (auto& c : relFwd) if (c == L'\\') c = L'/';
+        std::wstring relLower = relFwd;
+        for (auto& c : relLower) c = static_cast<wchar_t>(towlower(c));
+
+        std::filesystem::path fullPath = std::filesystem::path(wsRoot) / rel;
+        std::error_code ec;
+        if (!std::filesystem::exists(fullPath, ec)) continue;
+
+        if (relLower == L"node_modules" || relLower.rfind(L"node_modules/", 0) == 0 || relLower.find(L"/node_modules/") != std::wstring::npos) {
+            findings.push_back(PreCommitFinding{ relFwd, L"node_modules directory tracked in commit", true });
+            continue;
+        }
+
+        std::wstring baseName = fullPath.filename().wstring();
+        std::wstring baseLower = baseName;
+        for (auto& c : baseLower) c = static_cast<wchar_t>(towlower(c));
+        if ((baseLower == L".env" || baseLower.rfind(L".env.", 0) == 0) &&
+            baseLower != L".env.example" && baseLower != L".env.sample" && baseLower != L".env.template") {
+            findings.push_back(PreCommitFinding{ relFwd, L"Unignored .env secrets file", true });
+            continue;
+        }
+
+        if (std::filesystem::is_regular_file(fullPath, ec)) {
+            uintmax_t sz = std::filesystem::file_size(fullPath, ec);
+            if (!ec && sz > 10ULL * 1024ULL * 1024ULL) {
+                double mb = static_cast<double>(sz) / (1024.0 * 1024.0);
+                wchar_t mbBuf[64] = { 0 };
+                swprintf_s(mbBuf, L"Large file > 10 MB (%.1f MB)", mb);
+                findings.push_back(PreCommitFinding{ relFwd, mbBuf, true });
+                continue;
+            }
+            if (!ec && sz <= 1024ULL * 1024ULL) {
+                std::ifstream fin(fullPath, std::ios::binary);
+                if (fin.is_open()) {
+                    std::string bytes((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+                    if (bytes.find('\0') == std::string::npos) {
+                        for (const auto& re : secretPatterns) {
+                            if (std::regex_search(bytes, re)) {
+                                findings.push_back(PreCommitFinding{ relFwd, L"Possible secret token / hardcoded DB credential", false });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (findings.empty()) {
+        return true;
+    }
+
+    m_preCommitModal.isOpen = true;
+    m_preCommitModal.isPublishFlow = isPublish;
+    m_preCommitModal.commitMessage = commitMsg;
+    m_preCommitModal.findings = std::move(findings);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    return false;
+}
+
+void Window::RenderPreCommitGuardModal(float clientW, float clientH) {
+    if (!m_preCommitModal.isOpen || !m_pRenderTarget) return;
+    size_t maxList = (std::min<size_t>)(m_preCommitModal.findings.size(), 6);
+    const float cardW = m_config.ScaleF(560.0f);
+    const float cardH = m_config.ScaleF(165.0f + static_cast<float>(maxList) * 22.0f);
+    D2D1_RECT_F rcCard{};
+    DrawOverlayModalCardShell(
+        m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH, cardW, cardH,
+        L"Pre-Commit Secret & Bloat Guard",
+        D2D1::ColorF(0.92f, 0.30f, 0.32f, 1.0f), rcCard);
+
+    std::wstring body = L"Blocked commit because " + std::to_wstring(m_preCommitModal.findings.size()) +
+                        L" potential leak or bloat item(s) were detected:\n\n";
+    for (size_t i = 0; i < maxList; ++i) {
+        body += L"• " + m_preCommitModal.findings[i].relPath + L" — " + m_preCommitModal.findings[i].reason + L"\n";
+    }
+    if (m_preCommitModal.findings.size() > maxList) {
+        body += L"... and " + std::to_wstring(m_preCommitModal.findings.size() - maxList) + L" more.\n";
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+    m_pRenderTarget->CreateSolidColorBrush(
+        m_theme.IsDarkMode() ? D2D1::ColorF(0.86f, 0.88f, 0.92f, 1.0f) : D2D1::ColorF(0.18f, 0.20f, 0.24f, 1.0f),
+        &textBrush);
+    if (m_theme.fontBody && textBrush) {
+        D2D1_RECT_F rcBody = D2D1::RectF(
+            rcCard.left + m_config.ScaleF(20.0f), rcCard.top + m_config.ScaleF(50.0f),
+            rcCard.right - m_config.ScaleF(20.0f), rcCard.bottom - m_config.ScaleF(62.0f));
+        m_pRenderTarget->DrawText(body.c_str(), static_cast<UINT32>(body.length()), m_theme.fontBody.Get(), rcBody, textBrush.Get());
+    }
+
+    const float btnH = m_config.ScaleF(32.0f);
+    const float btnY = rcCard.bottom - m_config.ScaleF(48.0f);
+    const float gap = m_config.ScaleF(10.0f);
+    float curX = rcCard.left + m_config.ScaleF(20.0f);
+    m_preCommitModal.rcIgnoreUnstageBtn = D2D1::RectF(curX, btnY, curX + m_config.ScaleF(214.0f), btnY + btnH);
+    curX = m_preCommitModal.rcIgnoreUnstageBtn.right + gap;
+    m_preCommitModal.rcCommitAnywayBtn = D2D1::RectF(curX, btnY, curX + m_config.ScaleF(146.0f), btnY + btnH);
+    curX = m_preCommitModal.rcCommitAnywayBtn.right + gap;
+    m_preCommitModal.rcCancelBtn = D2D1::RectF(curX, btnY, rcCard.right - m_config.ScaleF(20.0f), btnY + btnH);
+
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_preCommitModal.rcIgnoreUnstageBtn,
+                          L"Add to .gitignore & Unstage",
+                          D2D1::ColorF(0.12f, 0.48f, 0.34f, 1.0f), D2D1::ColorF(0.24f, 0.72f, 0.50f, 1.0f),
+                          D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_preCommitModal.rcCommitAnywayBtn,
+                          L"Commit Anyway",
+                          D2D1::ColorF(0.74f, 0.24f, 0.24f, 1.0f), D2D1::ColorF(0.92f, 0.36f, 0.36f, 1.0f),
+                          D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+    DrawModalActionButton(m_pRenderTarget.Get(), m_theme, m_config, m_preCommitModal.rcCancelBtn,
+                          L"Cancel",
+                          m_theme.IsDarkMode() ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.90f, 0.91f, 0.93f, 1.0f),
+                          D2D1::ColorF(0.38f, 0.40f, 0.44f, 1.0f),
+                          m_theme.IsDarkMode() ? D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f) : D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f));
 }
 
 } // namespace phide::app

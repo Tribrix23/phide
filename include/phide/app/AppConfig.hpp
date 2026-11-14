@@ -62,6 +62,7 @@ struct AppConfig {
     bool showMenuBar = true;            ///< True if top menu bar items are visible.
     bool sideBarOnRight = false;        ///< True if primary activity rail & drawer are moved to the right.
     bool enableStickyScroll = true;     ///< True if sticky scroll header is enabled.
+    bool enablePrivacyMask = false;     ///< True to mask .env values and secret literals on screen.
     bool renderControlChars = false;    ///< True if control characters are rendered.
 
     struct ZenPreState {

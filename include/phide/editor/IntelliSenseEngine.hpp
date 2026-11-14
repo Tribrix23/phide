@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
 
 namespace phide::editor {
 
@@ -73,6 +74,22 @@ public:
     [[nodiscard]] AdaptiveCodeEngine* GetAdaptiveEngine() noexcept {
         return m_pAdaptiveEngine;
     }
+
+    struct EnvVarEntry {
+        std::wstring key;
+        std::wstring valuePreview;
+        std::wstring sourceFile;
+    };
+
+    struct DbSchemaColumn {
+        std::wstring tableName;
+        std::wstring columnName;
+        std::wstring dataType;
+        std::wstring keyType;
+    };
+
+    void SetWorkspaceEnvVars(std::vector<EnvVarEntry> vars);
+    void SetDatabaseSchema(std::vector<DbSchemaColumn> columns, std::wstring dbName);
 
     /**
      * @brief Sets workspace root directory for resolving file path completions.
@@ -147,6 +164,11 @@ private:
     const SnippetManager* m_pSnippetManager = nullptr;
     AdaptiveCodeEngine* m_pAdaptiveEngine = nullptr;
     std::wstring m_workspaceRoot;
+
+    mutable std::mutex m_contextMutex;
+    std::vector<EnvVarEntry> m_envVars;
+    std::vector<DbSchemaColumn> m_dbSchema;
+    std::wstring m_dbName;
 };
 
 } // namespace phide::editor

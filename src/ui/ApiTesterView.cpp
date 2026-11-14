@@ -11,6 +11,7 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <shlobj.h>
 
 #pragma comment(lib, "winhttp.lib")
@@ -1431,6 +1432,8 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
         resp.body = FormatJsonPretty(resp.body);
     }
 
+    ExtractPhpOrNginxErrorLocation(resp.body, resp.statusCode, resp.errorFilePath, resp.errorLine, resp.errorDetail);
+
     resp.hasResponse = true;
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
@@ -1639,6 +1642,658 @@ std::wstring ApiTesterView::GetSelectedText(const ApiRequestSession& s) const {
     return L"";
 }
 
+namespace {
+
+std::wstring TrimCurlWhitespace(const std::wstring& s) {
+    size_t start = s.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return L"";
+    size_t end = s.find_last_not_of(L" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+std::wstring ToLowerAsciiW(std::wstring s) {
+    for (wchar_t& c : s) {
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    }
+    return s;
+}
+
+bool EqualsIgnoreCaseW(const std::wstring& a, const std::wstring& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        wchar_t ca = (a[i] >= L'A' && a[i] <= L'Z') ? static_cast<wchar_t>(a[i] + 32) : a[i];
+        wchar_t cb = (b[i] >= L'A' && b[i] <= L'Z') ? static_cast<wchar_t>(b[i] + 32) : b[i];
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+std::vector<std::wstring> TokenizeCurlCommand(const std::wstring& input) {
+    // Collapse shell line continuations (\<nl>, ^<nl>, `<nl>)
+    std::wstring cmd;
+    cmd.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        if ((input[i] == L'\\' || input[i] == L'^' || input[i] == L'`') && i + 1 < input.size()) {
+            if (input[i + 1] == L'\n') {
+                cmd.push_back(L' ');
+                ++i;
+                continue;
+            }
+            if (input[i + 1] == L'\r' && i + 2 < input.size() && input[i + 2] == L'\n') {
+                cmd.push_back(L' ');
+                i += 2;
+                continue;
+            }
+        }
+        cmd.push_back(input[i]);
+    }
+
+    std::vector<std::wstring> tokens;
+    std::wstring current;
+    bool inToken = false;
+    size_t i = 0;
+    const size_t n = cmd.size();
+
+    auto decodeEscape = [&](size_t& idx) -> wchar_t {
+        ++idx;
+        if (idx >= n) return L'\\';
+        switch (cmd[idx]) {
+            case L'n': return L'\n';
+            case L'r': return L'\r';
+            case L't': return L'\t';
+            case L'\\': return L'\\';
+            case L'\'': return L'\'';
+            case L'"': return L'"';
+            default: return cmd[idx];
+        }
+    };
+
+    while (i < n) {
+        wchar_t c = cmd[i];
+        if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') {
+            if (inToken) {
+                tokens.push_back(std::move(current));
+                current.clear();
+                inToken = false;
+            }
+            ++i;
+            continue;
+        }
+
+        inToken = true;
+        if (c == L'$' && i + 1 < n && cmd[i + 1] == L'\'') {
+            // ANSI-C quoting: $'...'
+            i += 2;
+            while (i < n && cmd[i] != L'\'') {
+                if (cmd[i] == L'\\') {
+                    current.push_back(decodeEscape(i));
+                } else {
+                    current.push_back(cmd[i]);
+                }
+                ++i;
+            }
+            if (i < n && cmd[i] == L'\'') ++i;
+        } else if (c == L'\'') {
+            ++i;
+            while (i < n && cmd[i] != L'\'') {
+                current.push_back(cmd[i]);
+                ++i;
+            }
+            if (i < n && cmd[i] == L'\'') ++i;
+        } else if (c == L'"') {
+            ++i;
+            while (i < n && cmd[i] != L'"') {
+                if (cmd[i] == L'\\' && i + 1 < n) {
+                    wchar_t next = cmd[i + 1];
+                    if (next == L'"' || next == L'\\' || next == L'$' || next == L'\n') {
+                        current.push_back(next);
+                        i += 2;
+                        continue;
+                    }
+                    if (next == L'n') { current.push_back(L'\n'); i += 2; continue; }
+                    if (next == L'r') { current.push_back(L'\r'); i += 2; continue; }
+                    if (next == L't') { current.push_back(L'\t'); i += 2; continue; }
+                }
+                current.push_back(cmd[i]);
+                ++i;
+            }
+            if (i < n && cmd[i] == L'"') ++i;
+        } else if (c == L'\\' && i + 1 < n) {
+            current.push_back(cmd[i + 1]);
+            i += 2;
+        } else {
+            current.push_back(c);
+            ++i;
+        }
+    }
+
+    if (inToken) {
+        tokens.push_back(std::move(current));
+    }
+    return tokens;
+}
+
+std::wstring StripHtmlAndDecodeBasicEntities(const std::wstring& input) {
+    std::wstring stripped;
+    stripped.reserve(input.size());
+    bool inTag = false;
+    for (size_t i = 0; i < input.size(); ++i) {
+        wchar_t ch = input[i];
+        if (ch == L'<') {
+            // Convert <br> tags into newlines so stack lines stay separated
+            if (i + 3 < input.size() &&
+                (input[i + 1] == L'b' || input[i + 1] == L'B') &&
+                (input[i + 2] == L'r' || input[i + 2] == L'R')) {
+                stripped.push_back(L'\n');
+            }
+            inTag = true;
+            continue;
+        }
+        if (ch == L'>') {
+            inTag = false;
+            continue;
+        }
+        if (!inTag) stripped.push_back(ch);
+    }
+
+    auto replaceAll = [](std::wstring& str, const std::wstring& from, const std::wstring& to) {
+        size_t pos = 0;
+        while ((pos = str.find(from, pos)) != std::wstring::npos) {
+            str.replace(pos, from.length(), to);
+            pos += to.length();
+        }
+    };
+    replaceAll(stripped, L"&quot;", L"\"");
+    replaceAll(stripped, L"&#039;", L"'");
+    replaceAll(stripped, L"&apos;", L"'");
+    replaceAll(stripped, L"&lt;", L"<");
+    replaceAll(stripped, L"&gt;", L">");
+    replaceAll(stripped, L"&amp;", L"&");
+    replaceAll(stripped, L"\\/", L"/");
+    return stripped;
+}
+
+std::wstring ResolveErrorFilePath(const std::wstring& rawPath, const std::wstring& workspaceRoot) {
+    if (rawPath.empty()) return L"";
+    std::wstring normalized = rawPath;
+    for (wchar_t& c : normalized) {
+        if (c == L'/') c = L'\\';
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(normalized, ec)) {
+        return normalized;
+    }
+    if (!workspaceRoot.empty()) {
+        std::wstring wsNorm = workspaceRoot;
+        for (wchar_t& c : wsNorm) {
+            if (c == L'/') c = L'\\';
+        }
+        std::wstring rel = normalized;
+        while (!rel.empty() && rel.front() == L'\\') rel.erase(rel.begin());
+        std::filesystem::path candidate = std::filesystem::path(wsNorm) / rel;
+        if (std::filesystem::exists(candidate, ec)) {
+            return candidate.wstring();
+        }
+        // Fallback: match by filename under workspace if container/chroot prefix differed
+        std::wstring fname = std::filesystem::path(normalized).filename().wstring();
+        if (!fname.empty()) {
+            size_t tailSlash = normalized.find_last_of(L'\\');
+            if (tailSlash != std::wstring::npos && tailSlash > 0) {
+                size_t prevSlash = normalized.find_last_of(L'\\', tailSlash - 1);
+                if (prevSlash != std::wstring::npos) {
+                    std::filesystem::path subCandidate = std::filesystem::path(wsNorm) / normalized.substr(prevSlash + 1);
+                    if (std::filesystem::exists(subCandidate, ec)) {
+                        return subCandidate.wstring();
+                    }
+                }
+            }
+            std::filesystem::path rootDirect = std::filesystem::path(wsNorm) / fname;
+            if (std::filesystem::exists(rootDirect, ec)) {
+                return rootDirect.wstring();
+            }
+        }
+    }
+    return normalized;
+}
+
+bool MatchPhpOrNginxErrorInText(const std::wstring& rawText, const std::wstring& workspaceRoot,
+                                std::wstring& outFile, size_t& outLine, std::wstring& outDetail) {
+    if (rawText.empty()) return false;
+    const std::wstring cleaned = StripHtmlAndDecodeBasicEntities(rawText);
+
+    static const std::wregex rePhpStandard(
+        LR"((?:PHP\s+)?(?:Fatal error|Parse error|Warning|Notice|Deprecated|Strict Standards|Recoverable fatal error|Uncaught\s+[^:\r\n]+):\s*([^\r\n]+?)\s+in\s+([A-Za-z]:[\\/][^\r\n:*?"<>|]+\.(?:php|phtml|inc)|[\\/][^\r\n\s]+\.(?:php|phtml|inc)|[^\s\r\n]+\.(?:php|phtml|inc))\s+on\s+line\s+(\d+))",
+        std::regex_constants::icase);
+
+    static const std::wregex rePhpStackFrame(
+        LR"(#\d+\s+([A-Za-z]:[\\/][^\r\n()]+?\.(?:php|phtml|inc)|[\\/][^\r\n()]+?\.(?:php|phtml|inc)|[^\s()]+\.(?:php|phtml|inc))\((\d+)\):)",
+        std::regex_constants::icase);
+
+    static const std::wregex reJsonErrorLoc(
+        LR"delim("file"\s*:\s*"([^"]+\.(?:php|phtml|inc))"\s*,\s*"line"\s*:\s*(\d+))delim",
+        std::regex_constants::icase);
+
+    static const std::wregex reGenericPhpLine(
+        LR"delim((?:in\s+|at\s+)?([A-Za-z]:[\\/][^\s:()"'<>\r\n]+\.(?:php|phtml|inc)|[^\s:()"'<>\r\n]+\.(?:php|phtml|inc))(?:\s+on\s+line\s+|\s*:\s*)(\d+))delim",
+        std::regex_constants::icase);
+
+    std::wsmatch m;
+    if (std::regex_search(cleaned, m, rePhpStandard) && m.size() >= 4) {
+        outDetail = TrimCurlWhitespace(m[1].str());
+        outFile = ResolveErrorFilePath(TrimCurlWhitespace(m[2].str()), workspaceRoot);
+        outLine = static_cast<size_t>(_wtoi(m[3].str().c_str()));
+        return !outFile.empty() && outLine > 0;
+    }
+    if (std::regex_search(cleaned, m, rePhpStackFrame) && m.size() >= 3) {
+        outFile = ResolveErrorFilePath(TrimCurlWhitespace(m[1].str()), workspaceRoot);
+        outLine = static_cast<size_t>(_wtoi(m[2].str().c_str()));
+        outDetail = L"PHP Exception / Stack Trace";
+        return !outFile.empty() && outLine > 0;
+    }
+    if (std::regex_search(cleaned, m, reJsonErrorLoc) && m.size() >= 3) {
+        outFile = ResolveErrorFilePath(TrimCurlWhitespace(m[1].str()), workspaceRoot);
+        outLine = static_cast<size_t>(_wtoi(m[2].str().c_str()));
+        outDetail = L"Server JSON Error Location";
+        return !outFile.empty() && outLine > 0;
+    }
+    if (std::regex_search(cleaned, m, reGenericPhpLine) && m.size() >= 3) {
+        outFile = ResolveErrorFilePath(TrimCurlWhitespace(m[1].str()), workspaceRoot);
+        outLine = static_cast<size_t>(_wtoi(m[2].str().c_str()));
+        outDetail = L"Backend PHP Error";
+        return !outFile.empty() && outLine > 0;
+    }
+    return false;
+}
+
+std::vector<std::wstring> ReadLogTailLinesUtf8(const std::filesystem::path& logPath, size_t maxBytes = 32768) {
+    std::vector<std::wstring> lines;
+    std::error_code ec;
+    if (!std::filesystem::exists(logPath, ec) || !std::filesystem::is_regular_file(logPath, ec)) {
+        return lines;
+    }
+    HANDLE hFile = CreateFileW(logPath.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return lines;
+
+    LARGE_INTEGER fileSize{};
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0) {
+        CloseHandle(hFile);
+        return lines;
+    }
+
+    LONGLONG offset = (fileSize.QuadPart > static_cast<LONGLONG>(maxBytes))
+        ? (fileSize.QuadPart - static_cast<LONGLONG>(maxBytes))
+        : 0;
+    LARGE_INTEGER seekPos{};
+    seekPos.QuadPart = offset;
+    SetFilePointerEx(hFile, seekPos, nullptr, FILE_BEGIN);
+
+    DWORD toRead = static_cast<DWORD>(fileSize.QuadPart - offset);
+    std::string raw(toRead, '\0');
+    DWORD bytesRead = 0;
+    if (ReadFile(hFile, raw.data(), toRead, &bytesRead, nullptr)) {
+        raw.resize(bytesRead);
+    } else {
+        raw.clear();
+    }
+    CloseHandle(hFile);
+    if (raw.empty()) return lines;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), static_cast<int>(raw.size()), nullptr, 0);
+    if (wlen <= 0) return lines;
+    std::wstring wide(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), static_cast<int>(raw.size()), wide.data(), wlen);
+
+    size_t pos = 0;
+    while (pos < wide.size()) {
+        size_t nl = wide.find(L'\n', pos);
+        if (nl == std::wstring::npos) nl = wide.size();
+        std::wstring ln = wide.substr(pos, nl - pos);
+        if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+        if (!ln.empty()) lines.push_back(std::move(ln));
+        pos = nl + 1;
+    }
+    return lines;
+}
+
+} // namespace
+
+bool ApiTesterView::TryImportCurlCommand(const std::wstring& rawText, ApiRequestSession& s) {
+    std::wstring trimmed = TrimCurlWhitespace(rawText);
+    if (trimmed.size() < 5) return false;
+    std::wstring headLower = ToLowerAsciiW(trimmed.substr(0, (std::min)(size_t(10), trimmed.size())));
+    bool startsWithCurl = (headLower.rfind(L"curl ", 0) == 0 ||
+                           headLower.rfind(L"curl\t", 0) == 0 ||
+                           headLower.rfind(L"curl\n", 0) == 0 ||
+                           headLower.rfind(L"curl.exe ", 0) == 0 ||
+                           headLower.rfind(L"curl.exe\t", 0) == 0);
+    if (!startsWithCurl) return false;
+
+    std::vector<std::wstring> tokens = TokenizeCurlCommand(trimmed);
+    if (tokens.size() < 2) return false;
+    std::wstring cmdExe = ToLowerAsciiW(tokens[0]);
+    if (cmdExe != L"curl" && cmdExe != L"curl.exe") return false;
+
+    bool methodExplicit = false;
+    bool forceGet = false;
+    HttpMethod parsedMethod = HttpMethod::Get;
+    std::wstring parsedUrl;
+    std::vector<ApiKeyValueItem> parsedHeaders;
+    std::vector<std::wstring> dataChunks;
+    std::vector<ApiKeyValueItem> formRows;
+    std::vector<ApiKeyValueItem> urlEncodedRows;
+    bool isJsonFlag = false;
+    bool isForm = false;
+    bool isUrlEncodedFlag = false;
+    ApiAuthType parsedAuth = ApiAuthType::NoAuth;
+    std::wstring parsedBearer;
+    std::wstring parsedBasicUser;
+    std::wstring parsedBasicPass;
+    std::wstring parsedCookies;
+    bool followRedirects = s.followRedirects;
+    bool verifySsl = s.verifySsl;
+    std::wstring timeoutMsStr = s.timeoutMsStr;
+
+    auto applyMethodStr = [&](const std::wstring& mRaw) {
+        std::wstring m = ToLowerAsciiW(TrimCurlWhitespace(mRaw));
+        methodExplicit = true;
+        if (m == L"get") parsedMethod = HttpMethod::Get;
+        else if (m == L"post") parsedMethod = HttpMethod::Post;
+        else if (m == L"put") parsedMethod = HttpMethod::Put;
+        else if (m == L"patch") parsedMethod = HttpMethod::Patch;
+        else if (m == L"delete") parsedMethod = HttpMethod::Delete;
+        else if (m == L"head") parsedMethod = HttpMethod::Head;
+        else if (m == L"options") parsedMethod = HttpMethod::Options;
+        else methodExplicit = false;
+    };
+
+    auto applyHeaderLine = [&](const std::wstring& hdrLine) {
+        size_t colon = hdrLine.find(L':');
+        if (colon == std::wstring::npos) return;
+        std::wstring key = TrimCurlWhitespace(hdrLine.substr(0, colon));
+        std::wstring val = TrimCurlWhitespace(hdrLine.substr(colon + 1));
+        if (key.empty()) return;
+        if (EqualsIgnoreCaseW(key, L"Authorization")) {
+            if (val.size() > 7 && EqualsIgnoreCaseW(val.substr(0, 7), L"Bearer ")) {
+                parsedAuth = ApiAuthType::BearerToken;
+                parsedBearer = TrimCurlWhitespace(val.substr(7));
+                return;
+            }
+        }
+        parsedHeaders.push_back(ApiKeyValueItem{true, key, val, L""});
+    };
+
+    auto splitKv = [](const std::wstring& raw, std::wstring& k, std::wstring& v) {
+        size_t eq = raw.find(L'=');
+        if (eq == std::wstring::npos) {
+            k = raw;
+            v.clear();
+        } else {
+            k = raw.substr(0, eq);
+            v = raw.substr(eq + 1);
+        }
+    };
+
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        const std::wstring& tok = tokens[i];
+        auto takeVal = [&](std::wstring& out) -> bool {
+            size_t eq = tok.find(L'=');
+            if (eq != std::wstring::npos) {
+                out = tok.substr(eq + 1);
+                return true;
+            }
+            if (i + 1 < tokens.size()) {
+                out = tokens[++i];
+                return true;
+            }
+            return false;
+        };
+
+        if (tok == L"-X" || tok == L"--request" || tok.rfind(L"--request=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) applyMethodStr(val);
+        } else if (tok.rfind(L"-X", 0) == 0 && tok.size() > 2) {
+            applyMethodStr(tok.substr(2));
+        } else if (tok == L"--url" || tok.rfind(L"--url=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val) && parsedUrl.empty()) parsedUrl = val;
+        } else if (tok == L"-H" || tok == L"--header" || tok.rfind(L"--header=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) applyHeaderLine(val);
+        } else if (tok == L"-b" || tok == L"--cookie" || tok.rfind(L"--cookie=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val) && !val.empty()) {
+                if (!parsedCookies.empty()) parsedCookies += L"; ";
+                parsedCookies += val;
+            }
+        } else if (tok == L"-A" || tok == L"--user-agent" || tok.rfind(L"--user-agent=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) parsedHeaders.push_back(ApiKeyValueItem{true, L"User-Agent", val, L""});
+        } else if (tok == L"-e" || tok == L"--referer" || tok.rfind(L"--referer=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) parsedHeaders.push_back(ApiKeyValueItem{true, L"Referer", val, L""});
+        } else if (tok == L"-u" || tok == L"--user" || tok.rfind(L"--user=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) {
+                parsedAuth = ApiAuthType::BasicAuth;
+                size_t col = val.find(L':');
+                if (col == std::wstring::npos) {
+                    parsedBasicUser = val;
+                    parsedBasicPass.clear();
+                } else {
+                    parsedBasicUser = val.substr(0, col);
+                    parsedBasicPass = val.substr(col + 1);
+                }
+            }
+        } else if (tok == L"-d" || tok == L"--data" || tok == L"--data-raw" ||
+                   tok == L"--data-binary" || tok == L"--data-ascii" ||
+                   tok.rfind(L"--data=", 0) == 0 || tok.rfind(L"--data-raw=", 0) == 0 ||
+                   tok.rfind(L"--data-binary=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) dataChunks.push_back(val);
+        } else if (tok.rfind(L"-d", 0) == 0 && tok.size() > 2 && tok[2] != L'-') {
+            dataChunks.push_back(tok.substr(2));
+        } else if (tok == L"--json" || tok.rfind(L"--json=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) {
+                dataChunks.push_back(val);
+                isJsonFlag = true;
+            }
+        } else if (tok == L"--data-urlencode" || tok.rfind(L"--data-urlencode=", 0) == 0) {
+            std::wstring val, k, v;
+            if (takeVal(val)) {
+                isUrlEncodedFlag = true;
+                splitKv(val, k, v);
+                if (!k.empty()) urlEncodedRows.push_back(ApiKeyValueItem{true, k, v, L""});
+            }
+        } else if (tok == L"-F" || tok == L"--form" || tok == L"--form-string" ||
+                   tok.rfind(L"--form=", 0) == 0) {
+            std::wstring val, k, v;
+            if (takeVal(val)) {
+                isForm = true;
+                splitKv(val, k, v);
+                if (!k.empty()) formRows.push_back(ApiKeyValueItem{true, k, v, L""});
+            }
+        } else if (tok == L"-G" || tok == L"--get") {
+            forceGet = true;
+            methodExplicit = true;
+            parsedMethod = HttpMethod::Get;
+        } else if (tok == L"-I" || tok == L"--head") {
+            methodExplicit = true;
+            parsedMethod = HttpMethod::Head;
+        } else if (tok == L"-L" || tok == L"--location") {
+            followRedirects = true;
+        } else if (tok == L"-k" || tok == L"--insecure") {
+            verifySsl = false;
+        } else if (tok == L"-m" || tok == L"--max-time" || tok.rfind(L"--max-time=", 0) == 0) {
+            std::wstring val;
+            if (takeVal(val)) {
+                double secs = _wtof(val.c_str());
+                if (secs > 0.0) {
+                    timeoutMsStr = std::to_wstring(static_cast<int>(secs * 1000.0));
+                }
+            }
+        } else if (tok == L"-o" || tok == L"--output" || tok == L"--connect-timeout" ||
+                   tok == L"-x" || tok == L"--proxy" || tok == L"-w" || tok == L"--write-out") {
+            std::wstring discarded;
+            takeVal(discarded);
+        } else if (!tok.empty() && tok[0] != L'-') {
+            if (parsedUrl.empty()) {
+                parsedUrl = tok;
+            }
+        }
+    }
+
+    if (parsedUrl.empty()) return false;
+
+    if (!parsedCookies.empty()) {
+        parsedHeaders.push_back(ApiKeyValueItem{true, L"Cookie", parsedCookies, L""});
+    }
+
+    if (!methodExplicit) {
+        if (!dataChunks.empty() || !formRows.empty() || !urlEncodedRows.empty()) {
+            parsedMethod = HttpMethod::Post;
+        } else {
+            parsedMethod = HttpMethod::Get;
+        }
+    }
+
+    if (forceGet && !dataChunks.empty()) {
+        std::wstring joinedQuery;
+        for (const auto& d : dataChunks) {
+            if (!joinedQuery.empty()) joinedQuery += L"&";
+            joinedQuery += d;
+        }
+        parsedUrl += (parsedUrl.find(L'?') == std::wstring::npos) ? L"?" : L"&";
+        parsedUrl += joinedQuery;
+        dataChunks.clear();
+    }
+
+    // Apply parsed cURL request cleanly to the active session
+    s.method = parsedMethod;
+    s.url = parsedUrl;
+    s.urlCaret = s.url.length();
+    s.headers = std::move(parsedHeaders);
+    s.authType = parsedAuth;
+    s.bearerToken = std::move(parsedBearer);
+    s.apiKeyName.clear();
+    s.apiKeyValue.clear();
+    s.basicUser = std::move(parsedBasicUser);
+    s.basicPass = std::move(parsedBasicPass);
+    s.followRedirects = followRedirects;
+    s.verifySsl = verifySsl;
+    s.timeoutMsStr = timeoutMsStr;
+    s.formData.clear();
+    s.urlEncoded.clear();
+    s.bodyText.clear();
+    s.bodyType = ApiBodyType::None;
+
+    if (isForm && !formRows.empty()) {
+        s.bodyType = ApiBodyType::FormData;
+        s.formData = std::move(formRows);
+    } else if (isUrlEncodedFlag && !urlEncodedRows.empty()) {
+        s.bodyType = ApiBodyType::UrlEncoded;
+        s.urlEncoded = std::move(urlEncodedRows);
+    } else if (!dataChunks.empty()) {
+        std::wstring joinedBody;
+        for (const auto& chunk : dataChunks) {
+            if (!joinedBody.empty()) joinedBody += L"&";
+            joinedBody += chunk;
+        }
+        bool hasFormContentType = false;
+        for (const auto& h : s.headers) {
+            if (EqualsIgnoreCaseW(h.key, L"Content-Type") &&
+                ToLowerAsciiW(h.value).find(L"application/x-www-form-urlencoded") != std::wstring::npos) {
+                hasFormContentType = true;
+                break;
+            }
+        }
+        if (hasFormContentType && joinedBody.find(L'=') != std::wstring::npos) {
+            s.bodyType = ApiBodyType::UrlEncoded;
+            size_t pos = 0;
+            while (pos <= joinedBody.size()) {
+                size_t amp = joinedBody.find(L'&', pos);
+                if (amp == std::wstring::npos) amp = joinedBody.size();
+                std::wstring pair = joinedBody.substr(pos, amp - pos);
+                std::wstring k, v;
+                splitKv(pair, k, v);
+                if (!k.empty()) s.urlEncoded.push_back(ApiKeyValueItem{true, k, v, L""});
+                if (amp == joinedBody.size()) break;
+                pos = amp + 1;
+            }
+        } else {
+            s.bodyType = ApiBodyType::RawJson;
+            s.bodyText = std::move(joinedBody);
+            s.bodyCaret = s.bodyText.length();
+            if (isJsonFlag) {
+                bool hasCt = false;
+                for (const auto& h : s.headers) {
+                    if (EqualsIgnoreCaseW(h.key, L"Content-Type")) { hasCt = true; break; }
+                }
+                if (!hasCt) {
+                    s.headers.push_back(ApiKeyValueItem{true, L"Content-Type", L"application/json", L""});
+                }
+            }
+        }
+    }
+
+    SyncUrlToParams(s);
+    SaveSessionsToDisk();
+    m_hasSelection = false;
+    m_toastMessage = std::wstring(L"Imported cURL: ") + HttpMethodToString(s.method) + L" " + s.url;
+    if (m_toastMessage.size() > 72) m_toastMessage = m_toastMessage.substr(0, 69) + L"...";
+    m_toastExpiry = GetTickCount() + 2600;
+    return true;
+}
+
+void ApiTesterView::ExtractPhpOrNginxErrorLocation(const std::wstring& responseBody, int statusCode,
+                                                   std::wstring& outFile, size_t& outLine,
+                                                   std::wstring& outDetail) const {
+    outFile.clear();
+    outLine = 0;
+    outDetail.clear();
+
+    if (MatchPhpOrNginxErrorInText(responseBody, m_workspaceRoot, outFile, outLine, outDetail)) {
+        if (outDetail.size() > 140) outDetail = outDetail.substr(0, 137) + L"...";
+        return;
+    }
+
+    if (statusCode < 500 && statusCode != 0 && !responseBody.empty()) {
+        return;
+    }
+
+    // Fallback for HTTP 500 / blank response: tail bundled Nginx / PHP error logs & workspace logs
+    std::vector<std::filesystem::path> logCandidates;
+    wchar_t exeBuf[MAX_PATH]{};
+    DWORD exeLen = GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    if (exeLen > 0) {
+        std::filesystem::path exeDir = std::filesystem::path(exeBuf).parent_path();
+        logCandidates.push_back(exeDir / L"server" / L"nginx" / L"logs" / L"error.log");
+        logCandidates.push_back(exeDir.parent_path() / L"server" / L"nginx" / L"logs" / L"error.log");
+        logCandidates.push_back(exeDir / L"server" / L"php" / L"logs" / L"php_error.log");
+        logCandidates.push_back(exeDir.parent_path() / L"server" / L"php" / L"logs" / L"php_error.log");
+        logCandidates.push_back(exeDir / L"php" / L"logs" / L"php_error.log");
+    }
+    if (!m_workspaceRoot.empty()) {
+        std::filesystem::path ws(m_workspaceRoot);
+        logCandidates.push_back(ws / L".phide" / L"logs" / L"php_error.log");
+        logCandidates.push_back(ws / L"storage" / L"logs" / L"laravel.log");
+        logCandidates.push_back(ws / L"logs" / L"error.log");
+        logCandidates.push_back(ws / L"error.log");
+    }
+
+    for (const auto& logPath : logCandidates) {
+        auto lines = ReadLogTailLinesUtf8(logPath);
+        for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+            if (MatchPhpOrNginxErrorInText(*it, m_workspaceRoot, outFile, outLine, outDetail)) {
+                if (outDetail.size() > 140) outDetail = outDetail.substr(0, 137) + L"...";
+                return;
+            }
+        }
+    }
+}
+
 void ApiTesterView::PasteFromClipboard() {
     if (!m_hwnd || !OpenClipboard(m_hwnd)) return;
     std::wstring clipText;
@@ -1656,6 +2311,10 @@ void ApiTesterView::PasteFromClipboard() {
     clipText.erase(std::remove(clipText.begin(), clipText.end(), L'\r'), clipText.end());
 
     auto& s = m_sessions[m_activeSessionIdx];
+    if ((m_focusedField == ApiFocusField::Url || m_focusedField == ApiFocusField::None) &&
+        TryImportCurlCommand(clipText, s)) {
+        return;
+    }
     if (m_hasSelection) {
         DeleteSelectedRange(s);
     }
@@ -3286,6 +3945,49 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
     m_respContentH = contentH;
 
     if (s.activeRespTab == ApiResponseTab::Body) {
+        m_rcErrorJumpBanner = {};
+        if (!s.response.errorFilePath.empty() && s.response.errorLine > 0) {
+            float errBannerH = config.ScaleF(30.0f);
+            float padX = config.ScaleF(8.0f);
+            m_rcErrorJumpBanner = D2D1::RectF(x + padX, contentY + config.ScaleF(4.0f),
+                                              x + w - padX, contentY + errBannerH - config.ScaleF(2.0f));
+            bool hoveredErr = PtInRectF(m_mousePt, m_rcErrorJumpBanner);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errBg, errBorder, errText, errLink;
+            pRT->CreateSolidColorBrush(
+                hoveredErr ? D2D1::ColorF(0.42f, 0.12f, 0.14f, 0.92f) : D2D1::ColorF(0.32f, 0.10f, 0.12f, 0.85f),
+                &errBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.32f, 0.34f, 0.85f), &errBorder);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.88f, 0.88f, 1.0f), &errText);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 1.0f, 1.0f), &errLink);
+            D2D1_ROUNDED_RECT rrcErr = D2D1::RoundedRect(m_rcErrorJumpBanner, config.ScaleF(5.0f), config.ScaleF(5.0f));
+            if (errBg) pRT->FillRoundedRectangle(&rrcErr, errBg.Get());
+            if (errBorder) pRT->DrawRoundedRectangle(&rrcErr, errBorder.Get(), 1.0f);
+
+            std::filesystem::path ep(s.response.errorFilePath);
+            std::wstring shortTarget = ep.filename().wstring() + L":" + std::to_wstring(s.response.errorLine);
+            std::wstring label = L"Backend PHP/Nginx Error";
+            if (!s.response.errorDetail.empty()) {
+                std::wstring snippet = s.response.errorDetail;
+                if (snippet.length() > 54) snippet = snippet.substr(0, 51) + L"...";
+                label += L": " + snippet;
+            }
+            std::wstring jumpLabel = L"Jump to " + shortTarget + L" \x2192";
+            float jumpW = config.ScaleF(static_cast<float>(jumpLabel.length()) * 7.2f + 16.0f);
+            D2D1_RECT_F rcMsg = D2D1::RectF(m_rcErrorJumpBanner.left + config.ScaleF(10.0f), m_rcErrorJumpBanner.top + config.ScaleF(4.0f),
+                                            (std::max)(m_rcErrorJumpBanner.left + config.ScaleF(40.0f), m_rcErrorJumpBanner.right - jumpW),
+                                            m_rcErrorJumpBanner.bottom - config.ScaleF(4.0f));
+            D2D1_RECT_F rcJump = D2D1::RectF(rcMsg.right + config.ScaleF(4.0f), m_rcErrorJumpBanner.top + config.ScaleF(4.0f),
+                                             m_rcErrorJumpBanner.right - config.ScaleF(8.0f), m_rcErrorJumpBanner.bottom - config.ScaleF(4.0f));
+            if (theme.fontBody && errText) {
+                pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()), theme.fontBody.Get(), rcMsg, errText.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            if (theme.fontBody && errLink) {
+                pRT->DrawText(jumpLabel.c_str(), static_cast<UINT32>(jumpLabel.length()), theme.fontBody.Get(), rcJump, errLink.Get());
+            }
+            contentY += errBannerH;
+            contentH = (std::max)(20.0f, contentH - errBannerH);
+        }
+
         if (s.response.streamEvents.empty() && (s.response.isStream || IsSseStreamContent(s.response.body))) {
             ParseStreamEventsFromBody(s.response);
         }
@@ -3998,6 +4700,18 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
     }
     if (PtInRectF(pt, m_rcAddSessionBtn)) {
         AddNewSession();
+        return true;
+    }
+
+    // PHP / Nginx Error Jump banner click
+    if (s.response.hasResponse && s.activeRespTab == ApiResponseTab::Body &&
+        !s.response.errorFilePath.empty() && s.response.errorLine > 0 &&
+        PtInRectF(pt, m_rcErrorJumpBanner)) {
+        if (m_onJumpToErrorLocation) {
+            std::wstring targetPath = s.response.errorFilePath;
+            size_t targetLine = s.response.errorLine;
+            m_onJumpToErrorLocation(targetPath, targetLine);
+        }
         return true;
     }
 
@@ -5218,7 +5932,7 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         if (PtInRectF(pt, rc)) return IDC_HAND;
     }
 
-    if (PtInRectF(pt, m_rcCopyBtn) || PtInRectF(pt, m_rcClearBtn) || PtInRectF(pt, m_rcStatusBadge)) {
+    if (PtInRectF(pt, m_rcCopyBtn) || PtInRectF(pt, m_rcClearBtn) || PtInRectF(pt, m_rcStatusBadge) || PtInRectF(pt, m_rcErrorJumpBanner)) {
         return IDC_HAND;
     }
     for (const auto& [tab, rc] : m_respNavTabs) {

@@ -128,6 +128,11 @@ public:
     void SetPmaUrl(const std::wstring& url) { m_pmaUrl = url; }
     [[nodiscard]] const std::wstring& GetNginxUrl() const noexcept { return m_nginxUrl; }
     [[nodiscard]] const std::wstring& GetNginxPort() const noexcept { return m_nginxPort; }
+    void SetNginxPort(const std::wstring& port) {
+        m_nginxPort = port;
+        std::wstring host = m_nginxHost.empty() ? L"localhost" : m_nginxHost;
+        m_nginxUrl = L"http://" + host + L":" + port;
+    }
     [[nodiscard]] const std::wstring& GetNginxHost() const noexcept { return m_nginxHost; }
     [[nodiscard]] const std::wstring& GetPmaConfigPath() const noexcept { return m_pmaConfigFile; }
     [[nodiscard]] const std::wstring& GetNginxConfigPath() const noexcept { return m_nginxConfigFile; }

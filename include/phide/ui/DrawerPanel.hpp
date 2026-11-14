@@ -247,7 +247,7 @@ public:
     void UnstageFileAsync(const std::wstring& relPath);
     void DiscardFileAsync(const std::wstring& relPath);
     bool DiscardFile(const std::wstring& relPath);
-    void CommitChangesAsync(const std::wstring& message);
+    void CommitChangesAsync(const std::wstring& message, bool bypassGuard = false);
     void UncommitLastCommitAsync();
     void PushCommitsAsync();
     void PullCommitsAsync();
@@ -447,6 +447,7 @@ public:
                pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom;
     }
     void SetOnPreCommit(std::function<void()> cb) { m_onPreCommit = std::move(cb); }
+    void SetOnPreCommitValidator(std::function<bool(const std::wstring& commitMsg)> cb) { m_onPreCommitValidator = std::move(cb); }
     void SetOnGitStateChanged(std::function<void()> cb) { m_onGitStateChanged = std::move(cb); }
     void SetOnGitError(std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> cb) { m_onGitError = std::move(cb); }
 
@@ -459,10 +460,10 @@ public:
     bool HandlePublishRepoMouseDown(POINT pt);
     bool HandlePublishRepoKeyDown(WPARAM wParam);
     bool HandlePublishRepoChar(wchar_t ch);
-    void ConfirmPublishRepo(int visibilityChoice); // 0 = Private, 1 = Public
+    void ConfirmPublishRepo(int visibilityChoice, bool bypassGuard = false); // 0 = Private, 1 = Public
+    [[nodiscard]] int GetPublishRepoSelectedChoice() const noexcept { return m_publishRepoSelectedChoice; }
     [[nodiscard]] const std::wstring& GetPublishRepoName() const noexcept { return m_publishRepoName; }
     void SetPublishRepoName(const std::wstring& name) { m_publishRepoName = name; }
-    [[nodiscard]] int GetPublishRepoSelectedChoice() const noexcept { return m_publishRepoSelectedChoice; }
     [[nodiscard]] const D2D1_RECT_F& GetPublishModalBounds() const noexcept { return m_publishModalBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetPublishInputBounds() const noexcept { return m_publishInputBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetPublishOptionBounds(int idx) const noexcept { return m_publishOptionBounds[idx == 1 ? 1 : 0]; }
@@ -1142,6 +1143,7 @@ private:
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_assetBitmaps;
     ID2D1Bitmap* GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
     std::function<void()> m_onPreCommit;
+    std::function<bool(const std::wstring&)> m_onPreCommitValidator;
     std::function<void()> m_onGitStateChanged;
     std::function<void(const std::wstring& cmd, const std::wstring& output, const std::wstring& repoDir)> m_onGitError;
 

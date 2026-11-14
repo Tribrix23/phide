@@ -20,6 +20,10 @@
 #include <string>
 #include <unordered_map>
 #include <filesystem>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
@@ -555,6 +559,11 @@ private:
     /** @brief Restores previous workspace folder, open tabs, and active tab index from AppData JSON file. */
     void LoadSessionState();
 
+    /** @brief Crash-safe Hot Exit: persists dirty and untitled buffers to %APPDATA%\phide\recovery\. */
+    void SaveDirtyBuffersRecovery();
+    void RestoreDirtyBuffersRecovery();
+    void ClearDirtyBuffersRecovery();
+
     /** @brief Computes absolute path to the session persistence file in %APPDATA%\phide\session.json. */
     std::wstring GetSessionFilePath() const;
 
@@ -714,11 +723,79 @@ private:
     bool m_chordCtrlK = false;
     bool m_suppressNextChar = false;
     bool m_isCleanNewWindow = false;
+    bool m_isRestoringSession = false;
     bool m_isDraggingGitSplitter = false;
     bool m_gitRefreshPending = false;
     ULONGLONG m_gitRefreshTargetTime = 0;
+
+    // External Disk-Change Detector & Local File Timeline
+    void CheckOpenDocumentsDiskChanges();
+    void OnDocumentDiskSaved(editor::OpenDocument& doc, bool writeHistory);
+    void WriteLocalHistorySnapshot(const std::wstring& filePath, const std::wstring& content);
+    void OpenLocalTimelineForFile(const std::wstring& filePath);
+
+    // Workspace .env + Live MySQL Schema IntelliSense
+    void RefreshWorkspaceEnvVars();
+    void RefreshDatabaseSchemaAsync();
+    std::atomic<bool> m_isRefreshingDbSchema{false};
+    std::atomic<bool> m_isDestroying{false};
+    std::mutex m_bgWorkersMutex;
+    std::condition_variable m_bgWorkersCv;
+    size_t m_activeBgWorkers{0};
+    std::mutex m_pendingLspDiagMutex;
+    struct PendingLspDiagUpdate {
+        std::wstring filePath;
+        std::vector<lsp::Diagnostic> diags;
+    };
+    std::vector<PendingLspDiagUpdate> m_pendingLspDiags;
+    void StartLspForDocumentAsync(const std::wstring& filePath, const std::wstring& text);
+    [[nodiscard]] std::vector<editor::IntelliSenseItem> QueryCombinedCompletions(
+        const editor::OpenDocument* pDoc, const std::wstring& lineText, size_t col);
+
+    // Port Conflict Detector & Process Killer Modal
+    struct PortConflictModalState {
+        bool isOpen = false;
+        int port = 0;
+        DWORD pid = 0;
+        std::wstring processName;
+        std::wstring serverLabel;
+        std::function<void(int)> onProceedWithPort;
+        D2D1_RECT_F rcKillStartBtn{};
+        D2D1_RECT_F rcSwitchPortBtn{};
+        D2D1_RECT_F rcCancelBtn{};
+    } m_portConflictModal;
+    bool m_skipNextPortPrompt = false;
+    bool CheckPortBeforeServerStart(int port, const std::wstring& serverLabel, HANDLE ownServerHandle,
+                                    std::function<void(int)> onStartWithPort);
+    void RenderPortConflictModal(float clientW, float clientH);
+
+    // Pre-Commit Secret & Bloat Guard Modal
+    struct PreCommitFinding {
+        std::wstring relPath;
+        std::wstring reason;
+        bool canAddGitignore = false;
+    };
+    struct PreCommitGuardModalState {
+        bool isOpen = false;
+        bool isPublishFlow = false;
+        std::wstring commitMessage;
+        std::vector<PreCommitFinding> findings;
+        D2D1_RECT_F rcIgnoreUnstageBtn{};
+        D2D1_RECT_F rcCommitAnywayBtn{};
+        D2D1_RECT_F rcCancelBtn{};
+    } m_preCommitModal;
+    bool RunPreCommitSecretAndBloatCheck(const std::wstring& commitMsg);
+    void RenderPreCommitGuardModal(float clientW, float clientH);
     std::vector<std::wstring> m_recentPaths;
-    std::wstring m_lastClosedFilePath;
+    struct ClosedTabEntry {
+        std::wstring filePath;
+        int groupIdx = 0;
+        size_t cursorLine = 0;
+        size_t cursorCol = 0;
+        size_t scrollLine = 0;
+        float scrollOffsetX = 0.0f;
+    };
+    std::vector<ClosedTabEntry> m_closedTabHistory;
 
     // Explorer Context Menu & Clipboard State (Images 4 & 5)
     std::wstring m_contextTargetPath;
@@ -821,6 +898,8 @@ private:
     bool m_isHoveredStatusBarSpaces = false;
     D2D1_RECT_F m_rcStatusBarEncoding{};
     bool m_isHoveredStatusBarEncoding = false;
+    D2D1_RECT_F m_rcStatusBarPrivacyMask{};
+    bool m_isHoveredStatusBarPrivacyMask = false;
 
     // Git Branch Switcher Dropdown (Status bar popup)
     bool m_showBranchDropdown = false;

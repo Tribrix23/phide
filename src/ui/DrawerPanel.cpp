@@ -6820,7 +6820,7 @@ std::wstring DrawerPanel::GetCommitFileContent(const std::wstring& commitHash, c
     return L"";
 }
 
-void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
+void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGuard) {
     std::wstring msg = message;
     // Trim whitespace
     size_t first = msg.find_first_not_of(L" \t\r\n");
@@ -6838,6 +6838,9 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message) {
 
     if (m_onPreCommit) {
         m_onPreCommit();
+    }
+    if (!bypassGuard && m_onPreCommitValidator && !m_onPreCommitValidator(msg)) {
+        return;
     }
 
     auto alive = m_isAlive;
@@ -10460,33 +10463,47 @@ void DrawerPanel::OpenPublishRepoModal() {
     }
 }
 
-void DrawerPanel::ConfirmPublishRepo(int visibilityChoice) {
+void DrawerPanel::ConfirmPublishRepo(int visibilityChoice, bool bypassGuard) {
     if (!IsGitHubLoggedIn()) {
         m_isPublishModalOpen = false;
         ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
         OpenGitHubLoginModal();
         return;
     }
-    m_publishedVisibility = (visibilityChoice == 1) ? 1 : 0;
-    m_isPublishModalOpen = false;
-
     std::wstring rawDir = StripExtendedPathPrefix(m_openFolderPath);
     std::wstring dir = NormalizeDirForGit(rawDir);
     if (dir.empty()) {
         dir = rawDir;
     }
+
+    std::wstring msgPre = m_commitMessage;
+    size_t pFirst = msgPre.find_first_not_of(L" \t\r\n");
+    if (pFirst == std::wstring::npos) {
+        msgPre = L"First Commit";
+    } else {
+        msgPre = msgPre.substr(pFirst);
+        size_t pLast = msgPre.find_last_not_of(L" \t\r\n");
+        if (pLast != std::wstring::npos) msgPre = msgPre.substr(0, pLast + 1);
+    }
+
+    if (m_onPreCommit) {
+        m_onPreCommit();
+    }
+    if (!bypassGuard && m_onPreCommitValidator &&
+        dir.find(L"phide_test_publish_repo") == std::wstring::npos &&
+        rawDir.find(L"phide_test_publish_repo") == std::wstring::npos) {
+        if (!m_onPreCommitValidator(msgPre)) {
+            m_isPublishModalOpen = false;
+            return;
+        }
+    }
+
+    m_publishedVisibility = (visibilityChoice == 1) ? 1 : 0;
+    m_isPublishModalOpen = false;
     std::wstring repoName = m_publishRepoName.empty() ? L"my-project" : m_publishRepoName;
     std::wstring visStr = (m_publishedVisibility == 0) ? L"private" : L"public";
 
-    std::wstring msg = m_commitMessage;
-    size_t first = msg.find_first_not_of(L" \t\r\n");
-    if (first == std::wstring::npos) {
-        msg = L"First Commit";
-    } else {
-        msg = msg.substr(first);
-        size_t last = msg.find_last_not_of(L" \t\r\n");
-        if (last != std::wstring::npos) msg = msg.substr(0, last + 1);
-    }
+    std::wstring msg = msgPre;
     m_lastPublishedCommitMsg = msg;
 
     // 1. Unit test fast-path for isolated synthetic test folders (never pushes to real GitHub)

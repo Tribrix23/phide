@@ -34,6 +34,17 @@ IntelliSenseEngine::IntelliSenseEngine() {
     PopulateCommonVocabulary();
 }
 
+void IntelliSenseEngine::SetWorkspaceEnvVars(std::vector<EnvVarEntry> vars) {
+    std::lock_guard<std::mutex> lock(m_contextMutex);
+    m_envVars = std::move(vars);
+}
+
+void IntelliSenseEngine::SetDatabaseSchema(std::vector<DbSchemaColumn> columns, std::wstring dbName) {
+    std::lock_guard<std::mutex> lock(m_contextMutex);
+    m_dbSchema = std::move(columns);
+    m_dbName = std::move(dbName);
+}
+
 void IntelliSenseEngine::PopulateHtmlTags() {
     const auto& officialTags = WebIntelliSenseData::GetHtmlTags();
     if (!officialTags.empty()) {
@@ -3150,8 +3161,63 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool isIdAttrContext = (isInsideQuotes && enclosingAttrName == L"id");
     bool quoteAttrTrigger = isInsideQuotes && !enclosingAttrName.empty();
 
-    // If typing inside quotes and NOT inside an HTML tag attribute, PHP server key, JS import, or file path prefix:
-    if (isInsideQuotes && !insideHtmlTag && !insideServerKey && !insideJsImportClause) {
+    std::wstring fnameOnly = std::filesystem::path(fileName).filename().wstring();
+    std::wstring fnameLower = fnameOnly;
+    for (auto& chF : fnameLower) chF = static_cast<wchar_t>(towlower(chF));
+    bool isEnvFile = (fnameLower == L".env" || fnameLower.rfind(L".env.", 0) == 0 || ext == L".env");
+    bool isSqlFile = (ext == L".sql");
+
+    // Detect .env variable lookup context: getenv('...'), $_ENV['...'], $_SERVER['...'], process.env.*, import.meta.env.*, os.environ[...], os.getenv(...)
+    bool isEnvKeyContext = isEnvFile;
+    if (!isEnvKeyContext) {
+        size_t scanLimit = (std::min)(cursorCol, currentLine.length());
+        std::wstring lineBefore = currentLine.substr(0, scanLimit);
+        if (lineBefore.find(L"process.env.") != std::wstring::npos ||
+            lineBefore.find(L"import.meta.env.") != std::wstring::npos) {
+            isEnvKeyContext = true;
+        } else if (isInsideQuotes && openQuotePos != std::wstring::npos) {
+            std::wstring beforeCall = currentLine.substr(0, openQuotePos);
+            std::wstring beforeCallLower = beforeCall;
+            for (auto& chB : beforeCallLower) chB = static_cast<wchar_t>(towlower(chB));
+            if (beforeCallLower.find(L"getenv(") != std::wstring::npos ||
+                beforeCallLower.find(L"$_env[") != std::wstring::npos ||
+                beforeCallLower.find(L"$_server[") != std::wstring::npos ||
+                beforeCallLower.find(L"os.environ") != std::wstring::npos ||
+                beforeCallLower.find(L"env(") != std::wstring::npos) {
+                isEnvKeyContext = true;
+            }
+        }
+    }
+
+    // Detect SQL query context in .sql files OR SQL strings/calls in PHP, Python, JS, TS
+    auto hasSqlToken = [](const std::wstring& lineText) -> bool {
+        std::wstring up;
+        up.reserve(lineText.size());
+        for (wchar_t ch : lineText) up.push_back(static_cast<wchar_t>(towupper(ch)));
+        static const wchar_t* kSqlWords[] = {
+            L"SELECT ", L"FROM ", L"JOIN ", L"WHERE ", L"INSERT INTO ", L"UPDATE ",
+            L"DELETE FROM ", L"ORDER BY ", L"GROUP BY ", L"ALTER TABLE ", L"CREATE TABLE ",
+            L"HAVING ", L"->QUERY(", L"->PREPARE(", L"->EXEC(", L"CURSOR.EXECUTE(", L"DB::TABLE("
+        };
+        for (const auto* kw : kSqlWords) {
+            if (up.find(kw) != std::wstring::npos) return true;
+        }
+        return false;
+    };
+    bool isSqlContext = isSqlFile || hasSqlToken(currentLine);
+    if (!isSqlContext && isInsideQuotes && pDocLines && !pDocLines->empty()) {
+        size_t checked = 0;
+        for (const auto& dl : *pDocLines) {
+            if (hasSqlToken(dl)) {
+                // Only check up to cursor line
+                isSqlContext = true;
+            }
+            if (&dl == &currentLine || ++checked >= 120) break;
+        }
+    }
+
+    // If typing inside quotes and NOT inside an HTML tag attribute, PHP server key, JS import, .env lookup, SQL query, or file path prefix:
+    if (isInsideQuotes && !insideHtmlTag && !insideServerKey && !insideJsImportClause && !isEnvKeyContext && !isSqlContext) {
         bool isPathPrefix = (!prefix.empty() && (prefix[0] == L'.' || prefix[0] == L'/' || prefix[0] == L'\\'));
         bool isImportLine = (currentLine.find(L"import ") != std::wstring::npos || currentLine.find(L"require(") != std::wstring::npos || currentLine.find(L"include") != std::wstring::npos);
         if (!isPathPrefix && !isImportLine) {
@@ -3160,14 +3226,119 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // If prefix is empty and cursor is NOT at an explicit member/tag/key/import/attribute trigger, do not dump unfiltered completions!
+    // If prefix is empty and cursor is NOT at an explicit member/tag/key/import/attribute/env/sql trigger, do not dump unfiltered completions!
     bool pyImportTrigger = isPy && (TrimWs(currentLine).rfind(L"import ", 0) == 0 || TrimWs(currentLine).rfind(L"from ", 0) == 0)
                            && cursorCol > 0 && cursorCol <= currentLine.length() && currentLine[cursorCol - 1] == L' ';
-    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger && !quoteAttrTrigger) {
+    bool envTrigger = isEnvKeyContext && (afterDot || (isInsideQuotes && openQuotePos != std::wstring::npos && cursorCol >= openQuotePos));
+    bool sqlDotTrigger = isSqlContext && afterDot;
+    if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger && !quoteAttrTrigger && !envTrigger && !sqlDotTrigger) {
         return {};
     }
 
     std::vector<IntelliSenseItem> rawCandidates;
+
+    // 0a. .env Variable Autocomplete & Live Local Database Schema IntelliSense
+    {
+        std::lock_guard<std::mutex> ctxLock(m_contextMutex);
+        if (isEnvKeyContext && !m_envVars.empty()) {
+            for (const auto& ev : m_envVars) {
+                IntelliSenseItem item;
+                item.label = ev.key;
+                item.detail = ev.valuePreview.empty()
+                    ? (L"Env key (" + ev.sourceFile + L")")
+                    : (ev.valuePreview + L" [" + ev.sourceFile + L"]");
+                item.insertText = isEnvFile ? (ev.key + L"=") : ev.key;
+                item.kind = CompletionKind::Constant;
+                item.origin = L"env";
+                item.score = 3600;
+                rawCandidates.push_back(std::move(item));
+            }
+            if (!isEnvFile && (isInsideQuotes || afterDot)) {
+                pyExclusive = true;
+                pyExclusiveItems = rawCandidates;
+            }
+        }
+
+        if (isSqlContext) {
+            std::wstring tableQualifier;
+            if (afterDot && beforePos >= 2) {
+                size_t qEnd = beforePos - 1;
+                size_t qStart = qEnd;
+                while (qStart > 0 && (iswalnum(currentLine[qStart - 1]) || currentLine[qStart - 1] == L'_')) {
+                    qStart--;
+                }
+                if (qEnd > qStart) {
+                    tableQualifier = currentLine.substr(qStart, qEnd - qStart);
+                }
+            }
+
+            std::vector<IntelliSenseItem> sqlItems;
+            if (!tableQualifier.empty()) {
+                for (const auto& col : m_dbSchema) {
+                    if (_wcsicmp(col.tableName.c_str(), tableQualifier.c_str()) == 0) {
+                        IntelliSenseItem item;
+                        item.label = col.columnName;
+                        item.detail = col.tableName + L"." + col.columnName + L" (" + col.dataType + L")" +
+                                      (col.keyType.empty() ? L"" : (L" [" + col.keyType + L"]"));
+                        item.insertText = col.columnName;
+                        item.kind = CompletionKind::Property;
+                        item.origin = L"db-schema";
+                        item.score = 4200;
+                        sqlItems.push_back(std::move(item));
+                    }
+                }
+                if (!sqlItems.empty()) {
+                    pyExclusive = true;
+                    pyExclusiveItems = std::move(sqlItems);
+                }
+            } else {
+                std::unordered_set<std::wstring> addedTables;
+                std::wstring dbLabel = m_dbName.empty() ? L"MySQL" : m_dbName;
+                for (const auto& col : m_dbSchema) {
+                    std::wstring tLow = col.tableName;
+                    for (auto& cT : tLow) cT = static_cast<wchar_t>(towlower(cT));
+                    if (addedTables.insert(tLow).second) {
+                        IntelliSenseItem tItem;
+                        tItem.label = col.tableName;
+                        tItem.detail = L"Table in " + dbLabel;
+                        tItem.insertText = col.tableName;
+                        tItem.kind = CompletionKind::Class;
+                        tItem.origin = L"db-schema";
+                        tItem.score = 3400;
+                        sqlItems.push_back(std::move(tItem));
+                    }
+                    IntelliSenseItem cItem;
+                    cItem.label = col.columnName;
+                    cItem.detail = col.tableName + L"." + col.columnName + L" (" + col.dataType + L")" +
+                                   (col.keyType.empty() ? L"" : (L" [" + col.keyType + L"]"));
+                    cItem.insertText = col.columnName;
+                    cItem.kind = CompletionKind::Property;
+                    cItem.origin = L"db-schema";
+                    cItem.score = 3200;
+                    sqlItems.push_back(std::move(cItem));
+                }
+                if (isSqlFile) {
+                    static const wchar_t* kSqlKwList[] = {
+                        L"SELECT", L"FROM", L"WHERE", L"JOIN", L"LEFT JOIN", L"INNER JOIN",
+                        L"INSERT INTO", L"VALUES", L"UPDATE", L"SET", L"DELETE FROM",
+                        L"ORDER BY", L"GROUP BY", L"HAVING", L"LIMIT", L"OFFSET",
+                        L"CREATE TABLE", L"ALTER TABLE", L"DROP TABLE", L"PRIMARY KEY",
+                        L"AUTO_INCREMENT", L"NOT NULL", L"VARCHAR", L"INT", L"BIGINT",
+                        L"TEXT", L"DATETIME", L"TIMESTAMP", L"BOOLEAN"
+                    };
+                    for (const auto* sk : kSqlKwList) {
+                        sqlItems.push_back({ sk, L"SQL Keyword", sk, CompletionKind::Keyword, 2200, 0, 0, L"sql" });
+                    }
+                }
+                if (isSqlFile || (isInsideQuotes && !sqlItems.empty())) {
+                    pyExclusive = true;
+                    pyExclusiveItems = std::move(sqlItems);
+                } else {
+                    for (auto& si : sqlItems) rawCandidates.push_back(std::move(si));
+                }
+            }
+        }
+    }
 
     // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code, inside quotes, or right after '<')
     std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
