@@ -390,6 +390,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 136) {
         goto run_test_136;
     }
+    if (targetTest == 137) {
+        goto run_test_137;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -22450,6 +22453,199 @@ run_test_136:
         std::cout << "  Passed: All [TEST 136] Activity Heatmap math, persistence, responsive grid, tooltip & commit drill-down checks passed!" << std::endl;
         if (targetTest == 136) {
             std::cout << "Target test 136 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_137:
+    // [TEST 137] Commit Card Unclipped Sizing & Cursors, Insertion/Deletion Stat Colors, Disabled Empty Git Buttons, Async Commit Diff Modern Flat Loading
+    if (targetTest == 0 || targetTest == 137) {
+        std::cout << "\n[TEST 137] Testing Commit Card unclipped layout, HitTestGitButtons, disabled empty Stage/Stash controls & flat loading view..." << std::endl;
+
+        using namespace Microsoft::WRL;
+        auto createSurface137 = [&](int w, int h, ComPtr<IWICBitmap>& outWic, ComPtr<ID2D1RenderTarget>& outRt) {
+            assert(SUCCEEDED(pWicFactory->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &outWic)));
+            D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(outWic.Get(), props, &outRt)));
+        };
+
+        phide::ui::DrawerPanel drawer;
+        drawer.SetOpenFolderPath(L"C:\\mock_repo");
+        drawer.SetGitRepo(true);
+        drawer.GetGitChangesMutable().clear();
+
+        phide::app::AppConfig cfg137 = config;
+        cfg137.activeRailTab = 2; // Source Control
+
+        ComPtr<IWICBitmap> wic137;
+        ComPtr<ID2D1RenderTarget> rt137;
+        createSurface137(1280, 820, wic137, rt137);
+        phide::ui::Theme theme137;
+        theme137.SetThemeMode(phide::ui::ThemeMode::Dark);
+        assert(SUCCEEDED(theme137.CreateDeviceResources(rt137.Get(), pDWriteFactory.Get())));
+
+        // 1. With 0 changes: Stage All (+), Discard All, and Stashes (+) must have empty/disabled bounds and ignore hover/click
+        {
+            rt137->BeginDraw();
+            drawer.Render(rt137.Get(), theme137, cfg137, 820.0f, 300.0f, true);
+            assert(SUCCEEDED(rt137->EndDraw()));
+
+            const auto& stageRc = drawer.GetGitStageAllBounds();
+            const auto& discRc = drawer.GetGitDiscardAllBounds();
+            const auto& stashRc = drawer.GetGitStashSaveBtnBounds();
+            assert(stageRc.right == stageRc.left);
+            assert(discRc.right == discRc.left);
+            assert(stashRc.right == stashRc.left);
+
+            // Hovering the visual slots just left of Changes "..." must NOT activate hand cursor or trigger Stage/Discard
+            const auto& moreRc = drawer.GetGitChangesMoreBounds();
+            const float slotY = (moreRc.top + moreRc.bottom) * 0.5f;
+            POINT disabledDiscardPt{ static_cast<LONG>(moreRc.left - 13.0f), static_cast<LONG>(slotY) };
+            POINT disabledStagePt{ static_cast<LONG>(moreRc.left - 35.0f), static_cast<LONG>(slotY) };
+            assert(!drawer.HitTestGitButtons(disabledDiscardPt));
+            assert(!drawer.HitTestGitButtons(disabledStagePt));
+            std::wstring dummyOpen137;
+            drawer.HitTestGit(disabledStagePt, cfg137, dummyOpen137);
+            assert(drawer.GetPressedGitButton() != L"stageAll");
+            assert(drawer.GetGitNotificationText().find(L"Staging") == std::wstring::npos);
+
+            // Adding only a staged change keeps Stage All (+) disabled while enabling Discard/Stash
+            phide::ui::GitChangeItem stagedOnly;
+            stagedOnly.path = L"staged.ts";
+            stagedOnly.fileName = L"staged.ts";
+            stagedOnly.status = L"M";
+            stagedOnly.isStaged = true;
+            drawer.GetGitChangesMutable().push_back(stagedOnly);
+
+            rt137->BeginDraw();
+            drawer.Render(rt137.Get(), theme137, cfg137, 820.0f, 300.0f, true);
+            assert(SUCCEEDED(rt137->EndDraw()));
+
+            assert(drawer.GetGitStageAllBounds().right == drawer.GetGitStageAllBounds().left);
+            assert(drawer.GetGitDiscardAllBounds().right > drawer.GetGitDiscardAllBounds().left);
+            assert(drawer.GetGitStashSaveBtnBounds().right > drawer.GetGitStashSaveBtnBounds().left);
+
+            // Adding an unstaged change enables Stage All (+) too
+            phide::ui::GitChangeItem unstagedItem;
+            unstagedItem.path = L"src/app.ts";
+            unstagedItem.fileName = L"app.ts";
+            unstagedItem.status = L"M";
+            unstagedItem.isStaged = false;
+            drawer.GetGitChangesMutable().push_back(unstagedItem);
+
+            rt137->BeginDraw();
+            drawer.Render(rt137.Get(), theme137, cfg137, 820.0f, 300.0f, true);
+            assert(SUCCEEDED(rt137->EndDraw()));
+
+            assert(drawer.GetGitStageAllBounds().right > drawer.GetGitStageAllBounds().left);
+            POINT enabledStagePt{
+                static_cast<LONG>((drawer.GetGitStageAllBounds().left + drawer.GetGitStageAllBounds().right) * 0.5f),
+                static_cast<LONG>((drawer.GetGitStageAllBounds().top + drawer.GetGitStageAllBounds().bottom) * 0.5f)
+            };
+            assert(drawer.HitTestGitButtons(enabledStagePt));
+        }
+
+        // 2. Commit Card with insertion-only & deletion-only stats: unclipped buttons, non-overlapping layout, pointer cursor & hover states
+        {
+            drawer.GetGitCommitsMutable().clear();
+
+            phide::ui::GitCommitItem insCommit;
+            insCommit.hash = L"9adbfd81234567890abcdef1234567890abcdef1";
+            insCommit.author = L"John David L. Perez";
+            insCommit.relativeTime = L"4 hours ago";
+            insCommit.dateFormatted = L"November 15, 2026 at 01:20 PM";
+            insCommit.message = L"Initial commit from Create Next App";
+            insCommit.statSummary = L"17 files changed, 6977 insertions(+)";
+            insCommit.filesLoaded = true;
+            insCommit.bounds = D2D1::RectF(48.0f, 220.0f, 348.0f, 244.0f);
+
+            phide::ui::GitCommitItem delCommit;
+            delCommit.hash = L"ef35e75abcdef1234567890abcdef12345678901";
+            delCommit.author = L"Reviewer";
+            delCommit.relativeTime = L"2 hours ago";
+            delCommit.message = L"Remove legacy bundle";
+            delCommit.statSummary = L"3 files changed, 42 deletions(-)";
+            delCommit.filesLoaded = true;
+            delCommit.bounds = D2D1::RectF(48.0f, 244.0f, 348.0f, 268.0f);
+
+            drawer.GetGitCommitsMutable().push_back(insCommit);
+            drawer.GetGitCommitsMutable().push_back(delCommit);
+            drawer.SetSelectedCommitIndex(0);
+
+            rt137->BeginDraw();
+            drawer.RenderCommitCard(rt137.Get(), theme137, cfg137, 820.0f, 300.0f);
+            assert(SUCCEEDED(rt137->EndDraw()));
+
+            const auto& cardRc = drawer.GetCommitCardBounds();
+            const auto& coRc = drawer.GetCommitCardCheckoutBounds();
+            const auto& cpRc = drawer.GetCommitCardCherryPickBounds();
+            const auto& ocRc = drawer.GetCommitCardOpenChangesBounds();
+            const auto& closeRc = drawer.GetCommitCardCloseBounds();
+
+            assert(cardRc.right > cardRc.left && (cardRc.right - cardRc.left) >= 520.0f);
+            assert((coRc.right - coRc.left) >= 70.0f);
+            assert((cpRc.right - cpRc.left) >= 88.0f);
+            assert((ocRc.right - ocRc.left) >= 100.0f);
+            assert(coRc.right <= cpRc.left && cpRc.right <= ocRc.left);
+            assert(ocRc.right <= cardRc.right - 10.0f && coRc.left >= cardRc.left + 10.0f);
+
+            auto midPt = [](const D2D1_RECT_F& r) -> POINT {
+                return POINT{ static_cast<LONG>((r.left + r.right) * 0.5f), static_cast<LONG>((r.top + r.bottom) * 0.5f) };
+            };
+            POINT cpPt = midPt(cpRc);
+            POINT coPt = midPt(coRc);
+            POINT ocPt = midPt(ocRc);
+            POINT clPt = midPt(closeRc);
+            assert(drawer.HitTestCommitCard(cpPt));
+            assert(drawer.HitTestGitButtons(cpPt));
+            assert(drawer.HitTestGitButtons(coPt));
+            assert(drawer.HitTestGitButtons(ocPt));
+            assert(drawer.HitTestGitButtons(clPt));
+
+            // Non-button body of card must NOT report HitTestGitButtons (so cursor stays IDC_ARROW)
+            POINT cardBodyPt{ static_cast<LONG>(cardRc.left + 20.0f), static_cast<LONG>(cardRc.top + 48.0f) };
+            assert(drawer.HitTestCommitCard(cardBodyPt));
+            assert(!drawer.HitTestGitButtons(cardBodyPt));
+
+            // Hovering Cherry-Pick sets hovered button state and tooltip
+            assert(drawer.HandleGitMouseMove(cpPt, false, &theme137, &cfg137));
+            assert(drawer.GetHoveredGitButton() == L"cardCherryPick");
+
+            // Switching to deletion-only commit card renders cleanly as well
+            drawer.SetSelectedCommitIndex(1);
+            rt137->BeginDraw();
+            drawer.RenderCommitCard(rt137.Get(), theme137, cfg137, 820.0f, 300.0f);
+            assert(SUCCEEDED(rt137->EndDraw()));
+
+            drawer.DismissCommitCard();
+            assert(!drawer.IsCommitCardVisible());
+            assert(!drawer.HitTestGitButtons(cpPt));
+            assert(!drawer.HitTestGitButtons(POINT{ 0, 0 }));
+        }
+
+        // 3. Multi-File Commit Diff modern flat loading UI renders cleanly while loading asynchronously
+        {
+            phide::ui::EditorCanvas ec137;
+            std::vector<phide::editor::OpenDocument> docs137;
+            phide::editor::OpenDocument d;
+            d.fileName = L"9adbfd8 - Initial commit (Loading...)";
+            d.isDiffView = true;
+            d.isMultiFileDiff = true;
+            d.isMultiFileDiffLoading = true;
+            d.commitHash = L"9adbfd8";
+            d.commitMessage = L"Initial commit from Create Next App";
+            docs137.push_back(std::move(d));
+
+            rt137->BeginDraw();
+            ec137.Render(rt137.Get(), theme137, cfg137, docs137, 0, 0.0f, 1280.0f, 820.0f);
+            assert(SUCCEEDED(rt137->EndDraw()));
+        }
+
+        std::cout << "  Passed: All [TEST 137] Commit Card, Git button states, cursor priority & flat loading UI checks passed!" << std::endl;
+        if (targetTest == 137) {
+            std::cout << "Target test 137 finished successfully." << std::endl;
             return 0;
         }
     }

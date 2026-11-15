@@ -331,6 +331,7 @@ public:
         return HitTestGit(pt, config, outOpenFile, dummyDiscard, isDiff, dummyCommit, dummyUrl);
     }
     void LoadCommitFiles(GitCommitItem& ci);
+    void LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash);
     static void ComputeGitGraphLanes(std::vector<GitCommitItem>& commits);
     bool HandleGitMouseMove(POINT pt, bool isLButtonDown = false, Theme* pTheme = nullptr, const app::AppConfig* pConfig = nullptr);
     bool HandleGitMouseDown(POINT pt, bool isShift, Theme& theme, const app::AppConfig& config);
@@ -474,15 +475,30 @@ public:
         m_commitCardCloseBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardCherryPickBounds = D2D1::RectF(0, 0, 0, 0);
+        m_commitCardCheckoutBounds = D2D1::RectF(0, 0, 0, 0);
     }
     [[nodiscard]] bool IsCommitCardVisible() const noexcept {
         return (m_hoveredCommitIdx >= 0);
     }
     [[nodiscard]] const D2D1_RECT_F& GetCommitCardBounds() const noexcept { return m_commitCardBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardCloseBounds() const noexcept { return m_commitCardCloseBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardOpenChangesBounds() const noexcept { return m_commitCardOpenChangesBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardGitHubBounds() const noexcept { return m_commitCardGitHubBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardCherryPickBounds() const noexcept { return m_commitCardCherryPickBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCommitCardCheckoutBounds() const noexcept { return m_commitCardCheckoutBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitStageAllBounds() const noexcept { return m_gitStageAllBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitDiscardAllBounds() const noexcept { return m_gitDiscardAllBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitStashSaveBtnBounds() const noexcept { return m_gitStashSaveBtnBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitChangesMoreBounds() const noexcept { return m_gitChangesMoreBounds; }
     [[nodiscard]] bool HitTestCommitCard(POINT pt) const noexcept {
         return IsCommitCardVisible() &&
-               pt.x >= m_commitCardBounds.left && pt.x <= m_commitCardBounds.right &&
-               pt.y >= m_commitCardBounds.top && pt.y <= m_commitCardBounds.bottom;
+               m_commitCardBounds.right > m_commitCardBounds.left &&
+               m_commitCardBounds.bottom > m_commitCardBounds.top &&
+               static_cast<float>(pt.x) >= m_commitCardBounds.left &&
+               static_cast<float>(pt.x) <= m_commitCardBounds.right &&
+               static_cast<float>(pt.y) >= m_commitCardBounds.top &&
+               static_cast<float>(pt.y) <= m_commitCardBounds.bottom;
     }
     void SetOnPreCommit(std::function<void()> cb) { m_onPreCommit = std::move(cb); }
     void SetOnPreCommitValidator(std::function<bool(const std::wstring& commitMsg)> cb) { m_onPreCommitValidator = std::move(cb); }
@@ -973,17 +989,42 @@ public:
 
     [[nodiscard]] bool HitTestGitInputs(POINT pt) const noexcept {
         auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
-            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+            return rc.right > rc.left && rc.bottom > rc.top &&
+                   static_cast<float>(p.x) >= rc.left && static_cast<float>(p.x) <= rc.right &&
+                   static_cast<float>(p.y) >= rc.top && static_cast<float>(p.y) <= rc.bottom;
         };
         return inRect(pt, m_gitMsgBoxBounds);
     }
 
     [[nodiscard]] bool HitTestGitButtons(POINT pt) const noexcept {
         auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
-            return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+            return rc.right > rc.left && rc.bottom > rc.top &&
+                   static_cast<float>(p.x) >= rc.left && static_cast<float>(p.x) <= rc.right &&
+                   static_cast<float>(p.y) >= rc.top && static_cast<float>(p.y) <= rc.bottom;
         };
+        if (m_activeGitMenu != GitMenuType::None && inRect(pt, m_gitMenuBounds)) {
+            for (const auto& mi : m_gitMenuItems) {
+                if (!mi.isHeader && !mi.isSeparator && inRect(pt, mi.bounds)) return true;
+            }
+            return false;
+        }
+        if (IsCommitCardVisible()) {
+            if (inRect(pt, m_commitCardCloseBounds) ||
+                inRect(pt, m_commitCardOpenChangesBounds) ||
+                inRect(pt, m_commitCardCherryPickBounds) ||
+                inRect(pt, m_commitCardCheckoutBounds) ||
+                inRect(pt, m_commitCardGitHubBounds)) {
+                return true;
+            }
+            if (HitTestCommitCard(pt)) return false;
+        }
         for (const auto& item : m_gitChanges) {
-            if (inRect(pt, item.discardBtnBounds) || inRect(pt, item.stageBtnBounds)) return true;
+            if (inRect(pt, item.bounds) || inRect(pt, item.discardBtnBounds) || inRect(pt, item.stageBtnBounds)) return true;
+        }
+        if (m_stashesExpanded) {
+            for (const auto& st : m_gitStashes) {
+                if (inRect(pt, st.applyBtnBounds) || inRect(pt, st.popBtnBounds) || inRect(pt, st.dropBtnBounds)) return true;
+            }
         }
         for (const auto& ci : m_gitCommits) {
             if (inRect(pt, ci.bounds) || inRect(pt, ci.openChangesBtnBounds)) return true;
@@ -997,17 +1038,17 @@ public:
         bool hitAction = (!loading && (inRect(pt, m_gitCommitBtnBounds) || inRect(pt, m_gitSyncBtnBounds) ||
                                        inRect(pt, m_gitCommitDropdownBounds) || inRect(pt, m_gitGraphPushBounds)));
         return hitAction ||
-               inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitStageAllBounds) ||
-               inRect(pt, m_gitDiscardAllBounds) || inRect(pt, m_gitChangesChevronBounds) ||
+               inRect(pt, m_gitGenerateAiBounds) || inRect(pt, m_gitAmendToggleBounds) ||
+               inRect(pt, m_gitStageAllBounds) || inRect(pt, m_gitDiscardAllBounds) ||
+               inRect(pt, m_gitChangesChevronBounds) ||
                inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
-               inRect(pt, m_gitStagedChevronBounds) || inRect(pt, m_gitUnstageAllBounds) ||
-               inRect(pt, m_gitStagedMoreBounds) ||
-               inRect(pt, m_gitGraphChevronBounds) || inRect(pt, m_gitGraphAutoBounds) ||
-               inRect(pt, m_gitGraphBullseyeBounds) || inRect(pt, m_gitGraphSplitBounds) ||
-               inRect(pt, m_gitGraphMergeBounds) || inRect(pt, m_gitGraphPushBounds) ||
-               inRect(pt, m_gitGraphRefreshBounds) || inRect(pt, m_gitGraphMoreBounds) ||
-               inRect(pt, m_commitCardCloseBounds) || inRect(pt, m_commitCardOpenChangesBounds) ||
-               inRect(pt, m_commitCardGitHubBounds);
+               inRect(pt, m_gitStagedChevronBounds) ||
+               inRect(pt, m_gitUnstageAllBounds) || inRect(pt, m_gitStagedMoreBounds) ||
+               inRect(pt, m_gitStashSaveBtnBounds) ||
+               inRect(pt, m_gitGraphChevronBounds) ||
+               inRect(pt, m_gitGraphAutoBounds) || inRect(pt, m_gitGraphBullseyeBounds) ||
+               inRect(pt, m_gitGraphSplitBounds) || inRect(pt, m_gitGraphMergeBounds) ||
+               inRect(pt, m_gitGraphRefreshBounds) || inRect(pt, m_gitGraphMoreBounds);
     }
     [[nodiscard]] bool IsCommitting() const noexcept { return m_isCommitting.load(); }
     [[nodiscard]] bool IsSyncing() const noexcept { return m_isSyncing.load(); }

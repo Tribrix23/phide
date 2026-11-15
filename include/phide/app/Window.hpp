@@ -1253,6 +1253,20 @@ private:
     void AnimateTerminalClose();
     void AnimateRightSidebarOpen();
     void AnimateRightSidebarClose();
+
+    struct PendingCommitDiffResult {
+        uint64_t generation = 0;
+        std::wstring commitHash;
+        std::wstring focusRelPath;
+        std::wstring commitMsg;
+        std::wstring author;
+        std::wstring dateStr;
+        std::vector<editor::OpenDocument::MultiFileDiffEntry> entries;
+    };
+    std::mutex m_commitDiffMutex;
+    std::vector<PendingCommitDiffResult> m_pendingCommitDiffs;
+    std::atomic<uint64_t> m_commitDiffGenCounter{ 0 };
+    void ApplyPendingCommitDiffs();
 };
 
 } // namespace phide::app

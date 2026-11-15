@@ -1475,29 +1475,64 @@ void ActivityHeatmapView::Render(
                     pRT->FillRoundedRectangle(rrcRow, setColor(hovRow ? theme.colors.itemActive : pillBg));
                     if (hovRow) pRT->DrawRoundedRectangle(rrcRow, setColor(accentCol), 1.0f);
 
-                    float badgeW = 62.0f * scale;
+                    float badgeW = (std::max)(74.0f * scale,
+                        MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtMono.Get(), ce.shortHash) + 16.0f * scale);
                     D2D1_RECT_F rcBadge = D2D1::RectF(dLeft + 8.0f * scale, dy + 6.0f * scale, dLeft + 8.0f * scale + badgeW, dy + rowH - 6.0f * scale);
                     pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBadge, 4.0f * scale, 4.0f * scale), setColor(accentFill));
                     if (m_fmtMono && theme.brushTextPrimary) {
+                        m_fmtMono->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                         pRT->DrawText(ce.shortHash.c_str(), static_cast<UINT32>(ce.shortHash.size()), m_fmtMono.Get(), rcBadge, theme.brushTextPrimary.Get());
+                        m_fmtMono->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                     }
 
-                    std::wstring statStr = (ce.additions > 0 || ce.deletions > 0)
-                        ? (L"+" + std::to_wstring(ce.additions) + L" / -" + std::to_wstring(ce.deletions))
-                        : L"Diff ->";
-                    float statW = MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtSmall.Get(), statStr) + 12.0f * scale;
-                    D2D1_RECT_F rcStat = D2D1::RectF(dRight - statW - 8.0f * scale, dy, dRight - 8.0f * scale, dy + rowH);
-                    if (m_fmtSmall && theme.brushTextSecondary) {
-                        m_fmtSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                        pRT->DrawText(statStr.c_str(), static_cast<UINT32>(statStr.size()), m_fmtSmall.Get(), rcStat, theme.brushTextSecondary.Get());
-                        m_fmtSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    const D2D1_COLOR_F insCol = isDark ? D2D1::ColorF(0.29f, 0.84f, 0.50f, 1.0f) : D2D1::ColorF(0.09f, 0.56f, 0.25f, 1.0f);
+                    const D2D1_COLOR_F delCol = isDark ? D2D1::ColorF(0.96f, 0.42f, 0.42f, 1.0f) : D2D1::ColorF(0.80f, 0.16f, 0.18f, 1.0f);
+                    float statLeftX = dRight - 8.0f * scale;
+                    if (ce.additions > 0 || ce.deletions > 0) {
+                        std::wstring insStr = L"+" + std::to_wstring(ce.additions);
+                        std::wstring sepStr = L" / ";
+                        std::wstring delStr = L"-" + std::to_wstring(ce.deletions);
+                        float insW = MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtSmall.Get(), insStr) + 2.0f * scale;
+                        float sepW = MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtSmall.Get(), sepStr) + 2.0f * scale;
+                        float delW = MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtSmall.Get(), delStr) + 2.0f * scale;
+                        float totalW = (ce.additions > 0 && ce.deletions > 0)
+                            ? (insW + sepW + delW)
+                            : (ce.additions > 0 ? insW : delW);
+                        statLeftX = dRight - 8.0f * scale - totalW - 4.0f * scale;
+                        float sx = dRight - 8.0f * scale - totalW;
+                        if (m_fmtSmall) {
+                            if (ce.additions > 0) {
+                                pRT->DrawText(insStr.c_str(), static_cast<UINT32>(insStr.size()), m_fmtSmall.Get(),
+                                              D2D1::RectF(sx, dy, sx + insW + 2.0f * scale, dy + rowH), setColor(insCol));
+                                sx += insW;
+                            }
+                            if (ce.additions > 0 && ce.deletions > 0 && theme.brushTextSecondary) {
+                                pRT->DrawText(sepStr.c_str(), static_cast<UINT32>(sepStr.size()), m_fmtSmall.Get(),
+                                              D2D1::RectF(sx, dy, sx + sepW + 2.0f * scale, dy + rowH), theme.brushTextSecondary.Get());
+                                sx += sepW;
+                            }
+                            if (ce.deletions > 0) {
+                                pRT->DrawText(delStr.c_str(), static_cast<UINT32>(delStr.size()), m_fmtSmall.Get(),
+                                              D2D1::RectF(sx, dy, sx + delW + 2.0f * scale, dy + rowH), setColor(delCol));
+                            }
+                        }
+                    } else {
+                        std::wstring diffStr = L"Diff ->";
+                        float diffW = MeasureStringWidth(theme.dwriteFactory.Get(), m_fmtSmall.Get(), diffStr) + 8.0f * scale;
+                        statLeftX = dRight - 8.0f * scale - diffW;
+                        if (m_fmtSmall && theme.brushTextSecondary) {
+                            m_fmtSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                            pRT->DrawText(diffStr.c_str(), static_cast<UINT32>(diffStr.size()), m_fmtSmall.Get(),
+                                          D2D1::RectF(statLeftX, dy, dRight - 8.0f * scale, dy + rowH), theme.brushTextSecondary.Get());
+                            m_fmtSmall->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        }
                     }
 
                     std::wstring msgLine = ce.message;
                     if (!isNarrow && !ce.author.empty()) {
                         msgLine += L"  —  " + ce.author;
                     }
-                    D2D1_RECT_F rcMsg = D2D1::RectF(rcBadge.right + 10.0f * scale, dy, rcStat.left - 8.0f * scale, dy + rowH);
+                    D2D1_RECT_F rcMsg = D2D1::RectF(rcBadge.right + 10.0f * scale, dy, statLeftX - 8.0f * scale, dy + rowH);
                     if (m_fmtBody && theme.brushTextPrimary) {
                         pRT->DrawText(msgLine.c_str(), static_cast<UINT32>(msgLine.size()), m_fmtBody.Get(), rcMsg, theme.brushTextPrimary.Get());
                     }
@@ -1566,6 +1601,21 @@ void ActivityHeatmapView::Render(
                 }
                 break;
             }
+        }
+    }
+
+    if (m_isLoading) {
+        const float barH = 2.5f * scale;
+        const float vpW = (std::max)(1.0f, m_rcViewport.right - m_rcViewport.left);
+        pRT->FillRectangle(D2D1::RectF(m_rcViewport.left, m_rcViewport.top, m_rcViewport.right, m_rcViewport.top + barH),
+                           setColor(theme.colors.borderSubtle));
+        float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+        float slideW = (std::max)(80.0f * scale, vpW * 0.25f);
+        float slideX = m_rcViewport.left - slideW + t * (vpW + slideW * 2.0f);
+        float sL = (std::max)(m_rcViewport.left, slideX);
+        float sR = (std::min)(m_rcViewport.right, slideX + slideW);
+        if (sR > sL) {
+            pRT->FillRectangle(D2D1::RectF(sL, m_rcViewport.top, sR, m_rcViewport.top + barH), setColor(accentCol));
         }
     }
 

@@ -1425,6 +1425,8 @@ struct OpenDocument {
         D2D1_RECT_F headerBounds{};      // Clickable file header banner
     };
     bool isMultiFileDiff = false;        ///< True if this document renders all files changed in a commit (Image 4)
+    bool isMultiFileDiffLoading = false; ///< True while commit file contents & diff hunks are loading asynchronously
+    uint64_t diffLoadGen = 0;            ///< Generation token matching async commit diff load results
     std::wstring commitHash;             ///< Commit hash for multi-file commit diff
     std::wstring commitAuthor;           ///< Commit author
     std::wstring commitDate;             ///< Commit date

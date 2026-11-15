@@ -8566,6 +8566,28 @@ void DrawerPanel::GenerateAiCommitMessage() {
     ClearGitSelection();
 }
 
+void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash) {
+    std::thread([this, cHash, commitIdx]() {
+        GitCommitItem itemCopy;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash) {
+                itemCopy = m_gitCommits[commitIdx];
+            } else {
+                return;
+            }
+        }
+        LoadCommitFiles(itemCopy);
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash) {
+                m_gitCommits[commitIdx] = std::move(itemCopy);
+            }
+        }
+        if (m_onGitStateChanged) m_onGitStateChanged();
+    }).detach();
+}
+
 bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             std::wstring& outOpenFile,
                             std::wstring& outDiscardedFile,
@@ -8871,17 +8893,20 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
 
         // Changes (Unstaged) Header buttons & chevron
-        if (pt.x >= m_gitStageAllBounds.left && pt.x <= m_gitStageAllBounds.right &&
+        if (m_gitStageAllBounds.right > m_gitStageAllBounds.left &&
+            pt.x >= m_gitStageAllBounds.left && pt.x <= m_gitStageAllBounds.right &&
             pt.y >= m_gitStageAllBounds.top && pt.y <= m_gitStageAllBounds.bottom) {
-            if (IsActionPending(L"*")) return true;
+            bool hasUnstaged = std::any_of(m_gitChanges.begin(), m_gitChanges.end(), [](const auto& c) { return !c.isStaged; });
+            if (!hasUnstaged || IsActionPending(L"*")) return true;
             m_pressedGitButton = L"stageAll";
             ShowGitNotification(L"Staging all changes...");
             StageAllChangesAsync();
             return true;
         }
-        if (pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
+        if (m_gitDiscardAllBounds.right > m_gitDiscardAllBounds.left &&
+            pt.x >= m_gitDiscardAllBounds.left && pt.x <= m_gitDiscardAllBounds.right &&
             pt.y >= m_gitDiscardAllBounds.top && pt.y <= m_gitDiscardAllBounds.bottom) {
-            if (IsActionPending(L"*")) return true;
+            if (m_gitChanges.empty() || IsActionPending(L"*")) return true;
             if (pOutPromptDiscard) {
                 *pOutPromptDiscard = true;
                 if (pOutDiscardFileName) *pOutDiscardFileName = L"all files";
@@ -8915,6 +8940,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             if (m_gitStashSaveBtnBounds.right > m_gitStashSaveBtnBounds.left &&
                 pt.x >= m_gitStashSaveBtnBounds.left && pt.x <= m_gitStashSaveBtnBounds.right &&
                 pt.y >= m_gitStashSaveBtnBounds.top && pt.y <= m_gitStashSaveBtnBounds.bottom) {
+                if (m_gitChanges.empty()) return true;
                 OpenGitPromptModal(GitPromptKind::StashMessage, L"Stash Changes (Optional Message)", L"");
                 return true;
             }
@@ -9103,17 +9129,15 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     m_selectedCommitIdx = static_cast<int>(i);
                     m_hoveredCommitIdx = static_cast<int>(i);
                     m_commitCardHash = ci.hash;
-                    if (ci.statSummary.empty()) {
-                        LoadCommitFiles(ci);
-                    }
                     ci.isExpanded = !ci.isExpanded;
                     if (ci.isExpanded) {
                         m_expandedCommitHashes.insert(ci.hash);
-                        if (!ci.filesLoaded) {
-                            LoadCommitFiles(ci);
-                        }
                     } else {
                         m_expandedCommitHashes.erase(ci.hash);
+                    }
+                    if (!ci.filesLoaded && ci.statSummary != L"Loading...") {
+                        ci.statSummary = L"Loading...";
+                        LoadCommitFilesAsync(i, ci.hash);
                     }
                     return true;
                 }
@@ -9163,7 +9187,9 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
     }
 
     auto checkBtn = [&](const D2D1_RECT_F& rc, const wchar_t* text) {
-        if (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom) {
+        if (rc.right > rc.left && rc.bottom > rc.top &&
+            static_cast<float>(pt.x) >= rc.left && static_cast<float>(pt.x) <= rc.right &&
+            static_cast<float>(pt.y) >= rc.top && static_cast<float>(pt.y) <= rc.bottom) {
             m_gitTooltipText = text;
             m_gitTooltipTarget = rc;
             m_showGitTooltip = true;
@@ -9172,6 +9198,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
         return false;
     };
 
+    std::wstring oldBtn = m_hoveredGitButton;
     m_hoveredGitButton.clear();
     if (checkBtn(m_gitHeaderMoreBounds, L"Views and More Actions...")) {}
     else if (checkBtn(m_gitUnstageAllBounds, L"Unstage All Changes (⊖)")) { m_hoveredGitButton = L"unstageAll"; }
@@ -9288,27 +9315,16 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
             m_commitCardHash = m_gitCommits[hitCommitIdx].hash;
             if (m_gitCommits[hitCommitIdx].statSummary.empty()) {
                 m_gitCommits[hitCommitIdx].statSummary = L"Loading...";
-                std::wstring cHash = m_gitCommits[hitCommitIdx].hash;
-                std::thread([this, cHash, hitCommitIdx]() {
-                    GitCommitItem itemCopy;
-                    {
-                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                        if (hitCommitIdx < m_gitCommits.size() && m_gitCommits[hitCommitIdx].hash == cHash) {
-                            itemCopy = m_gitCommits[hitCommitIdx];
-                        } else return;
-                    }
-                    LoadCommitFiles(itemCopy);
-                    {
-                        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                        if (hitCommitIdx < m_gitCommits.size() && m_gitCommits[hitCommitIdx].hash == cHash) {
-                            m_gitCommits[hitCommitIdx] = std::move(itemCopy);
-                        }
-                    }
-                    if (m_onGitStateChanged) m_onGitStateChanged();
-                }).detach();
+                LoadCommitFilesAsync(hitCommitIdx, m_gitCommits[hitCommitIdx].hash);
             }
         } else if (inCard || inBridge) {
-            // Keep card alive while hovering inside the card bounds or transitioning from drawer
+            if (inCard) {
+                if (checkBtn(m_commitCardCloseBounds, L"Close")) { m_hoveredGitButton = L"cardClose"; }
+                else if (checkBtn(m_commitCardGitHubBounds, L"Open Commit on GitHub")) { m_hoveredGitButton = L"cardGitHub"; }
+                else if (checkBtn(m_commitCardCheckoutBounds, L"Checkout Commit")) { m_hoveredGitButton = L"cardCheckout"; }
+                else if (checkBtn(m_commitCardCherryPickBounds, L"Cherry-Pick Commit")) { m_hoveredGitButton = L"cardCherryPick"; }
+                else if (checkBtn(m_commitCardOpenChangesBounds, L"Open Commit Changes")) { m_hoveredGitButton = L"cardOpenChanges"; }
+            }
         } else {
             // Mouse is outside both commit rows and card: dismiss card
             m_hoveredCommitIdx = -1;
@@ -9316,24 +9332,27 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
             m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         }
 
-        for (const auto& ci : m_gitCommits) {
-            if (ci.isExpanded) {
-                for (const auto& cf : ci.files) {
-                    if (pt.x >= cf.bounds.left && pt.x <= cf.bounds.right &&
-                        pt.y >= cf.bounds.top && pt.y <= cf.bounds.bottom) {
-                        m_gitTooltipText = cf.path + L" [" + cf.status + L"]\nClick to view diff";
-                        m_gitTooltipTarget = cf.bounds;
-                        m_showGitTooltip = true;
-                        break;
+        if (!inCard) {
+            for (const auto& ci : m_gitCommits) {
+                if (ci.isExpanded) {
+                    for (const auto& cf : ci.files) {
+                        if (pt.x >= cf.bounds.left && pt.x <= cf.bounds.right &&
+                            pt.y >= cf.bounds.top && pt.y <= cf.bounds.bottom) {
+                            m_gitTooltipText = cf.path + L" [" + cf.status + L"]\nClick to view diff";
+                            m_gitTooltipTarget = cf.bounds;
+                            m_showGitTooltip = true;
+                            break;
+                        }
                     }
+                    if (m_showGitTooltip) break;
                 }
-                if (m_showGitTooltip) break;
             }
         }
     }
 
     return (m_gitTooltipText != oldTip || m_hoveredGitChangeIdx != oldHoverChange ||
-            m_hoveredCommitIdx != oldHoverCommit || m_hoveredGitGraphOutgoing != oldHoverOutgoing);
+            m_hoveredCommitIdx != oldHoverCommit || m_hoveredGitGraphOutgoing != oldHoverOutgoing ||
+            m_hoveredGitButton != oldBtn);
 }
 
 void DrawerPanel::DeleteGitSelection() {
@@ -9987,6 +10006,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                       m_rcOpenFolderBtn, theme.brushTextWhite.Get());
 
         m_gitHeaderMoreBounds = {};
+        m_gitStageAllBounds = {};
+        m_gitDiscardAllBounds = {};
         m_gitChangesHeaderBounds = {};
         m_gitStagedHeaderBounds = {};
         m_gitStashesHeaderBounds = {};
@@ -10801,13 +10822,18 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float btnGap = config.ScaleF(4.0f);
             float rightX = railW + currentDrawerW - config.ScaleF(10.0f);
 
+            const bool hasUnstaged = (unstagedCount > 0);
+            const bool hasAnyChanges = (unstagedCount > 0 || stagedCount > 0);
+
             m_gitChangesMoreBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
             rightX -= (btnW + btnGap);
 
-            m_gitDiscardAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            D2D1_RECT_F rcDiscardSlot = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            m_gitDiscardAllBounds = hasAnyChanges ? rcDiscardSlot : D2D1::RectF(0, 0, 0, 0);
             rightX -= (btnW + btnGap);
 
-            m_gitStageAllBounds = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            D2D1_RECT_F rcStageSlot = D2D1::RectF(rightX - btnW, itemY + 2.0f, rightX, itemY + secH - 2.0f);
+            m_gitStageAllBounds = hasUnstaged ? rcStageSlot : D2D1::RectF(0, 0, 0, 0);
             rightX -= (btnW + btnGap);
 
             // Circular count pill badge [ unstagedCount ] (Caps at 10000 if >= 10,000)
@@ -10825,28 +10851,39 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                               rrcBadge.rect, theme.brushTextPrimary.Get());
             }
 
-            // Draw + icon on m_gitStageAllBounds
-            bool isStageAllHovered = (m_hoveredGitButton == L"stageAll");
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabledIcon;
+            if (!hasUnstaged || !hasAnyChanges) {
+                D2D1_COLOR_F mc = theme.colors.textMuted;
+                mc.a *= 0.40f;
+                pRT->CreateSolidColorBrush(mc, &brushDisabledIcon);
+            }
+
+            // Draw + icon on Stage All slot (disabled & dimmed when 0 unstaged entries)
+            bool isStageAllHovered = hasUnstaged && (m_hoveredGitButton == L"stageAll");
             bool isStageAllPending = IsActionPending(L"*");
             if (isStageAllHovered && !isStageAllPending) {
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitStageAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStageSlot, 3.0f, 3.0f), theme.brushItemHover.Get());
             }
-            float ckX = (m_gitStageAllBounds.left + m_gitStageAllBounds.right) / 2.0f;
-            float ckY = (m_gitStageAllBounds.top + m_gitStageAllBounds.bottom) / 2.0f;
-            ID2D1Brush* pStageAllBrush = isStageAllPending ? theme.brushTextMuted.Get() : (isStageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+            float ckX = (rcStageSlot.left + rcStageSlot.right) / 2.0f;
+            float ckY = (rcStageSlot.top + rcStageSlot.bottom) / 2.0f;
+            ID2D1Brush* pStageAllBrush = (!hasUnstaged && brushDisabledIcon)
+                ? brushDisabledIcon.Get()
+                : (isStageAllPending ? theme.brushTextMuted.Get() : (isStageAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()));
             float pr = config.ScaleF(4.0f);
             pRT->DrawLine(D2D1::Point2F(ckX - pr, ckY), D2D1::Point2F(ckX + pr, ckY), pStageAllBrush, 1.4f);
             pRT->DrawLine(D2D1::Point2F(ckX, ckY - pr), D2D1::Point2F(ckX, ckY + pr), pStageAllBrush, 1.4f);
 
-            // Draw 🔄 circular arrow on m_gitDiscardAllBounds
-            bool isDiscardAllHovered = (m_hoveredGitButton == L"discardAll");
+            // Draw 🔄 circular arrow on Discard All slot (disabled & dimmed when no changes exist)
+            bool isDiscardAllHovered = hasAnyChanges && (m_hoveredGitButton == L"discardAll");
             bool isDiscardAllPending = IsActionPending(L"*");
             if (isDiscardAllHovered && !isDiscardAllPending) {
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitDiscardAllBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcDiscardSlot, 3.0f, 3.0f), theme.brushItemHover.Get());
             }
-            float rcX = (m_gitDiscardAllBounds.left + m_gitDiscardAllBounds.right) / 2.0f;
-            float rcY = (m_gitDiscardAllBounds.top + m_gitDiscardAllBounds.bottom) / 2.0f;
-            ID2D1Brush* pDiscAllBrush = isDiscardAllPending ? theme.brushTextMuted.Get() : (isDiscardAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get());
+            float rcX = (rcDiscardSlot.left + rcDiscardSlot.right) / 2.0f;
+            float rcY = (rcDiscardSlot.top + rcDiscardSlot.bottom) / 2.0f;
+            ID2D1Brush* pDiscAllBrush = (!hasAnyChanges && brushDisabledIcon)
+                ? brushDisabledIcon.Get()
+                : (isDiscardAllPending ? theme.brushTextMuted.Get() : (isDiscardAllHovered ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()));
             D2D1_ELLIPSE elDisc = D2D1::Ellipse(D2D1::Point2F(rcX, rcY), 4.0f, 4.0f);
             pRT->DrawEllipse(elDisc, pDiscAllBrush, 1.3f);
             pRT->DrawLine(D2D1::Point2F(rcX + 4.0f, rcY - 2.5f), D2D1::Point2F(rcX + 4.0f, rcY), pDiscAllBrush, 1.3f);
@@ -11084,13 +11121,24 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                               rcStashTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
                 float sbW = config.ScaleF(18.0f);
-                m_gitStashSaveBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - sbW, itemY + 2.0f,
-                                                      railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
-                float spx = (m_gitStashSaveBtnBounds.left + m_gitStashSaveBtnBounds.right) * 0.5f;
-                float spy = (m_gitStashSaveBtnBounds.top + m_gitStashSaveBtnBounds.bottom) * 0.5f;
+                D2D1_RECT_F rcStashSaveSlot = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - sbW, itemY + 2.0f,
+                                                          railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
+                const bool canStash = !m_gitChanges.empty();
+                m_gitStashSaveBtnBounds = canStash ? rcStashSaveSlot : D2D1::RectF(0, 0, 0, 0);
+                float spx = (rcStashSaveSlot.left + rcStashSaveSlot.right) * 0.5f;
+                float spy = (rcStashSaveSlot.top + rcStashSaveSlot.bottom) * 0.5f;
                 float spr = config.ScaleF(4.0f);
-                pRT->DrawLine(D2D1::Point2F(spx - spr, spy), D2D1::Point2F(spx + spr, spy), theme.brushTextSecondary.Get(), 1.3f);
-                pRT->DrawLine(D2D1::Point2F(spx, spy - spr), D2D1::Point2F(spx, spy + spr), theme.brushTextSecondary.Get(), 1.3f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStashDisabled;
+                ID2D1Brush* pStashPlusBrush = theme.brushTextSecondary.Get();
+                if (!canStash) {
+                    D2D1_COLOR_F mc = theme.colors.textMuted;
+                    mc.a *= 0.40f;
+                    if (SUCCEEDED(pRT->CreateSolidColorBrush(mc, &brushStashDisabled)) && brushStashDisabled) {
+                        pStashPlusBrush = brushStashDisabled.Get();
+                    }
+                }
+                pRT->DrawLine(D2D1::Point2F(spx - spr, spy), D2D1::Point2F(spx + spr, spy), pStashPlusBrush, 1.3f);
+                pRT->DrawLine(D2D1::Point2F(spx, spy - spr), D2D1::Point2F(spx, spy + spr), pStashPlusBrush, 1.3f);
 
                 itemY += secH;
                 if (m_stashesExpanded) {
@@ -13514,8 +13562,56 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
         auto& ci = m_gitCommits[cardCommitIdx];
         m_commitCardHash = ci.hash;
 
+        IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+        auto measureCardTextW = [&](const std::wstring& txt, float fallbackCharW) -> float {
+            if (txt.empty()) return 0.0f;
+            if (theme.dwriteFactory && pCardFmt) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        txt.c_str(), static_cast<UINT32>(txt.length()),
+                        pCardFmt, 10000.0f, config.ScaleF(64.0f), &pLayout)) && pLayout) {
+                    pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                        return tm.widthIncludingTrailingWhitespace;
+                    }
+                }
+            }
+            return static_cast<float>(txt.length()) * fallbackCharW;
+        };
+        auto drawCenteredCardText = [&](const std::wstring& txt, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush) {
+            if (!pBrush || txt.empty() || !pCardFmt) return;
+            const float bw = (std::max)(1.0f, bounds.right - bounds.left);
+            const float bh = (std::max)(1.0f, bounds.bottom - bounds.top);
+            if (theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        txt.c_str(), static_cast<UINT32>(txt.length()),
+                        pCardFmt, bw, bh, &pLayout)) && pLayout) {
+                    pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    pRT->DrawTextLayout(D2D1::Point2F(bounds.left, bounds.top), pLayout.Get(), pBrush);
+                    return;
+                }
+            }
+            pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.length()), pCardFmt, bounds, pBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        };
+
+        std::wstring shortH = ci.hash.substr(0, (ci.hash.length() < 7) ? ci.hash.length() : 7);
+        std::wstring repoBase = GetGitHubRepoUrl();
+        const float btnH = config.ScaleF(24.0f);
+        const float hashW = (std::max)(config.ScaleF(64.0f), measureCardTextW(shortH, config.ScaleF(7.5f)) + config.ScaleF(16.0f));
+        const float ghW = repoBase.empty() ? 0.0f : (config.ScaleF(13.0f) + config.ScaleF(6.0f) + measureCardTextW(L"Open on GitHub", config.ScaleF(7.2f)) + config.ScaleF(16.0f));
+        const float coW = (std::max)(config.ScaleF(74.0f), measureCardTextW(L"Checkout", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
+        const float cpW = (std::max)(config.ScaleF(94.0f), measureCardTextW(L"Cherry-Pick", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
+        const float chW = (std::max)(config.ScaleF(108.0f), measureCardTextW(L"Open Changes", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
+        const float leftRowW = hashW + (ghW > 0.0f ? (config.ScaleF(8.0f) + ghW) : 0.0f);
+        const float rightRowW = coW + config.ScaleF(6.0f) + cpW + config.ScaleF(6.0f) + chW;
+        const float minReqW = config.ScaleF(14.0f) + leftRowW + config.ScaleF(16.0f) + rightRowW + config.ScaleF(14.0f);
+
         // 4.5 Floating Commit Details Card OUTSIDE the sidebar drawer (Image 3)
-        float cardW = config.ScaleF(520.0f);
+        float cardW = (std::max)(config.ScaleF(520.0f), minReqW);
         float cardH = config.ScaleF(142.0f);
         float cardLeft = railW + currentDrawerW + config.ScaleF(8.0f);
         float cardTop = (ci.bounds.top + ci.bounds.bottom) * 0.5f - cardH * 0.5f;
@@ -13545,11 +13641,16 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
             cardLeft + cardW - config.ScaleF(8.0f),
             cardTop + config.ScaleF(8.0f) + closeBtnSize
         );
+        const bool hovClose = (m_hoveredGitButton == L"cardClose");
+        if (hovClose && theme.brushItemHover) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCloseBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+        }
         float cx = (m_commitCardCloseBounds.left + m_commitCardCloseBounds.right) * 0.5f;
         float cy = (m_commitCardCloseBounds.top + m_commitCardCloseBounds.bottom) * 0.5f;
         float cr = config.ScaleF(3.5f);
-        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
-        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextMuted.Get(), 1.4f);
+        ID2D1Brush* pCloseBrush = hovClose ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get();
+        pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), pCloseBrush, 1.4f);
+        pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), pCloseBrush, 1.4f);
 
         // Header: Author Avatar circle + Author Name (bold) + relative time & date (Image 3)
         float curCardY = cardTop + config.ScaleF(10.0f);
@@ -13574,18 +13675,16 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
             pRT->DrawText(initialChar, 1, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get(), rcAvatar, theme.brushTextWhite.Get());
         }
 
-        IDWriteTextFormat* pCardFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
-
         float textStartX = avatarX + avatarR + config.ScaleF(8.0f);
         std::wstring authorName = ci.author.empty() ? L"Commit" : ci.author;
-        float authorW = static_cast<float>(authorName.length()) * config.ScaleF(7.5f);
+        float authorW = measureCardTextW(authorName, config.ScaleF(7.5f)) + config.ScaleF(4.0f);
         D2D1_RECT_F rcAuthor = D2D1::RectF(textStartX, curCardY - config.ScaleF(1.0f), textStartX + authorW, curCardY + config.ScaleF(18.0f));
         pRT->DrawText(authorName.c_str(), static_cast<UINT32>(authorName.length()),
                       pCardFmt, rcAuthor, theme.brushTextPrimary.Get());
 
         std::wstring timeLine = ci.relativeTime;
         if (!ci.dateFormatted.empty()) timeLine += L" (" + ci.dateFormatted + L")";
-        float timeRight = cardLeft + cardW - closeBtnSize - config.ScaleF(12.0f);
+        float timeRight = cardLeft + cardW - closeBtnSize - config.ScaleF(14.0f);
         D2D1_RECT_F rcTime = D2D1::RectF(textStartX + authorW + config.ScaleF(8.0f), curCardY, timeRight, curCardY + config.ScaleF(18.0f));
         if (rcTime.right > rcTime.left) {
             pRT->PushAxisAlignedClip(rcTime, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -13611,108 +13710,99 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
         if (statText.empty()) {
             statText = (ci.files.empty() ? L"1 file changed" : (std::to_wstring(ci.files.size()) + L" files changed"));
         }
-        D2D1_RECT_F rcStat = D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f));
 
-        // Syntax highlight insertions(+) in green, deletions(-) in red
-        size_t insPos = statText.find(L"insertion");
-        size_t delPos = statText.find(L"deletion");
-        if (insPos != std::wstring::npos || delPos != std::wstring::npos) {
-            float sX = cardLeft + config.ScaleF(14.0f);
-            size_t c1 = statText.find(L',');
-            if (c1 != std::wstring::npos) {
-                std::wstring part1 = statText.substr(0, c1 + 2); // e.g. "10 files changed, "
-                float w1 = static_cast<float>(part1.length()) * config.ScaleF(7.0f);
-                pRT->DrawText(part1.c_str(), static_cast<UINT32>(part1.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w1, curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
-                sX += w1;
+        // Syntax highlight insertions(+) in green and deletions(-) in red even when only one exists
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIns, brushDel;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.30f, 0.82f, 0.45f, 1.0f) : D2D1::ColorF(0.10f, 0.56f, 0.24f, 1.0f), &brushIns);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f) : D2D1::ColorF(0.80f, 0.16f, 0.18f, 1.0f), &brushDel);
 
-                size_t c2 = statText.find(L',', c1 + 1);
-                if (c2 != std::wstring::npos) {
-                    std::wstring part2 = statText.substr(c1 + 2, c2 - (c1 + 2)); // e.g. "1174 insertions(+)"
-                    float w2 = static_cast<float>(part2.length()) * config.ScaleF(7.0f);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushIns;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.78f, 0.40f, 1.0f), &brushIns);
-                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w2, curCardY + config.ScaleF(18.0f)), brushIns.Get());
-                    sX += w2;
-
-                    std::wstring commaSep = L", ";
-                    pRT->DrawText(commaSep.c_str(), 2, pCardFmt, D2D1::RectF(sX, curCardY, sX + config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
-                    sX += config.ScaleF(14.0f);
-
-                    std::wstring part3 = statText.substr(c2 + 2); // e.g. "83 deletions(-)"
-                    float w3 = static_cast<float>(part3.length()) * config.ScaleF(7.0f);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDel;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.35f, 0.35f, 1.0f), &brushDel);
-                    pRT->DrawText(part3.c_str(), static_cast<UINT32>(part3.length()), pCardFmt, D2D1::RectF(sX, curCardY, sX + w3, curCardY + config.ScaleF(18.0f)), brushDel.Get());
-                } else {
-                    std::wstring part2 = statText.substr(c1 + 2);
-                    pRT->DrawText(part2.c_str(), static_cast<UINT32>(part2.length()), pCardFmt, D2D1::RectF(sX, curCardY, cardLeft + cardW - config.ScaleF(14.0f), curCardY + config.ScaleF(18.0f)), theme.brushTextMuted.Get());
+        float sX = cardLeft + config.ScaleF(14.0f);
+        const float statMaxX = cardLeft + cardW - config.ScaleF(14.0f);
+        size_t pos = 0;
+        while (pos <= statText.length() && sX < statMaxX) {
+            size_t comma = statText.find(L", ", pos);
+            std::wstring seg = (comma == std::wstring::npos) ? statText.substr(pos) : statText.substr(pos, comma - pos);
+            if (!seg.empty()) {
+                ID2D1Brush* pSegBrush = theme.brushTextMuted.Get();
+                if (seg.find(L"insertion") != std::wstring::npos && brushIns) {
+                    pSegBrush = brushIns.Get();
+                } else if (seg.find(L"deletion") != std::wstring::npos && brushDel) {
+                    pSegBrush = brushDel.Get();
                 }
-            } else {
-                pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+                float segW = measureCardTextW(seg, config.ScaleF(7.0f)) + config.ScaleF(2.0f);
+                pRT->DrawText(seg.c_str(), static_cast<UINT32>(seg.length()), pCardFmt,
+                              D2D1::RectF(sX, curCardY, (std::min)(statMaxX, sX + segW), curCardY + config.ScaleF(18.0f)),
+                              pSegBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                sX += segW;
             }
-        } else {
-            pRT->DrawText(statText.c_str(), static_cast<UINT32>(statText.length()), pCardFmt, rcStat, theme.brushTextMuted.Get());
+            if (comma == std::wstring::npos) break;
+            std::wstring sep = L", ";
+            float sepW = measureCardTextW(sep, config.ScaleF(7.0f));
+            if (sX < statMaxX) {
+                pRT->DrawText(sep.c_str(), static_cast<UINT32>(sep.length()), pCardFmt,
+                              D2D1::RectF(sX, curCardY, (std::min)(statMaxX, sX + sepW + 2.0f), curCardY + config.ScaleF(18.0f)),
+                              theme.brushTextMuted.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            sX += sepW;
+            pos = comma + 2;
         }
 
         curCardY += config.ScaleF(20.0f);
 
-        // Action buttons row: [hash pill] [↗ Open on GitHub] [Open Changes] (Image 3)
-        float hashW = config.ScaleF(62.0f);
-        float btnH = config.ScaleF(24.0f);
+        // Action buttons row: [hash pill] [↗ Open on GitHub] ... [Checkout] [Cherry-Pick] [Open Changes]
         D2D1_ROUNDED_RECT rrcHash = D2D1::RoundedRect(
             D2D1::RectF(cardLeft + config.ScaleF(14.0f), curCardY, cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
             3.0f, 3.0f
         );
         pRT->FillRoundedRectangle(rrcHash, theme.brushHeaderBg.Get());
         pRT->DrawRoundedRectangle(rrcHash, brushCardBorder.Get(), 1.0f);
-        std::wstring shortH = ci.hash.substr(0, (ci.hash.length() < 7) ? ci.hash.length() : 7);
-        pRT->DrawText(shortH.c_str(), static_cast<UINT32>(shortH.length()),
-                      pCardFmt,
-                      D2D1::RectF(cardLeft + config.ScaleF(18.0f), curCardY + config.ScaleF(3.0f), cardLeft + config.ScaleF(14.0f) + hashW, curCardY + btnH),
-                      theme.brushBrandAccent.Get());
+        drawCenteredCardText(shortH, rrcHash.rect, theme.brushBrandAccent.Get());
 
         // Open on GitHub link (upright vector ExternalLink icon)
-        std::wstring repoBase = GetGitHubRepoUrl();
         if (!repoBase.empty()) {
-            float ghLeft = cardLeft + config.ScaleF(84.0f);
-            float ghW = config.ScaleF(114.0f);
+            float ghLeft = rrcHash.rect.right + config.ScaleF(8.0f);
             m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
+            if (m_hoveredGitButton == L"cardGitHub") {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGhHover;
+                D2D1_COLOR_F ac = theme.colors.brandAccent;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(ac.r, ac.g, ac.b, 0.14f), &brushGhHover);
+                if (brushGhHover) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardGitHubBounds, 3.5f, 3.5f), brushGhHover.Get());
+            }
             DrawCenteredIconAndText(pRT, theme, config, m_commitCardGitHubBounds, theme.brushBrandAccent.Get(), DrawerActionIcon::ExternalLink, L"Open on GitHub", pCardFmt);
         } else {
             m_commitCardGitHubBounds = D2D1::RectF(0, 0, 0, 0);
         }
 
         // Checkout & Cherry-Pick buttons left of Open Changes
-        float cpW = config.ScaleF(78.0f);
-        float coW = config.ScaleF(64.0f);
-        float chW = config.ScaleF(104.0f);
-        float chLeft = cardLeft + cardW - chW - config.ScaleF(12.0f);
+        float chLeft = cardLeft + cardW - chW - config.ScaleF(14.0f);
         float cpLeft = chLeft - cpW - config.ScaleF(6.0f);
         float coLeft = cpLeft - coW - config.ScaleF(6.0f);
 
+        const bool hovCo = (m_hoveredGitButton == L"cardCheckout");
         m_commitCardCheckoutBounds = D2D1::RectF(coLeft, curCardY, coLeft + coW, curCardY + btnH);
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), theme.brushHeaderBg.Get());
-        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), brushCardBorder.Get(), 1.0f);
-        pRT->DrawText(L"Checkout", 8, pCardFmt,
-                      D2D1::RectF(coLeft + config.ScaleF(6.0f), curCardY + config.ScaleF(3.0f), coLeft + coW - 2.0f, curCardY + btnH),
-                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), hovCo && theme.brushItemHover ? theme.brushItemHover.Get() : theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCheckoutBounds, 3.5f, 3.5f), hovCo && theme.brushBrandAccent ? theme.brushBrandAccent.Get() : brushCardBorder.Get(), 1.0f);
+        drawCenteredCardText(L"Checkout", m_commitCardCheckoutBounds, theme.brushTextPrimary.Get());
 
+        const bool hovCp = (m_hoveredGitButton == L"cardCherryPick");
         m_commitCardCherryPickBounds = D2D1::RectF(cpLeft, curCardY, cpLeft + cpW, curCardY + btnH);
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), theme.brushHeaderBg.Get());
-        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), brushCardBorder.Get(), 1.0f);
-        pRT->DrawText(L"Cherry-Pick", 11, pCardFmt,
-                      D2D1::RectF(cpLeft + config.ScaleF(6.0f), curCardY + config.ScaleF(3.0f), cpLeft + cpW - 2.0f, curCardY + btnH),
-                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), hovCp && theme.brushItemHover ? theme.brushItemHover.Get() : theme.brushHeaderBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_commitCardCherryPickBounds, 3.5f, 3.5f), hovCp && theme.brushBrandAccent ? theme.brushBrandAccent.Get() : brushCardBorder.Get(), 1.0f);
+        drawCenteredCardText(L"Cherry-Pick", m_commitCardCherryPickBounds, theme.brushTextPrimary.Get());
 
-        // Open Changes Button (Right-aligned, matching Image 5 & 3)
+        // Open Changes Button (Right-aligned)
+        const bool hovOc = (m_hoveredGitButton == L"cardOpenChanges");
         m_commitCardOpenChangesBounds = D2D1::RectF(chLeft, curCardY, chLeft + chW, curCardY + btnH);
         D2D1_ROUNDED_RECT rrcOpenChanges = D2D1::RoundedRect(m_commitCardOpenChangesBounds, 3.5f, 3.5f);
-        pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
-        const wchar_t* ocText = L"Open Changes";
-        pRT->DrawText(ocText, static_cast<UINT32>(wcslen(ocText)),
-                      pCardFmt,
-                      D2D1::RectF(chLeft + config.ScaleF(8.0f), curCardY + config.ScaleF(3.0f), chLeft + chW, curCardY + btnH),
-                      theme.brushTextWhite.Get());
+        if (hovOc) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushOcHover;
+            D2D1_COLOR_F ac = theme.colors.brandAccent;
+            pRT->CreateSolidColorBrush(D2D1::ColorF((std::min)(1.0f, ac.r + 0.08f), (std::min)(1.0f, ac.g + 0.08f), (std::min)(1.0f, ac.b + 0.08f), 1.0f), &brushOcHover);
+            pRT->FillRoundedRectangle(rrcOpenChanges, brushOcHover ? brushOcHover.Get() : theme.brushBrandAccent.Get());
+        } else {
+            pRT->FillRoundedRectangle(rrcOpenChanges, theme.brushBrandAccent.Get());
+        }
+        drawCenteredCardText(L"Open Changes", m_commitCardOpenChangesBounds, theme.brushTextWhite.Get());
     } else {
         m_commitCardBounds = D2D1::RectF(0, 0, 0, 0);
         m_commitCardOpenChangesBounds = D2D1::RectF(0, 0, 0, 0);

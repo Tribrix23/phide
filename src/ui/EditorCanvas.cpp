@@ -12,6 +12,7 @@
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include <algorithm>
+#include <cmath>
 #include <wincodec.h>
 #include <filesystem>
 #include <regex>
@@ -10747,6 +10748,71 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
 
     // Clip rendering to content area
     pRT->PushAxisAlignedClip(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (doc.isMultiFileDiffLoading && doc.multiFileDiffs.empty()) {
+        // Modern flat indeterminate loading state (crisp sliding accent bar + pulsing skeleton diff cards)
+        const float barH = config.ScaleF(2.5f);
+        pRT->FillRectangle(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + barH),
+                           theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+        float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+        float slideW = (std::max)(config.ScaleF(96.0f), canvasWidth * 0.28f);
+        float slideX = canvasLeft - slideW + t * (canvasWidth + slideW * 2.0f);
+        float sL = (std::max)(canvasLeft, slideX);
+        float sR = (std::min)(canvasLeft + canvasWidth, slideX + slideW);
+        if (sR > sL && theme.brushBrandAccent) {
+            pRT->FillRectangle(D2D1::RectF(sL, topY, sR, topY + barH), theme.brushBrandAccent.Get());
+        }
+
+        const float padX = config.ScaleF(22.0f);
+        float sy = topY + config.ScaleF(18.0f);
+        std::wstring shortH = doc.commitHash.substr(0, (std::min<size_t>)(7, doc.commitHash.size()));
+        std::wstring title = (shortH.empty() ? L"Commit" : shortH) + L"  —  " +
+                             (doc.commitMessage.empty() ? L"Loading commit changes..." : doc.commitMessage);
+        D2D1_RECT_F rcTitle = D2D1::RectF(canvasLeft + padX, sy, canvasLeft + canvasWidth - padX, sy + config.ScaleF(24.0f));
+        pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()), pLabelFmt, rcTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        sy += config.ScaleF(22.0f);
+
+        std::wstring sub = L"Preparing side-by-side file diffs...";
+        pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.length()), pLabelFmt,
+                      D2D1::RectF(canvasLeft + padX, sy, canvasLeft + canvasWidth - padX, sy + config.ScaleF(18.0f)),
+                      theme.brushTextMuted.Get());
+        sy += config.ScaleF(30.0f);
+
+        float phase = static_cast<float>(GetTickCount64() % 1400) / 1400.0f * 6.283185f;
+        float pulseAlpha = 0.22f + 0.14f * (0.5f + 0.5f * std::sin(phase));
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg, brushCardBorder, brushSkel;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.13f, 0.135f, 0.155f, 1.0f) : D2D1::ColorF(0.955f, 0.960f, 0.970f, 1.0f), &brushCardBg);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.22f, 0.23f, 0.26f, 1.0f) : D2D1::ColorF(0.84f, 0.86f, 0.89f, 1.0f), &brushCardBorder);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, pulseAlpha) : D2D1::ColorF(0.0f, 0.0f, 0.0f, pulseAlpha * 0.65f), &brushSkel);
+
+        float cardW = (std::max)(config.ScaleF(180.0f), canvasWidth - padX * 2.0f);
+        float cardH = config.ScaleF(96.0f);
+        for (int c = 0; c < 3 && sy < clientHeight - config.ScaleF(16.0f); ++c) {
+            D2D1_RECT_F rcCard = D2D1::RectF(canvasLeft + padX, sy, canvasLeft + padX + cardW, sy + cardH);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCard, 6.0f, 6.0f), brushCardBg.Get());
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcCard, 6.0f, 6.0f), brushCardBorder.Get(), 1.0f);
+
+            // Header bar skeleton inside card
+            float hx = rcCard.left + config.ScaleF(14.0f);
+            float hy = rcCard.top + config.ScaleF(12.0f);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(hx, hy, (std::min)(rcCard.right - 20.0f, hx + config.ScaleF(190.0f - c * 24.0f)), hy + config.ScaleF(10.0f)), 4.0f, 4.0f), brushSkel.Get());
+            pRT->DrawLine(D2D1::Point2F(rcCard.left, rcCard.top + config.ScaleF(32.0f)), D2D1::Point2F(rcCard.right, rcCard.top + config.ScaleF(32.0f)), brushCardBorder.Get(), 1.0f);
+
+            // Split skeleton code rows
+            float midX = rcCard.left + cardW * 0.5f;
+            for (int r = 0; r < 2; ++r) {
+                float ry = rcCard.top + config.ScaleF(44.0f + r * 20.0f);
+                float lw = (std::max)(config.ScaleF(40.0f), (midX - rcCard.left - config.ScaleF(32.0f)) * ((r == 0) ? 0.72f : 0.48f));
+                float rw = (std::max)(config.ScaleF(40.0f), (rcCard.right - midX - config.ScaleF(32.0f)) * ((r == 0) ? 0.60f : 0.78f));
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(rcCard.left + config.ScaleF(16.0f), ry, rcCard.left + config.ScaleF(16.0f) + lw, ry + config.ScaleF(8.0f)), 3.0f, 3.0f), brushSkel.Get());
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(midX + config.ScaleF(16.0f), ry, midX + config.ScaleF(16.0f) + rw, ry + config.ScaleF(8.0f)), 3.0f, 3.0f), brushSkel.Get());
+            }
+            sy += cardH + config.ScaleF(14.0f);
+        }
+
+        pRT->PopAxisAlignedClip();
+        return;
+    }
 
     // Calculate total visual rows for scrollbar
     size_t totalVisualRows = 0;
