@@ -9,6 +9,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <string>
+#include <vector>
 #include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
@@ -26,6 +27,7 @@ enum class ConfirmModalType {
     Notice,
     DeleteFile,
     DeleteFolder,
+    DeleteBatch,
     UpdateImportsOnRename,
     UpdateImportsOnMove
 };
@@ -92,6 +94,7 @@ public:
         m_filePath = targetPath;
         m_fileName = std::filesystem::path(targetPath).filename().wstring();
         m_newPath.clear();
+        m_batchPaths.clear();
         m_status.clear();
         m_changeCount = 0;
         m_title.clear();
@@ -104,6 +107,30 @@ public:
         m_isCancelHovered = false;
         m_isCloseHovered = false;
     }
+
+    /**
+     * @brief Opens delete confirmation for multiple selected files/folders at once.
+     */
+    void OpenDeleteBatch(const std::vector<std::wstring>& targetPaths) {
+        m_type = ConfirmModalType::DeleteBatch;
+        m_batchPaths = targetPaths;
+        m_filePath = targetPaths.empty() ? L"" : targetPaths.front();
+        m_fileName = std::to_wstring(targetPaths.size()) + L" items";
+        m_newPath.clear();
+        m_status.clear();
+        m_changeCount = targetPaths.size();
+        m_title.clear();
+        m_message.clear();
+        m_subtext.clear();
+        m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
+        m_isConfirmHovered = false;
+        m_isCancelHovered = false;
+        m_isCloseHovered = false;
+    }
+
+    [[nodiscard]] const std::vector<std::wstring>& GetBatchPaths() const noexcept { return m_batchPaths; }
 
     /**
      * @brief Opens the reference update confirmation dialog when renaming or moving a referenced file.
@@ -199,6 +226,7 @@ private:
     ConfirmModalType m_type = ConfirmModalType::DiscardFile;
     std::wstring m_filePath;
     std::wstring m_newPath;
+    std::vector<std::wstring> m_batchPaths;
     std::wstring m_fileName;
     std::wstring m_status; // "D", "M", "U", "A", or "ALL"
     size_t m_changeCount = 1;

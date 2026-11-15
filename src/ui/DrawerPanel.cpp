@@ -45,6 +45,26 @@ bool MatchesWildcard(const std::wstring& str, const std::wstring& pattern) {
     return p == pattern.length();
 }
 
+std::wstring NormalizeExplorerPathKey(const std::wstring& path) {
+    std::wstring p = path;
+    if (p.rfind(L"\\\\?\\", 0) == 0) {
+        p = p.substr(4);
+    }
+    for (auto& c : p) {
+        if (c == L'/') c = L'\\';
+        else c = static_cast<wchar_t>(towlower(c));
+    }
+    while (p.size() > 3 && p.back() == L'\\') {
+        p.pop_back();
+    }
+    return p;
+}
+
+bool IsVirtualExplorerPath(const std::wstring& path) {
+    if (path.empty()) return true;
+    return path.rfind(L"__", 0) == 0;
+}
+
 bool MatchesPatternList(const std::wstring& filename, const std::wstring& fullPath, const std::wstring& patternList) {
     if (patternList.empty()) return true;
     size_t start = 0;
@@ -446,6 +466,188 @@ std::vector<workspace::WorkspaceFolderEntry> DrawerPanel::GetAllWorkspaceFolders
         out.push_back(extra);
     }
     return out;
+}
+
+void DrawerPanel::ClearSelection() noexcept {
+    m_selectedPaths.clear();
+    m_selectionAnchorPath.clear();
+}
+
+void DrawerPanel::SetSingleSelection(const std::wstring& path) {
+    m_selectedPaths.clear();
+    if (!path.empty() && !IsVirtualExplorerPath(path)) {
+        m_selectedPaths.push_back(path);
+        m_selectionAnchorPath = path;
+    } else {
+        m_selectionAnchorPath.clear();
+    }
+}
+
+void DrawerPanel::SetSelectionAnchor(const std::wstring& path) {
+    if (!path.empty() && !IsVirtualExplorerPath(path)) {
+        m_selectionAnchorPath = path;
+    }
+}
+
+bool DrawerPanel::IsPathSelected(const std::wstring& path) const {
+    if (path.empty() || m_selectedPaths.empty()) return false;
+    const std::wstring key = NormalizeExplorerPathKey(path);
+    for (const auto& sel : m_selectedPaths) {
+        if (NormalizeExplorerPathKey(sel) == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DrawerPanel::ToggleSelection(const std::wstring& path) {
+    if (path.empty() || IsVirtualExplorerPath(path)) return false;
+    const std::wstring key = NormalizeExplorerPathKey(path);
+    for (auto it = m_selectedPaths.begin(); it != m_selectedPaths.end(); ++it) {
+        if (NormalizeExplorerPathKey(*it) == key) {
+            m_selectedPaths.erase(it);
+            return false;
+        }
+    }
+    m_selectedPaths.push_back(path);
+    m_selectionAnchorPath = path;
+    return true;
+}
+
+void DrawerPanel::SelectRangeTo(int targetIdx) {
+    if (targetIdx < 0 || targetIdx >= static_cast<int>(m_visibleItems.size())) return;
+    if (IsVirtualExplorerPath(m_visibleItems[targetIdx].fullPath)) return;
+
+    int anchorIdx = -1;
+    if (!m_selectionAnchorPath.empty()) {
+        const std::wstring anchorKey = NormalizeExplorerPathKey(m_selectionAnchorPath);
+        for (int i = 0; i < static_cast<int>(m_visibleItems.size()); ++i) {
+            if (NormalizeExplorerPathKey(m_visibleItems[i].fullPath) == anchorKey) {
+                anchorIdx = i;
+                break;
+            }
+        }
+    }
+    if (anchorIdx < 0 && !m_activeFilePath.empty()) {
+        const std::wstring activeKey = NormalizeExplorerPathKey(m_activeFilePath);
+        for (int i = 0; i < static_cast<int>(m_visibleItems.size()); ++i) {
+            if (NormalizeExplorerPathKey(m_visibleItems[i].fullPath) == activeKey) {
+                anchorIdx = i;
+                m_selectionAnchorPath = m_visibleItems[i].fullPath;
+                break;
+            }
+        }
+    }
+    if (anchorIdx < 0) {
+        anchorIdx = targetIdx;
+        m_selectionAnchorPath = m_visibleItems[targetIdx].fullPath;
+    }
+
+    int lo = (std::min)(anchorIdx, targetIdx);
+    int hi = (std::max)(anchorIdx, targetIdx);
+    m_selectedPaths.clear();
+    for (int i = lo; i <= hi; ++i) {
+        if (m_visibleItems[i].fullPath == L"__EXTERNAL_LIBRARIES__") break;
+        if (!IsVirtualExplorerPath(m_visibleItems[i].fullPath)) {
+            m_selectedPaths.push_back(m_visibleItems[i].fullPath);
+        }
+    }
+}
+
+void DrawerPanel::SelectAllExplorerItems() {
+    m_selectedPaths.clear();
+    const auto wsRoots = GetAllWorkspaceFolders();
+    auto isRootFolder = [&](const std::wstring& p) {
+        const std::wstring k = NormalizeExplorerPathKey(p);
+        for (const auto& r : wsRoots) {
+            if (NormalizeExplorerPathKey(r.path) == k) return true;
+        }
+        return false;
+    };
+    for (const auto& item : m_visibleItems) {
+        if (item.fullPath == L"__EXTERNAL_LIBRARIES__") break;
+        if (IsVirtualExplorerPath(item.fullPath) || isRootFolder(item.fullPath)) continue;
+        m_selectedPaths.push_back(item.fullPath);
+    }
+    if (!m_selectedPaths.empty()) {
+        m_selectionAnchorPath = m_selectedPaths.front();
+    }
+}
+
+void DrawerPanel::ReplaceSelectedPaths(const std::vector<std::wstring>& paths) {
+    m_selectedPaths.clear();
+    for (const auto& p : paths) {
+        if (!p.empty() && !IsVirtualExplorerPath(p) && !IsPathSelected(p)) {
+            m_selectedPaths.push_back(p);
+        }
+    }
+    if (!m_selectedPaths.empty()) {
+        m_selectionAnchorPath = m_selectedPaths.back();
+    } else {
+        m_selectionAnchorPath.clear();
+    }
+}
+
+void DrawerPanel::RemoveSelectedPath(const std::wstring& path) {
+    if (path.empty()) return;
+    const std::wstring key = NormalizeExplorerPathKey(path);
+    const std::wstring prefix = key + L"\\";
+    std::erase_if(m_selectedPaths, [&](const std::wstring& s) {
+        const std::wstring sk = NormalizeExplorerPathKey(s);
+        return sk == key || sk.rfind(prefix, 0) == 0;
+    });
+    if (!m_selectionAnchorPath.empty()) {
+        const std::wstring ak = NormalizeExplorerPathKey(m_selectionAnchorPath);
+        if (ak == key || ak.rfind(prefix, 0) == 0) {
+            m_selectionAnchorPath = m_selectedPaths.empty() ? L"" : m_selectedPaths.back();
+        }
+    }
+}
+
+std::vector<std::wstring> DrawerPanel::GetTopLevelSelectedPaths() const {
+    std::vector<std::pair<std::wstring, std::wstring>> keyed;
+    keyed.reserve(m_selectedPaths.size());
+    const auto wsRoots = GetAllWorkspaceFolders();
+    auto isRootFolder = [&](const std::wstring& k) {
+        for (const auto& r : wsRoots) {
+            if (NormalizeExplorerPathKey(r.path) == k) return true;
+        }
+        return false;
+    };
+
+    for (const auto& p : m_selectedPaths) {
+        if (IsVirtualExplorerPath(p)) continue;
+        std::wstring k = NormalizeExplorerPathKey(p);
+        if (k.empty() || isRootFolder(k)) continue;
+        bool dup = false;
+        for (const auto& existing : keyed) {
+            if (existing.second == k) { dup = true; break; }
+        }
+        if (!dup) {
+            keyed.emplace_back(p, k);
+        }
+    }
+
+    // Filter out any item whose ancestor directory is also selected so batch Move/Delete never double-processes.
+    std::vector<std::wstring> result;
+    result.reserve(keyed.size());
+    for (size_t i = 0; i < keyed.size(); ++i) {
+        bool hasSelectedAncestor = false;
+        for (size_t j = 0; j < keyed.size(); ++j) {
+            if (i == j) continue;
+            const std::wstring& ancestorKey = keyed[j].second;
+            std::wstring prefix = ancestorKey;
+            if (!prefix.empty() && prefix.back() != L'\\') prefix += L'\\';
+            if (keyed[i].second.rfind(prefix, 0) == 0) {
+                hasSelectedAncestor = true;
+                break;
+            }
+        }
+        if (!hasSelectedAncestor) {
+            result.push_back(keyed[i].first);
+        }
+    }
+    return result;
 }
 
 void DrawerPanel::RebuildVisibleItems() {
@@ -1462,6 +1664,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 item.bounds = D2D1::RectF(railW + config.ScaleF(4.0f), curY, railW + fullDrawerW - config.ScaleF(4.0f), curY + itemH);
 
                 bool isActive = (!m_activeFilePath.empty() && _wcsicmp(item.fullPath.c_str(), m_activeFilePath.c_str()) == 0);
+                bool isMultiSelected = IsPathSelected(item.fullPath);
                 bool isHovered = (m_hoveredIndex == static_cast<int>(i));
 
                 D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(item.bounds, 3.5f, 3.5f);
@@ -1475,8 +1678,8 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.60f, 1.0f, 0.95f), &brushDropBorder);
                     if (brushDropBg) pRT->FillRoundedRectangle(rrc, brushDropBg.Get());
                     if (brushDropBorder) pRT->DrawRoundedRectangle(rrc, brushDropBorder.Get(), 1.5f);
-                } else if (isActive) {
-                    // Active selection highlight bar matching Images 2 & 3
+                } else if (isMultiSelected || isActive) {
+                    // Active / multi-selection highlight bar
                     if (theme.brushTreeSelected) {
                         pRT->FillRoundedRectangle(rrc, theme.brushTreeSelected.Get());
                     } else {

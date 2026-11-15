@@ -3737,6 +3737,7 @@ void Window::OpenCourseTab(const std::wstring& courseTitle, const std::wstring& 
 void Window::ClearExplorerSelectionOverride() noexcept {
     m_selectedExplorerPath.clear();
     m_explorerClearedSelection = false;
+    m_drawer.ClearSelection();
 }
 
 void Window::SyncActiveTabWithDrawer() {
@@ -4403,26 +4404,262 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+bool Window::IsExplorerKeyboardFocused() const noexcept {
+    return m_explorerHasFocus && m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
+           m_drawerAnimProgress > 0.001f && !m_drawer.IsRenaming() && !m_drawer.IsCreating() &&
+           !(m_terminal.IsOpen() && m_isTerminalFocused);
+}
+
+std::vector<std::wstring> Window::GetActiveExplorerTargetPaths(const std::wstring& fallbackPath) const {
+    if (m_drawer.GetSelectedCount() > 1) {
+        auto selected = m_drawer.GetTopLevelSelectedPaths();
+        if (!selected.empty()) {
+            if (fallbackPath.empty() || m_drawer.IsPathSelected(fallbackPath)) {
+                return selected;
+            }
+        }
+    }
+    if (!fallbackPath.empty()) {
+        return { fallbackPath };
+    }
+    if (!m_selectedExplorerPath.empty()) {
+        return { m_selectedExplorerPath };
+    }
+    if (m_drawer.GetSelectedCount() == 1 && !m_drawer.GetSelectedPaths().empty()) {
+        return { m_drawer.GetSelectedPaths().front() };
+    }
+    return {};
+}
+
+std::vector<std::wstring> Window::GetExplorerDragSourcePaths() const {
+    if (m_dragCandidatePath.empty()) return {};
+    if (m_drawer.GetSelectedCount() > 1 && m_drawer.IsPathSelected(m_dragCandidatePath)) {
+        auto selected = m_drawer.GetTopLevelSelectedPaths();
+        if (!selected.empty()) {
+            return selected;
+        }
+    }
+    return { m_dragCandidatePath };
+}
+
+void Window::CopyExplorerSelectionToClipboard(bool isCut, const std::wstring& fallbackPath) {
+    auto targets = GetActiveExplorerTargetPaths(fallbackPath);
+    if (targets.empty()) return;
+    m_clipboardPaths = targets;
+    m_clipboardPath = targets.front();
+    m_clipboardIsCut = isCut;
+    std::wstring joined;
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (i > 0) joined += L"\r\n";
+        joined += targets[i];
+    }
+    SetClipboardText(m_hwnd, joined);
+}
+
+void Window::PasteClipboardToExplorerTarget(const std::wstring& targetPath, bool targetIsFolder) {
+    std::vector<std::wstring> sources = m_clipboardPaths;
+    if (sources.empty() && !m_clipboardPath.empty()) {
+        sources.push_back(m_clipboardPath);
+    }
+    if (sources.empty()) return;
+
+    std::filesystem::path destDir;
+    if (!targetPath.empty()) {
+        destDir = targetIsFolder ? std::filesystem::path(targetPath) : std::filesystem::path(targetPath).parent_path();
+    } else if (m_drawer.HasOpenFolder()) {
+        destDir = std::filesystem::path(m_drawer.GetOpenFolderPath());
+    }
+    if (destDir.empty()) return;
+
+    if (m_clipboardIsCut) {
+        if (sources.size() == 1 && std::filesystem::exists(sources.front())) {
+            std::filesystem::path src(sources.front());
+            std::filesystem::path dest = destDir / src.filename();
+            std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+            if (m_config.updateImportsOnRename && !wsRoot.empty()) {
+                auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, src.wstring());
+                if (!refs.empty()) {
+                    m_confirmDiscardModal.OpenUpdateImports(src.wstring(), dest.wstring(), refs.size(), true);
+                    m_clipboardPath.clear();
+                    m_clipboardPaths.clear();
+                    m_clipboardIsCut = false;
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
+        }
+        if (ExecuteMoveExplorerItems(sources, destDir)) {
+            m_clipboardPath.clear();
+            m_clipboardPaths.clear();
+            m_clipboardIsCut = false;
+        }
+        return;
+    }
+
+    bool anyCopied = false;
+    std::vector<std::wstring> createdPaths;
+    for (const auto& s : sources) {
+        std::error_code ec;
+        if (s.empty() || !std::filesystem::exists(s, ec)) continue;
+        std::filesystem::path src(s);
+        std::filesystem::path dest = destDir / src.filename();
+        if (std::filesystem::exists(dest, ec)) {
+            std::wstring stem = dest.stem().wstring();
+            std::wstring ext = dest.extension().wstring();
+            for (int n = 1; n < 100 && std::filesystem::exists(dest, ec); ++n) {
+                std::wstring cand = stem + L" copy" + (n > 1 ? L" " + std::to_wstring(n) : L"") + ext;
+                dest = destDir / cand;
+            }
+        }
+        if (std::filesystem::is_directory(src, ec)) {
+            std::filesystem::copy(src, dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+        } else {
+            std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec);
+        }
+        if (!ec) {
+            m_explorerUndo.PushCopy(dest.wstring());
+            createdPaths.push_back(dest.wstring());
+            anyCopied = true;
+        }
+    }
+    if (anyCopied) {
+        auto expDirs = m_drawer.GetExpandedDirs();
+        expDirs.insert(destDir.wstring());
+        m_drawer.SetExpandedDirs(expDirs);
+        m_drawer.RefreshTree();
+        m_drawer.ReplaceSelectedPaths(createdPaths);
+        if (!createdPaths.empty()) m_selectedExplorerPath = createdPaths.back();
+        NotifyGraphViewFilesystemChanged();
+        m_drawer.RefreshGitStatusOnly(true);
+    }
+}
+
+bool Window::ExecuteMoveExplorerItems(const std::vector<std::wstring>& srcPaths, const std::filesystem::path& destDir) {
+    std::error_code ec;
+    if (destDir.empty() || !std::filesystem::exists(destDir, ec)) return false;
+
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> plannedMoves;
+    for (const auto& rawSrc : srcPaths) {
+        if (rawSrc.empty()) continue;
+        std::filesystem::path srcP(rawSrc);
+        std::filesystem::path destP = destDir / srcP.filename();
+        if (_wcsicmp(srcP.c_str(), destP.c_str()) == 0 ||
+            _wcsicmp(srcP.parent_path().c_str(), destDir.c_str()) == 0) {
+            continue;
+        }
+        bool srcIsDir = std::filesystem::is_directory(srcP, ec);
+        if (srcIsDir) {
+            auto rel = std::filesystem::relative(destDir, srcP, ec);
+            if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                continue; // Cannot drop parent folder into child
+            }
+        }
+        if (std::filesystem::exists(destP, ec)) {
+            m_confirmDiscardModal.OpenNotice(
+                L"Move Error",
+                L"A file or folder with name '" + srcP.filename().wstring() + L"' already exists in destination.",
+                L"Resolve the naming conflict and try moving again."
+            );
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return false;
+        }
+        plannedMoves.emplace_back(srcP, destP);
+    }
+
+    if (plannedMoves.empty()) return false;
+
+    std::vector<std::wstring> movedDestPaths;
+    bool anyMoved = false;
+    for (const auto& [srcP, destP] : plannedMoves) {
+        bool isDir = std::filesystem::is_directory(srcP, ec);
+        ec.clear();
+        std::filesystem::rename(srcP, destP, ec);
+        if (ec) {
+            ec.clear();
+            if (isDir) {
+                std::filesystem::copy(srcP, destP, std::filesystem::copy_options::recursive, ec);
+            } else {
+                std::filesystem::copy_file(srcP, destP, std::filesystem::copy_options::overwrite_existing, ec);
+            }
+            if (!ec) {
+                std::filesystem::remove_all(srcP, ec);
+            }
+        }
+        if (!ec) {
+            anyMoved = true;
+            m_explorerUndo.PushMove(srcP.wstring(), destP.wstring());
+            movedDestPaths.push_back(destP.wstring());
+
+            // Update open tabs pointing to moved file or inside moved folder
+            const std::wstring srcPrefix = srcP.wstring() + L"\\";
+            for (auto& grp : m_editorGroups) {
+                for (auto& doc : grp.docs) {
+                    if (_wcsicmp(doc.filePath.c_str(), srcP.c_str()) == 0) {
+                        doc.filePath = destP.wstring();
+                        doc.fileName = destP.filename().wstring();
+                    } else if (isDir && doc.filePath.size() > srcPrefix.size() &&
+                               _wcsnicmp(doc.filePath.c_str(), srcPrefix.c_str(), srcPrefix.size()) == 0) {
+                        doc.filePath = destP.wstring() + doc.filePath.substr(srcP.wstring().length());
+                    }
+                }
+            }
+        }
+    }
+
+    if (anyMoved) {
+        auto expDirs = m_drawer.GetExpandedDirs();
+        expDirs.insert(destDir.wstring());
+        m_drawer.SetExpandedDirs(expDirs);
+        m_drawer.RefreshTree();
+        m_drawer.ReplaceSelectedPaths(movedDestPaths);
+        m_explorerClearedSelection = false;
+        m_selectedExplorerPath = movedDestPaths.back();
+        m_drawer.SetActiveFilePath(m_selectedExplorerPath);
+        UpdateDrawerDirtyFiles();
+        UpdateDrawerErrorFiles();
+        m_drawer.RefreshGitStatusOnly(true);
+        NotifyGraphViewFilesystemChanged();
+        SaveSessionState();
+        if (movedDestPaths.size() > 1) {
+            m_drawer.ShowGitNotification(L"Moved " + std::to_wstring(movedDestPaths.size()) + L" items");
+        }
+    }
+    return anyMoved;
+}
+
 void Window::DoDeleteSelectedExplorerItem() {
-    std::wstring targetPath = m_selectedExplorerPath;
-    if (targetPath.empty()) {
+    auto targets = GetActiveExplorerTargetPaths();
+    std::vector<std::wstring> existingTargets;
+    std::error_code ec;
+    for (const auto& p : targets) {
+        if (!p.empty() && std::filesystem::exists(p, ec)) {
+            existingTargets.push_back(p);
+        }
+    }
+    if (existingTargets.empty()) {
+        std::wstring fallback;
         int hovered = m_drawer.GetHoveredIndex();
         if (hovered >= 0) {
             const auto* pItem = m_drawer.GetItem(hovered);
-            if (pItem) targetPath = pItem->fullPath;
+            if (pItem) fallback = pItem->fullPath;
+        }
+        if (fallback.empty()) fallback = m_drawer.GetActiveFilePath();
+        if (fallback.empty()) {
+            auto* pDoc = GetActiveDoc();
+            if (pDoc) fallback = pDoc->filePath;
+        }
+        if (!fallback.empty() && std::filesystem::exists(fallback, ec)) {
+            existingTargets.push_back(fallback);
         }
     }
-    if (targetPath.empty()) {
-        targetPath = m_drawer.GetActiveFilePath();
-    }
-    if (targetPath.empty()) {
-        auto* pDoc = GetActiveDoc();
-        if (pDoc) targetPath = pDoc->filePath;
-    }
-    if (targetPath.empty() || !std::filesystem::exists(targetPath)) return;
+    if (existingTargets.empty()) return;
 
-    bool isFolder = std::filesystem::is_directory(targetPath);
-    m_confirmDiscardModal.OpenDelete(targetPath, isFolder);
+    if (existingTargets.size() > 1) {
+        m_confirmDiscardModal.OpenDeleteBatch(existingTargets);
+    } else {
+        bool isFolder = std::filesystem::is_directory(existingTargets.front(), ec);
+        m_confirmDiscardModal.OpenDelete(existingTargets.front(), isFolder);
+    }
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -5597,6 +5834,11 @@ void Window::FlushPendingAutoSaves() {
 }
 
 void Window::DoCut() {
+    if (IsExplorerKeyboardFocused()) {
+        CopyExplorerSelectionToClipboard(true);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
@@ -5619,6 +5861,11 @@ void Window::DoCut() {
 }
 
 void Window::DoCopy() {
+    if (IsExplorerKeyboardFocused()) {
+        CopyExplorerSelectionToClipboard(false);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         std::wstring textToCopy;
@@ -5658,6 +5905,14 @@ void Window::DoCopy() {
 }
 
 void Window::DoPaste() {
+    if (IsExplorerKeyboardFocused()) {
+        std::wstring target = !m_selectedExplorerPath.empty() ? m_selectedExplorerPath : ResolveExplorerCreateTargetDir(false);
+        std::error_code ec;
+        bool isDir = !target.empty() && std::filesystem::is_directory(target, ec);
+        PasteClipboardToExplorerTarget(target, isDir);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         if (pDoc->buffer.IsMemoryMappedReadOnly()) return;
@@ -5761,6 +6016,16 @@ void Window::DoExplorerRedo() {
 }
 
 void Window::DoSelectAll() {
+    if (IsExplorerKeyboardFocused() && m_drawer.HasOpenFolder()) {
+        m_drawer.SelectAllExplorerItems();
+        const auto& sel = m_drawer.GetSelectedPaths();
+        if (!sel.empty()) {
+            m_selectedExplorerPath = sel.back();
+            m_explorerClearedSelection = false;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         size_t count = pDoc->buffer.GetLineCount();
@@ -8712,6 +8977,8 @@ struct DeleteTaskResult {
     std::wstring targetPath;
     bool isFolder = false;
     bool success = false;
+    std::vector<std::wstring> batchPaths;
+    size_t batchSuccessCount = 0;
 };
 
 void Window::ExecuteDiscardOrRestore(const std::wstring& targetPath, const std::wstring& targetFileName, const std::wstring& targetStatus) {
@@ -8856,6 +9123,87 @@ void Window::ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder) {
     }).detach();
 }
 
+void Window::CleanupDeletedExplorerPath(const std::wstring& deletedPath, bool isFolder) {
+    if (deletedPath.empty()) return;
+    const std::wstring prefix = deletedPath + L"\\";
+    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
+        if (g >= static_cast<int>(m_editorGroups.size())) continue;
+        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
+            if (g >= static_cast<int>(m_editorGroups.size())) break;
+            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
+            const auto& path = m_editorGroups[g].docs[d].filePath;
+            if (_wcsicmp(path.c_str(), deletedPath.c_str()) == 0 ||
+                (isFolder && path.size() > prefix.size() && _wcsnicmp(path.c_str(), prefix.c_str(), prefix.size()) == 0)) {
+                CloseDocument(g, d);
+            }
+        }
+    }
+    m_drawer.RemoveSelectedPath(deletedPath);
+    if (_wcsicmp(m_selectedExplorerPath.c_str(), deletedPath.c_str()) == 0) {
+        m_selectedExplorerPath.clear();
+    }
+}
+
+void Window::ExecuteDeleteBatchAsync(const std::vector<std::wstring>& targetPaths) {
+    if (targetPaths.empty()) {
+        m_confirmDiscardModal.Close();
+        return;
+    }
+
+    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    HWND hwnd = m_hwnd;
+    std::thread([this, hwnd, targetPaths]() {
+        auto tStart = std::chrono::steady_clock::now();
+        std::vector<std::wstring> deletedPaths;
+        size_t okCount = 0;
+
+        for (const auto& targetPath : targetPaths) {
+            if (targetPath.empty()) continue;
+            std::error_code ec;
+            bool isFolder = std::filesystem::is_directory(targetPath, ec);
+            std::wstring backup;
+            m_explorerUndo.PrepareDelete(targetPath, isFolder, backup);
+            std::filesystem::remove_all(targetPath, ec);
+            if (!ec) {
+                m_explorerUndo.PushDelete(targetPath, backup, isFolder);
+                deletedPaths.push_back(targetPath);
+                okCount++;
+            }
+        }
+
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tStart).count();
+        if (elapsedMs < 150) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150 - elapsedMs));
+        }
+
+        auto* pRes = new DeleteTaskResult{};
+        pRes->batchPaths = std::move(deletedPaths);
+        pRes->batchSuccessCount = okCount;
+        pRes->success = (okCount > 0);
+        PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes));
+    }).detach();
+}
+
+void Window::FinishDeleteBatch(const std::vector<std::wstring>& deletedPaths, size_t successCount) {
+    if (successCount > 0) {
+        m_drawer.ShowGitNotification(L"✓ Deleted " + std::to_wstring(successCount) + L" items");
+    } else {
+        m_drawer.ShowGitNotification(L"✕ Failed to delete selected items");
+    }
+    for (const auto& path : deletedPaths) {
+        CleanupDeletedExplorerPath(path, true);
+    }
+    if (m_selectedExplorerPath.empty() && !m_drawer.GetSelectedPaths().empty()) {
+        m_selectedExplorerPath = m_drawer.GetSelectedPaths().back();
+    }
+    m_drawer.RefreshTree();
+    NotifyGraphViewFilesystemChanged();
+    UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
+    m_drawer.RefreshGitStatusOnly(true);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::FinishDelete(const std::wstring& targetPath, bool isFolder, bool success) {
     if (targetPath.empty()) return;
 
@@ -8866,20 +9214,9 @@ void Window::FinishDelete(const std::wstring& targetPath, bool isFolder, bool su
         m_drawer.ShowGitNotification(L"✕ Failed to delete " + fileName);
     }
 
-    // Close open documents corresponding to deleted path
-    for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
-        if (g >= static_cast<int>(m_editorGroups.size())) continue;
-        for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
-            if (g >= static_cast<int>(m_editorGroups.size())) break;
-            if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
-            const auto& path = m_editorGroups[g].docs[d].filePath;
-            if (path == targetPath || (isFolder && path.starts_with(targetPath + L"\\"))) {
-                CloseDocument(g, d);
-            }
-        }
+    if (success) {
+        CleanupDeletedExplorerPath(targetPath, isFolder);
     }
-
-    if (m_selectedExplorerPath == targetPath) m_selectedExplorerPath.clear();
     m_drawer.RefreshTree();
     NotifyGraphViewFilesystemChanged();
     UpdateDrawerDirtyFiles();
@@ -10545,10 +10882,15 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Start 60-second periodic idle garbage collection timer
     SetTimer(m_hwnd, m_gcTimerId, 60000, nullptr);
 
+    // Enable true Windows ConPTY for interactive shells so CLI spinners, TTY prompts, and Ctrl+C work natively.
+    m_terminal.SetUseConPtyForShells(true);
+
     // Register callback for immediate terminal output repainting (marshal safely from reader thread to UI thread)
     m_terminal.SetOutputCallback([this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
+        if (m_hwnd && !m_terminalRepaintPosted.exchange(true)) {
+            if (!PostMessageW(m_hwnd, WM_USER + 201, 0, 0)) {
+                m_terminalRepaintPosted.store(false);
+            }
         }
     });
 
@@ -12036,7 +12378,10 @@ void Window::OnPaint() {
         float ghostX = static_cast<float>(m_dragCurrentPt.x) + 14.0f;
         float ghostY = static_cast<float>(m_dragCurrentPt.y) + 14.0f;
 
-        std::wstring dragLabel = m_dragCandidateName;
+        auto dragSources = GetExplorerDragSourcePaths();
+        std::wstring dragLabel = (dragSources.size() > 1)
+            ? (std::to_wstring(dragSources.size()) + L" items")
+            : m_dragCandidateName;
         if (m_isDragOverExplorer && m_hasDragDropTarget) {
             dragLabel += L" (move)";
         } else if (m_hasDragDropTarget) {
@@ -14145,34 +14490,46 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             m_explorerDropTargetIndex = -1;
             m_explorerDropTargetIsRoot = false;
 
-            // 1. Check if dragging over Explorer drawer to move file/folder
+            // 1. Check if dragging over Explorer drawer to move file(s)/folder(s)
             if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
                 clientPt.x >= railW && clientPt.x < railW + drawerW &&
                 clientPt.y >= headerH && clientPt.y < clientH) {
                 m_isDragOverExplorer = true;
                 int hoverTree = m_drawer.HitTest(clientPt, m_config);
-                std::filesystem::path srcP(m_dragCandidatePath);
+                auto dragSources = GetExplorerDragSourcePaths();
                 std::error_code ec;
+
+                auto validateDestDir = [&](const std::filesystem::path& destDir, const std::filesystem::path* targetSelf) {
+                    if (destDir.empty()) return false;
+                    bool anyMovable = false;
+                    for (const auto& rawSrc : dragSources) {
+                        std::filesystem::path srcP(rawSrc);
+                        if (targetSelf && _wcsicmp(srcP.c_str(), targetSelf->c_str()) == 0) {
+                            return false; // Cannot drop onto one of the dragged items
+                        }
+                        bool srcIsDir = std::filesystem::is_directory(srcP, ec);
+                        if (srcIsDir) {
+                            if (_wcsicmp(srcP.c_str(), destDir.c_str()) == 0) {
+                                return false;
+                            }
+                            auto rel = std::filesystem::relative(destDir, srcP, ec);
+                            if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                                return false; // Cannot drop folder into its descendant
+                            }
+                        }
+                        if (_wcsicmp(srcP.parent_path().c_str(), destDir.c_str()) != 0) {
+                            anyMovable = true;
+                        }
+                    }
+                    return anyMovable;
+                };
 
                 if (hoverTree >= 0) {
                     const auto* pTarget = m_drawer.GetItem(hoverTree);
                     if (pTarget) {
                         std::filesystem::path targetP(pTarget->fullPath);
                         std::filesystem::path destDir = pTarget->isFolder ? targetP : targetP.parent_path();
-
-                        bool isValid = true;
-                        if (srcP == targetP) {
-                            isValid = false; // Cannot drop onto self
-                        } else if (srcP.parent_path() == destDir) {
-                            isValid = false; // Already inside this folder
-                        } else if (m_dragCandidateIsFolder) {
-                            auto rel = std::filesystem::relative(destDir, srcP, ec);
-                            if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
-                                isValid = false; // Cannot drop folder into child
-                            }
-                        }
-
-                        if (isValid) {
+                        if (validateDestDir(destDir, &targetP)) {
                             m_hasDragDropTarget = true;
                             m_explorerDropTargetIndex = hoverTree;
                             m_explorerDropTargetIsRoot = (hoverTree == 0 && pTarget->isFolder);
@@ -14184,7 +14541,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 } else {
                     // Over empty space in drawer -> target is root directory
                     std::filesystem::path rootP(m_drawer.GetOpenFolderPath());
-                    if (!rootP.empty() && srcP.parent_path() != rootP) {
+                    if (validateDestDir(rootP, nullptr)) {
                         m_hasDragDropTarget = true;
                         m_explorerDropTargetIsRoot = true;
                         m_explorerDropTargetIndex = 0;
@@ -15181,11 +15538,16 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
 
                     // Context Menu Actions (Images 4 & 5)
-                    case ui::MenuActionId::CtxOpenToSide:
-                        if (!m_contextTargetPath.empty()) {
-                            OpenFileDocument(m_contextTargetPath, false);
+                    case ui::MenuActionId::CtxOpenToSide: {
+                        auto targets = GetActiveExplorerTargetPaths(m_contextTargetPath);
+                        for (const auto& t : targets) {
+                            std::error_code ec;
+                            if (!t.empty() && !std::filesystem::is_directory(t, ec)) {
+                                OpenFileDocument(t, false);
+                            }
                         }
                         break;
+                    }
                     case ui::MenuActionId::CtxOpenWith:
                         if (!m_contextTargetPath.empty()) {
                             ShellExecuteW(m_hwnd, L"open", L"rundll32.exe",
@@ -15223,88 +15585,62 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         DoExplorerRedo();
                         break;
                     case ui::MenuActionId::CtxCut:
-                        if (!m_contextTargetPath.empty()) {
-                            m_clipboardPath = m_contextTargetPath;
-                            m_clipboardIsCut = true;
-                            SetClipboardText(m_hwnd, m_contextTargetPath);
-                        }
+                        CopyExplorerSelectionToClipboard(true, m_contextTargetPath);
                         break;
                     case ui::MenuActionId::CtxCopy:
-                        if (!m_contextTargetPath.empty()) {
-                            m_clipboardPath = m_contextTargetPath;
-                            m_clipboardIsCut = false;
-                            SetClipboardText(m_hwnd, m_contextTargetPath);
-                        }
+                        CopyExplorerSelectionToClipboard(false, m_contextTargetPath);
                         break;
                     case ui::MenuActionId::CtxPaste:
-                        if (!m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath)) {
-                            std::filesystem::path src(m_clipboardPath);
-                            std::filesystem::path destDir = m_contextTargetIsFolder ? m_contextTargetPath
-                                : std::filesystem::path(m_contextTargetPath).parent_path().wstring();
-                            std::filesystem::path dest = destDir / src.filename();
-                            if (m_clipboardIsCut) {
-                                std::wstring wsRoot = m_drawer.GetOpenFolderPath();
-                                if (m_config.updateImportsOnRename && !wsRoot.empty()) {
-                                    auto refs = editor::SmartImportHelper::FindReferencesToPath(wsRoot, src.wstring());
-                                    if (!refs.empty()) {
-                                        m_confirmDiscardModal.OpenUpdateImports(src.wstring(), dest.wstring(), refs.size(), true);
-                                        m_clipboardPath.clear();
-                                        m_clipboardIsCut = false;
-                                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                                        break;
-                                    }
-                                }
+                        PasteClipboardToExplorerTarget(m_contextTargetPath, m_contextTargetIsFolder);
+                        break;
+                    case ui::MenuActionId::CtxCopyPath: {
+                        auto targets = GetActiveExplorerTargetPaths(m_contextTargetPath);
+                        if (!targets.empty()) {
+                            std::wstring joined;
+                            for (size_t i = 0; i < targets.size(); ++i) {
+                                if (i > 0) joined += L"\r\n";
+                                joined += targets[i];
                             }
-                            std::error_code ec;
-                            if (m_clipboardIsCut && std::filesystem::exists(dest, ec) && _wcsicmp(src.c_str(), dest.c_str()) != 0) {
-                                m_confirmDiscardModal.OpenNotice(
-                                    L"File Already Exists",
-                                    L"A file or folder with the name '" + dest.filename().wstring() + L"' already exists in destination.",
-                                    L"Cannot move to an existing destination."
-                                );
-                                InvalidateRect(m_hwnd, nullptr, FALSE);
-                                break;
-                            }
-                            if (std::filesystem::is_directory(src)) {
-                                std::filesystem::copy(src, dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
-                            } else {
-                                std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing, ec);
-                            }
-                            if (m_clipboardIsCut && !ec) {
-                                m_explorerUndo.PushMove(src.wstring(), dest.wstring());
-                                std::filesystem::remove_all(src, ec);
-                                m_clipboardPath.clear();
-                                m_clipboardIsCut = false;
-                            } else if (!ec) {
-                                m_explorerUndo.PushCopy(dest.wstring());
-                            }
-                            m_drawer.RefreshTree();
+                            SetClipboardText(m_hwnd, joined);
                         }
                         break;
-                    case ui::MenuActionId::CtxCopyPath:
-                        if (!m_contextTargetPath.empty()) {
-                            SetClipboardText(m_hwnd, m_contextTargetPath);
+                    }
+                    case ui::MenuActionId::CtxCopyRelativePath: {
+                        auto targets = GetActiveExplorerTargetPaths(m_contextTargetPath);
+                        if (!targets.empty()) {
+                            std::wstring joined;
+                            const std::wstring root = m_drawer.GetOpenFolderPath();
+                            for (size_t i = 0; i < targets.size(); ++i) {
+                                if (i > 0) joined += L"\r\n";
+                                joined += GetRelativePath(targets[i], root);
+                            }
+                            SetClipboardText(m_hwnd, joined);
                         }
                         break;
-                    case ui::MenuActionId::CtxCopyRelativePath:
-                        if (!m_contextTargetPath.empty()) {
-                            std::wstring rel = GetRelativePath(m_contextTargetPath, m_drawer.GetOpenFolderPath());
-                            SetClipboardText(m_hwnd, rel);
-                        }
-                        break;
+                    }
                     case ui::MenuActionId::CtxRename:
                         if (!m_contextTargetPath.empty()) {
                             m_drawer.StartInlineRenameByPath(m_contextTargetPath);
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
                         break;
-                    case ui::MenuActionId::CtxDelete:
-                        if (!m_contextTargetPath.empty()) {
-                            bool isFolder = std::filesystem::is_directory(m_contextTargetPath);
-                            m_confirmDiscardModal.OpenDelete(m_contextTargetPath, isFolder);
+                    case ui::MenuActionId::CtxDelete: {
+                        auto targets = GetActiveExplorerTargetPaths(m_contextTargetPath);
+                        std::vector<std::wstring> existing;
+                        std::error_code ec;
+                        for (const auto& t : targets) {
+                            if (!t.empty() && std::filesystem::exists(t, ec)) existing.push_back(t);
+                        }
+                        if (existing.size() > 1) {
+                            m_confirmDiscardModal.OpenDeleteBatch(existing);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        } else if (!existing.empty()) {
+                            bool isFolder = std::filesystem::is_directory(existing.front(), ec);
+                            m_confirmDiscardModal.OpenDelete(existing.front(), isFolder);
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                         }
                         break;
+                    }
                     case ui::MenuActionId::CtxNewFile: {
                         std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
                             : (m_contextTargetPath.empty() ? (m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".")
@@ -16251,6 +16587,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_drawer.SetGitCommitBoxFocus(1);
                 } else if (modalType == ui::ConfirmModalType::UpdateImportsOnRename || modalType == ui::ConfirmModalType::UpdateImportsOnMove) {
                     ExecuteRenameAndUpdateImports(targetPath, m_confirmDiscardModal.GetNewFilePath(), modalType == ui::ConfirmModalType::UpdateImportsOnMove);
+                } else if (modalType == ui::ConfirmModalType::DeleteBatch) {
+                    ExecuteDeleteBatchAsync(m_confirmDiscardModal.GetBatchPaths());
                 } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
                     ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
                 } else {
@@ -18066,9 +18404,50 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     m_explorerHasFocus = true;
                     const auto* pItem = m_drawer.GetItem(clickedTree);
                     if (pItem) {
+                        bool isCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                        bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                         m_explorerClearedSelection = false;
-                        m_selectedExplorerPath = pItem->fullPath;
-                        m_drawer.SetActiveFilePath(pItem->fullPath);
+
+                        if (isShift) {
+                            if (m_drawer.GetSelectedCount() == 0) {
+                                std::wstring seed = !m_selectedExplorerPath.empty() ? m_selectedExplorerPath : m_drawer.GetActiveFilePath();
+                                if (!seed.empty()) m_drawer.SetSelectionAnchor(seed);
+                            }
+                            m_drawer.SelectRangeTo(clickedTree);
+                            m_selectedExplorerPath = pItem->fullPath;
+                            m_drawer.SetActiveFilePath(pItem->fullPath);
+                            m_pendingSingleSelectOnRelease = false;
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+
+                        if (isCtrl) {
+                            if (m_drawer.GetSelectedCount() == 0) {
+                                std::wstring seed = !m_selectedExplorerPath.empty() ? m_selectedExplorerPath : m_drawer.GetActiveFilePath();
+                                if (!seed.empty()) {
+                                    m_drawer.SetSingleSelection(seed);
+                                }
+                            }
+                            bool nowSelected = m_drawer.ToggleSelection(pItem->fullPath);
+                            if (nowSelected) {
+                                m_selectedExplorerPath = pItem->fullPath;
+                            } else {
+                                m_selectedExplorerPath = m_drawer.GetSelectedPaths().empty() ? L"" : m_drawer.GetSelectedPaths().back();
+                            }
+                            m_explorerClearedSelection = (m_drawer.GetSelectedCount() == 0);
+                            m_drawer.SetActiveFilePath(m_selectedExplorerPath);
+                            m_pendingSingleSelectOnRelease = false;
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+
+                        bool keepMultiForDrag = (m_drawer.GetSelectedCount() > 1 && m_drawer.IsPathSelected(pItem->fullPath));
+                        m_pendingSingleSelectOnRelease = keepMultiForDrag;
+                        if (!keepMultiForDrag) {
+                            m_drawer.SetSingleSelection(pItem->fullPath);
+                            m_selectedExplorerPath = pItem->fullPath;
+                            m_drawer.SetActiveFilePath(pItem->fullPath);
+                        }
                         // File or Folder item clicked: initiate potential drag candidate to move or open/toggle
                         m_dragCandidatePath = pItem->fullPath;
                         m_dragCandidateName = pItem->label;
@@ -18084,6 +18463,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_explorerDropTargetIsRoot = false;
                         SetCapture(m_hwnd);
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
                 } else if (m_config.activeRailTab == 0) {
@@ -18100,6 +18480,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_explorerHasFocus = true;
                         m_selectedExplorerPath.clear();
                         m_explorerClearedSelection = true;
+                        m_pendingSingleSelectOnRelease = false;
+                        m_drawer.ClearSelection();
                         m_drawer.SetActiveFilePath(L"");
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
@@ -18817,9 +19199,8 @@ void Window::HandleLButtonUp(POINT clientPt) {
             if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
                 clientPt.x >= railW && clientPt.x < railW + drawerW &&
                 clientPt.y >= headerH && clientPt.y < clientH) {
-                // User dropped inside Explorer drawer to move file or folder!
+                // User dropped inside Explorer drawer to move file(s) or folder(s)!
                 int dropIdx = m_drawer.HitTest(clientPt, m_config);
-                std::filesystem::path srcP(m_dragCandidatePath);
                 std::filesystem::path destDir;
 
                 if (dropIdx >= 0) {
@@ -18832,65 +19213,8 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     destDir = std::filesystem::path(m_drawer.GetOpenFolderPath());
                 }
 
-                if (!destDir.empty() && std::filesystem::exists(destDir)) {
-                    std::error_code ec;
-                    std::filesystem::path destP = destDir / srcP.filename();
-
-                    bool canMove = (srcP != destP && srcP.parent_path() != destDir);
-                    if (canMove && m_dragCandidateIsFolder) {
-                        auto rel = std::filesystem::relative(destDir, srcP, ec);
-                        if (!ec && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
-                            canMove = false; // Cannot drop parent folder into child
-                        }
-                    }
-
-                    if (canMove) {
-                        if (std::filesystem::exists(destP, ec)) {
-                            std::wstring msg = L"A file or folder with name '" + srcP.filename().wstring() + L"' already exists in destination.";
-                            MessageBoxW(m_hwnd, msg.c_str(), L"Move Error", MB_OK | MB_ICONWARNING);
-                        } else {
-                            std::filesystem::rename(srcP, destP, ec);
-                            if (ec) {
-                                ec.clear();
-                                std::filesystem::copy(srcP, destP, std::filesystem::copy_options::recursive, ec);
-                                if (!ec) {
-                                    std::filesystem::remove_all(srcP, ec);
-                                }
-                            }
-
-                            if (!ec) {
-                                // 1. Update open tabs pointing to moved file or inside moved folder
-                                for (auto& grp : m_editorGroups) {
-                                    for (auto& doc : grp.docs) {
-                                        if (doc.filePath == srcP.wstring()) {
-                                            doc.filePath = destP.wstring();
-                                            doc.fileName = destP.filename().wstring();
-                                        } else if (m_dragCandidateIsFolder && doc.filePath.rfind(srcP.wstring() + L"\\", 0) == 0) {
-                                            doc.filePath = destP.wstring() + doc.filePath.substr(srcP.wstring().length());
-                                        }
-                                    }
-                                }
-
-                                // 2. Expand destination directory if needed
-                                auto expDirs = m_drawer.GetExpandedDirs();
-                                expDirs.insert(destDir.wstring());
-                                m_drawer.SetExpandedDirs(expDirs);
-
-                                // 3. Refresh file tree and git status
-                                m_drawer.RefreshTree();
-                                m_drawer.SetActiveFilePath(destP.wstring());
-                                m_selectedExplorerPath = destP.wstring();
-                                UpdateDrawerDirtyFiles();
-                                UpdateDrawerErrorFiles();
-                                m_drawer.RefreshGitStatusOnly(true);
-
-                                // 4. Update GraphView with preserved positions
-                                NotifyGraphViewFilesystemChanged();
-                                SaveSessionState();
-                            }
-                        }
-                    }
-                }
+                auto dragSources = GetExplorerDragSourcePaths();
+                ExecuteMoveExplorerItems(dragSources, destDir);
             } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH) {
                 UpdateEditorGroupBounds();
                 int dropGrp = FindEditorGroupAtPoint(clientPt);
@@ -18900,8 +19224,16 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 const auto& grpBounds = m_editorGroups[m_focusedGroupIdx].bounds;
                 bool isOnTabBar = (clientPt.y >= grpBounds.top && clientPt.y < grpBounds.top + tabH);
                 auto* pDoc = GetActiveDoc();
+                auto dragSources = GetExplorerDragSourcePaths();
 
-                if (m_dragCandidateIsFolder || isOnTabBar || !pDoc ||
+                if (dragSources.size() > 1 && (isOnTabBar || !pDoc || pDoc->isFolderView || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary || pDoc->isDiffView)) {
+                    std::error_code ec;
+                    for (const auto& s : dragSources) {
+                        if (!std::filesystem::is_directory(s, ec)) {
+                            OpenFileDocument(s, false);
+                        }
+                    }
+                } else if (m_dragCandidateIsFolder || isOnTabBar || !pDoc ||
                     pDoc->isFolderView || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary || pDoc->isDiffView) {
                     OpenFileDocument(m_dragCandidatePath, false);
                 } else if (m_hasDragDropTarget && pDoc->filePath != m_dragCandidatePath) {
@@ -18928,12 +19260,16 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     }
 
                     std::wstring textToInsert;
-                    if (isInsideQuotes) {
-                        // User dropped into quotes: insert just the relative file path location!
-                        textToInsert = phide::editor::SmartImportHelper::ComputeRelativePath(pDoc->filePath, m_dragCandidatePath);
-                    } else {
-                        // User dropped outside quotes: generate smart language-aware import statement!
-                        textToInsert = phide::editor::SmartImportHelper::Generate(pDoc->filePath, m_dragCandidatePath);
+                    for (const auto& srcPath : dragSources) {
+                        std::error_code ec;
+                        if (std::filesystem::is_directory(srcPath, ec) || pDoc->filePath == srcPath) continue;
+                        std::wstring part = isInsideQuotes
+                            ? phide::editor::SmartImportHelper::ComputeRelativePath(pDoc->filePath, srcPath)
+                            : phide::editor::SmartImportHelper::Generate(pDoc->filePath, srcPath);
+                        if (!part.empty()) {
+                            if (!textToInsert.empty() && textToInsert.back() != L'\n') textToInsert += L"\n";
+                            textToInsert += part;
+                        }
                     }
 
                     if (!textToInsert.empty()) {
@@ -18956,6 +19292,9 @@ void Window::HandleLButtonUp(POINT clientPt) {
             // Normal click without drag: preview/open file or toggle folder!
             m_explorerClearedSelection = false;
             m_selectedExplorerPath = m_dragCandidatePath;
+            m_drawer.SetSingleSelection(m_dragCandidatePath);
+            m_drawer.SetActiveFilePath(m_dragCandidatePath);
+            m_pendingSingleSelectOnRelease = false;
             m_explorerHasFocus = true;
             if (m_dragCandidateIsFolder) {
                 m_drawer.ToggleFolder(m_dragCandidateTreeIdx);
@@ -18966,6 +19305,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
             }
         }
 
+        m_pendingSingleSelectOnRelease = false;
         m_dragCandidatePath.clear();
         m_dragCandidateName.clear();
         m_dragCandidateIsFolder = false;
@@ -19080,7 +19420,17 @@ void Window::HandleRButtonDown(POINT clientPt) {
             m_selectedExplorerPath = targetPath;
             m_explorerClearedSelection = targetPath.empty();
             m_explorerHasFocus = true;
-            bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
+            if (pItem) {
+                if (!(m_drawer.GetSelectedCount() > 1 && m_drawer.IsPathSelected(targetPath))) {
+                    m_drawer.SetSingleSelection(targetPath);
+                }
+            } else {
+                m_drawer.ClearSelection();
+            }
+            size_t multiCount = GetActiveExplorerTargetPaths(targetPath).size();
+            if (multiCount == 0) multiCount = 1;
+            bool canPaste = (!m_clipboardPaths.empty() && std::filesystem::exists(m_clipboardPaths.front())) ||
+                            (!m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath));
             m_popupMenu.OpenContextMenu(
                 static_cast<float>(clientPt.x),
                 static_cast<float>(clientPt.y),
@@ -19092,7 +19442,8 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 m_explorerUndo.CanUndo(),
                 m_explorerUndo.CanRedo(),
                 clientW,
-                clientH
+                clientH,
+                multiCount
             );
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -21197,6 +21548,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             m_drawer.SetGitCommitBoxFocus(1);
                         } else if (modalType == ui::ConfirmModalType::UpdateImportsOnRename || modalType == ui::ConfirmModalType::UpdateImportsOnMove) {
                             ExecuteRenameAndUpdateImports(targetPath, m_confirmDiscardModal.GetNewFilePath(), modalType == ui::ConfirmModalType::UpdateImportsOnMove);
+                        } else if (modalType == ui::ConfirmModalType::DeleteBatch) {
+                            ExecuteDeleteBatchAsync(m_confirmDiscardModal.GetBatchPaths());
                         } else if (modalType == ui::ConfirmModalType::DeleteFile || modalType == ui::ConfirmModalType::DeleteFolder) {
                             ExecuteDeleteAsync(targetPath, modalType == ui::ConfirmModalType::DeleteFolder);
                         } else {
@@ -21397,6 +21750,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (m_isDraggingExplorerFile) {
                     m_isDraggingExplorerFile = false;
+                    m_pendingSingleSelectOnRelease = false;
                     m_dragCandidatePath.clear();
                     m_dragCandidateName.clear();
                     m_dragCandidateIsFolder = false;
@@ -21406,6 +21760,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_isDragOverExplorer = false;
                     m_drawer.ClearExplorerDropTarget();
                     ReleaseCapture();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (IsExplorerKeyboardFocused() && m_drawer.GetSelectedCount() > 1) {
+                    std::wstring keep = !m_selectedExplorerPath.empty() ? m_selectedExplorerPath : m_drawer.GetSelectedPaths().back();
+                    m_drawer.SetSingleSelection(keep);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -22943,6 +23303,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 201: {
+            m_terminalRepaintPosted.store(false);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
@@ -23007,7 +23368,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 205: {
             auto* pRes = reinterpret_cast<DeleteTaskResult*>(lParam);
             if (pRes) {
-                FinishDelete(pRes->targetPath, pRes->isFolder, pRes->success);
+                if (!pRes->batchPaths.empty() || pRes->targetPath.empty()) {
+                    FinishDeleteBatch(pRes->batchPaths, pRes->batchSuccessCount);
+                } else {
+                    FinishDelete(pRes->targetPath, pRes->isFolder, pRes->success);
+                }
                 delete pRes;
             }
             m_confirmDiscardModal.Close();

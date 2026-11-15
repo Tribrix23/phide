@@ -1079,6 +1079,20 @@ public:
     void SetActiveFilePath(const std::wstring& path) noexcept { m_activeFilePath = path; }
     [[nodiscard]] const std::wstring& GetActiveFilePath() const noexcept { return m_activeFilePath; }
 
+    // --- Explorer Multi-Select (Ctrl+Click, Shift+Click, Ctrl+A, Batch Move/Delete) ---
+    void ClearSelection() noexcept;
+    void SetSingleSelection(const std::wstring& path);
+    bool ToggleSelection(const std::wstring& path);
+    void SelectRangeTo(int targetIdx);
+    void SelectAllExplorerItems();
+    void SetSelectionAnchor(const std::wstring& path);
+    void ReplaceSelectedPaths(const std::vector<std::wstring>& paths);
+    void RemoveSelectedPath(const std::wstring& path);
+    [[nodiscard]] bool IsPathSelected(const std::wstring& path) const;
+    [[nodiscard]] const std::vector<std::wstring>& GetSelectedPaths() const noexcept { return m_selectedPaths; }
+    [[nodiscard]] size_t GetSelectedCount() const noexcept { return m_selectedPaths.size(); }
+    [[nodiscard]] std::vector<std::wstring> GetTopLevelSelectedPaths() const;
+
     // --- Search Tooltips ---
     /**
      * @brief Handles mouse movement over Code Search buttons to update floating tooltips.
@@ -1407,6 +1421,8 @@ private:
     size_t m_renameSelEnd = 0;
     size_t m_renameCaretPos = 0;
     std::wstring m_activeFilePath;
+    std::vector<std::wstring> m_selectedPaths;
+    std::wstring m_selectionAnchorPath;
 
     // Inline Tree Item Create State (Images 2 & 3: VS Code style new file / new folder)
     bool m_isCreating = false;

@@ -54,6 +54,8 @@ static std::wstring EscapeBashSingleQuoted(const std::wstring& s) {
 
 static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
     std::vector<std::pair<std::wstring, std::wstring>> vars;
+    bool hasTerm = false;
+    bool hasColorTerm = false;
     LPWCH rawEnv = GetEnvironmentStringsW();
     if (rawEnv) {
         const wchar_t* cur = rawEnv;
@@ -65,12 +67,23 @@ static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
             std::wstring key = entry.substr(0, eqPos);
             if (_wcsicmp(key.c_str(), L"GH_PROMPT_DISABLED") == 0 ||
                 _wcsicmp(key.c_str(), L"GIT_TERMINAL_PROMPT") == 0 ||
-                _wcsicmp(key.c_str(), L"GCM_INTERACTIVE") == 0) {
+                _wcsicmp(key.c_str(), L"GCM_INTERACTIVE") == 0 ||
+                _wcsicmp(key.c_str(), L"NO_COLOR") == 0 ||
+                _wcsicmp(key.c_str(), L"CI") == 0) {
                 continue;
             }
+            if (_wcsicmp(key.c_str(), L"TERM") == 0) hasTerm = true;
+            if (_wcsicmp(key.c_str(), L"COLORTERM") == 0) hasColorTerm = true;
             vars.emplace_back(std::move(key), entry.substr(eqPos + 1));
         }
         FreeEnvironmentStringsW(rawEnv);
+    }
+
+    if (!hasTerm) {
+        vars.emplace_back(L"TERM", L"xterm-256color");
+    }
+    if (!hasColorTerm) {
+        vars.emplace_back(L"COLORTERM", L"truecolor");
     }
 
     std::sort(vars.begin(), vars.end(), [](const auto& a, const auto& b) {
@@ -193,6 +206,7 @@ static D2D1_COLOR_F AdaptTerminalColorForLight(D2D1_COLOR_F c) {
 
 using PhideCreatePseudoConsoleFn = HRESULT(WINAPI*)(COORD, HANDLE, HANDLE, DWORD, HANDLE*);
 using PhideClosePseudoConsoleFn = void(WINAPI*)(HANDLE);
+using PhideResizePseudoConsoleFn = HRESULT(WINAPI*)(HANDLE, COORD);
 
 static PhideCreatePseudoConsoleFn GetCreatePseudoConsoleFn() {
     static auto fn = reinterpret_cast<PhideCreatePseudoConsoleFn>(
@@ -204,6 +218,57 @@ static PhideClosePseudoConsoleFn GetClosePseudoConsoleFn() {
     static auto fn = reinterpret_cast<PhideClosePseudoConsoleFn>(
         GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ClosePseudoConsole"));
     return fn;
+}
+
+static PhideResizePseudoConsoleFn GetResizePseudoConsoleFn() {
+    static auto fn = reinterpret_cast<PhideResizePseudoConsoleFn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ResizePseudoConsole"));
+    return fn;
+}
+
+static bool ColorsEqual(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b) noexcept {
+    return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+
+static D2D1_COLOR_F XtermColorIndexToD2D(int idx) noexcept {
+    static constexpr D2D1_COLOR_F kAnsi16[16] = {
+        { 0.12f, 0.12f, 0.14f, 1.0f }, { 0.92f, 0.30f, 0.30f, 1.0f },
+        { 0.35f, 0.78f, 0.38f, 1.0f }, { 0.95f, 0.80f, 0.25f, 1.0f },
+        { 0.35f, 0.65f, 0.95f, 1.0f }, { 0.80f, 0.45f, 0.85f, 1.0f },
+        { 0.30f, 0.78f, 0.85f, 1.0f }, { 0.88f, 0.88f, 0.90f, 1.0f },
+        { 0.55f, 0.55f, 0.58f, 1.0f }, { 0.98f, 0.40f, 0.40f, 1.0f },
+        { 0.45f, 0.90f, 0.48f, 1.0f }, { 0.98f, 0.88f, 0.40f, 1.0f },
+        { 0.48f, 0.75f, 1.00f, 1.0f }, { 0.90f, 0.55f, 0.95f, 1.0f },
+        { 0.42f, 0.88f, 0.94f, 1.0f }, { 0.96f, 0.96f, 0.98f, 1.0f }
+    };
+    if (idx >= 0 && idx < 16) return kAnsi16[idx];
+    if (idx >= 16 && idx < 232) {
+        int c = idx - 16;
+        int r = (c / 36) % 6;
+        int g = (c / 6) % 6;
+        int b = c % 6;
+        auto toF = [](int v) -> float { return v == 0 ? 0.0f : static_cast<float>(55 + v * 40) / 255.0f; };
+        return D2D1::ColorF(toF(r), toF(g), toF(b), 1.0f);
+    }
+    if (idx >= 232 && idx <= 255) {
+        float gray = static_cast<float>(8 + (idx - 232) * 10) / 255.0f;
+        return D2D1::ColorF(gray, gray, gray, 1.0f);
+    }
+    return D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
+}
+
+static size_t IncompleteUtf8TailLength(const std::string& bytes) noexcept {
+    size_t n = bytes.size();
+    if (n == 0) return 0;
+    size_t scan = (std::min)(size_t{ 3 }, n);
+    for (size_t k = 1; k <= scan; ++k) {
+        unsigned char lead = static_cast<unsigned char>(bytes[n - k]);
+        if ((lead & 0x80) == 0) return 0; // ASCII terminates cleanly
+        if ((lead & 0xE0) == 0xC0) return (k < 2) ? k : 0;
+        if ((lead & 0xF0) == 0xE0) return (k < 3) ? k : 0;
+        if ((lead & 0xF8) == 0xF0) return (k < 4) ? k : 0;
+    }
+    return 0;
 }
 
 static void AppendSpanChar(TerminalLine& line, wchar_t ch, D2D1_COLOR_F curColor, bool bold) {
@@ -253,13 +318,28 @@ static void OverwriteLineChar(TerminalLine& line, size_t& col, wchar_t ch, D2D1_
         return;
     }
     line.rawText[col] = ch;
-    // Update the matching character in spans (preserving existing segments cleanly)
     size_t pos = 0;
     for (size_t s = 0; s < line.spans.size(); ++s) {
         size_t len = line.spans[s].text.size();
         if (col < pos + len) {
             size_t localIdx = col - pos;
-            line.spans[s].text[localIdx] = ch;
+            if (ColorsEqual(line.spans[s].color, curColor) && line.spans[s].bold == bold) {
+                line.spans[s].text[localIdx] = ch;
+            } else {
+                // Split span so overwritten character keeps its exact ANSI color/bold style
+                std::wstring origText = std::move(line.spans[s].text);
+                D2D1_COLOR_F origCol = line.spans[s].color;
+                bool origBold = line.spans[s].bold;
+                line.spans.erase(line.spans.begin() + s);
+                size_t ins = s;
+                if (localIdx > 0) {
+                    line.spans.insert(line.spans.begin() + ins++, { origText.substr(0, localIdx), origCol, origBold });
+                }
+                line.spans.insert(line.spans.begin() + ins++, { std::wstring(1, ch), curColor, bold });
+                if (localIdx + 1 < origText.size()) {
+                    line.spans.insert(line.spans.begin() + ins++, { origText.substr(localIdx + 1), origCol, origBold });
+                }
+            }
             col++;
             return;
         }
@@ -268,52 +348,79 @@ static void OverwriteLineChar(TerminalLine& line, size_t& col, wchar_t ch, D2D1_
     col++;
 }
 
-
-// Native Win32 Process Tree Termination: pure API, ZERO taskkill.exe / powershell.exe, ZERO popping console windows!
-// Uses single-snapshot BFS with visited cycle prevention to eliminate UI freezing and infinite recursion.
-static void SafeKillProcessTree(DWORD rootPid) {
-    if (rootPid == 0) return;
-
-    std::vector<DWORD> toKill;
-    std::unordered_set<DWORD> visited;
-    toKill.push_back(rootPid);
-    visited.insert(rootPid);
+static std::vector<std::pair<DWORD, std::wstring>> CollectDescendantProcesses(DWORD rootPid) {
+    std::vector<std::pair<DWORD, std::wstring>> result;
+    if (rootPid == 0) return result;
 
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnap != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32W pe{};
-        pe.dwSize = sizeof(pe);
-        std::vector<std::pair<DWORD, DWORD>> allProcs;
-        if (Process32FirstW(hSnap, &pe)) {
-            do {
-                if (pe.th32ProcessID != 0) {
-                    allProcs.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID);
-                }
-            } while (Process32NextW(hSnap, &pe));
-        }
-        CloseHandle(hSnap);
+    if (hSnap == INVALID_HANDLE_VALUE) return result;
 
-        size_t head = 0;
-        while (head < toKill.size()) {
-            DWORD currentParent = toKill[head++];
-            for (const auto& proc : allProcs) {
-                if (proc.second == currentParent && proc.first != currentParent) {
-                    if (visited.insert(proc.first).second) {
-                        toKill.push_back(proc.first);
-                    }
+    struct ProcInfo { DWORD pid; DWORD ppid; std::wstring exe; };
+    std::vector<ProcInfo> allProcs;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(hSnap, &pe)) {
+        do {
+            if (pe.th32ProcessID != 0) {
+                allProcs.push_back({ pe.th32ProcessID, pe.th32ParentProcessID, pe.szExeFile });
+            }
+        } while (Process32NextW(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+
+    std::vector<DWORD> bfs;
+    std::unordered_set<DWORD> visited;
+    bfs.push_back(rootPid);
+    visited.insert(rootPid);
+    result.emplace_back(rootPid, L"");
+
+    size_t head = 0;
+    while (head < bfs.size()) {
+        DWORD parent = bfs[head++];
+        for (const auto& p : allProcs) {
+            if (p.ppid == parent && p.pid != parent) {
+                if (visited.insert(p.pid).second) {
+                    bfs.push_back(p.pid);
+                    result.emplace_back(p.pid, p.exe);
                 }
             }
         }
     }
+    return result;
+}
 
-    // Terminate in reverse order (deepest descendants first, parent last)
-    for (auto it = toKill.rbegin(); it != toKill.rend(); ++it) {
-        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, *it);
+// Native Win32 Process Tree Termination: pure API, ZERO taskkill.exe / powershell.exe, ZERO popping console windows!
+static void SafeKillProcessTree(DWORD rootPid) {
+    auto procs = CollectDescendantProcesses(rootPid);
+    for (auto it = procs.rbegin(); it != procs.rend(); ++it) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, it->first);
         if (hProc) {
             TerminateProcess(hProc, 0);
             CloseHandle(hProc);
         }
     }
+}
+
+size_t TerminalPanel::InterruptForegroundChildProcesses(DWORD rootShellPid) {
+    auto procs = CollectDescendantProcesses(rootShellPid);
+    size_t interrupted = 0;
+    // Skip rootShellPid (index 0) and system console host helpers so the interactive shell stays alive
+    for (auto it = procs.rbegin(); it != procs.rend(); ++it) {
+        if (it->first == rootShellPid) continue;
+        std::wstring exeLower = it->second;
+        for (auto& c : exeLower) c = static_cast<wchar_t>(towlower(c));
+        if (exeLower == L"conhost.exe" || exeLower == L"openconsole.exe") {
+            continue;
+        }
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, it->first);
+        if (hProc) {
+            if (TerminateProcess(hProc, STATUS_CONTROL_C_EXIT)) {
+                interrupted++;
+            }
+            CloseHandle(hProc);
+        }
+    }
+    return interrupted;
 }
 
 static void FillUpperLeftRoundedRect(ID2D1RenderTarget* pRT, ID2D1Brush* pBrush,
@@ -490,18 +597,34 @@ std::wstring TerminalTab::GetSelectedText() const {
 void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bool forceAppend) {
     if (!data || length == 0 || (!isAlive.load() && !forceAppend)) return;
 
-    // Convert UTF-8 / ANSI to wide string
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, data, static_cast<int>(length), NULL, 0);
+    // Convert UTF-8 / ANSI to wide string (preserving multi-byte UTF-8 spinner glyphs split across ReadFile chunks)
+    std::string rawChunk;
+    {
+        std::lock_guard<std::mutex> lock(bufferMutex);
+        if (!conPtyPendingUtf8.empty()) {
+            rawChunk = std::move(conPtyPendingUtf8);
+            conPtyPendingUtf8.clear();
+        }
+        rawChunk.append(data, length);
+        size_t tailLen = IncompleteUtf8TailLength(rawChunk);
+        if (tailLen > 0 && tailLen <= rawChunk.size()) {
+            conPtyPendingUtf8 = rawChunk.substr(rawChunk.size() - tailLen);
+            rawChunk.resize(rawChunk.size() - tailLen);
+        }
+    }
+    if (rawChunk.empty()) return;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, rawChunk.data(), static_cast<int>(rawChunk.size()), NULL, 0);
     std::wstring wstr;
     if (wlen > 0) {
         wstr.resize(wlen);
-        MultiByteToWideChar(CP_UTF8, 0, data, static_cast<int>(length), &wstr[0], wlen);
+        MultiByteToWideChar(CP_UTF8, 0, rawChunk.data(), static_cast<int>(rawChunk.size()), &wstr[0], wlen);
     } else {
         // Fallback to ANSI code page
-        wlen = MultiByteToWideChar(CP_ACP, 0, data, static_cast<int>(length), NULL, 0);
+        wlen = MultiByteToWideChar(CP_ACP, 0, rawChunk.data(), static_cast<int>(rawChunk.size()), NULL, 0);
         if (wlen > 0) {
             wstr.resize(wlen);
-            MultiByteToWideChar(CP_ACP, 0, data, static_cast<int>(length), &wstr[0], wlen);
+            MultiByteToWideChar(CP_ACP, 0, rawChunk.data(), static_cast<int>(rawChunk.size()), &wstr[0], wlen);
         } else {
             return;
         }
@@ -622,14 +745,58 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
 
     if (lines.empty()) {
         lines.push_back({});
+        conPtyViewportTop = 0;
+        conPtyCursorLine = 0;
+        conPtyCursorCol = 0;
     }
 
-    // Parse ANSI escapes and accumulate spans
-    D2D1_COLOR_F curColor = isError ? D2D1::ColorF(0.94f, 0.32f, 0.32f, 1.0f) : D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
-    bool bold = isError;
+    if (!conPtyPendingEsc.empty()) {
+        wstr = conPtyPendingEsc + wstr;
+        conPtyPendingEsc.clear();
+    }
+
+    D2D1_COLOR_F localErrColor = D2D1::ColorF(0.94f, 0.32f, 0.32f, 1.0f);
+    D2D1_COLOR_F pipeColorCopy = localErrColor;
+    D2D1_COLOR_F& curColor = (!isConPty && isError) ? pipeColorCopy : conPtyCurColor;
+    D2D1_COLOR_F activeColor = isError ? localErrColor : curColor;
+    bool pipeBoldCopy = true;
+    bool& bold = (!isConPty && isError) ? pipeBoldCopy : conPtyCurBold;
+
+    auto getActiveLineIdx = [&]() -> size_t {
+        if (!isConPty) {
+            return lines.size() - 1;
+        }
+        while (lines.size() <= conPtyCursorLine) {
+            lines.push_back({});
+        }
+        return conPtyCursorLine;
+    };
+
+    auto parseCsiParams = [](const std::wstring& seqStr) -> std::vector<int> {
+        std::vector<int> vals;
+        if (seqStr.empty()) return vals;
+        std::wstring clean = seqStr;
+        if (!clean.empty() && (clean.front() == L'?' || clean.front() == L'>')) {
+            clean.erase(clean.begin());
+        }
+        std::wstringstream ss(clean);
+        std::wstring part;
+        while (std::getline(ss, part, L';')) {
+            int v = 0;
+            try { if (!part.empty()) v = std::stoi(part); } catch (...) {}
+            vals.push_back(v);
+        }
+        return vals;
+    };
 
     for (size_t i = 0; i < wstr.length(); ++i) {
         wchar_t ch = wstr[i];
+
+        // Incomplete trailing ESC sequence split across chunk boundary: buffer for next AppendOutput
+        if (ch == L'\x1b' && i + 1 == wstr.length() && isConPty) {
+            conPtyPendingEsc = wstr.substr(i);
+            break;
+        }
 
         // OSC (Operating System Command) sequence (BEL or ESC ST terminator)
         if (ch == L'\x1b' && i + 1 < wstr.length() && wstr[i + 1] == L']') {
@@ -643,6 +810,10 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
                 i = stEnd + 1;
                 continue;
             }
+            if (isConPty && (wstr.length() - i) < 256) {
+                conPtyPendingEsc = wstr.substr(i);
+                break;
+            }
         }
 
         // Character set / keypad escapes: \x1b(B, \x1b)0, \x1b=, \x1b>
@@ -652,6 +823,9 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
                 if (i + 2 < wstr.length()) {
                     i += 2;
                     continue;
+                } else if (isConPty) {
+                    conPtyPendingEsc = wstr.substr(i);
+                    break;
                 }
             } else if (nxt == L'=' || nxt == L'>' || nxt == L'M') {
                 i += 1;
@@ -665,91 +839,182 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
             while (j < wstr.length() && (wstr[j] < 0x40 || wstr[j] > 0x7E)) {
                 j++;
             }
-            if (j < wstr.length()) {
+            if (j >= wstr.length()) {
+                if (isConPty && (wstr.length() - i) < 128) {
+                    conPtyPendingEsc = wstr.substr(i);
+                }
+                break;
+            }
+            {
                 wchar_t cmd = wstr[j];
                 std::wstring seq = wstr.substr(i + 2, j - (i + 2));
                 if (cmd == L'm') {
-                    std::wstringstream sss(seq.empty() ? L"0" : seq);
-                    std::wstring codeStr;
-                    while (std::getline(sss, codeStr, L';')) {
-                        int code = 0;
-                        try { if (!codeStr.empty()) code = std::stoi(codeStr); } catch (...) {}
+                    std::vector<int> codes = parseCsiParams(seq.empty() ? L"0" : seq);
+                    if (codes.empty()) codes.push_back(0);
+                    for (size_t k = 0; k < codes.size(); ++k) {
+                        int code = codes[k];
                         if (code == 0) {
                             curColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
+                            activeColor = isError ? localErrColor : curColor;
                             bold = false;
                         } else if (code == 1) {
                             bold = true;
                         } else if (code == 22) {
                             bold = false;
-                        } else if (code == 30) {
-                            curColor = D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f);
-                        } else if (code == 31 || code == 91) {
-                            curColor = D2D1::ColorF(0.92f, 0.30f, 0.30f, 1.0f); // Red
-                        } else if (code == 32 || code == 92) {
-                            curColor = D2D1::ColorF(0.35f, 0.78f, 0.38f, 1.0f); // Green
-                        } else if (code == 33 || code == 93) {
-                            curColor = D2D1::ColorF(0.95f, 0.80f, 0.25f, 1.0f); // Yellow
-                        } else if (code == 34 || code == 94) {
-                            curColor = D2D1::ColorF(0.35f, 0.65f, 0.95f, 1.0f); // Blue
-                        } else if (code == 35 || code == 95) {
-                            curColor = D2D1::ColorF(0.80f, 0.45f, 0.85f, 1.0f); // Magenta
-                        } else if (code == 36 || code == 96) {
-                            curColor = D2D1::ColorF(0.30f, 0.78f, 0.85f, 1.0f); // Cyan
-                        } else if (code == 37 || code == 97) {
-                            curColor = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f); // White
-                        } else if (code == 90) {
-                            curColor = D2D1::ColorF(0.55f, 0.55f, 0.58f, 1.0f); // Gray
+                        } else if (code == 38 && k + 1 < codes.size()) {
+                            if (codes[k + 1] == 5 && k + 2 < codes.size()) {
+                                curColor = XtermColorIndexToD2D(codes[k + 2]);
+                                activeColor = curColor;
+                                k += 2;
+                            } else if (codes[k + 1] == 2 && k + 4 < codes.size()) {
+                                float r = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(codes[k + 2]) / 255.0f));
+                                float g = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(codes[k + 3]) / 255.0f));
+                                float b = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(codes[k + 4]) / 255.0f));
+                                curColor = D2D1::ColorF(r, g, b, 1.0f);
+                                activeColor = curColor;
+                                k += 4;
+                            }
+                        } else if (code == 48 && k + 1 < codes.size()) {
+                            // Skip extended background color params so RGB bytes are not parsed as SGR foreground colors
+                            if (codes[k + 1] == 5 && k + 2 < codes.size()) {
+                                k += 2;
+                            } else if (codes[k + 1] == 2 && k + 4 < codes.size()) {
+                                k += 4;
+                            }
+                        } else if (code >= 30 && code <= 37) {
+                            curColor = XtermColorIndexToD2D(code - 30);
+                            activeColor = curColor;
+                        } else if (code >= 90 && code <= 97) {
+                            curColor = XtermColorIndexToD2D((code - 90) + 8);
+                            activeColor = curColor;
                         } else if (code == 39) {
                             curColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
+                            activeColor = isError ? localErrColor : curColor;
                         }
                     }
                 } else if (cmd == L'J') {
-                    // ANSI Erase in Display: Clear terminal screen & scrollback
-                    if (seq == L"2" || seq == L"3" || seq.empty()) {
+                    // ANSI Erase in Display: 0=cursor->end, 1=top->cursor, 2=clear screen, 3=clear scrollback
+                    int mode = 0;
+                    try { if (!seq.empty()) mode = std::stoi(seq); } catch (...) {}
+                    if (mode == 3) {
                         lines.clear();
                         lines.push_back({});
                         scrollOffsetY = 0.0f;
+                        conPtyViewportTop = 0;
+                        conPtyCursorLine = 0;
                         conPtyCursorCol = 0;
+                    } else if (mode == 2) {
+                        if (isConPty && conPtyViewportTop < lines.size()) {
+                            lines.resize(conPtyViewportTop);
+                            lines.push_back({});
+                            conPtyCursorLine = conPtyViewportTop;
+                        } else {
+                            lines.clear();
+                            lines.push_back({});
+                            conPtyViewportTop = 0;
+                            conPtyCursorLine = 0;
+                        }
+                        scrollOffsetY = 0.0f;
+                        conPtyCursorCol = 0;
+                    } else if (mode == 0) {
+                        size_t curL = getActiveLineIdx();
+                        TruncateLineFromCol(lines[curL], conPtyCursorCol);
+                        if (curL + 1 < lines.size()) {
+                            lines.resize(curL + 1);
+                        }
+                    } else if (mode == 1) {
+                        size_t curL = getActiveLineIdx();
+                        for (size_t li = conPtyViewportTop; li < curL && li < lines.size(); ++li) {
+                            lines[li].spans.clear();
+                            lines[li].rawText.clear();
+                        }
+                        size_t clearEnd = (std::min)(conPtyCursorCol + 1, lines[curL].rawText.size());
+                        size_t tmpCol = 0;
+                        for (size_t c = 0; c < clearEnd; ++c) {
+                            OverwriteLineChar(lines[curL], tmpCol, L' ', activeColor, bold);
+                        }
                     }
                 } else if (cmd == L'K') {
-                    // ANSI Erase in Line
-                    if (!lines.empty()) {
-                        if (seq == L"2") {
-                            lines.back().spans.clear();
-                            lines.back().rawText.clear();
+                    // ANSI Erase in Line: 0=cursor->end, 1=start->cursor, 2=entire line (preserve col)
+                    size_t curL = getActiveLineIdx();
+                    int mode = 0;
+                    try { if (!seq.empty()) mode = std::stoi(seq); } catch (...) {}
+                    if (mode == 2) {
+                        lines[curL].spans.clear();
+                        lines[curL].rawText.clear();
+                    } else if (mode == 1) {
+                        size_t clearEnd = (std::min)(conPtyCursorCol + 1, lines[curL].rawText.size());
+                        size_t tmpCol = 0;
+                        for (size_t c = 0; c < clearEnd; ++c) {
+                            OverwriteLineChar(lines[curL], tmpCol, L' ', activeColor, bold);
+                        }
+                    } else {
+                        TruncateLineFromCol(lines[curL], conPtyCursorCol);
+                    }
+                } else if (cmd == L'X') {
+                    // ECH: Erase N characters from cursor without moving cursor
+                    int n = 1;
+                    try { if (!seq.empty()) n = (std::max)(1, std::stoi(seq)); } catch (...) {}
+                    size_t curL = getActiveLineIdx();
+                    size_t tmpCol = conPtyCursorCol;
+                    for (int c = 0; c < n; ++c) {
+                        OverwriteLineChar(lines[curL], tmpCol, L' ', activeColor, false);
+                    }
+                } else if (cmd == L'h' || cmd == L'l') {
+                    bool setMode = (cmd == L'h');
+                    if (seq == L"?25") {
+                        conPtyCursorVisible = setMode;
+                    } else if (seq == L"?1049" && isConPty) {
+                        if (setMode && !conPtyUseAltScreen) {
+                            conPtyAltSavedLines = std::move(lines);
+                            conPtyAltSavedViewportTop = conPtyViewportTop;
+                            conPtyAltSavedCursorLine = conPtyCursorLine;
+                            conPtyAltSavedCursorCol = conPtyCursorCol;
+                            lines.clear();
+                            lines.push_back({});
+                            conPtyViewportTop = 0;
+                            conPtyCursorLine = 0;
                             conPtyCursorCol = 0;
-                        } else if (isConPty) {
-                            TruncateLineFromCol(lines.back(), conPtyCursorCol);
-                        } else {
-                            lines.back().spans.clear();
-                            lines.back().rawText.clear();
+                            conPtyUseAltScreen = true;
+                        } else if (!setMode && conPtyUseAltScreen) {
+                            lines = std::move(conPtyAltSavedLines);
+                            if (lines.empty()) lines.push_back({});
+                            conPtyViewportTop = conPtyAltSavedViewportTop;
+                            conPtyCursorLine = conPtyAltSavedCursorLine;
+                            conPtyCursorCol = conPtyAltSavedCursorCol;
+                            conPtyUseAltScreen = false;
                         }
                     }
-                } else if (isConPty && (cmd == L'C' || cmd == L'D' || cmd == L'G' || cmd == L'H' || cmd == L'f')) {
-                    int n = 1;
-                    try {
-                        if (!seq.empty() && seq.find(L';') == std::wstring::npos && seq.find(L'?') == std::wstring::npos) {
-                            n = (std::max)(1, std::stoi(seq));
-                        }
-                    } catch (...) {}
-                    if (cmd == L'C') {
-                        conPtyCursorCol += static_cast<size_t>(n);
+                } else if (cmd == L'C' || cmd == L'D' || cmd == L'G' ||
+                           (isConPty && (cmd == L'A' || cmd == L'B' || cmd == L'd' || cmd == L'H' || cmd == L'f'))) {
+                    std::vector<int> params = parseCsiParams(seq);
+                    int p1 = (!params.empty() && params[0] > 0) ? params[0] : 1;
+                    int p2 = (params.size() >= 2 && params[1] > 0) ? params[1] : 1;
+                    if (cmd == L'A') {
+                        size_t step = static_cast<size_t>(p1);
+                        conPtyCursorLine = (conPtyCursorLine > conPtyViewportTop + step) ? (conPtyCursorLine - step) : conPtyViewportTop;
+                    } else if (cmd == L'B') {
+                        size_t maxRow = conPtyViewportTop + static_cast<size_t>((std::max)(1, static_cast<int>(conPtyRows)) - 1);
+                        conPtyCursorLine = (std::min)(maxRow, conPtyCursorLine + static_cast<size_t>(p1));
+                        while (lines.size() <= conPtyCursorLine) lines.push_back({});
+                    } else if (cmd == L'C') {
+                        conPtyCursorCol += static_cast<size_t>(p1);
                     } else if (cmd == L'D') {
-                        conPtyCursorCol = (conPtyCursorCol > static_cast<size_t>(n)) ? (conPtyCursorCol - static_cast<size_t>(n)) : 0;
+                        size_t step = static_cast<size_t>(p1);
+                        conPtyCursorCol = (conPtyCursorCol > step) ? (conPtyCursorCol - step) : 0;
                     } else if (cmd == L'G') {
-                        conPtyCursorCol = (n > 0) ? static_cast<size_t>(n - 1) : 0;
+                        conPtyCursorCol = static_cast<size_t>(p1 - 1);
+                    } else if (cmd == L'd') {
+                        int maxRow0 = (std::max)(0, static_cast<int>(conPtyRows) - 1);
+                        int row0 = (std::min)(maxRow0, p1 - 1);
+                        conPtyCursorLine = conPtyViewportTop + static_cast<size_t>(row0);
+                        while (lines.size() <= conPtyCursorLine) lines.push_back({});
                     } else if (cmd == L'H' || cmd == L'f') {
-                        size_t semi = seq.find(L';');
-                        if (semi == std::wstring::npos) {
-                            conPtyCursorCol = 0;
-                        } else {
-                            try {
-                                int colVal = std::stoi(seq.substr(semi + 1));
-                                conPtyCursorCol = (colVal > 0) ? static_cast<size_t>(colVal - 1) : 0;
-                            } catch (...) {
-                                conPtyCursorCol = 0;
-                            }
-                        }
+                        int maxRow0 = (std::max)(0, static_cast<int>(conPtyRows) - 1);
+                        int row0 = (std::min)(maxRow0, p1 - 1);
+                        conPtyCursorLine = conPtyViewportTop + static_cast<size_t>(row0);
+                        while (lines.size() <= conPtyCursorLine) lines.push_back({});
+                        conPtyCursorCol = static_cast<size_t>(p2 - 1);
                     }
                 }
                 i = j;
@@ -763,47 +1028,56 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
         }
 
         if (ch == L'\r') {
-            if (isConPty) {
-                conPtyCursorCol = 0;
-            }
+            conPtyCursorCol = 0;
             continue;
         }
 
         if (ch == L'\n') {
-            lines.push_back({});
+            if (isConPty) {
+                size_t bottomRow = conPtyViewportTop + static_cast<size_t>((std::max)(1, static_cast<int>(conPtyRows)) - 1);
+                if (conPtyCursorLine >= bottomRow) {
+                    conPtyViewportTop++;
+                }
+                conPtyCursorLine++;
+                while (lines.size() <= conPtyCursorLine) {
+                    lines.push_back({});
+                }
+            } else {
+                lines.push_back({});
+                conPtyCursorLine = lines.size() - 1;
+            }
             conPtyCursorCol = 0;
             continue;
         }
 
         if (ch == L'\b') {
-            if (isConPty) {
+            size_t curL = getActiveLineIdx();
+            if (isConPty || conPtyCursorCol < lines[curL].rawText.size()) {
                 if (conPtyCursorCol > 0) conPtyCursorCol--;
-            } else if (!lines.empty() && !lines.back().rawText.empty()) {
-                lines.back().rawText.pop_back();
-                if (!lines.back().spans.empty()) {
-                    if (!lines.back().spans.back().text.empty()) {
-                        lines.back().spans.back().text.pop_back();
-                        if (lines.back().spans.back().text.empty()) {
-                            lines.back().spans.pop_back();
-                        }
+            } else if (!lines[curL].rawText.empty()) {
+                lines[curL].rawText.pop_back();
+                if (!lines[curL].spans.empty() && !lines[curL].spans.back().text.empty()) {
+                    lines[curL].spans.back().text.pop_back();
+                    if (lines[curL].spans.back().text.empty()) {
+                        lines[curL].spans.pop_back();
                     }
                 }
+                if (conPtyCursorCol > 0) conPtyCursorCol--;
             }
             continue;
         }
 
-        // Add character to last line
-        if (isConPty) {
-            OverwriteLineChar(lines.back(), conPtyCursorCol, ch, curColor, bold);
-        } else {
-            AppendSpanChar(lines.back(), ch, curColor, bold);
-        }
+        // Add character at active cursor position (in-place overwrite supports live spinners cleanly)
+        size_t curL = getActiveLineIdx();
+        OverwriteLineChar(lines[curL], conPtyCursorCol, ch, activeColor, bold);
     }
 
     // Limit scrollback buffer to 2000 lines
     if (lines.size() > 2000) {
         size_t excess = lines.size() - 2000;
         lines.erase(lines.begin(), lines.begin() + excess);
+        conPtyViewportTop = (conPtyViewportTop >= excess) ? (conPtyViewportTop - excess) : 0;
+        conPtyCursorLine = (conPtyCursorLine >= excess) ? (conPtyCursorLine - excess) : 0;
         if (lastScannedLineIdx >= excess) {
             lastScannedLineIdx -= excess;
         } else {
@@ -1080,6 +1354,12 @@ void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingD
     else if (shell == TerminalShellType::Python) shellName = L"python";
 
     tab->title = std::to_wstring(count) + L": " + shellName;
+    if (m_useConPtyForShells &&
+        (shell == TerminalShellType::PowerShell || shell == TerminalShellType::Cmd ||
+         shell == TerminalShellType::GitBash || shell == TerminalShellType::Node ||
+         shell == TerminalShellType::Python)) {
+        tab->isConPty = true;
+    }
     tab->onOutput = m_outputCallback;
     tab->onExecutionError = m_onExecutionError;
     tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
@@ -1260,6 +1540,12 @@ void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
     else if (splitShell == TerminalShellType::Node) shellName = L"node";
     else if (splitShell == TerminalShellType::Python) shellName = L"python";
     split->title = primary->title + L" (split: " + shellName + L")";
+    if (m_useConPtyForShells &&
+        (splitShell == TerminalShellType::PowerShell || splitShell == TerminalShellType::Cmd ||
+         splitShell == TerminalShellType::GitBash || splitShell == TerminalShellType::Node ||
+         splitShell == TerminalShellType::Python)) {
+        split->isConPty = true;
+    }
     split->onOutput = m_outputCallback;
     split->onExecutionError = m_onExecutionError;
     split->onClearRuntimeErrors = m_onClearRuntimeErrors;
@@ -1293,19 +1579,20 @@ void TerminalPanel::SetWorkingDir(const std::wstring& dir) {
     for (auto& tab : m_tabs) {
         if (!tab) continue;
         if (tab->isServerTab || tab->isGitHubLoginTab || tab->shellType == TerminalShellType::DebugConsole ||
-            tab->shellType == TerminalShellType::Custom || tab->isConPty) {
+            tab->shellType == TerminalShellType::Custom) {
             continue;
         }
         if (tab->workingDir == cleanDir) continue;
         tab->workingDir = cleanDir;
         if (tab->isAlive.load() && tab->hStdinWrite && tab->currentInputLine.empty()) {
+            const wchar_t* nl = tab->isConPty ? L"\r" : L"\n";
             std::wstring cdCmd;
             if (tab->shellType == TerminalShellType::PowerShell) {
-                cdCmd = L"Set-Location -LiteralPath '" + EscapePowerShellSingleQuoted(cleanDir) + L"'\n";
+                cdCmd = L"Set-Location -LiteralPath '" + EscapePowerShellSingleQuoted(cleanDir) + L"'" + nl;
             } else if (tab->shellType == TerminalShellType::Cmd) {
-                cdCmd = L"cd /d \"" + cleanDir + L"\"\n";
+                cdCmd = L"cd /d \"" + cleanDir + L"\"" + nl;
             } else if (tab->shellType == TerminalShellType::GitBash) {
-                cdCmd = L"cd '" + EscapeBashSingleQuoted(cleanDir) + L"'\n";
+                cdCmd = L"cd '" + EscapeBashSingleQuoted(cleanDir) + L"'" + nl;
             }
             if (!cdCmd.empty()) {
                 std::string utf8 = WideToUtf8Terminal(cdCmd);
@@ -1431,7 +1718,9 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                 COORD ptySize{ 120, 36 };
                 if (SUCCEEDED(createPty(ptySize, hPtyInR, hPtyOutW, 0, &hPC)) && hPC) {
                     CloseHandle(hPtyInR);
+                    hPtyInR = NULL;
                     CloseHandle(hPtyOutW);
+                    hPtyOutW = NULL;
 
                     SIZE_T attrSize = 0;
                     InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
@@ -1449,7 +1738,7 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
 
                     STARTUPINFOEXW siEx{};
                     siEx.StartupInfo.cb = sizeof(STARTUPINFOEXW);
-                    // Prevent inheriting parent's redirected console pipes so child binds strictly to ConPTY
+                    // Prevent inheriting parent's redirected stdio pipes so child binds strictly to ConPTY
                     siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
                     siEx.StartupInfo.hStdInput = NULL;
                     siEx.StartupInfo.hStdOutput = NULL;
@@ -1539,9 +1828,12 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
                             DWORD readErr = GetLastError();
                             if (pTab->isAlive.load()) {
                                 int code = pTab->processExitCode.load();
+                                std::string label = (pTab->shellType == TerminalShellType::Custom)
+                                    ? "Remote session closed"
+                                    : "Process exited";
                                 std::string exitMsg = (code >= 0)
-                                    ? ("\r\n[Remote session closed (exit code " + std::to_string(code) + ")]\r\n")
-                                    : ("\r\n[Remote session closed (readErr=" + std::to_string(readErr) + ")]\r\n");
+                                    ? ("\r\n[" + label + " (exit code " + std::to_string(code) + ")]\r\n")
+                                    : ("\r\n[" + label + " (readErr=" + std::to_string(readErr) + ")]\r\n");
                                 // Append status BEFORE flipping isAlive=false so observers see complete final lines.
                                 pTab->AppendOutput(exitMsg.data(), exitMsg.size(), code > 0, true);
                                 pTab->isAlive.store(false);
@@ -1613,6 +1905,9 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             while (pTab->isAlive.load() && ReadFile(hStdoutRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, false);
+                if (pTab->onOutput) {
+                    pTab->onOutput();
+                }
             }
             if (pTab->shellType == TerminalShellType::DebugConsole) {
                 if (pTab->onDebugEnded) {
@@ -1643,6 +1938,9 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             while (pTab->isAlive.load() && ReadFile(hStderrRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
                 pTab->AppendOutput(buffer, bytesRead, streamDefaultError);
+                if (pTab->onOutput) {
+                    pTab->onOutput();
+                }
             }
             if (pTab->shellType == TerminalShellType::DebugConsole) {
                 if (pTab->onDebugEnded) {
@@ -2729,6 +3027,21 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     m_uiScale = config.dpiScale;
 
     if (tab->isConPty && tab->isAlive.load()) {
+        short targetCols = (std::max)(short{ 30 }, (std::min)(short{ 320 }, static_cast<short>((bounds.right - bounds.left - padX * 2.0f) / (std::max)(4.0f, charW))));
+        short targetRows = (std::max)(short{ 8 }, (std::min)(short{ 120 }, static_cast<short>(availableH / (std::max)(8.0f, lineH))));
+        if (targetCols != tab->conPtyCols || targetRows != tab->conPtyRows) {
+            if (auto resizePty = GetResizePseudoConsoleFn()) {
+                std::lock_guard<std::mutex> ptyLk(tab->ptyMutex);
+                if (tab->hPC) {
+                    resizePty(tab->hPC, COORD{ targetCols, targetRows });
+                    tab->conPtyCols = targetCols;
+                    tab->conPtyRows = targetRows;
+                }
+            }
+        }
+    }
+
+    if (tab->isConPty && tab->shellType == TerminalShellType::Custom && tab->isAlive.load()) {
         bool allBlank = true;
         for (const auto& ln : tab->lines) {
             for (wchar_t ch : ln.rawText) {
@@ -2886,10 +3199,18 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             }
         }
 
-        // Blinking cursor '█' on the last active output line
-        if (isFocused && l == totalLines - 1) {
+        // Blinking cursor '█' at active cursor position
+        if (isFocused) {
             bool blinkOn = ((GetTickCount64() / 500) % 2 == 0);
-            if (blinkOn) {
+            if (tab->isConPty && tab->isAlive.load()) {
+                if (tab->conPtyCursorVisible && l == tab->conPtyCursorLine && blinkOn) {
+                    float caretX = bounds.left + padX + static_cast<float>(tab->conPtyCursorCol) * charW;
+                    float cursorW = config.ScaleF(7.5f);
+                    float cursorH = lineH - config.ScaleF(2.0f);
+                    D2D1_RECT_F rcCursor = D2D1::RectF(caretX, curY + 1.0f, caretX + cursorW, curY + 1.0f + cursorH);
+                    pRT->FillRectangle(rcCursor, theme.brushTextPrimary.Get());
+                }
+            } else if (l == totalLines - 1 && blinkOn) {
                 int safeCursorCol = (std::max)(0, (std::min)(tab->inputCursorCol, static_cast<int>(tab->currentInputLine.length())));
                 float caretX = curX - static_cast<float>(static_cast<int>(tab->currentInputLine.length()) - safeCursorCol) * charW;
                 float cursorW = config.ScaleF(7.5f);
@@ -5982,25 +6303,37 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
 
     // 3. Ctrl + C (strictly without Shift): STOP / CANCEL process execution & input
     if (isCtrl && !isShift && (vk == 'C' || vk == 'c')) {
-        tab->SendInput("\x03"); // SIGINT interrupt
+        tab->selection.clear();
+        tab->scrollOffsetLines = 0;
+        tab->SendInput("\x03"); // SIGINT interrupt via PTY or pipe
         if (tab->isConPty && tab->isAlive.load()) {
-            tab->selection.clear();
+            ULONGLONG now = GetTickCount64();
+            // If user presses Ctrl+C again rapidly (< 800ms) while stubborn non-shell child ignores SIGINT, terminate foreground child
+            if (tab->lastCtrlCTick != 0 && (now - tab->lastCtrlCTick) <= 800 && tab->processId != 0) {
+                InterruptForegroundChildProcesses(tab->processId);
+            }
+            tab->lastCtrlCTick = now;
             return true;
         }
+        size_t killedChildren = 0;
         if (tab->processId != 0) {
-            GenerateConsoleCtrlEvent(CTRL_C_EVENT, tab->processId);
+            killedChildren = InterruptForegroundChildProcesses(tab->processId);
+            if (killedChildren == 0) {
+                GenerateConsoleCtrlEvent(CTRL_C_EVENT, tab->processId);
+            }
         }
-        tab->selection.clear();
+        bool hadInput = !tab->currentInputLine.empty();
         tab->currentInputLine.clear();
         tab->inputCursorCol = 0;
-        {
+        if (hadInput || killedChildren > 0 || tab->processId == 0) {
             std::lock_guard<std::mutex> lock(tab->bufferMutex);
             if (!tab->lines.empty()) {
                 tab->lines.back().rawText += L"^C";
                 tab->lines.back().spans.push_back({ L"^C", D2D1::ColorF(0.92f, 0.92f, 0.92f), false });
             }
             tab->lines.push_back({});
-            tab->scrollOffsetLines = 0;
+            tab->conPtyCursorLine = tab->lines.empty() ? 0 : (tab->lines.size() - 1);
+            tab->conPtyCursorCol = 0;
         }
         return true;
     }
@@ -6014,6 +6347,8 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
         if (vk == VK_END)    { tab->SendInput("\x1b[F");  return true; }
         if (vk == VK_UP)     { tab->SendInput("\x1b[A");  return true; }
         if (vk == VK_DOWN)   { tab->SendInput("\x1b[B");  return true; }
+        if (isCtrl && !isShift && (vk == 'D' || vk == 'd')) { tab->SendInput("\x04"); return true; }
+        if (isCtrl && !isShift && (vk == 'L' || vk == 'l')) { tab->SendInput("\x0c"); return true; }
         if (isCtrl) return false;
         return false;
     }

@@ -380,6 +380,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 133) {
         goto run_test_133;
     }
+    if (targetTest == 134) {
+        goto run_test_134;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -21711,6 +21714,296 @@ run_test_133:
 
         if (targetTest == 133) {
             std::cout << "Target test 133 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_134:
+    // [TEST 134] Explorer Multi-Select & Batch Actions + ConPTY Spinner/ANSI Rendering & Ctrl+C Interrupt
+    if (targetTest == 0 || targetTest == 134) {
+        std::cout << "\n[TEST 134] Testing Explorer Multi-Select, Batch Context Menu/Delete Modal, Terminal Spinner VT & ConPTY Ctrl+C..." << std::endl;
+
+        std::error_code ec134;
+        std::filesystem::path tempRoot134 = std::filesystem::temp_directory_path(ec134) /
+            (L"phide_test_134_" + std::to_wstring(GetCurrentProcessId()));
+        std::filesystem::remove_all(tempRoot134, ec134);
+        std::filesystem::create_directories(tempRoot134 / L"folderA", ec134);
+        {
+            std::ofstream(tempRoot134 / L"alpha.txt") << "alpha\n";
+            std::ofstream(tempRoot134 / L"folderA" / L"nested1.txt") << "nested1\n";
+            std::ofstream(tempRoot134 / L"folderA" / L"nested2.txt") << "nested2\n";
+            std::ofstream(tempRoot134 / L"beta.txt") << "beta\n";
+            std::ofstream(tempRoot134 / L"gamma.txt") << "gamma\n";
+        }
+        std::wstring canonRoot134 = std::filesystem::canonical(tempRoot134, ec134).wstring();
+        if (canonRoot134.rfind(L"\\\\?\\", 0) == 0) canonRoot134 = canonRoot134.substr(4);
+        std::wstring canonFolderA = std::filesystem::canonical(tempRoot134 / L"folderA", ec134).wstring();
+        if (canonFolderA.rfind(L"\\\\?\\", 0) == 0) canonFolderA = canonFolderA.substr(4);
+
+        // Part A: Explorer Multi-Select, Ancestor Deduplication, Batch Context Menu & Delete Batch Modal
+        {
+            phide::ui::DrawerPanel drawer134;
+            std::set<std::wstring> initExpanded = { canonFolderA };
+            drawer134.OpenFolder(canonRoot134, &initExpanded);
+
+            const auto& items = drawer134.GetTreeItems();
+            int idxAlpha = -1, idxFolderA = -1, idxNested1 = -1, idxBeta = -1, idxGamma = -1;
+            std::wstring pathAlpha, pathFolderA, pathNested1, pathBeta, pathGamma;
+            for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+                if (items[i].label == L"alpha.txt") { idxAlpha = i; pathAlpha = items[i].fullPath; }
+                else if (items[i].label == L"folderA") { idxFolderA = i; pathFolderA = items[i].fullPath; }
+                else if (items[i].label == L"nested1.txt") { idxNested1 = i; pathNested1 = items[i].fullPath; }
+                else if (items[i].label == L"beta.txt") { idxBeta = i; pathBeta = items[i].fullPath; }
+                else if (items[i].label == L"gamma.txt") { idxGamma = i; pathGamma = items[i].fullPath; }
+            }
+            assert(idxAlpha >= 0 && idxFolderA >= 0 && idxNested1 >= 0 && idxBeta >= 0 && idxGamma >= 0);
+
+            // 1. SetSingleSelection + ToggleSelection + Top-Level Ancestor Deduplication
+            drawer134.SetSingleSelection(pathAlpha);
+            assert(drawer134.GetSelectedCount() == 1);
+            assert(drawer134.IsPathSelected(pathAlpha));
+
+            assert(drawer134.ToggleSelection(pathFolderA));
+            assert(drawer134.ToggleSelection(pathNested1));
+            assert(drawer134.ToggleSelection(pathBeta));
+            assert(drawer134.GetSelectedCount() == 4);
+            assert(!drawer134.ToggleSelection(pathBeta)); // Toggled back off
+            assert(drawer134.GetSelectedCount() == 3);
+
+            auto topLevel = drawer134.GetTopLevelSelectedPaths();
+            assert(topLevel.size() == 2); // pathNested1 is under pathFolderA, so excluded
+            bool hasAlpha = false, hasFolderA = false;
+            for (const auto& p : topLevel) {
+                if (_wcsicmp(p.c_str(), pathAlpha.c_str()) == 0) hasAlpha = true;
+                if (_wcsicmp(p.c_str(), pathFolderA.c_str()) == 0) hasFolderA = true;
+                assert(_wcsicmp(p.c_str(), pathNested1.c_str()) != 0);
+            }
+            assert(hasAlpha && hasFolderA);
+
+            // 2. Shift+Click contiguous range selection (folders sort before files in Explorer)
+            drawer134.SetSingleSelection(pathFolderA);
+            drawer134.SelectRangeTo(idxBeta);
+            assert(drawer134.IsPathSelected(pathFolderA));
+            assert(drawer134.IsPathSelected(pathNested1));
+            assert(drawer134.IsPathSelected(pathAlpha));
+            assert(drawer134.IsPathSelected(pathBeta));
+            assert(!drawer134.IsPathSelected(pathGamma));
+
+            drawer134.SetSingleSelection(pathAlpha);
+            drawer134.SelectRangeTo(idxGamma);
+            assert(!drawer134.IsPathSelected(pathFolderA));
+            assert(drawer134.IsPathSelected(pathAlpha));
+            assert(drawer134.IsPathSelected(pathBeta));
+            assert(drawer134.IsPathSelected(pathGamma));
+
+            // 3. Ctrl+A Select All excludes virtual containers (e.g. __EXTERNAL_LIBRARIES__)
+            drawer134.SelectAllExplorerItems();
+            assert(drawer134.IsPathSelected(pathAlpha));
+            assert(drawer134.IsPathSelected(pathGamma));
+            assert(!drawer134.IsPathSelected(L"__EXTERNAL_LIBRARIES__"));
+            assert(!drawer134.IsPathSelected(canonRoot134));
+
+            drawer134.ClearSelection();
+            assert(drawer134.GetSelectedCount() == 0);
+            std::cout << "  Passed: Explorer Ctrl+Click toggle, Shift+Click range, Ctrl+A filtering & ancestor deduplication verified" << std::endl;
+
+            // 4. Context menu labels & ConfirmDiscardModal::OpenDeleteBatch for multi-selection
+            phide::ui::PopupMenu popup134;
+            phide::app::AppConfig cfg134;
+            popup134.OpenContextMenu(40.0f, 80.0f, false, pathAlpha, canonRoot134, cfg134, false, false, false, 1280.0f, 800.0f, 3);
+            bool sawCut3 = false, sawCopy3 = false, sawCopyPaths = false, sawCopyRelPaths = false, sawOpenAll = false, sawDelete3 = false;
+            bool renameDisabled = false, openWithDisabled = false;
+            for (const auto& mi : popup134.GetItems()) {
+                if (mi.actionId == phide::ui::MenuActionId::CtxCut && mi.label == L"Cut (3 items)") sawCut3 = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxCopy && mi.label == L"Copy (3 items)") sawCopy3 = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxCopyPath && mi.label == L"Copy Paths") sawCopyPaths = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxCopyRelativePath && mi.label == L"Copy Relative Paths") sawCopyRelPaths = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxOpenToSide && mi.label == L"Open All Selected") sawOpenAll = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxDelete && mi.label == L"Delete (3 items)") sawDelete3 = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxRename && !mi.isEnabled) renameDisabled = true;
+                if (mi.actionId == phide::ui::MenuActionId::CtxOpenWith && !mi.isEnabled) openWithDisabled = true;
+            }
+            assert(sawCut3 && sawCopy3 && sawCopyPaths && sawCopyRelPaths && sawOpenAll && sawDelete3);
+            assert(renameDisabled && openWithDisabled);
+
+            phide::ui::ConfirmDiscardModal modal134;
+            modal134.OpenDeleteBatch({ pathAlpha, pathFolderA, pathBeta });
+            assert(modal134.IsOpen());
+            assert(modal134.GetType() == phide::ui::ConfirmModalType::DeleteBatch);
+            assert(modal134.GetBatchPaths().size() == 3);
+
+            ComPtr<IWICBitmap> pWic134;
+            ComPtr<ID2D1RenderTarget> pRT134;
+            CreateTarget(pWic134, pRT134);
+            phide::ui::Theme theme134;
+            theme134.CreateDeviceResources(pRT134.Get(), pDWriteFactory.Get());
+            pRT134->BeginDraw();
+            pRT134->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            modal134.Render(pRT134.Get(), theme134, cfg134, 1280.0f, 800.0f);
+            assert(SUCCEEDED(pRT134->EndDraw()));
+            std::cout << "  Passed: Multi-select ContextMenu labels and DeleteBatch ConfirmDiscardModal verified" << std::endl;
+        }
+
+        // Part B: Terminal Spinner/ANSI VT Sequences & Live ConPTY Ctrl+C Interrupt
+        {
+            // 1. Headless VT / Spinner parser checks
+            phide::ui::TerminalPanel termVt;
+            termVt.SetUseConPtyForShells(false);
+            termVt.Open(canonRoot134);
+            auto* vtTab = termVt.GetActiveTab();
+            assert(vtTab != nullptr);
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                vtTab->isConPty = true;
+                vtTab->lines.clear();
+                vtTab->lines.push_back({});
+                vtTab->conPtyViewportTop = 0;
+                vtTab->conPtyCursorLine = 0;
+                vtTab->conPtyCursorCol = 0;
+                vtTab->conPtyCursorVisible = true;
+                vtTab->conPtyPendingUtf8.clear();
+                vtTab->conPtyPendingEsc.clear();
+            }
+
+            // Hide cursor, write static header + newline, then split UTF-8 Braille spinner across chunks
+            const char* hdr = "\x1b[?25lInstalling dependencies:\r\n";
+            vtTab->AppendOutput(hdr, std::strlen(hdr));
+            assert(!vtTab->conPtyCursorVisible);
+
+            // U+2838 '⠸' = UTF-8 E2 A0 B8 split across 2 reads
+            const char chunk1[] = "\xe2\xa0";
+            const char chunk2[] = "\xb8 Installing...";
+            vtTab->AppendOutput(chunk1, 2);
+            vtTab->AppendOutput(chunk2, std::strlen(chunk2));
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                assert(vtTab->lines.size() == 2);
+                assert(vtTab->lines[0].rawText == L"Installing dependencies:");
+                assert(vtTab->lines[1].rawText == L"\x2838 Installing...");
+            }
+
+            // Spinner frame overwrite via \r\x1b[1G\x1b[2K
+            const char* frame2 = "\r\x1b[1G\x1b[2K\xe2\xa0\xb4 Step 2";
+            vtTab->AppendOutput(frame2, std::strlen(frame2));
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                assert(vtTab->lines.size() == 2);
+                assert(vtTab->lines[1].rawText == L"\x2834 Step 2");
+            }
+
+            // \x1b[0J from cursor line clears forward without wiping line 0
+            const char* curUp = "\x1b[A\r\n"; // move to row 0 then back to row 1
+            vtTab->AppendOutput(curUp, std::strlen(curUp));
+            const char* ed0 = "\x1b[0J";
+            vtTab->AppendOutput(ed0, std::strlen(ed0));
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                assert(vtTab->lines.size() == 2);
+                assert(vtTab->lines[0].rawText == L"Installing dependencies:");
+                assert(vtTab->lines[1].rawText.empty());
+            }
+
+            // TrueColor FG + BG (\x1b[38;2;0;200;255;48;2;30;31;34m) must NOT parse BG bytes as FG colors
+            const char* sgrLine = "\x1b[38;2;0;200;255;48;2;30;31;34mCyanText\x1b[0m\x1b[?25h";
+            vtTab->AppendOutput(sgrLine, std::strlen(sgrLine));
+            assert(vtTab->conPtyCursorVisible);
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                const auto& ln = vtTab->lines[1];
+                assert(ln.rawText == L"CyanText");
+                assert(!ln.spans.empty());
+                const auto& c = ln.spans[0].color;
+                assert(c.r < 0.05f && c.g > 0.70f && c.b > 0.95f);
+            }
+
+            // Alt screen enter / exit + \x1b[H home positioning
+            const char* altEnter = "\x1b[?1049h\x1b[HAltTitle";
+            vtTab->AppendOutput(altEnter, std::strlen(altEnter));
+            assert(vtTab->conPtyUseAltScreen);
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                assert(vtTab->lines.back().rawText == L"AltTitle");
+            }
+            const char* altExit = "\x1b[?1049l";
+            vtTab->AppendOutput(altExit, std::strlen(altExit));
+            assert(!vtTab->conPtyUseAltScreen);
+            {
+                std::lock_guard<std::mutex> lk(vtTab->bufferMutex);
+                assert(vtTab->lines.size() >= 2);
+                assert(vtTab->lines[1].rawText == L"CyanText");
+            }
+            termVt.CloseTab(0);
+            std::cout << "  Passed: TerminalPanel split UTF-8 spinner, \\r/\\x1b[2K overwrite, \\x1b[0J, 24-bit SGR & alt-screen verified" << std::endl;
+
+            // 2. Live ConPTY PowerShell spinner/output & Ctrl+C child interruption without closing shell
+            phide::ui::TerminalPanel termPty;
+            termPty.SetUseConPtyForShells(true);
+            assert(termPty.GetUseConPtyForShells());
+            assert(phide::ui::TerminalPanel::InterruptForegroundChildProcesses(0) == 0);
+            std::atomic<int> ptyNotifyCount{ 0 };
+            termPty.Open(canonRoot134);
+            auto* ptyTab = termPty.GetActiveTab();
+            assert(ptyTab != nullptr && ptyTab->isConPty && ptyTab->isAlive.load());
+            ptyTab->onOutput = [&]() { ++ptyNotifyCount; };
+
+            auto tabContains = [&](const std::wstring& needle) -> bool {
+                std::lock_guard<std::mutex> lk(ptyTab->bufferMutex);
+                for (const auto& ln : ptyTab->lines) {
+                    if (ln.rawText.find(needle) != std::wstring::npos) return true;
+                }
+                return false;
+            };
+
+            // Wait for PowerShell prompt initialization
+            for (int w = 0; w < 80 && !tabContains(L"PS "); ++w) {
+                Sleep(50);
+            }
+
+            // Launch long-running child process (30s ping loop); cmd ^ escape avoids matching typed echo
+            const ULONGLONG tStart = GetTickCount64();
+            ptyTab->SendInput("cmd /c \"echo SPIN_^READY_134 & ping -n 30 127.0.0.1 >nul\"\r");
+            for (int w = 0; w < 100 && !tabContains(L"SPIN_READY_134"); ++w) {
+                Sleep(50);
+            }
+            if (!tabContains(L"SPIN_READY_134")) {
+                std::lock_guard<std::mutex> lk(ptyTab->bufferMutex);
+                std::wcerr << L"[DEBUG 134] isAlive=" << ptyTab->isAlive.load()
+                           << L" exitCode=" << ptyTab->processExitCode.load()
+                           << L" notify=" << ptyNotifyCount.load()
+                           << L" lines=" << ptyTab->lines.size() << L"\n";
+                for (size_t li = 0; li < ptyTab->lines.size(); ++li) {
+                    std::wcerr << L"  [" << li << L"] " << ptyTab->lines[li].rawText << L"\n";
+                }
+            }
+            assert(tabContains(L"SPIN_READY_134"));
+            assert(ptyNotifyCount.load() > 0);
+
+            // Press Ctrl+C twice rapidly to trigger ConPTY ETX + child-interrupt fallback
+            assert(termPty.OnKeyDown('C', true, false));
+            Sleep(80);
+            assert(termPty.OnKeyDown('C', true, false));
+            Sleep(300);
+
+            // Shell must still be alive and execute next command promptly (well before 30s ping would finish)
+            assert(ptyTab->isAlive.load());
+            ptyTab->SendInput("Write-Output ('AFTER_' + 'CTRLC_134')\r");
+            for (int w = 0; w < 120 && !tabContains(L"AFTER_CTRLC_134"); ++w) {
+                Sleep(50);
+            }
+            const ULONGLONG elapsedMs = GetTickCount64() - tStart;
+            assert(tabContains(L"AFTER_CTRLC_134"));
+            assert(elapsedMs < 15000ULL);
+            termPty.CloseTab(0);
+            std::cout << "  Passed: Live ConPTY PowerShell Ctrl+C interrupted 30s child in " << elapsedMs
+                      << "ms while keeping shell alive" << std::endl;
+        }
+
+        Sleep(100);
+        std::filesystem::remove_all(tempRoot134, ec134);
+        std::cout << "  Passed: All [TEST 134] Explorer Multi-Select & ConPTY Terminal Spinner/Ctrl+C checks passed!" << std::endl;
+
+        if (targetTest == 134) {
+            std::cout << "Target test 134 finished successfully." << std::endl;
             return 0;
         }
     }

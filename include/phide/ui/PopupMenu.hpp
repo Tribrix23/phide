@@ -453,7 +453,7 @@ public:
     void OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                          const std::wstring& rootFolder, const app::AppConfig& config,
                          bool canPaste = false, bool canUndo = false, bool canRedo = false,
-                         float clientW = 0.0f, float clientH = 0.0f);
+                         float clientW = 0.0f, float clientH = 0.0f, size_t multiSelectCount = 1);
 
     /**
      * @brief Opens the custom editor context menu (Image 4).
@@ -517,7 +517,7 @@ private:
                             const std::vector<std::wstring>& recentItems = {});
     void BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
                                const std::wstring& rootFolder, bool canPaste,
-                               bool canUndo = false, bool canRedo = false);
+                               bool canUndo = false, bool canRedo = false, size_t multiSelectCount = 1);
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds,
                     float clientW = 0.0f, float clientH = 0.0f);

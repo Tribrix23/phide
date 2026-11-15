@@ -1097,12 +1097,25 @@ private:
     std::wstring m_contextTargetPath;
     bool m_contextTargetIsFolder = false;
     std::wstring m_clipboardPath;
+    std::vector<std::wstring> m_clipboardPaths;
     bool m_clipboardIsCut = false;
     std::wstring m_compareSourcePath;
     std::wstring m_selectedExplorerPath;
     bool m_explorerHasFocus = false;
     bool m_explorerClearedSelection = false;
+    std::atomic<bool> m_terminalRepaintPosted{false};
+    bool m_pendingSingleSelectOnRelease = false;
+    bool m_suppressExplorerClickOpen = false;
     [[nodiscard]] std::wstring ResolveExplorerCreateTargetDir(bool fallbackToActiveDoc = false) const;
+    [[nodiscard]] std::vector<std::wstring> GetExplorerDragSourcePaths() const;
+    [[nodiscard]] std::vector<std::wstring> GetActiveExplorerTargetPaths(const std::wstring& fallbackPath = L"") const;
+    [[nodiscard]] bool IsExplorerKeyboardFocused() const noexcept;
+    void CopyExplorerSelectionToClipboard(bool isCut, const std::wstring& fallbackPath = L"");
+    void PasteClipboardToExplorerTarget(const std::wstring& targetPath, bool targetIsFolder);
+    bool ExecuteMoveExplorerItems(const std::vector<std::wstring>& srcPaths, const std::filesystem::path& destDir);
+    void ExecuteDeleteBatchAsync(const std::vector<std::wstring>& targetPaths);
+    void FinishDeleteBatch(const std::vector<std::wstring>& deletedPaths, size_t successCount);
+    void CleanupDeletedExplorerPath(const std::wstring& deletedPath, bool isFolder);
     void DoDeleteSelectedExplorerItem();
 
     UINT_PTR m_caretTimerId    = 1001;

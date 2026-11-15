@@ -64,13 +64,13 @@ void PopupMenu::OpenFileMenu(float x, float y, const app::AppConfig& config, boo
 void PopupMenu::OpenContextMenu(float x, float y, bool isFolder, const std::wstring& targetPath,
                                 const std::wstring& rootFolder, const app::AppConfig& config,
                                 bool canPaste, bool canUndo, bool canRedo,
-                                float clientW, float clientH) {
+                                float clientW, float clientH, size_t multiSelectCount) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
 
-    BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste, canUndo, canRedo);
+    BuildContextMenuItems(isFolder, targetPath, rootFolder, canPaste, canUndo, canRedo, multiSelectCount);
 
     const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(240.0f));
     LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
@@ -807,16 +807,33 @@ void PopupMenu::BuildFileMenuItems(bool autoSave, bool hasOpenFile, bool isDirty
 
 void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetPath,
                                       const std::wstring& rootFolder, bool canPaste,
-                                      bool canUndo, bool canRedo) {
+                                      bool canUndo, bool canRedo, size_t multiSelectCount) {
     m_items.clear();
 
-    bool hasTarget = !targetPath.empty();
-    if (hasTarget && !rootFolder.empty()) {
+    const bool isMulti = multiSelectCount > 1;
+    const std::wstring multiSuffix = isMulti ? (L" (" + std::to_wstring(multiSelectCount) + L" items)") : L"";
+    bool hasTarget = !targetPath.empty() || isMulti;
+    if (!isMulti && hasTarget && !rootFolder.empty()) {
         std::error_code ec;
         if (std::filesystem::equivalent(targetPath, rootFolder, ec) || _wcsicmp(targetPath.c_str(), rootFolder.c_str()) == 0) {
             hasTarget = false;
         }
     }
+
+    auto appendCommonTail = [&](bool includePaste) {
+        m_items.push_back({ MenuActionId::None,                 L"",                                     L"",                    true,  false, false, false, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCut,               L"Cut" + multiSuffix,                    L"Ctrl+X",              false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy" + multiSuffix,                   L"Ctrl+C",              false, false, false, hasTarget, {}, {} });
+        if (includePaste) {
+            m_items.push_back({ MenuActionId::CtxPaste,         L"Paste",                                L"Ctrl+V",              false, false, false, canPaste, {}, {} });
+        }
+        m_items.push_back({ MenuActionId::None,                 L"",                                     L"",                    true,  false, false, false, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyPath,          isMulti ? L"Copy Paths" : L"Copy Path",  L"Shift+Alt+C",         false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  isMulti ? L"Copy Relative Paths" : L"Copy Relative Path", L"Ctrl+K Ctrl+Shift+C", false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::None,                 L"",                                     L"",                    true,  false, false, false, {}, {} });
+        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                            L"F2",                  false, false, false, hasTarget && !isMulti, {}, {} });
+        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete" + multiSuffix,                 L"Delete",              false, false, false, hasTarget, {}, {} });
+    };
 
     // 0. Undo and Redo actions (Image 1: Explorer Undo/Redo)
     m_items.push_back({ MenuActionId::CtxUndo, L"Undo", L"Ctrl+Z", false, false, false, canUndo, {}, {} });
@@ -827,88 +844,23 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
 
     if (isFolder) {
         // --- Folder Context Menu (Matching Image 5) ---
-        // 1. New File...
         m_items.push_back({ MenuActionId::CtxNewFile,           L"New File...",                  L"",                       false, false, false, true, {}, {} });
-        // 2. New Folder...
         m_items.push_back({ MenuActionId::CtxNewFolder,         L"New Folder...",                L"",                       false, false, false, true, {}, {} });
-        // 3. Reveal in File Explorer (Shift+Alt+R)
         m_items.push_back({ MenuActionId::CtxRevealInExplorer,  L"Reveal in File Explorer",      L"Shift+Alt+R",            false, false, false, true, {}, {} });
-        // 4. Open in Integrated Terminal
         m_items.push_back({ MenuActionId::CtxOpenInTerminal,    L"Open in Integrated Terminal",  L"",                       false, false, false, true, {}, {} });
-
-        // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 5. Find in Folder... (Shift+Alt+F)
         m_items.push_back({ MenuActionId::CtxFindInFolder,      L"Find in Folder...",            L"Shift+Alt+F",            false, false, false, true, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 6. Cut (Ctrl+X)
-        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, hasTarget, {}, {} });
-        // 7. Copy (Ctrl+C)
-        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, hasTarget, {}, {} });
-        // 8. Paste (Ctrl+V)
-        m_items.push_back({ MenuActionId::CtxPaste,             L"Paste",                        L"Ctrl+V",                 false, false, false, canPaste, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 9. Copy Path (Shift+Alt+C)
-        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, hasTarget, {}, {} });
-        // 10. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
-        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, hasTarget, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 11. Rename... (F2)
-        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, hasTarget, {}, {} });
-        // 12. Delete (Delete)
-        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, hasTarget, {}, {} });
+        appendCommonTail(true);
     } else {
         // --- File Context Menu (Matching Image 4) ---
-        // 1. Open to the Side
-        m_items.push_back({ MenuActionId::CtxOpenToSide,        L"Open to the Side",             L"",                       false, false, false, true, {}, {} });
-        // 2. Open With...
-        m_items.push_back({ MenuActionId::CtxOpenWith,          L"Open With...",                 L"",                       false, false, false, true, {}, {} });
-        // 3. Reveal in File Explorer (Shift+Alt+R)
+        m_items.push_back({ MenuActionId::CtxOpenToSide,        isMulti ? L"Open All Selected" : L"Open to the Side", L"",  false, false, false, true, {}, {} });
+        m_items.push_back({ MenuActionId::CtxOpenWith,          L"Open With...",                 L"",                       false, false, false, !isMulti, {}, {} });
         m_items.push_back({ MenuActionId::CtxRevealInExplorer,  L"Reveal in File Explorer",      L"Shift+Alt+R",            false, false, false, true, {}, {} });
-        // 4. Open in Integrated Terminal
         m_items.push_back({ MenuActionId::CtxOpenInTerminal,    L"Open in Integrated Terminal",  L"",                       false, false, false, true, {}, {} });
-
-        // --- Separator ---
         m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 5. Compare with Selected
-        m_items.push_back({ MenuActionId::CtxCompareWithSelected, L"Compare with Selected",      L"",                       false, false, false, true, {}, {} });
-        // 6. Select for Compare
-        m_items.push_back({ MenuActionId::CtxSelectForCompare,    L"Select for Compare",         L"",                       false, false, false, true, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 8. Cut (Ctrl+X)
-        m_items.push_back({ MenuActionId::CtxCut,               L"Cut",                          L"Ctrl+X",                 false, false, false, hasTarget, {}, {} });
-        // 9. Copy (Ctrl+C)
-        m_items.push_back({ MenuActionId::CtxCopy,              L"Copy",                         L"Ctrl+C",                 false, false, false, hasTarget, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 10. Copy Path (Shift+Alt+C)
-        m_items.push_back({ MenuActionId::CtxCopyPath,          L"Copy Path",                    L"Shift+Alt+C",            false, false, false, hasTarget, {}, {} });
-        // 11. Copy Relative Path (Ctrl+K Ctrl+Shift+C)
-        m_items.push_back({ MenuActionId::CtxCopyRelativePath,  L"Copy Relative Path",           L"Ctrl+K Ctrl+Shift+C",    false, false, false, hasTarget, {}, {} });
-
-        // --- Separator ---
-        m_items.push_back({ MenuActionId::None,                 L"",                             L"",                       true,  false, false, false, {}, {} });
-
-        // 12. Rename... (F2)
-        m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                    L"F2",                     false, false, false, hasTarget, {}, {} });
-        // 13. Delete (Delete)
-        m_items.push_back({ MenuActionId::CtxDelete,            L"Delete",                       L"Delete",                 false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::CtxCompareWithSelected, L"Compare with Selected",      L"",                       false, false, false, !isMulti, {}, {} });
+        m_items.push_back({ MenuActionId::CtxSelectForCompare,    L"Select for Compare",         L"",                       false, false, false, !isMulti, {}, {} });
+        appendCommonTail(false);
     }
 }
 

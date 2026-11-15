@@ -259,6 +259,21 @@ struct TerminalTab {
     bool isConPty = false;
     std::wstring customCommand;
     size_t conPtyCursorCol = 0;
+    size_t conPtyCursorLine = 0;
+    size_t conPtyViewportTop = 0;
+    short conPtyRows = 36;
+    short conPtyCols = 120;
+    bool conPtyCursorVisible = true;
+    bool conPtyUseAltScreen = false;
+    std::vector<TerminalLine> conPtyAltSavedLines;
+    size_t conPtyAltSavedViewportTop = 0;
+    size_t conPtyAltSavedCursorLine = 0;
+    size_t conPtyAltSavedCursorCol = 0;
+    D2D1_COLOR_F conPtyCurColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
+    bool conPtyCurBold = false;
+    std::string conPtyPendingUtf8;
+    std::wstring conPtyPendingEsc;
+    ULONGLONG lastCtrlCTick = 0;
     std::thread readerThread;
     std::thread stderrReaderThread;
     std::thread exitWatcherThread;
@@ -396,6 +411,9 @@ public:
     [[nodiscard]] const std::vector<D2D1_RECT_F>& GetResizeSubmenuItemBounds() const noexcept { return m_resizeSubmenuItemBounds; }
     [[nodiscard]] D2D1_RECT_F GetOptionsBtnBounds() const noexcept { return m_optionsBtnBounds; }
     void ExecuteCommandLine(const std::wstring& command);
+    void SetUseConPtyForShells(bool enabled) noexcept { m_useConPtyForShells = enabled; }
+    [[nodiscard]] bool GetUseConPtyForShells() const noexcept { return m_useConPtyForShells; }
+    static size_t InterruptForegroundChildProcesses(DWORD rootShellPid);
 
     // Debug Session Management (Same layout as terminal, fully functional)
     void StartDebugSession(const std::wstring& filePath, const std::wstring& workingDir,
@@ -541,6 +559,7 @@ private:
     mutable std::recursive_mutex m_tabsMutex;
     std::vector<TerminalProfileDef> m_availableProfiles;
     std::function<void()> m_outputCallback;
+    bool m_useConPtyForShells = false;
     int m_activeTabIdx = 0;
     int m_hoveredTabIdx = -1;
     int m_hoveredCloseIdx = -1;

@@ -21,7 +21,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
     // 2. Card Dimensions and Center Placement
     const bool isNotice = (m_type == ConfirmModalType::Notice);
-    const bool isDelete = (m_type == ConfirmModalType::DeleteFile || m_type == ConfirmModalType::DeleteFolder);
+    const bool isDelete = (m_type == ConfirmModalType::DeleteFile || m_type == ConfirmModalType::DeleteFolder || m_type == ConfirmModalType::DeleteBatch);
     const bool isRestore = (m_type == ConfirmModalType::RestoreFile || m_status == L"D");
     const bool isDiscardAll = (m_type == ConfirmModalType::DiscardAll || m_status == L"ALL");
     const bool isUpdateImports = (m_type == ConfirmModalType::UpdateImportsOnRename || m_type == ConfirmModalType::UpdateImportsOnMove);
@@ -137,7 +137,11 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     } else if (isUpdateImports) {
         titleText = (m_type == ConfirmModalType::UpdateImportsOnMove) ? L"Update Imports on Move?" : L"Update Imports on Rename?";
     } else if (isDelete) {
-        titleText = (m_type == ConfirmModalType::DeleteFolder) ? L"Delete Folder?" : L"Delete File?";
+        if (m_type == ConfirmModalType::DeleteBatch) {
+            titleText = L"Delete " + std::to_wstring(m_changeCount) + L" Items?";
+        } else {
+            titleText = (m_type == ConfirmModalType::DeleteFolder) ? L"Delete Folder?" : L"Delete File?";
+        }
     } else if (isRestore) {
         titleText = L"Restore File?";
     } else if (isDiscardAll) {
@@ -171,11 +175,16 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
             ? L"Moving this file will update those imports across your project."
             : L"Renaming this file will update those imports across your project.";
     } else if (isDelete) {
-        mainMsg = L"Are you sure you want to delete '" + m_fileName + L"'?";
-        if (m_type == ConfirmModalType::DeleteFolder) {
-            subMsg = L"This folder and its contents will be permanently deleted. This action cannot be undone.";
+        if (m_type == ConfirmModalType::DeleteBatch) {
+            mainMsg = L"Are you sure you want to delete these " + std::to_wstring(m_changeCount) + L" selected items?";
+            subMsg = L"All selected files and folders will be permanently removed. This action cannot be undone.";
         } else {
-            subMsg = L"This file will be permanently deleted from the project. This action cannot be undone.";
+            mainMsg = L"Are you sure you want to delete '" + m_fileName + L"'?";
+            if (m_type == ConfirmModalType::DeleteFolder) {
+                subMsg = L"This folder and its contents will be permanently deleted. This action cannot be undone.";
+            } else {
+                subMsg = L"This file will be permanently deleted from the project. This action cannot be undone.";
+            }
         }
     } else if (isRestore) {
         mainMsg = L"Are you sure you want to restore '" + m_fileName + L"'?";
