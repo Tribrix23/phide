@@ -9,6 +9,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <winsvc.h>
+#include <iphlpapi.h>
+#include <tlhelp32.h>
 
 #include "phide/db/SqlEngine.hpp"
 
@@ -22,6 +25,8 @@
 #include <unordered_set>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 namespace phide::db {
 
@@ -279,17 +284,19 @@ std::wstring FindToolExe(const std::wstring& exeName,
     return L"";
 }
 
-std::wstring FindMysqlExe() {
+std::wstring FindMysqlToolExe(const wchar_t* exeName) {
     fs::path exeDir(GetExeDirW());
     return FindToolExe(
-        L"mysql.exe",
+        exeName,
         {
-            L"C:\\Program Files\\phide\\runtimes\\mysql\\bin\\mysql.exe",
-            (exeDir / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe").wstring(),
-            (exeDir.parent_path() / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe").wstring(),
-            (exeDir / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe").wstring(),
-            (exeDir.parent_path() / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / L"mysql.exe").wstring(),
-            L"C:\\xampp\\mysql\\bin\\mysql.exe"
+            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql\\bin") / exeName).wstring(),
+            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql") / exeName).wstring(),
+            (exeDir / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (exeDir / L"runtimes" / L"mysql" / exeName).wstring(),
+            (exeDir.parent_path() / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (exeDir / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (exeDir.parent_path() / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (fs::path(L"C:\\xampp\\mysql\\bin") / exeName).wstring()
         },
         {
             L"C:\\laragon\\bin\\mysql",
@@ -298,12 +305,32 @@ std::wstring FindMysqlExe() {
         });
 }
 
+std::wstring FindMysqlExe() { return FindMysqlToolExe(L"mysql.exe"); }
+std::wstring FindMysqldExe() { return FindMysqlToolExe(L"mysqld.exe"); }
+std::wstring FindMysqlAdminExe() { return FindMysqlToolExe(L"mysqladmin.exe"); }
+
 std::wstring FindPsqlExe() {
     return FindToolExe(
         L"psql.exe",
         {
             L"C:\\xampp\\pgsql\\bin\\psql.exe"
         },
+        {
+            L"C:\\Program Files\\PostgreSQL",
+            L"C:\\Program Files (x86)\\PostgreSQL",
+            L"C:\\laragon\\bin\\postgresql"
+        });
+}
+
+std::wstring FindPgCtlExe() {
+    std::wstring psql = FindPsqlExe();
+    std::vector<std::wstring> known = { L"C:\\xampp\\pgsql\\bin\\pg_ctl.exe" };
+    if (!psql.empty()) {
+        known.insert(known.begin(), (fs::path(psql).parent_path() / L"pg_ctl.exe").wstring());
+    }
+    return FindToolExe(
+        L"pg_ctl.exe",
+        known,
         {
             L"C:\\Program Files\\PostgreSQL",
             L"C:\\Program Files (x86)\\PostgreSQL",
@@ -321,6 +348,171 @@ std::wstring FindSqlCmdExe() {
         });
 }
 
+bool IsLocalHostAddress(const std::wstring& host) {
+    std::wstring low = ToLowerW(TrimW(host));
+    return low.empty() || low == L"localhost" || low == L"127.0.0.1" || low == L"::1";
+}
+
+struct ScmServiceMatch {
+    std::wstring serviceName;
+    DWORD currentState = 0;
+};
+
+std::vector<ScmServiceMatch> FindWindowsServicesByPrefix(const std::vector<std::wstring>& prefixes) {
+    std::vector<ScmServiceMatch> matches;
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+    if (!scm) return matches;
+
+    DWORD bytesNeeded = 0;
+    DWORD count = 0;
+    DWORD resume = 0;
+    EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
+                          nullptr, 0, &bytesNeeded, &count, &resume, nullptr);
+    if (GetLastError() == ERROR_MORE_DATA && bytesNeeded > 0) {
+        std::vector<BYTE> buf(bytesNeeded);
+        resume = 0;
+        if (EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
+                                  buf.data(), bytesNeeded, &bytesNeeded, &count, &resume, nullptr)) {
+            const auto* entries = reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buf.data());
+            for (DWORD i = 0; i < count; ++i) {
+                std::wstring name = entries[i].lpServiceName ? entries[i].lpServiceName : L"";
+                std::wstring low = ToLowerW(name);
+                for (const auto& pfx : prefixes) {
+                    if (low.rfind(ToLowerW(pfx), 0) == 0) {
+                        matches.push_back({ name, entries[i].ServiceStatusProcess.dwCurrentState });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    CloseServiceHandle(scm);
+    return matches;
+}
+
+bool ControlWindowsServiceState(const std::wstring& serviceName, bool start, DWORD timeoutMs, std::wstring& outErr) {
+    outErr.clear();
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) {
+        outErr = L"Failed to open Windows Service Control Manager.";
+        return false;
+    }
+    const DWORD access = start ? (SERVICE_START | SERVICE_QUERY_STATUS) : (SERVICE_STOP | SERVICE_QUERY_STATUS);
+    SC_HANDLE svc = OpenServiceW(scm, serviceName.c_str(), access);
+    if (!svc) {
+        DWORD err = GetLastError();
+        CloseServiceHandle(scm);
+        outErr = (err == ERROR_ACCESS_DENIED)
+            ? (L"Permission denied for service '" + serviceName + L"'. Run Phide as Administrator.")
+            : (L"Could not open Windows service '" + serviceName + L"'.");
+        return false;
+    }
+
+    SERVICE_STATUS_PROCESS ssp{};
+    DWORD bytesNeeded = 0;
+    bool ok = false;
+    if (start) {
+        if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&ssp), sizeof(ssp), &bytesNeeded) &&
+            ssp.dwCurrentState == SERVICE_RUNNING) {
+            ok = true;
+        } else if (StartServiceW(svc, 0, nullptr) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+            ULONGLONG deadline = GetTickCount64() + timeoutMs;
+            while (GetTickCount64() < deadline) {
+                if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&ssp), sizeof(ssp), &bytesNeeded)) {
+                    if (ssp.dwCurrentState == SERVICE_RUNNING) {
+                        ok = true;
+                        break;
+                    }
+                    if (ssp.dwCurrentState == SERVICE_STOPPED) break;
+                }
+                Sleep(80);
+            }
+        } else {
+            DWORD err = GetLastError();
+            outErr = (err == ERROR_ACCESS_DENIED)
+                ? (L"Permission denied starting service '" + serviceName + L"'.")
+                : (L"Failed to start service '" + serviceName + L"' (code " + std::to_wstring(err) + L").");
+        }
+    } else {
+        if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&ssp), sizeof(ssp), &bytesNeeded) &&
+            ssp.dwCurrentState == SERVICE_STOPPED) {
+            ok = true;
+        } else {
+            SERVICE_STATUS st{};
+            if (ControlService(svc, SERVICE_CONTROL_STOP, &st) || GetLastError() == ERROR_SERVICE_NOT_ACTIVE) {
+                ULONGLONG deadline = GetTickCount64() + timeoutMs;
+                while (GetTickCount64() < deadline) {
+                    if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&ssp), sizeof(ssp), &bytesNeeded)) {
+                        if (ssp.dwCurrentState == SERVICE_STOPPED) {
+                            ok = true;
+                            break;
+                        }
+                    }
+                    Sleep(80);
+                }
+            } else {
+                DWORD err = GetLastError();
+                outErr = (err == ERROR_ACCESS_DENIED)
+                    ? (L"Permission denied stopping service '" + serviceName + L"'.")
+                    : (L"Failed to stop service '" + serviceName + L"' (code " + std::to_wstring(err) + L").");
+            }
+        }
+    }
+
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return ok;
+}
+
+bool TerminateLocalProcessListeningOnPort(int port, const std::vector<std::wstring>& allowedExeNames) {
+    if (port <= 0 || port >= 65536) return false;
+    ULONG size = 0;
+    GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
+    if (size == 0) return false;
+    std::vector<BYTE> buf(size);
+    if (GetExtendedTcpTable(buf.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) {
+        return false;
+    }
+    const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buf.data());
+    std::vector<DWORD> pids;
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        DWORD p = table->table[i].dwLocalPort;
+        int localPort = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+        if (localPort == port && table->table[i].dwOwningPid > 4) {
+            pids.push_back(table->table[i].dwOwningPid);
+        }
+    }
+    if (pids.empty()) return false;
+
+    bool terminated = false;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnap, &pe)) {
+            do {
+                if (std::find(pids.begin(), pids.end(), pe.th32ProcessID) == pids.end()) continue;
+                std::wstring exeLow = ToLowerW(pe.szExeFile);
+                bool match = false;
+                for (const auto& allowed : allowedExeNames) {
+                    if (exeLow == ToLowerW(allowed)) { match = true; break; }
+                }
+                if (!match) continue;
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
+                if (hProc) {
+                    if (TerminateProcess(hProc, 0)) {
+                        WaitForSingleObject(hProc, 1500);
+                        terminated = true;
+                    }
+                    CloseHandle(hProc);
+                }
+            } while (Process32NextW(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+    }
+    return terminated;
+}
+
 int ReadPortFile(const fs::path& portFile) {
     std::error_code ec;
     if (!fs::exists(portFile, ec)) return 0;
@@ -331,7 +523,41 @@ int ReadPortFile(const fs::path& portFile) {
     return (p > 0 && p < 65536) ? p : 0;
 }
 
+void PersistMysqlPort(int port) {
+    if (port <= 0 || port >= 65536) return;
+    SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(port).c_str());
+    std::error_code ec;
+    wchar_t localApp[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
+        fs::path dir = fs::path(localApp) / L"phide";
+        fs::create_directories(dir, ec);
+        std::ofstream out(dir / L"mysql_port.txt", std::ios::trunc);
+        if (out.is_open()) out << port;
+    }
+    fs::path exeDir(GetExeDirW());
+    std::vector<fs::path> roots = {
+        exeDir,
+        exeDir.parent_path(),
+        exeDir.parent_path().parent_path(),
+        fs::current_path(),
+        fs::path(L"C:\\Program Files\\phide")
+    };
+    for (const auto& r : roots) {
+        if (r.empty()) continue;
+        fs::path pmaDir = r / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+        if (fs::exists(pmaDir, ec) && fs::is_directory(pmaDir, ec)) {
+            std::ofstream out(pmaDir / L"mysql_port.txt", std::ios::trunc);
+            if (out.is_open()) out << port;
+        }
+    }
+}
+
 int ReadMysqlPortFromPmaConfig() {
+    wchar_t localApp[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
+        int p = ReadPortFile(fs::path(localApp) / L"phide" / L"mysql_port.txt");
+        if (p > 0) return p;
+    }
     fs::path exeDir(GetExeDirW());
     std::vector<fs::path> roots = {
         exeDir,
@@ -729,7 +955,8 @@ std::vector<SqlConnectionProfile> SqlEngine::DiscoverWorkspaceDatabases(
             addedPg = true;
         }
     }
-    if (!addedPg && envHints.connection == L"pgsql") {
+    auto pgServices = FindWindowsServicesByPrefix({ L"postgresql", L"postgres" });
+    if (!addedPg && (envHints.connection == L"pgsql" || !FindPsqlExe().empty() || !pgServices.empty())) {
         int fallbackPg = !pgPorts.empty() ? pgPorts.front() : 5432;
         SqlConnectionProfile pgProf;
         pgProf.dialect = SqlDialect::PostgreSQL;
@@ -743,9 +970,9 @@ std::vector<SqlConnectionProfile> SqlEngine::DiscoverWorkspaceDatabases(
         profiles.push_back(std::move(pgProf));
     }
 
-    // 4. Dynamically detect SQL Server (1433) if listening & sqlcmd.exe exists
-    std::wstring sqlcmdExe = FindSqlCmdExe();
-    if ((!sqlcmdExe.empty() && IsTcpPortOpen(L"127.0.0.1", 1433, 35)) || envHints.connection == L"sqlsrv") {
+    // 4. Dynamically detect SQL Server (1433) if listening, installed service exists, or .env configures sqlsrv
+    auto msServices = FindWindowsServicesByPrefix({ L"mssqlserver", L"mssql$" });
+    if (IsTcpPortOpen(L"127.0.0.1", 1433, 35) || !msServices.empty() || envHints.connection == L"sqlsrv") {
         SqlConnectionProfile msProf;
         msProf.dialect = SqlDialect::SQLServer;
         msProf.host = L"localhost";
@@ -759,6 +986,367 @@ std::vector<SqlConnectionProfile> SqlEngine::DiscoverWorkspaceDatabases(
     }
 
     return profiles;
+}
+
+bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::wstring& outMessage, int* outResolvedPort) {
+    outMessage.clear();
+    if (outResolvedPort) *outResolvedPort = profile.port;
+
+    if (profile.dialect == SqlDialect::SQLite) {
+        outMessage = L"SQLite is file-based and does not use a server.";
+        return true;
+    }
+    if (!IsLocalHostAddress(profile.host)) {
+        outMessage = L"Cannot start remote host '" + profile.host + L"'. Start the server directly on that machine.";
+        return false;
+    }
+
+    const std::wstring connectHost = NormalizeConnectHost(profile.host);
+
+    if (profile.dialect == SqlDialect::PostgreSQL) {
+        const int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : 5432;
+        if (outResolvedPort) *outResolvedPort = effPort;
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"PostgreSQL is already running (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+
+        std::wstring svcErr;
+        auto pgServices = FindWindowsServicesByPrefix({ L"postgresql", L"postgres" });
+        for (const auto& svc : pgServices) {
+            ControlWindowsServiceState(svc.serviceName, true, 5000, svcErr);
+        }
+
+        ULONGLONG deadline = GetTickCount64() + 4500;
+        while (GetTickCount64() < deadline) {
+            if (IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(100);
+        }
+
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            std::wstring pgCtl = FindPgCtlExe();
+            if (!pgCtl.empty()) {
+                fs::path dataDir;
+                wchar_t pgDataEnv[MAX_PATH] = {};
+                if (GetEnvironmentVariableW(L"PGDATA", pgDataEnv, MAX_PATH) > 0 && pgDataEnv[0] != 0) {
+                    dataDir = pgDataEnv;
+                } else {
+                    dataDir = fs::path(pgCtl).parent_path().parent_path() / L"data";
+                }
+                std::error_code ec;
+                if (fs::exists(dataDir, ec) && fs::is_directory(dataDir, ec)) {
+                    std::string out;
+                    DWORD code = 1;
+                    RunProcessCapture(pgCtl, L"start -D \"" + dataDir.wstring() + L"\" -w -t 5", "", out, code, {}, 6000);
+                }
+            }
+        }
+
+        deadline = GetTickCount64() + 2000;
+        while (GetTickCount64() < deadline) {
+            if (IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(80);
+        }
+
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"Started PostgreSQL (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = !svcErr.empty()
+            ? svcErr
+            : (L"Failed to start PostgreSQL on port " + std::to_wstring(effPort) + L". Check the Windows PostgreSQL service.");
+        return false;
+    }
+
+    if (profile.dialect == SqlDialect::MySQL) {
+        int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : ResolveDynamicMysqlPort(3306);
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            PersistMysqlPort(effPort);
+            if (outResolvedPort) *outResolvedPort = effPort;
+            outMessage = L"MySQL is already running (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+
+        // 1. Try Windows service if installed (MySQL / MariaDB)
+        std::wstring svcErr;
+        auto mysqlServices = FindWindowsServicesByPrefix({ L"mysql", L"mariadb" });
+        for (const auto& svc : mysqlServices) {
+            ControlWindowsServiceState(svc.serviceName, true, 4500, svcErr);
+        }
+        if (!mysqlServices.empty()) {
+            std::vector<int> probePorts = { effPort, 3306, 3307, 3308 };
+            ULONGLONG svcDeadline = GetTickCount64() + 3000;
+            while (GetTickCount64() < svcDeadline) {
+                for (int p : probePorts) {
+                    if (IsTcpPortOpen(connectHost, p, 35)) {
+                        PersistMysqlPort(p);
+                        if (outResolvedPort) *outResolvedPort = p;
+                        outMessage = L"Started MySQL (" + profile.host + L":" + std::to_wstring(p) + L")";
+                        return true;
+                    }
+                }
+                Sleep(100);
+            }
+        }
+
+        // 2. Spawn bundled or local mysqld.exe on effPort (picking free port if non-MySQL occupies effPort)
+        while (IsTcpPortOpen(L"127.0.0.1", effPort, 35) && effPort < 65535) {
+            ++effPort;
+        }
+        std::wstring mysqldExe = FindMysqldExe();
+        if (mysqldExe.empty()) {
+            outMessage = !svcErr.empty()
+                ? svcErr
+                : L"mysqld.exe was not found in Phide runtimes, XAMPP, or Windows services.";
+            return false;
+        }
+
+        std::error_code ec;
+        fs::path mysqldPath(mysqldExe);
+        fs::path binDir = mysqldPath.parent_path();
+        fs::path mysqlDir = (ToLowerW(binDir.filename().wstring()) == L"bin") ? binDir.parent_path() : binDir;
+
+        if (!fs::exists(mysqlDir / L"data", ec) && fs::exists(mysqlDir / L"initial_data", ec)) {
+            fs::copy(mysqlDir / L"initial_data", mysqlDir / L"data", fs::copy_options::recursive, ec);
+        }
+
+        fs::path myIni = binDir / L"my.ini";
+        if (!fs::exists(myIni, ec)) myIni = mysqlDir / L"my.ini";
+
+        fs::path pidDir = mysqlDir / L"data";
+        wchar_t localApp[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
+            fs::path appDataPhide = fs::path(localApp) / L"phide";
+            fs::create_directories(appDataPhide, ec);
+            if (fs::exists(appDataPhide, ec)) pidDir = appDataPhide;
+        }
+        fs::path pidFile = pidDir / (L"mysql_" + std::to_wstring(effPort) + L".pid");
+
+        std::wostringstream cmd;
+        cmd << L"\"" << mysqldExe << L"\"";
+        if (fs::exists(myIni, ec)) {
+            cmd << L" --defaults-file=\"" << myIni.wstring() << L"\"";
+        }
+        cmd << L" --port=" << effPort
+            << L" --pid-file=\"" << pidFile.wstring() << L"\""
+            << L" --skip-grant-tables --standalone --console";
+        if (fs::exists(mysqlDir / L"data", ec)) {
+            std::wstring dataStr = (mysqlDir / L"data").wstring();
+            cmd << L" --datadir=\"" << dataStr << L"\""
+                << L" --innodb-data-home-dir=\"" << dataStr << L"\""
+                << L" --innodb-log-group-home-dir=\"" << dataStr << L"\"";
+        }
+        cmd << L" --basedir=\"" << mysqlDir.wstring() << L"\"";
+
+        std::wstring cmdStr = cmd.str();
+        std::vector<wchar_t> cmdBuf(cmdStr.begin(), cmdStr.end());
+        cmdBuf.push_back(L'\0');
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                            nullptr, mysqlDir.wstring().c_str(), &si, &pi)) {
+            outMessage = L"Failed to launch mysqld.exe (error " + std::to_wstring(GetLastError()) + L").";
+            return false;
+        }
+        CloseHandle(pi.hThread);
+
+        ULONGLONG deadline = GetTickCount64() + 5000;
+        while (GetTickCount64() < deadline) {
+            if (IsTcpPortOpen(L"127.0.0.1", effPort, 35)) break;
+            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
+            Sleep(80);
+        }
+        CloseHandle(pi.hProcess);
+
+        if (IsTcpPortOpen(L"127.0.0.1", effPort, 35)) {
+            PersistMysqlPort(effPort);
+            if (outResolvedPort) *outResolvedPort = effPort;
+            outMessage = L"Started MySQL (localhost:" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = L"MySQL did not start listening on port " + std::to_wstring(effPort) + L". Check port or runtime data folder.";
+        return false;
+    }
+
+    if (profile.dialect == SqlDialect::SQLServer) {
+        const int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : 1433;
+        if (outResolvedPort) *outResolvedPort = effPort;
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"SQL Server is already running (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        std::wstring svcErr;
+        auto services = FindWindowsServicesByPrefix({ L"mssqlserver", L"mssql$" });
+        for (const auto& svc : services) {
+            ControlWindowsServiceState(svc.serviceName, true, 5000, svcErr);
+        }
+        ULONGLONG deadline = GetTickCount64() + 4500;
+        while (GetTickCount64() < deadline) {
+            if (IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(100);
+        }
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"Started SQL Server (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = !svcErr.empty() ? svcErr : L"Failed to start SQL Server service.";
+        return false;
+    }
+
+    return false;
+}
+
+bool SqlEngine::StopDatabaseServer(const SqlConnectionProfile& profile, std::wstring& outMessage) {
+    outMessage.clear();
+    if (profile.dialect == SqlDialect::SQLite) {
+        outMessage = L"SQLite is file-based and does not use a server.";
+        return true;
+    }
+    if (!IsLocalHostAddress(profile.host)) {
+        outMessage = L"Cannot stop remote host '" + profile.host + L"'.";
+        return false;
+    }
+
+    const std::wstring connectHost = NormalizeConnectHost(profile.host);
+
+    if (profile.dialect == SqlDialect::PostgreSQL) {
+        const int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : 5432;
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"PostgreSQL is already stopped (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+
+        std::wstring svcErr;
+        auto pgServices = FindWindowsServicesByPrefix({ L"postgresql", L"postgres" });
+        for (const auto& svc : pgServices) {
+            if (svc.currentState == SERVICE_RUNNING || svc.currentState == SERVICE_START_PENDING) {
+                ControlWindowsServiceState(svc.serviceName, false, 5000, svcErr);
+            }
+        }
+
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            std::wstring pgCtl = FindPgCtlExe();
+            if (!pgCtl.empty()) {
+                fs::path dataDir;
+                wchar_t pgDataEnv[MAX_PATH] = {};
+                if (GetEnvironmentVariableW(L"PGDATA", pgDataEnv, MAX_PATH) > 0 && pgDataEnv[0] != 0) {
+                    dataDir = pgDataEnv;
+                } else {
+                    dataDir = fs::path(pgCtl).parent_path().parent_path() / L"data";
+                }
+                std::error_code ec;
+                if (fs::exists(dataDir, ec) && fs::is_directory(dataDir, ec)) {
+                    std::string out;
+                    DWORD code = 1;
+                    RunProcessCapture(pgCtl, L"stop -D \"" + dataDir.wstring() + L"\" -m fast -t 5", "", out, code, {}, 6000);
+                }
+            }
+        }
+
+        ULONGLONG deadline = GetTickCount64() + 4500;
+        while (GetTickCount64() < deadline) {
+            if (!IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(100);
+        }
+
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"Stopped PostgreSQL (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = !svcErr.empty()
+            ? svcErr
+            : (L"PostgreSQL is still listening on port " + std::to_wstring(effPort) + L".");
+        return false;
+    }
+
+    if (profile.dialect == SqlDialect::MySQL) {
+        const int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : 3306;
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"MySQL is already stopped (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+
+        std::wstring adminExe = FindMysqlAdminExe();
+        if (!adminExe.empty()) {
+            std::wostringstream args;
+            args << L"--host=\"" << SanitizeCliArgW(connectHost) << L"\" "
+                 << L"--port=" << effPort << L" "
+                 << L"--protocol=TCP "
+                 << L"--user=\"" << SanitizeCliArgW(profile.user.empty() ? L"root" : profile.user) << L"\" "
+                 << L"shutdown";
+            std::vector<std::pair<std::wstring, std::wstring>> envs;
+            if (!profile.password.empty()) envs.emplace_back(L"MYSQL_PWD", profile.password);
+            std::string out;
+            DWORD code = 1;
+            RunProcessCapture(adminExe, args.str(), "", out, code, envs, 4000);
+        }
+
+        ULONGLONG deadline = GetTickCount64() + 2500;
+        while (GetTickCount64() < deadline) {
+            if (!IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(80);
+        }
+
+        std::wstring svcErr;
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            auto mysqlServices = FindWindowsServicesByPrefix({ L"mysql", L"mariadb" });
+            for (const auto& svc : mysqlServices) {
+                if (svc.currentState == SERVICE_RUNNING || svc.currentState == SERVICE_START_PENDING) {
+                    ControlWindowsServiceState(svc.serviceName, false, 4500, svcErr);
+                }
+            }
+        }
+
+        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+            TerminateLocalProcessListeningOnPort(effPort, { L"mysqld.exe", L"mariadbd.exe" });
+            deadline = GetTickCount64() + 2000;
+            while (GetTickCount64() < deadline) {
+                if (!IsTcpPortOpen(connectHost, effPort, 35)) break;
+                Sleep(80);
+            }
+        }
+
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"Stopped MySQL (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = !svcErr.empty()
+            ? svcErr
+            : (L"MySQL is still listening on port " + std::to_wstring(effPort) + L".");
+        return false;
+    }
+
+    if (profile.dialect == SqlDialect::SQLServer) {
+        const int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : 1433;
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"SQL Server is already stopped (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        std::wstring svcErr;
+        auto services = FindWindowsServicesByPrefix({ L"mssqlserver", L"mssql$" });
+        for (const auto& svc : services) {
+            if (svc.currentState == SERVICE_RUNNING || svc.currentState == SERVICE_START_PENDING) {
+                ControlWindowsServiceState(svc.serviceName, false, 5000, svcErr);
+            }
+        }
+        ULONGLONG deadline = GetTickCount64() + 4500;
+        while (GetTickCount64() < deadline) {
+            if (!IsTcpPortOpen(connectHost, effPort, 35)) break;
+            Sleep(100);
+        }
+        if (!IsTcpPortOpen(connectHost, effPort, 35)) {
+            outMessage = L"Stopped SQL Server (" + profile.host + L":" + std::to_wstring(effPort) + L")";
+            return true;
+        }
+        outMessage = !svcErr.empty() ? svcErr : L"Failed to stop SQL Server service.";
+        return false;
+    }
+
+    return false;
 }
 
 std::vector<std::wstring> SqlEngine::ListDatabases(const SqlConnectionProfile& profile, std::wstring& outError) {

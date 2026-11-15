@@ -23,11 +23,15 @@ namespace phide::ui {
  * @brief Logical grouping of configuration preferences.
  */
 enum class SettingCategory {
-    CommonlyUsed = 0,
-    TextEditor   = 1,
-    Appearance   = 2,
-    Files        = 3,
-    Extensions   = 4
+    CommonlyUsed     = 0,
+    TextEditor       = 1,
+    Appearance       = 2,
+    Files            = 3,
+    Extensions       = 4,
+    LanguageLsp      = 5,
+    TerminalTasks    = 6,
+    GitSourceControl = 7,
+    DebugDatabase    = 8
 };
 
 /**
@@ -132,6 +136,8 @@ public:
     void SetActiveScope(int scope) noexcept { m_activeScope = scope; m_scrollOffsetY = 0.0f; }
     void ResetScroll() noexcept { m_scrollOffsetY = 0.0f; }
     [[nodiscard]] const std::vector<SettingItem>& GetItems() const noexcept { return m_items; }
+    [[nodiscard]] const std::vector<D2D1_RECT_F>& GetScopeBounds() const noexcept { return m_scopeBounds; }
+    [[nodiscard]] const std::vector<D2D1_RECT_F>& GetCategoryBounds() const noexcept { return m_categoryBounds; }
 
     /**
      * @brief Queries the appropriate Windows mouse cursor for the given client coordinate.
@@ -188,6 +194,7 @@ private:
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pFontDesc;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pFontTitle;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_pFontTabCenter;
 
     LucideIcons m_icons;
 

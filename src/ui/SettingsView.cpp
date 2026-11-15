@@ -58,6 +58,257 @@ static ThemeMode DisplayNameToThemeMode(const std::wstring& name) {
     return ThemeMode::Dark;
 }
 
+static const wchar_t* DockPositionToName(int pos) {
+    switch (pos) {
+        case 1:  return L"Editor Area";
+        case 2:  return L"Right Side";
+        default: return L"Bottom Panel";
+    }
+}
+
+static int NameToDockPosition(const std::wstring& name) {
+    if (name == L"Editor Area") return 1;
+    if (name == L"Right Side")  return 2;
+    return 0;
+}
+
+static float MeasureTextWidthDWrite(IDWriteFactory* pFactory, IDWriteTextFormat* pFmt, const std::wstring& text, float fallbackCharW) {
+    if (text.empty()) return 0.0f;
+    if (pFactory && pFmt) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+        if (SUCCEEDED(pFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), pFmt, 2000.0f, 100.0f, &pLayout)) && pLayout) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
+                return tm.widthIncludingTrailingWhitespace;
+            }
+        }
+    }
+    return static_cast<float>(text.size()) * fallbackCharW;
+}
+
+static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) {
+    if (id == L"editor.wordWrap")                         return &cfg.wordWrap;
+    if (id == L"editor.minimap")                          return &cfg.showMinimap;
+    if (id == L"editor.codeLens")                         return &cfg.enableCodeLens;
+    if (id == L"editor.lineNumbers")                      return &cfg.showLineNumbers;
+    if (id == L"editor.insertSpaces")                     return &cfg.insertSpaces;
+    if (id == L"editor.formatOnSave")                     return &cfg.formatOnSave;
+    if (id == L"editor.stickyScroll.enabled")             return &cfg.enableStickyScroll;
+    if (id == L"editor.renderControlCharacters")          return &cfg.renderControlChars;
+    if (id == L"editor.linkedEditing")                    return &cfg.enableLinkedEditing;
+    if (id == L"editor.bracketPairColorization.enabled")  return &cfg.enableBracketPairColorization;
+    if (id == L"editor.folding")                          return &cfg.enableCodeFolding;
+    if (id == L"explorer.updateImportsOnRename")          return &cfg.updateImportsOnRename;
+    if (id == L"files.trimTrailingWhitespace")             return &cfg.trimTrailingWhitespace;
+    if (id == L"files.insertFinalNewline")                return &cfg.insertFinalNewline;
+    if (id == L"files.enableEditorConfig")                return &cfg.enableEditorConfig;
+    if (id == L"files.autoIgnorePhide")                   return &cfg.autoIgnorePhideDir;
+    if (id == L"search.useIgnoreFiles")                   return &cfg.searchUseIgnoreFiles;
+    if (id == L"workbench.breadcrumbs")                  return &cfg.showBreadcrumbs;
+    if (id == L"workbench.statusBar")                    return &cfg.showStatusBar;
+    if (id == L"workbench.menuBar")                      return &cfg.showMenuBar;
+    if (id == L"workbench.centeredLayout")               return &cfg.centeredLayout;
+    if (id == L"workbench.graphColored")                 return &cfg.isGraphColored;
+    if (id == L"workbench.markdownPreview")              return &cfg.enableMarkdownPreview;
+    if (id == L"workbench.zenMode")                      return &cfg.zenMode;
+    if (id == L"editor.gitLens")                          return &cfg.enableGitLens;
+    if (id == L"security.privacyMask")                    return &cfg.enablePrivacyMask;
+    if (id == L"editor.inlayHints")                       return &cfg.enableInlayHints;
+    if (id == L"editor.lspHover")                         return &cfg.enableLspHover;
+    if (id == L"editor.signatureHelp")                    return &cfg.enableSignatureHelp;
+    if (id == L"linter.externalEnabled")                  return &cfg.enableExternalLinters;
+    if (id == L"emmet.enabled")                           return &cfg.enableEmmet;
+    if (id == L"intellisense.tailwindClasses")            return &cfg.enableTailwindIntelliSense;
+    if (id == L"intellisense.databaseSchema")             return &cfg.enableDbSchemaIntelliSense;
+    if (id == L"code-runner.runInTerminal")               return &cfg.codeRunnerRunInTerminal;
+    if (id == L"code-runner.saveFileBeforeRun")           return &cfg.codeRunnerSaveFileBeforeRun;
+    if (id == L"code-runner.clearPreviousOutput")         return &cfg.codeRunnerClearPreviousOutput;
+    if (id == L"python.linting.enabled")                  return &cfg.pythonLintingEnabled;
+    if (id == L"python.linting.undefinedVariableCheck")    return &cfg.pythonCheckUndefinedVariables;
+    if (id == L"python.terminal.highlightErrorsInEditor") return &cfg.pythonHighlightTerminalErrors;
+    if (id == L"git.diffSideBySide")                     return &cfg.gitDiffSideBySide;
+    if (id == L"git.stashExcludePhide")                  return &cfg.gitSmartStashExcludePhide;
+    if (id == L"git.autoRefreshGraph")                    return &cfg.gitAutoRefreshGraph;
+    if (id == L"debug.inlineValues")                      return &cfg.debugInlineValues;
+    if (id == L"debug.openDebugOnBreak")                  return &cfg.debugOpenOnBreak;
+    if (id == L"liveServer.hotReload")                    return &cfg.liveServerHotReload;
+    if (id == L"editor.smoothScrolling")                  return &cfg.smoothScrolling;
+    if (id == L"editor.scrollBeyondLastLine")             return &cfg.scrollBeyondLastLine;
+    if (id == L"editor.highlightActiveIndentGuide")       return &cfg.highlightActiveIndentGuide;
+    if (id == L"editor.guides.indentation")               return &cfg.showIndentGuides;
+    if (id == L"editor.matchBrackets")                    return &cfg.highlightMatchingBrackets;
+    if (id == L"editor.formatOnPaste")                    return &cfg.formatOnPaste;
+    if (id == L"editor.trimAutoWhitespace")               return &cfg.trimAutoWhitespace;
+    if (id == L"workbench.activityBar.visible")           return &cfg.showActivityBar;
+    if (id == L"workbench.editor.showTabs")               return &cfg.showEditorTabs;
+    if (id == L"workbench.commandCenter")                 return &cfg.showCommandCenter;
+    if (id == L"files.excludeDotfiles")                   return &cfg.explorerHideDotfiles;
+    if (id == L"search.caseSensitive")                    return &cfg.searchDefaultCaseSensitive;
+    if (id == L"search.wholeWord")                        return &cfg.searchDefaultWholeWord;
+    if (id == L"editor.quickSuggestions")                 return &cfg.enableQuickSuggestions;
+    if (id == L"editor.suggest.snippets")                 return &cfg.enableSnippetSuggestions;
+    if (id == L"editor.parameterHints.cycle")             return &cfg.cycleParameterHints;
+    if (id == L"editor.diagnostics.onType")                return &cfg.validateDiagnosticsOnType;
+    if (id == L"terminal.integrated.copyOnSelection")      return &cfg.terminalCopyOnSelection;
+    if (id == L"code-runner.preserveFocus")               return &cfg.codeRunnerPreserveFocus;
+    if (id == L"extensions.autoCheckUpdates")             return &cfg.extensionsAutoCheckUpdates;
+    if (id == L"extensions.autoUpdate")                   return &cfg.extensionsAutoUpdate;
+    if (id == L"php.validate.enable")                     return &cfg.phpLintingEnabled;
+    if (id == L"javascript.validate.enable")              return &cfg.jsTsLintingEnabled;
+    if (id == L"css.validate.enable")                     return &cfg.cssLintingEnabled;
+    if (id == L"markdown.lint.enable")                   return &cfg.markdownLintEnabled;
+    if (id == L"git.enabled")                             return &cfg.gitEnabled;
+    if (id == L"git.autofetch")                           return &cfg.gitAutoFetch;
+    if (id == L"git.confirmSync")                         return &cfg.gitConfirmSync;
+    if (id == L"git.enableSmartCommit")                   return &cfg.gitSmartCommit;
+    if (id == L"git.showInlineBlame")                     return &cfg.gitShowInlineBlame;
+    if (id == L"git.decorations.enabled")                 return &cfg.gitExplorerDecorations;
+    if (id == L"debug.allowBreakpointsEverywhere")        return &cfg.debugBreakpointsEverywhere;
+    if (id == L"debug.showSubSessionsInToolBar")          return &cfg.debugFloatingToolbar;
+    if (id == L"database.autoDiscoverServers")            return &cfg.dbAutoDiscoverServers;
+    if (id == L"liveServer.autoOpenBrowser")              return &cfg.liveServerAutoOpenBrowser;
+    return nullptr;
+}
+
+static bool ReadBoolSetting(const std::wstring& id, const app::AppConfig& cfg) {
+    app::AppConfig& mutableCfg = const_cast<app::AppConfig&>(cfg);
+    if (const bool* ptr = ResolveBoolSettingPtr(id, mutableCfg)) {
+        return *ptr;
+    }
+    return false;
+}
+
+static std::wstring ReadDropdownSetting(const std::wstring& id, const app::AppConfig& cfg, const Theme& theme) {
+    if (id == L"files.autoSave")                   return cfg.autoSave;
+    if (id == L"files.eol")                        return cfg.defaultEol;
+    if (id == L"files.encoding")                   return cfg.defaultEncoding;
+    if (id == L"editor.fontFamily")                return cfg.fontFamily;
+    if (id == L"editor.renderWhitespace")          return cfg.renderWhitespaceMode;
+    if (id == L"editor.cursorStyle")               return cfg.cursorStyle;
+    if (id == L"editor.autoClosingBrackets")       return cfg.autoClosingBrackets;
+    if (id == L"editor.autoClosingQuotes")         return cfg.autoClosingQuotes;
+    if (id == L"editor.multiCursorModifier")       return cfg.multiCursorModifier;
+    if (id == L"workbench.colorTheme")             return ThemeModeToDisplayName(theme.GetThemeMode());
+    if (id == L"workbench.sideBar.location")       return cfg.sideBarOnRight ? L"right" : L"left";
+    if (id == L"terminal.integrated.dockPosition") return DockPositionToName(cfg.terminalDockPosition);
+    if (id == L"code-runner.executorMap.python")   return cfg.codeRunnerExecutorPython;
+    if (id == L"python.linting.linter")            return cfg.pythonLinter;
+    if (id == L"lsp.typescript.executable")        return cfg.lspPathTypeScript.empty() ? L"auto-detect" : cfg.lspPathTypeScript;
+    if (id == L"lsp.python.executable")            return cfg.lspPathPython.empty() ? L"auto-detect" : cfg.lspPathPython;
+    if (id == L"lsp.php.executable")               return cfg.lspPathPhp.empty() ? L"auto-detect" : cfg.lspPathPhp;
+    if (id == L"lsp.cpp.executable")               return cfg.lspPathCpp.empty() ? L"auto-detect" : cfg.lspPathCpp;
+    if (id == L"editor.cursorBlinking")            return cfg.cursorBlinking;
+    if (id == L"files.hotExit")                    return cfg.hotExit;
+    if (id == L"terminal.integrated.shell.windows") return cfg.terminalDefaultShell;
+    if (id == L"terminal.integrated.cursorStyle")  return cfg.terminalCursorStyle;
+    if (id == L"liveServer.root")                  return cfg.liveServerRoot;
+    return L"";
+}
+
+static void WriteDropdownSetting(const std::wstring& id, const std::wstring& val, app::AppConfig& cfg, Theme& theme) {
+    if (id == L"files.autoSave") {
+        cfg.autoSave = val;
+    } else if (id == L"files.eol") {
+        cfg.defaultEol = val;
+    } else if (id == L"files.encoding") {
+        cfg.defaultEncoding = val;
+    } else if (id == L"editor.fontFamily") {
+        cfg.fontFamily = val;
+    } else if (id == L"editor.renderWhitespace") {
+        cfg.renderWhitespaceMode = val;
+        cfg.renderWhitespace = (val != L"none");
+    } else if (id == L"editor.cursorStyle") {
+        cfg.cursorStyle = val;
+    } else if (id == L"editor.autoClosingBrackets") {
+        cfg.autoClosingBrackets = val;
+    } else if (id == L"editor.autoClosingQuotes") {
+        cfg.autoClosingQuotes = val;
+    } else if (id == L"editor.multiCursorModifier") {
+        cfg.multiCursorModifier = val;
+    } else if (id == L"workbench.colorTheme") {
+        theme.SetThemeMode(DisplayNameToThemeMode(val));
+    } else if (id == L"workbench.sideBar.location") {
+        cfg.sideBarOnRight = (val == L"right");
+    } else if (id == L"terminal.integrated.dockPosition") {
+        cfg.terminalDockPosition = NameToDockPosition(val);
+    } else if (id == L"code-runner.executorMap.python") {
+        cfg.codeRunnerExecutorPython = val;
+    } else if (id == L"python.linting.linter") {
+        cfg.pythonLinter = val;
+    } else if (id == L"lsp.typescript.executable") {
+        cfg.lspPathTypeScript = (val == L"auto-detect") ? L"" : val;
+    } else if (id == L"lsp.python.executable") {
+        cfg.lspPathPython = (val == L"auto-detect") ? L"" : val;
+    } else if (id == L"lsp.php.executable") {
+        cfg.lspPathPhp = (val == L"auto-detect") ? L"" : val;
+    } else if (id == L"lsp.cpp.executable") {
+        cfg.lspPathCpp = (val == L"auto-detect") ? L"" : val;
+    } else if (id == L"editor.cursorBlinking") {
+        cfg.cursorBlinking = val;
+    } else if (id == L"files.hotExit") {
+        cfg.hotExit = val;
+    } else if (id == L"terminal.integrated.shell.windows") {
+        cfg.terminalDefaultShell = val;
+    } else if (id == L"terminal.integrated.cursorStyle") {
+        cfg.terminalCursorStyle = val;
+    } else if (id == L"liveServer.root") {
+        cfg.liveServerRoot = val;
+    }
+}
+
+static std::wstring FormatStepperSettingValue(const SettingItem& it, const app::AppConfig& cfg) {
+    if (it.id == L"editor.fontSize")                    return std::to_wstring(static_cast<int>(cfg.fontSize)) + it.unit;
+    if (it.id == L"editor.tabSize")                     return std::to_wstring(cfg.tabSize) + it.unit;
+    if (it.id == L"files.autoSaveDelay")                return std::to_wstring(cfg.autoSaveDelay) + it.unit;
+    if (it.id == L"files.largeFileMmapThresholdMB")     return std::to_wstring(cfg.largeFileMmapThresholdMB) + it.unit;
+    if (it.id == L"workbench.drawerWidth")              return std::to_wstring(cfg.drawerWidth) + it.unit;
+    if (it.id == L"terminal.integrated.defaultHeight")  return std::to_wstring(static_cast<int>(cfg.terminalHeight)) + it.unit;
+    if (it.id == L"terminal.integrated.rightWidth")     return std::to_wstring(static_cast<int>(cfg.terminalRightWidth)) + it.unit;
+    if (it.id == L"database.sqlPageSize")               return std::to_wstring(cfg.sqlPageSize) + it.unit;
+    if (it.id == L"liveServer.port")                    return std::to_wstring(cfg.liveServerPort) + it.unit;
+    if (it.id == L"workbench.tree.indent")              return std::to_wstring(cfg.explorerTreeIndent) + it.unit;
+    if (it.id == L"search.maxResults")                  return std::to_wstring(cfg.searchMaxResults) + it.unit;
+    if (it.id == L"terminal.integrated.fontSize")       return std::to_wstring(cfg.terminalFontSize) + it.unit;
+    if (it.id == L"terminal.integrated.scrollback")     return std::to_wstring(cfg.terminalScrollbackLines) + it.unit;
+    if (it.id == L"database.queryTimeoutSec")           return std::to_wstring(cfg.dbQueryTimeoutSec) + it.unit;
+    if (it.id == L"editor.lineHeight") {
+        wchar_t buf[32] = { 0 };
+        swprintf_s(buf, L"%.2f", cfg.lineHeightMultiplier);
+        return std::wstring(buf) + it.unit;
+    }
+    return L"";
+}
+
+static void StepNumericSettingValue(const SettingItem& it, int dir, app::AppConfig& cfg) {
+    auto stepInt = [&](int& target) {
+        int delta = static_cast<int>(it.stepVal) * dir;
+        target = (std::clamp)(target + delta, static_cast<int>(it.minVal), static_cast<int>(it.maxVal));
+    };
+    auto stepFloat = [&](float& target, float precisionStep) {
+        float next = target + it.stepVal * static_cast<float>(dir);
+        if (precisionStep > 0.0f) {
+            next = std::round(next / precisionStep) * precisionStep;
+        }
+        target = (std::clamp)(next, it.minVal, it.maxVal);
+    };
+
+    if (it.id == L"editor.fontSize")                    stepFloat(cfg.fontSize, 1.0f);
+    else if (it.id == L"editor.lineHeight")             stepFloat(cfg.lineHeightMultiplier, 0.05f);
+    else if (it.id == L"editor.tabSize")                stepInt(cfg.tabSize);
+    else if (it.id == L"files.autoSaveDelay")           stepInt(cfg.autoSaveDelay);
+    else if (it.id == L"files.largeFileMmapThresholdMB")stepInt(cfg.largeFileMmapThresholdMB);
+    else if (it.id == L"workbench.drawerWidth")         stepInt(cfg.drawerWidth);
+    else if (it.id == L"terminal.integrated.defaultHeight") stepFloat(cfg.terminalHeight, 1.0f);
+    else if (it.id == L"terminal.integrated.rightWidth")    stepFloat(cfg.terminalRightWidth, 1.0f);
+    else if (it.id == L"database.sqlPageSize")          stepInt(cfg.sqlPageSize);
+    else if (it.id == L"liveServer.port")               stepInt(cfg.liveServerPort);
+    else if (it.id == L"workbench.tree.indent")         stepInt(cfg.explorerTreeIndent);
+    else if (it.id == L"search.maxResults")             stepInt(cfg.searchMaxResults);
+    else if (it.id == L"terminal.integrated.fontSize")  stepInt(cfg.terminalFontSize);
+    else if (it.id == L"terminal.integrated.scrollback")stepInt(cfg.terminalScrollbackLines);
+    else if (it.id == L"database.queryTimeoutSec")      stepInt(cfg.dbQueryTimeoutSec);
+}
+
 SettingsView::SettingsView() {
     InitializeSettings();
 }
@@ -65,487 +316,453 @@ SettingsView::SettingsView() {
 void SettingsView::InitializeSettings() {
     m_items.clear();
 
-    // 1. Files: Auto Save (Dropdown)
-    {
+    auto addToggle = [&](const std::wstring& id, const std::wstring& scope, const std::wstring& title,
+                         const std::wstring& desc, SettingCategory cat, bool common, bool appearance = false) {
         SettingItem it;
-        it.id = L"files.autoSave";
-        it.scope = L"FILES";
-        it.title = L"Auto Save";
-        it.description = L"Controls auto save of editors that have unsaved changes.";
-        it.category = SettingCategory::Files;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"afterDelay", L"onFocusChange", L"onWindowChange", L"off" };
+        it.id = id;
+        it.scope = scope;
+        it.title = title;
+        it.description = desc;
+        it.category = cat;
+        it.isCommonlyUsed = common;
+        it.isAppearance = appearance;
+        it.control = SettingControl::Toggle;
         m_items.push_back(std::move(it));
-    }
+    };
 
-    // 2. Files: Auto Save Delay (Number Stepper)
-    {
+    auto addStepper = [&](const std::wstring& id, const std::wstring& scope, const std::wstring& title,
+                          const std::wstring& desc, SettingCategory cat, bool common, bool appearance,
+                          float minVal, float maxVal, float stepVal, const std::wstring& unit) {
         SettingItem it;
-        it.id = L"files.autoSaveDelay";
-        it.scope = L"FILES";
-        it.title = L"Auto Save Delay";
-        it.description = L"Controls the delay in milliseconds after which an editor is saved automatically.";
-        it.category = SettingCategory::Files;
-        it.isCommonlyUsed = true;
+        it.id = id;
+        it.scope = scope;
+        it.title = title;
+        it.description = desc;
+        it.category = cat;
+        it.isCommonlyUsed = common;
+        it.isAppearance = appearance;
         it.control = SettingControl::NumberStepper;
-        it.minVal = 200.0f;
-        it.maxVal = 5000.0f;
-        it.stepVal = 200.0f;
-        it.unit = L"ms";
+        it.minVal = minVal;
+        it.maxVal = maxVal;
+        it.stepVal = stepVal;
+        it.unit = unit;
         m_items.push_back(std::move(it));
-    }
+    };
 
-    // 3. Editor: Font Size (Number Stepper)
-    {
+    auto addDropdown = [&](const std::wstring& id, const std::wstring& scope, const std::wstring& title,
+                           const std::wstring& desc, SettingCategory cat, bool common, bool appearance,
+                           std::vector<std::wstring> options) {
         SettingItem it;
-        it.id = L"editor.fontSize";
-        it.scope = L"EDITOR";
-        it.title = L"Font Size";
-        it.description = L"Controls the font size in pixels for code editors.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::NumberStepper;
-        it.minVal = 8.0f;
-        it.maxVal = 36.0f;
-        it.stepVal = 1.0f;
-        it.unit = L"px";
-        m_items.push_back(std::move(it));
-    }
-
-    // 4. Editor: Font Family (Dropdown / Presets)
-    {
-        SettingItem it;
-        it.id = L"editor.fontFamily";
-        it.scope = L"EDITOR";
-        it.title = L"Font Family";
-        it.description = L"Controls the typeface used in the editor buffer.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
+        it.id = id;
+        it.scope = scope;
+        it.title = title;
+        it.description = desc;
+        it.category = cat;
+        it.isCommonlyUsed = common;
+        it.isAppearance = appearance;
         it.control = SettingControl::Dropdown;
-        it.options = { L"Koda Mono", L"Koda Mono Semibold Italic", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" };
+        it.options = std::move(options);
         m_items.push_back(std::move(it));
-    }
+    };
 
-    // 5. Editor: Tab Size (Number Stepper)
-    {
-        SettingItem it;
-        it.id = L"editor.tabSize";
-        it.scope = L"EDITOR";
-        it.title = L"Tab Size";
-        it.description = L"The number of spaces a tab is equal to.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::NumberStepper;
-        it.minVal = 1.0f;
-        it.maxVal = 8.0f;
-        it.stepVal = 1.0f;
-        it.unit = L" spaces";
-        m_items.push_back(std::move(it));
-    }
+    // === 1. Files & Workspace Search === (Keep files.autoSave first for layout/test consistency)
+    addDropdown(L"files.autoSave", L"FILES", L"Auto Save",
+                L"Controls auto save of editors that have unsaved changes.",
+                SettingCategory::Files, true, false,
+                { L"afterDelay", L"onFocusChange", L"onWindowChange", L"off" });
+    addStepper(L"files.autoSaveDelay", L"FILES", L"Auto Save Delay",
+               L"Controls the delay in milliseconds after which an editor is saved automatically.",
+               SettingCategory::Files, true, false, 200.0f, 5000.0f, 200.0f, L"ms");
+    addDropdown(L"files.eol", L"FILES", L"Default End of Line",
+                L"Default line ending sequence for new or saved files (auto, LF, or CRLF).",
+                SettingCategory::Files, false, false,
+                { L"auto", L"LF", L"CRLF" });
+    addDropdown(L"files.encoding", L"FILES", L"Default File Encoding",
+                L"Default character encoding used when reading and saving workspace files.",
+                SettingCategory::Files, false, false,
+                { L"UTF-8", L"UTF-8 with BOM", L"UTF-16 LE", L"ISO-8859-1" });
+    addToggle(L"files.trimTrailingWhitespace", L"FILES", L"Trim Trailing Whitespace",
+              L"Remove trailing whitespace characters automatically when saving a file.",
+              SettingCategory::Files, true, false);
+    addToggle(L"files.insertFinalNewline", L"FILES", L"Insert Final Newline",
+              L"Ensure saved files terminate with a trailing newline character.",
+              SettingCategory::Files, false, false);
+    addToggle(L"files.enableEditorConfig", L"FILES", L"Respect .editorconfig",
+              L"Apply per-directory .editorconfig indentation, charset, and EOL rules automatically.",
+              SettingCategory::Files, true, false);
+    addToggle(L"files.autoIgnorePhide", L"FILES", L"Auto-Ignore .phide Directory",
+              L"Ensure .phide/ is present in .gitignore and workspace ignore files when created.",
+              SettingCategory::Files, false, false);
+    addStepper(L"files.largeFileMmapThresholdMB", L"FILES", L"Memory-Mapped Large File Threshold",
+               L"Open files larger than this threshold using the read-only memory-mapped engine.",
+               SettingCategory::Files, false, false, 2.0f, 64.0f, 2.0f, L" MB");
+    addToggle(L"search.useIgnoreFiles", L"SEARCH", L"Use Ignore Files in Search",
+              L"Exclude paths matching .gitignore and .ignore rules during Quick Open and Workspace Search.",
+              SettingCategory::Files, false, false);
+    addDropdown(L"files.hotExit", L"FILES", L"Hot Exit Recovery",
+                L"Persist unsaved dirty editor buffers across IDE restarts so work is never lost.",
+                SettingCategory::Files, true, false,
+                { L"onExit", L"onExitAndWindowClose", L"off" });
+    addToggle(L"files.excludeDotfiles", L"EXPLORER", L"Hide Dotfiles in Explorer",
+              L"Hide dot-prefixed configuration files (e.g. .env, .gitignore) in the Explorer tree.",
+              SettingCategory::Files, false, false);
+    addToggle(L"search.caseSensitive", L"SEARCH", L"Search Case Sensitive by Default",
+              L"Enable case-sensitive matching by default when opening Workspace Search.",
+              SettingCategory::Files, false, false);
+    addToggle(L"search.wholeWord", L"SEARCH", L"Search Whole Word by Default",
+              L"Enable whole-word matching by default in Workspace Search and Find.",
+              SettingCategory::Files, false, false);
+    addStepper(L"search.maxResults", L"SEARCH", L"Maximum Search Results",
+               L"Maximum number of matches collected per workspace search query.",
+               SettingCategory::Files, false, false, 500.0f, 10000.0f, 500.0f, L" hits");
 
-    // 6. Editor: Word Wrap (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.wordWrap";
-        it.scope = L"EDITOR";
-        it.title = L"Word Wrap";
-        it.description = L"Controls whether lines wrap to fit within the editor viewport width.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 2. Text Editor ===
+    addStepper(L"editor.fontSize", L"EDITOR", L"Font Size",
+               L"Controls the font size in pixels for code editors.",
+               SettingCategory::TextEditor, true, true, 8.0f, 36.0f, 1.0f, L"px");
+    addDropdown(L"editor.fontFamily", L"EDITOR", L"Font Family",
+                L"Controls the typeface used in the editor buffer.",
+                SettingCategory::TextEditor, true, true,
+                { L"Koda Mono", L"Koda Mono Semibold Italic", L"Consolas", L"Cascadia Code", L"Courier New", L"Lucida Console" });
+    addStepper(L"editor.lineHeight", L"EDITOR", L"Line Height Multiplier",
+               L"Controls line vertical spacing relative to editor font size.",
+               SettingCategory::TextEditor, true, true, 1.10f, 2.40f, 0.05f, L"x");
+    addStepper(L"editor.tabSize", L"EDITOR", L"Tab Size",
+               L"The number of spaces a tab is equal to.",
+               SettingCategory::TextEditor, true, false, 1.0f, 8.0f, 1.0f, L" spaces");
+    addToggle(L"editor.insertSpaces", L"EDITOR", L"Insert Spaces",
+              L"Insert spaces when pressing Tab instead of a hard tab character.",
+              SettingCategory::TextEditor, true, false);
+    addToggle(L"editor.wordWrap", L"EDITOR", L"Word Wrap",
+              L"Controls whether lines wrap to fit within the editor viewport width.",
+              SettingCategory::TextEditor, true, false);
+    addToggle(L"editor.lineNumbers", L"EDITOR", L"Line Numbers",
+              L"Controls the display of line numbers in the editor gutter.",
+              SettingCategory::TextEditor, true, true);
+    addToggle(L"editor.minimap", L"EDITOR", L"Minimap",
+              L"Controls whether the code overview minimap is shown on the right.",
+              SettingCategory::TextEditor, true, true);
+    addToggle(L"editor.stickyScroll.enabled", L"EDITOR", L"Sticky Scroll",
+              L"Pin enclosing class, namespace, and function headers at the top while scrolling.",
+              SettingCategory::TextEditor, true, true);
+    addToggle(L"editor.formatOnSave", L"EDITOR", L"Format On Save",
+              L"Automatically format document (HTML, CSS, JS, JSON, PHP) on save (Shift+Alt+F).",
+              SettingCategory::TextEditor, true, false);
+    addDropdown(L"editor.renderWhitespace", L"EDITOR", L"Render Whitespace",
+                L"Controls how the editor should render whitespace characters.",
+                SettingCategory::TextEditor, true, true,
+                { L"selection", L"boundary", L"trailing", L"all", L"none" });
+    addToggle(L"editor.renderControlCharacters", L"EDITOR", L"Render Control Characters",
+              L"Display non-printable ASCII control characters explicitly inside editor lines.",
+              SettingCategory::TextEditor, false, true);
+    addDropdown(L"editor.cursorStyle", L"EDITOR", L"Cursor Style",
+                L"Controls the cursor style in insert input mode.",
+                SettingCategory::TextEditor, true, true,
+                { L"line", L"block", L"underline" });
+    addDropdown(L"editor.autoClosingBrackets", L"EDITOR", L"Auto Closing Brackets",
+                L"Automatically insert matching (), [], and {} brackets as you type.",
+                SettingCategory::TextEditor, false, false,
+                { L"always", L"languageDefined", L"never" });
+    addDropdown(L"editor.autoClosingQuotes", L"EDITOR", L"Auto Closing Quotes",
+                L"Automatically close string quotes and backticks inside editable code blocks.",
+                SettingCategory::TextEditor, false, false,
+                { L"always", L"languageDefined", L"never" });
+    addToggle(L"editor.linkedEditing", L"EDITOR", L"Linked Tag Editing",
+              L"Synchronize edits between opening and closing HTML/JSX tag names while keeping attributes isolated.",
+              SettingCategory::TextEditor, true, false);
+    addToggle(L"editor.bracketPairColorization.enabled", L"EDITOR", L"Bracket Pair Colorization",
+              L"Highlight nested bracket pairs with cycling accent colors.",
+              SettingCategory::TextEditor, true, true);
+    addToggle(L"editor.folding", L"EDITOR", L"Code Folding",
+              L"Render interactive fold chevrons in the gutter to collapse functions and blocks.",
+              SettingCategory::TextEditor, true, false);
+    addDropdown(L"editor.multiCursorModifier", L"EDITOR", L"Multi-Cursor Click Modifier",
+                L"Modifier key used with mouse click to place additional arbitrary carets.",
+                SettingCategory::TextEditor, false, false,
+                { L"alt", L"ctrlCmd" });
+    addToggle(L"editor.codeLens", L"EDITOR", L"CodeLens",
+              L"Controls whether the editor shows CodeLens Run, Debug, and Reference actions above symbols.",
+              SettingCategory::TextEditor, true, true);
+    addToggle(L"explorer.updateImportsOnRename", L"EXPLORER", L"Update Imports On Rename / Move",
+              L"Prompt to update relative imports across all referencing files when renaming or moving a file.",
+              SettingCategory::TextEditor, true, false);
+    addToggle(L"editor.smoothScrolling", L"EDITOR", L"Smooth Scrolling",
+              L"Enable smooth interpolated vertical scrolling when navigating with the mouse wheel.",
+              SettingCategory::TextEditor, false, false);
+    addToggle(L"editor.scrollBeyondLastLine", L"EDITOR", L"Scroll Beyond Last Line",
+              L"Allow scrolling past the final line of a document for comfortable bottom-of-file editing.",
+              SettingCategory::TextEditor, false, false);
+    addDropdown(L"editor.cursorBlinking", L"EDITOR", L"Cursor Blinking",
+                L"Control the animation style of the editor text caret.",
+                SettingCategory::TextEditor, false, true,
+                { L"blink", L"smooth", L"phase", L"solid" });
+    addToggle(L"editor.guides.indentation", L"EDITOR", L"Indentation Guides",
+              L"Render subtle vertical guide lines at each indentation level.",
+              SettingCategory::TextEditor, false, true);
+    addToggle(L"editor.highlightActiveIndentGuide", L"EDITOR", L"Highlight Active Indent Guide",
+              L"Emphasize the indentation guide enclosing the active cursor scope.",
+              SettingCategory::TextEditor, false, true);
+    addToggle(L"editor.matchBrackets", L"EDITOR", L"Highlight Matching Brackets",
+              L"Highlight the matching opening or closing bracket when the cursor touches a delimiter.",
+              SettingCategory::TextEditor, false, true);
+    addToggle(L"editor.formatOnPaste", L"EDITOR", L"Format On Paste",
+              L"Automatically format pasted multi-line code blocks using the active language formatter.",
+              SettingCategory::TextEditor, false, false);
+    addToggle(L"editor.trimAutoWhitespace", L"EDITOR", L"Trim Auto Whitespace",
+              L"Remove trailing auto-inserted indentation when leaving an otherwise empty line.",
+              SettingCategory::TextEditor, false, false);
 
-    // 7. Editor: Line Numbers (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.lineNumbers";
-        it.scope = L"EDITOR";
-        it.title = L"Line Numbers";
-        it.description = L"Controls the display of line numbers in the editor gutter.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 3. Appearance & Layout ===
+    addDropdown(L"workbench.colorTheme", L"APPEARANCE", L"Color Theme",
+                L"Specifies the visual color theme used across the editor, sidebar, and workbench UI.",
+                SettingCategory::Appearance, true, true,
+                {
+                    L"Dark Mode", L"Light Mode", L"Auto (System)", L"Deep Purple",
+                    L"Cyan Cyber", L"Turquoise Teal", L"Monokai Pro", L"Dracula",
+                    L"Nord Arctic", L"Solarized Dark", L"GitHub Dark", L"One Dark Pro",
+                    L"SynthWave '84", L"Retro Grid '80s", L"Cosmic Starfield", L"Matrix Rain",
+                    L"Aurora Borealis", L"Sunset Glow", L"Emerald Forest", L"Rosé Pine"
+                });
+    addToggle(L"workbench.breadcrumbs", L"APPEARANCE", L"Breadcrumbs",
+              L"Turn file path navigation breadcrumbs on or off above the editor.",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"workbench.statusBar", L"APPEARANCE", L"Status Bar",
+              L"Controls the visibility of the bottom status bar.",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"workbench.menuBar", L"APPEARANCE", L"Menu Bar",
+              L"Controls visibility of the classic top menu bar items.",
+              SettingCategory::Appearance, false, true);
+    addDropdown(L"workbench.sideBar.location", L"APPEARANCE", L"Primary Sidebar Location",
+                L"Dock the Explorer, Search, and Git sidebar on the left or right of the workbench.",
+                SettingCategory::Appearance, false, true,
+                { L"left", L"right" });
+    addStepper(L"workbench.drawerWidth", L"APPEARANCE", L"Sidebar Drawer Width",
+               L"Default logical width of the Explorer/Git sidebar panel.",
+               SettingCategory::Appearance, false, true, 240.0f, 520.0f, 10.0f, L"px");
+    addToggle(L"workbench.centeredLayout", L"APPEARANCE", L"Centered Editor Layout",
+              L"Center the editor column horizontally for comfortable widescreen reading.",
+              SettingCategory::Appearance, false, true);
+    addToggle(L"workbench.zenMode", L"APPEARANCE", L"Zen Mode",
+              L"Distraction-free fullscreen presentation mode hiding sidebars, activity rails, and status bars.",
+              SettingCategory::Appearance, false, true);
+    addToggle(L"workbench.markdownPreview", L"APPEARANCE", L"Markdown Preview",
+              L"Automatically open a side-by-side Markdown preview when viewing a Markdown file.",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"workbench.graphColored", L"APPEARANCE", L"Graph Node Colors",
+              L"Colors nodes in the File Network graph view by file extension type.",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"editor.gitLens", L"APPEARANCE", L"GitLens Inline Blame",
+              L"Controls whether inline git authorship and commit blame annotations are shown on the active line.",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"security.privacyMask", L"SECURITY", L"Privacy Mask (.env & Secrets)",
+              L"Mask .env values, API tokens, and credential literals on screen (persisted across restarts).",
+              SettingCategory::Appearance, true, true);
+    addToggle(L"workbench.activityBar.visible", L"APPEARANCE", L"Activity Bar Visibility",
+              L"Show or hide the left vertical Activity Rail icons.",
+              SettingCategory::Appearance, false, true);
+    addToggle(L"workbench.editor.showTabs", L"APPEARANCE", L"Show Editor Tabs",
+              L"Display open document tabs across the top of each editor group.",
+              SettingCategory::Appearance, false, true);
+    addToggle(L"workbench.commandCenter", L"APPEARANCE", L"Title Bar Command Center",
+              L"Show the quick search & command pill in the integrated title bar.",
+              SettingCategory::Appearance, false, true);
+    addStepper(L"workbench.tree.indent", L"APPEARANCE", L"Explorer Tree Indent",
+               L"Controls tree indentation in pixels for nested folders in the Explorer.",
+               SettingCategory::Appearance, false, true, 8.0f, 28.0f, 2.0f, L"px");
 
-    // 8. Editor: Minimap (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.minimap";
-        it.scope = L"EDITOR";
-        it.title = L"Minimap";
-        it.description = L"Controls whether the code overview minimap is shown on the right.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 4. Language & LSP Intelligence ===
+    addToggle(L"editor.inlayHints", L"LSP", L"Inlay Hints",
+              L"Controls whether inferred parameter names and type annotations are displayed inline.",
+              SettingCategory::LanguageLsp, true, false);
+    addToggle(L"editor.lspHover", L"LSP", L"Rich Hover Documentation",
+              L"Shows formatted type signatures and Markdown documentation tooltips when hovering symbols.",
+              SettingCategory::LanguageLsp, true, false);
+    addToggle(L"editor.signatureHelp", L"LSP", L"Signature Parameter Help",
+              L"Automatically displays active parameter hints when typing function call arguments.",
+              SettingCategory::LanguageLsp, true, false);
+    addToggle(L"linter.externalEnabled", L"LINTER", L"External CLI Linters (TSC / ESLint / PHPStan / Ruff)",
+              L"Aggregates diagnostics from locally installed CLI linters into the Problems panel and editor squiggles.",
+              SettingCategory::LanguageLsp, true, false);
+    addToggle(L"emmet.enabled", L"INTELLISENSE", L"Emmet Abbreviations",
+              L"Expand Emmet HTML/CSS abbreviations (e.g. div.card>ul>li*3) with Tab.",
+              SettingCategory::LanguageLsp, false, false);
+    addToggle(L"intellisense.tailwindClasses", L"INTELLISENSE", L"Tailwind CSS Suggestions",
+              L"Offer Tailwind utility class completions inside class and className attributes.",
+              SettingCategory::LanguageLsp, false, false);
+    addToggle(L"intellisense.databaseSchema", L"INTELLISENSE", L"Live Database Schema Completion",
+              L"Autocomplete SQL table and column names discovered from connected MySQL/PostgreSQL instances.",
+              SettingCategory::LanguageLsp, false, false);
+    addDropdown(L"lsp.typescript.executable", L"LSP", L"TypeScript / JS Server",
+                L"Executable strategy for TypeScript and TSX/JSX language intelligence.",
+                SettingCategory::LanguageLsp, false, false,
+                { L"auto-detect", L"typescript-language-server", L"npx typescript-language-server" });
+    addDropdown(L"lsp.python.executable", L"LSP", L"Python Language Server",
+                L"Executable strategy for Python language intelligence.",
+                SettingCategory::LanguageLsp, false, false,
+                { L"auto-detect", L"pyright-langserver", L"pylsp" });
+    addDropdown(L"lsp.php.executable", L"LSP", L"PHP Language Server",
+                L"Executable strategy for PHP language intelligence.",
+                SettingCategory::LanguageLsp, false, false,
+                { L"auto-detect", L"intelephense", L"phpactor" });
+    addDropdown(L"lsp.cpp.executable", L"LSP", L"C / C++ Language Server",
+                L"Executable strategy for C/C++ language intelligence.",
+                SettingCategory::LanguageLsp, false, false,
+                { L"auto-detect", L"clangd" });
+    addToggle(L"editor.quickSuggestions", L"INTELLISENSE", L"Quick Suggestions While Typing",
+              L"Automatically open IntelliSense completion popups as you type identifiers.",
+              SettingCategory::LanguageLsp, true, false);
+    addToggle(L"editor.suggest.snippets", L"INTELLISENSE", L"Show Snippet Suggestions",
+              L"Include language snippets alongside symbol completions in IntelliSense.",
+              SettingCategory::LanguageLsp, false, false);
+    addToggle(L"editor.parameterHints.cycle", L"LSP", L"Cycle Overload Signatures",
+              L"Allow cycling through overloaded function signatures inside Parameter Help.",
+              SettingCategory::LanguageLsp, false, false);
+    addToggle(L"editor.diagnostics.onType", L"LINTER", L"Live Diagnostics On Type",
+              L"Continuously run syntax and semantic validation while editing buffers.",
+              SettingCategory::LanguageLsp, false, false);
 
-    // 8b. Editor: Format On Save (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.formatOnSave";
-        it.scope = L"EDITOR";
-        it.title = L"Format On Save";
-        it.description = L"Automatically format document (HTML, CSS, JS, JSON, PHP) on save (Shift+Alt+F).";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 5. Terminal & Task Runner ===
+    addDropdown(L"terminal.integrated.dockPosition", L"TERMINAL", L"Terminal Dock Location",
+                L"Choose whether the integrated ConPTY terminal docks at Bottom, Editor Area, or Right Side.",
+                SettingCategory::TerminalTasks, true, true,
+                { L"Bottom Panel", L"Editor Area", L"Right Side" });
+    addStepper(L"terminal.integrated.defaultHeight", L"TERMINAL", L"Terminal Panel Height",
+               L"Default height in logical pixels when the terminal is docked at the bottom.",
+               SettingCategory::TerminalTasks, false, false, 180.0f, 600.0f, 20.0f, L"px");
+    addStepper(L"terminal.integrated.rightWidth", L"TERMINAL", L"Terminal Right-Dock Width",
+               L"Default width in logical pixels when the terminal is docked to the right.",
+               SettingCategory::TerminalTasks, false, false, 320.0f, 760.0f, 20.0f, L"px");
+    addDropdown(L"code-runner.executorMap.python", L"RUNNER", L"Python Executor",
+                L"Command used to execute Python files (e.g. 'python -u' for unbuffered real-time output).",
+                SettingCategory::TerminalTasks, true, false,
+                { L"python -u", L"python", L"py -u", L"python3 -u" });
+    addToggle(L"code-runner.runInTerminal", L"RUNNER", L"Run Code In Terminal",
+              L"Execute scripts and framework tasks inside the interactive ConPTY terminal.",
+              SettingCategory::TerminalTasks, true, false);
+    addToggle(L"code-runner.saveFileBeforeRun", L"RUNNER", L"Save File Before Run",
+              L"Automatically save the active document prior to running or debugging.",
+              SettingCategory::TerminalTasks, true, false);
+    addToggle(L"code-runner.clearPreviousOutput", L"RUNNER", L"Clear Previous Terminal Output",
+              L"Clear prior terminal output before launching a new run task.",
+              SettingCategory::TerminalTasks, false, false);
+    addDropdown(L"terminal.integrated.shell.windows", L"TERMINAL", L"Default Terminal Shell",
+                L"Default shell profile launched when opening a new integrated ConPTY tab.",
+                SettingCategory::TerminalTasks, true, false,
+                { L"PowerShell", L"Command Prompt", L"Git Bash", L"WSL" });
+    addStepper(L"terminal.integrated.fontSize", L"TERMINAL", L"Terminal Font Size",
+               L"Controls the font size in pixels inside the integrated terminal.",
+               SettingCategory::TerminalTasks, false, false, 10.0f, 24.0f, 1.0f, L"px");
+    addStepper(L"terminal.integrated.scrollback", L"TERMINAL", L"Terminal Scrollback Buffer",
+               L"Maximum number of historical lines retained in each terminal session.",
+               SettingCategory::TerminalTasks, false, false, 1000.0f, 20000.0f, 1000.0f, L" lines");
+    addDropdown(L"terminal.integrated.cursorStyle", L"TERMINAL", L"Terminal Cursor Style",
+                L"Caret shape rendered inside active ConPTY terminal sessions.",
+                SettingCategory::TerminalTasks, false, false,
+                { L"block", L"line", L"underline" });
+    addToggle(L"terminal.integrated.copyOnSelection", L"TERMINAL", L"Copy On Selection",
+              L"Automatically copy highlighted terminal text to the system clipboard.",
+              SettingCategory::TerminalTasks, false, false);
+    addToggle(L"code-runner.preserveFocus", L"RUNNER", L"Preserve Editor Focus On Run",
+              L"Keep keyboard focus in the active code editor when launching a run command.",
+              SettingCategory::TerminalTasks, false, false);
 
-    // 8c. Explorer: Update Imports On Rename (Toggle)
-    {
-        SettingItem it;
-        it.id = L"explorer.updateImportsOnRename";
-        it.scope = L"EXPLORER";
-        it.title = L"Update Imports On Rename / Move";
-        it.description = L"Prompt to update imports across all referencing files when renaming or moving a file.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 6. Extensions & Linters === (Python Linter settings stay under Extensions for [TEST 116])
+    addToggle(L"python.linting.enabled", L"PYTHON LINTER", L"Enable Python Linting",
+              L"Whether to enable real-time Python syntax and variable linting in the editor.",
+              SettingCategory::Extensions, true, false);
+    addToggle(L"python.linting.undefinedVariableCheck", L"PYTHON LINTER", L"Check Undefined Variables",
+              L"Flag missing variables, undefined names, and typo suggestions (NameError / Flake8 F821) immediately.",
+              SettingCategory::Extensions, true, false);
+    addToggle(L"python.terminal.highlightErrorsInEditor", L"PYTHON LINTER", L"Highlight Terminal Execution Errors",
+              L"Automatically underline execution errors and tracebacks from the terminal directly on the editor line.",
+              SettingCategory::Extensions, true, false);
+    addDropdown(L"python.linting.linter", L"PYTHON LINTER", L"Python Linter Engine",
+                L"Linter engine used for real-time diagnostics (built-in AST/Flake8, Flake8 CLI, or Ruff).",
+                SettingCategory::Extensions, true, false,
+                { L"builtin (ast/flake8)", L"flake8", L"ruff" });
+    addToggle(L"extensions.autoCheckUpdates", L"EXTENSIONS", L"Auto-Check Extension Updates",
+              L"Periodically check installed plugins and language packs for newer releases.",
+              SettingCategory::Extensions, false, false);
+    addToggle(L"extensions.autoUpdate", L"EXTENSIONS", L"Auto-Update Extensions",
+              L"Automatically install compatible updates for enabled extensions in the background.",
+              SettingCategory::Extensions, false, false);
+    addToggle(L"php.validate.enable", L"PHP LINTER", L"Enable PHP Validation",
+              L"Run built-in PHP syntax, undefined class/function, and variable checks on open buffers.",
+              SettingCategory::Extensions, false, false);
+    addToggle(L"javascript.validate.enable", L"JS / TS LINTER", L"Enable JS/TS Validation",
+              L"Run semantic and syntax diagnostics on JavaScript, TypeScript, JSX, and TSX files.",
+              SettingCategory::Extensions, false, false);
+    addToggle(L"css.validate.enable", L"CSS LINTER", L"Enable CSS & Tailwind Validation",
+              L"Validate CSS properties, custom properties, and Tailwind directives.",
+              SettingCategory::Extensions, false, false);
+    addToggle(L"markdown.lint.enable", L"MARKDOWN", L"Enable Markdown Linting",
+              L"Check Markdown files for malformed headings and broken local links.",
+              SettingCategory::Extensions, false, false);
 
-    // 8b. Editor: CodeLens (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.codeLens";
-        it.scope = L"EDITOR";
-        it.title = L"CodeLens";
-        it.description = L"Controls whether the editor shows CodeLens Run and Debug actions above functions and tests.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
+    // === 7. Git & Source Control ===
+    addToggle(L"git.diffSideBySide", L"GIT", L"Side-by-Side Diff View",
+              L"Compare HEAD and working-tree file revisions in a two-column diff view.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.stashExcludePhide", L"GIT", L"Safe Git Stash (.phide Isolation)",
+              L"Exclude .phide/ workspace state on stash Push/Apply/Pop and preserve restored untracked files.",
+              SettingCategory::GitSourceControl, true, false);
+    addToggle(L"git.autoRefreshGraph", L"GIT", L"Auto-Refresh Git & File Graph",
+              L"Automatically refresh commit history, branches, and File Network graph on workspace edits.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.enabled", L"GIT", L"Enable Git Integration",
+              L"Enable Git repository detection, Source Control staging, and commit history graph.",
+              SettingCategory::GitSourceControl, true, false);
+    addToggle(L"git.autofetch", L"GIT", L"Auto-Fetch Remote Branches",
+              L"Periodically fetch updates from your configured Git remote without modifying local branches.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.confirmSync", L"GIT", L"Confirm Before Push / Pull Sync",
+              L"Prompt before pushing or pulling commits to/from remote repositories.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.enableSmartCommit", L"GIT", L"Smart Commit All Changes",
+              L"Automatically stage all modified files when committing with an empty staged list.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.showInlineBlame", L"GIT", L"Inline Blame Author & Age",
+              L"Show latest commit author, relative timestamp, and message inline on the active line.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.decorations.enabled", L"GIT", L"Explorer Git Status Badges",
+              L"Colorize modified, untracked, and staged files with status badges in the Explorer tree.",
+              SettingCategory::GitSourceControl, false, false);
 
-    // 9. Editor: Render Whitespace (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"editor.renderWhitespace";
-        it.scope = L"EDITOR";
-        it.title = L"Render Whitespace";
-        it.description = L"Controls how the editor should render whitespace characters.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"selection", L"boundary", L"trailing", L"all", L"none" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 10. Editor: Cursor Style (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"editor.cursorStyle";
-        it.scope = L"EDITOR";
-        it.title = L"Cursor Style";
-        it.description = L"Controls the cursor style in insert input mode.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"line", L"block", L"underline" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 11. Editor: Insert Spaces (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.insertSpaces";
-        it.scope = L"EDITOR";
-        it.title = L"Insert Spaces";
-        it.description = L"Insert spaces when pressing Tab instead of tab character.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 12. Appearance: Color Theme (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"workbench.colorTheme";
-        it.scope = L"APPEARANCE";
-        it.title = L"Color Theme";
-        it.description = L"Specifies the visual color theme used across the editor, sidebar, and workbench UI.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Dropdown;
-        it.options = {
-            L"Dark Mode",
-            L"Light Mode",
-            L"Auto (System)",
-            L"Deep Purple",
-            L"Cyan Cyber",
-            L"Turquoise Teal",
-            L"Monokai Pro",
-            L"Dracula",
-            L"Nord Arctic",
-            L"Solarized Dark",
-            L"GitHub Dark",
-            L"One Dark Pro",
-            L"SynthWave '84",
-            L"Retro Grid '80s",
-            L"Cosmic Starfield",
-            L"Matrix Rain",
-            L"Aurora Borealis",
-            L"Sunset Glow",
-            L"Emerald Forest",
-            L"Rosé Pine"
-        };
-        m_items.push_back(std::move(it));
-    }
-
-    // 12b. Appearance: GitLens Inline Blame (Toggle)
-    {
-        SettingItem it;
-        it.id = L"editor.gitLens";
-        it.scope = L"APPEARANCE";
-        it.title = L"GitLens Inline Blame";
-        it.description = L"Controls whether inline git authorship and commit blame annotations are shown on the active line.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 12c. Editor: Inlay Hints (#25)
-    {
-        SettingItem it;
-        it.id = L"editor.inlayHints";
-        it.scope = L"EDITOR";
-        it.title = L"Inlay Hints";
-        it.description = L"Controls whether inferred parameter names and type annotations are displayed inline via LSP and static analysis.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 12d. Editor: Rich Hover Cards (#22)
-    {
-        SettingItem it;
-        it.id = L"editor.lspHover";
-        it.scope = L"EDITOR";
-        it.title = L"Rich Hover Documentation";
-        it.description = L"Shows formatted type signatures and Markdown documentation tooltips when hovering symbols.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 12e. Editor: Signature Parameter Help (#22)
-    {
-        SettingItem it;
-        it.id = L"editor.signatureHelp";
-        it.scope = L"EDITOR";
-        it.title = L"Signature Parameter Help";
-        it.description = L"Automatically displays active parameter hints when typing function call arguments.";
-        it.category = SettingCategory::TextEditor;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 12f. Diagnostics: External CLI Linters (#23)
-    {
-        SettingItem it;
-        it.id = L"linter.externalEnabled";
-        it.scope = L"EDITOR";
-        it.title = L"External CLI Linters (TSC / ESLint / PHPStan / Ruff)";
-        it.description = L"Aggregates diagnostics from locally installed CLI linters into the Problems panel and editor squiggles.";
-        it.category = SettingCategory::TextEditor;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 13. Appearance: Breadcrumbs (Toggle)
-    {
-        SettingItem it;
-        it.id = L"workbench.breadcrumbs";
-        it.scope = L"APPEARANCE";
-        it.title = L"Breadcrumbs";
-        it.description = L"Turn file path navigation breadcrumbs on or off above editor.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 14. Appearance: Status Bar (Toggle)
-    {
-        SettingItem it;
-        it.id = L"workbench.statusBar";
-        it.scope = L"APPEARANCE";
-        it.title = L"Status Bar";
-        it.description = L"Controls the visibility of the bottom status bar.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 15. Appearance: File Network Graph Colors (Toggle)
-    {
-        SettingItem it;
-        it.id = L"workbench.graphColored";
-        it.scope = L"APPEARANCE";
-        it.title = L"Graph Node Colors";
-        it.description = L"Colors nodes in the File Network graph view by file extension type.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 16. Appearance: Markdown Preview (Toggle)
-    {
-        SettingItem it;
-        it.id = L"workbench.markdownPreview";
-        it.scope = L"APPEARANCE";
-        it.title = L"Markdown Preview";
-        it.description = L"Automatically open a side-by-side Markdown preview when viewing a markdown file.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = true;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 16b. Appearance: Zen Mode (Toggle)
-    {
-        SettingItem it;
-        it.id = L"workbench.zenMode";
-        it.scope = L"APPEARANCE";
-        it.title = L"Zen Mode";
-        it.description = L"Distraction-free fullscreen presentation mode hiding sidebars, activity rails, and status bars.";
-        it.category = SettingCategory::Appearance;
-        it.isCommonlyUsed = false;
-        it.isAppearance = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 17. Code Runner: Python Executor (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"code-runner.executorMap.python";
-        it.scope = L"CODE RUNNER";
-        it.title = L"Python Executor";
-        it.description = L"Command used to execute Python files (e.g. 'python -u' for unbuffered real-time output).";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"python -u", L"python", L"py -u", L"python3 -u" };
-        m_items.push_back(std::move(it));
-    }
-
-    // 18. Code Runner: Run In Terminal (Toggle)
-    {
-        SettingItem it;
-        it.id = L"code-runner.runInTerminal";
-        it.scope = L"CODE RUNNER";
-        it.title = L"Run In Terminal";
-        it.description = L"Whether to run code directly inside the integrated interactive terminal.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 19. Code Runner: Save File Before Run (Toggle)
-    {
-        SettingItem it;
-        it.id = L"code-runner.saveFileBeforeRun";
-        it.scope = L"CODE RUNNER";
-        it.title = L"Save File Before Run";
-        it.description = L"Whether to automatically save the active document before running.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 20. Code Runner: Clear Previous Output (Toggle)
-    {
-        SettingItem it;
-        it.id = L"code-runner.clearPreviousOutput";
-        it.scope = L"CODE RUNNER";
-        it.title = L"Clear Previous Output";
-        it.description = L"Whether to clear previous terminal output before executing code.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = false;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 21. Python Linter: Enable Linting (Toggle)
-    {
-        SettingItem it;
-        it.id = L"python.linting.enabled";
-        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
-        it.title = L"Enable Python Linting";
-        it.description = L"Whether to enable real-time Python syntax and variable linting in the editor.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 22. Python Linter: Check Undefined Variables (Toggle)
-    {
-        SettingItem it;
-        it.id = L"python.linting.undefinedVariableCheck";
-        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
-        it.title = L"Check Undefined Variables";
-        it.description = L"Whether to flag missing variables, undefined names, and typo suggestions (NameError / Flake8 F821) immediately in the editor.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 23. Python Linter: Highlight Terminal Execution Errors (Toggle)
-    {
-        SettingItem it;
-        it.id = L"python.terminal.highlightErrorsInEditor";
-        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
-        it.title = L"Highlight Terminal Execution Errors";
-        it.description = L"Whether to automatically underline execution errors and tracebacks from the terminal directly on the editor line.";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Toggle;
-        m_items.push_back(std::move(it));
-    }
-
-    // 24. Python Linter: Engine (Dropdown)
-    {
-        SettingItem it;
-        it.id = L"python.linting.linter";
-        it.scope = L"PYTHON LINTER (FLAKE8 / RUFF)";
-        it.title = L"Python Linter Engine";
-        it.description = L"Linter engine used for real-time diagnostics (e.g. built-in AST/Flake8, Flake8 CLI, or Ruff).";
-        it.category = SettingCategory::Extensions;
-        it.isCommonlyUsed = true;
-        it.control = SettingControl::Dropdown;
-        it.options = { L"builtin (ast/flake8)", L"flake8", L"ruff" };
-        m_items.push_back(std::move(it));
-    }
+    // === 8. Debug, Database & Live Server ===
+    addToggle(L"debug.inlineValues", L"DEBUG", L"Inline Debugger Variable Values",
+              L"Display local variable values inline next to source lines while paused at a breakpoint.",
+              SettingCategory::DebugDatabase, false, false);
+    addToggle(L"debug.openDebugOnBreak", L"DEBUG", L"Focus Paused Line On Breakpoint",
+              L"Open and scroll the active editor automatically to the paused frame on breakpoint hit or step.",
+              SettingCategory::DebugDatabase, false, false);
+    addToggle(L"debug.allowBreakpointsEverywhere", L"DEBUG", L"Allow Breakpoints In Any File",
+              L"Allow toggling gutter breakpoints in all source file types regardless of active adapter.",
+              SettingCategory::DebugDatabase, false, false);
+    addToggle(L"debug.showSubSessionsInToolBar", L"DEBUG", L"Floating Debug Control Toolbar",
+              L"Display floating Continue, Step Over, Step Into, and Stop controls during debug sessions.",
+              SettingCategory::DebugDatabase, false, false);
+    addStepper(L"database.sqlPageSize", L"DATABASE", L"SQL Console Result Page Size",
+               L"Number of rows shown per page in the integrated MySQL / PostgreSQL / SQLite Query Console.",
+               SettingCategory::DebugDatabase, true, false, 25.0f, 500.0f, 25.0f, L" rows");
+    addToggle(L"database.autoDiscoverServers", L"DATABASE", L"Auto-Discover Local DB Servers",
+              L"Automatically probe local MySQL, PostgreSQL, and SQLite services when opening SQL Console.",
+              SettingCategory::DebugDatabase, false, false);
+    addStepper(L"database.queryTimeoutSec", L"DATABASE", L"SQL Query Timeout",
+               L"Maximum execution time in seconds before a long-running SQL query is cancelled.",
+               SettingCategory::DebugDatabase, false, false, 5.0f, 120.0f, 5.0f, L"s");
+    addStepper(L"liveServer.port", L"LIVE SERVER", L"Live Server Default Port",
+               L"Preferred HTTP listen port when launching the integrated static/PHP Live Server.",
+               SettingCategory::DebugDatabase, false, false, 3000.0f, 9000.0f, 50.0f, L"");
+    addToggle(L"liveServer.hotReload", L"LIVE SERVER", L"Live Server Hot Reload (WS / SSE)",
+              L"Push DOM/CSS hot-reload signals to connected browsers when HTML or stylesheet buffers change.",
+              SettingCategory::DebugDatabase, false, false);
+    addToggle(L"liveServer.autoOpenBrowser", L"LIVE SERVER", L"Auto-Open Browser On Start",
+              L"Automatically launch the default web browser when starting the integrated Live Server.",
+              SettingCategory::DebugDatabase, false, false);
+    addDropdown(L"liveServer.root", L"LIVE SERVER", L"Live Server Document Root",
+                L"Default relative folder served as the HTTP root directory.",
+                SettingCategory::DebugDatabase, false, false,
+                { L"/", L"/public", L"/dist", L"/build" });
 }
 
 std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
@@ -559,7 +776,7 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
     for (size_t i = 0; i < m_items.size(); ++i) {
         const auto& it = m_items[i];
 
-        // If search query is non-empty, search across title, description, and id
+        // If search query is non-empty, search across title, description, id, and scope
         if (!qLower.empty()) {
             std::wstring tLower = it.title;
             for (auto& c : tLower) c = towlower(c);
@@ -567,10 +784,13 @@ std::vector<size_t> SettingsView::GetFilteredItemIndices() const {
             for (auto& c : dLower) c = towlower(c);
             std::wstring idLower = it.id;
             for (auto& c : idLower) c = towlower(c);
+            std::wstring sLower = it.scope;
+            for (auto& c : sLower) c = towlower(c);
 
             if (tLower.find(qLower) != std::wstring::npos ||
                 dLower.find(qLower) != std::wstring::npos ||
-                idLower.find(qLower) != std::wstring::npos) {
+                idLower.find(qLower) != std::wstring::npos ||
+                sLower.find(qLower) != std::wstring::npos) {
                 result.push_back(i);
             }
         } else {
@@ -600,27 +820,24 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     bool allKodaItalic = theme.IsAllKodaSemiBoldItalic();
     static bool s_lastAllKodaItalic = false;
-    if (s_lastAllKodaItalic != allKodaItalic) {
+    static float s_lastDpiScale = 0.0f;
+    if (s_lastAllKodaItalic != allKodaItalic || s_lastDpiScale != config.dpiScale) {
         m_pFontDesc.Reset();
         m_pFontTitle.Reset();
+        m_pFontTabCenter.Reset();
         s_lastAllKodaItalic = allKodaItalic;
+        s_lastDpiScale = config.dpiScale;
     }
 
-    // Ensure leading-aligned typography formats
+    // Ensure crisp leading-aligned and centered typography formats
     if (!m_pFontDesc && theme.dwriteFactory) {
         const wchar_t* family = allKodaItalic ? L"Koda Mono" : L"Segoe UI";
         IDWriteFontCollection* pCollection = allKodaItalic ? theme.customFontCollection.Get() : nullptr;
         DWRITE_FONT_WEIGHT weight = allKodaItalic ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_REGULAR;
         DWRITE_FONT_STYLE style = allKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         theme.dwriteFactory->CreateTextFormat(
-            family,
-            pCollection,
-            weight,
-            style,
-            DWRITE_FONT_STRETCH_NORMAL,
-            config.ScaleF(12.5f),
-            L"en-US",
-            &m_pFontDesc
+            family, pCollection, weight, style,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.0f), L"en-US", &m_pFontDesc
         );
         if (m_pFontDesc) {
             m_pFontDesc->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -634,14 +851,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
         DWRITE_FONT_STYLE style = allKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
         theme.dwriteFactory->CreateTextFormat(
-            family,
-            pCollection,
-            weight,
-            style,
-            DWRITE_FONT_STRETCH_NORMAL,
-            config.ScaleF(14.0f),
-            L"en-US",
-            &m_pFontTitle
+            family, pCollection, weight, style,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(14.5f), L"en-US", &m_pFontTitle
         );
         if (m_pFontTitle) {
             m_pFontTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -649,18 +860,30 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             m_pFontTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         }
     }
+    if (!m_pFontTabCenter && theme.dwriteFactory) {
+        const wchar_t* family = allKodaItalic ? L"Koda Mono" : L"Segoe UI";
+        IDWriteFontCollection* pCollection = allKodaItalic ? theme.customFontCollection.Get() : nullptr;
+        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+        DWRITE_FONT_STYLE style = allKodaItalic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+        theme.dwriteFactory->CreateTextFormat(
+            family, pCollection, weight, style,
+            DWRITE_FONT_STRETCH_NORMAL, config.ScaleF(12.0f), L"en-US", &m_pFontTabCenter
+        );
+        if (m_pFontTabCenter) {
+            m_pFontTabCenter->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            m_pFontTabCenter->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            m_pFontTabCenter->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
 
     // 1. Fill View Background with refined glass IDE backdrop
     ID2D1Brush* pBgBrush = theme.brushCanvasBg ? theme.brushCanvasBg.Get() : theme.brushRailBg.Get();
     pRT->FillRectangle(m_viewBounds, pBgBrush);
 
-    const float headerH = config.ScaleF(72.0f);
-    const float sidebarW = config.ScaleF(210.0f);
+    const float headerH = config.ScaleF(68.0f);
+    const float sidebarW = config.ScaleF(224.0f);
 
-    // 2. Render Header Section (Title + Subtitle + Search Bar + Scope Pills)
-    D2D1_RECT_F rcHeader = D2D1::RectF(left, top, left + width, top + headerH);
-
-    // Subtle header bottom divider line
+    // 2. Render Header Section (Title + Subtitle + Search Bar)
     pRT->DrawLine(
         D2D1::Point2F(left, top + headerH),
         D2D1::Point2F(left + width, top + headerH),
@@ -683,26 +906,28 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     ID2D1Brush* pAccentBrush = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get();
     m_icons.DrawSettings(pRT, rcGear, pAccentBrush, 1.4f);
 
-    // Header Title and Subtitle
-    float textX = iconBoxX + iconBoxSize + config.ScaleF(14.0f);
-    D2D1_RECT_F rcTitle = D2D1::RectF(textX, top + config.ScaleF(14.0f), textX + config.ScaleF(240.0f), top + config.ScaleF(38.0f));
-    const wchar_t* titleStr = L"Settings";
-    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
-                  theme.fontTitle.Get() ? theme.fontTitle.Get() : theme.fontBody.Get(),
-                  rcTitle, theme.brushTextPrimary.Get());
-
-    D2D1_RECT_F rcSub = D2D1::RectF(textX, top + config.ScaleF(40.0f), textX + config.ScaleF(360.0f), top + config.ScaleF(60.0f));
-    const wchar_t* subStr = L"Manage preferences, editor behavior, and appearance";
-    pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)),
-                  theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
-                  rcSub, theme.brushTextSecondary.Get());
-
-    // Search Bar on Right of Header
-    const float searchW = config.ScaleF((std::min)(420.0f, width * 0.45f));
+    // Search Bar on Right of Header (compute searchX first so title/subtitle never collide with it)
+    const float searchW = config.ScaleF((std::min)(420.0f, width * 0.42f));
     const float searchH = config.ScaleF(34.0f);
     const float searchX = left + width - searchW - config.ScaleF(28.0f);
     const float searchY = top + (headerH - searchH) / 2.0f;
     m_searchBoxBounds = D2D1::RectF(searchX, searchY, searchX + searchW, searchY + searchH);
+
+    // Header Title and Subtitle (leading-aligned to sit cleanly beside icon)
+    float textX = iconBoxX + iconBoxSize + config.ScaleF(14.0f);
+    float headerTextRight = (std::max)(textX + config.ScaleF(120.0f), searchX - config.ScaleF(18.0f));
+    D2D1_RECT_F rcTitle = D2D1::RectF(textX, top + config.ScaleF(12.0f), headerTextRight, top + config.ScaleF(36.0f));
+    const wchar_t* titleStr = L"Settings";
+    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
+                  m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(),
+                  rcTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+    D2D1_RECT_F rcSub = D2D1::RectF(textX, top + config.ScaleF(38.0f), headerTextRight, top + config.ScaleF(58.0f));
+    const wchar_t* subStr = L"Manage preferences, editor behavior, language tools, and appearance";
+    pRT->DrawText(subStr, static_cast<UINT32>(wcslen(subStr)),
+                  m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
+                  rcSub, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
     D2D1_ROUNDED_RECT rrcSearch = D2D1::RoundedRect(m_searchBoxBounds, 6.0f, 6.0f);
 
     // Search background
@@ -717,16 +942,17 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     D2D1_RECT_F rcSearchIcon = D2D1::RectF(searchX + config.ScaleF(8.0f), searchY + config.ScaleF(7.0f), searchX + config.ScaleF(24.0f), searchY + searchH - config.ScaleF(7.0f));
     m_icons.DrawSearch(pRT, rcSearchIcon, theme.brushTextSecondary.Get(), 1.4f);
 
-    // Search Text or Placeholder
-    D2D1_RECT_F rcSearchText = D2D1::RectF(searchX + config.ScaleF(30.0f), searchY + config.ScaleF(6.0f), searchX + searchW - config.ScaleF(30.0f), searchY + searchH - config.ScaleF(6.0f));
+    // Search Text or Placeholder (leading-aligned)
+    D2D1_RECT_F rcSearchText = D2D1::RectF(searchX + config.ScaleF(30.0f), searchY + config.ScaleF(4.0f), searchX + searchW - config.ScaleF(30.0f), searchY + searchH - config.ScaleF(4.0f));
     if (m_searchQuery.empty()) {
-        const wchar_t* phStr = L"Search settings (e.g. font, wrap, theme)...";
+        const wchar_t* phStr = L"Search settings (e.g. font, wrap, git, sql, mask)...";
         pRT->DrawText(phStr, static_cast<UINT32>(wcslen(phStr)),
-                      theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
-                      rcSearchText, theme.brushTextSecondary.Get());
+                      m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
+                      rcSearchText, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     } else {
         pRT->DrawText(m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
-                      theme.fontBody.Get(), rcSearchText, theme.brushTextPrimary.Get());
+                      m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
+                      rcSearchText, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         // Clear 'x' button
         float clearSize = config.ScaleF(16.0f);
         m_searchClearBounds = D2D1::RectF(searchX + searchW - clearSize - config.ScaleF(8.0f), searchY + (searchH - clearSize) / 2.0f,
@@ -741,38 +967,30 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         pRT->DrawLine(D2D1::Point2F(cx - cr, cy + cr), D2D1::Point2F(cx + cr, cy - cr), theme.brushTextSecondary.Get(), 1.4f);
     }
 
-    // Dynamic Blinking Caret (NO hardcoded '|', authentic Direct2D line blinking at 500ms)
+    // Dynamic Blinking Caret
     if (m_isSearchFocused) {
         bool showCaret = ((GetTickCount64() / 500) % 2 == 0);
         if (showCaret) {
             float caretX = rcSearchText.left;
             if (!m_searchQuery.empty() && theme.dwriteFactory) {
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
-                    theme.fontBody.Get(), 1000.0f, searchH, &pLayout)) && pLayout) {
-                    DWRITE_TEXT_METRICS tm;
-                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                        caretX += tm.widthIncludingTrailingWhitespace + 1.0f;
-                    }
-                }
+                IDWriteTextFormat* pQueryFmt = m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get();
+                caretX += MeasureTextWidthDWrite(theme.dwriteFactory.Get(), pQueryFmt, m_searchQuery, config.ScaleF(7.5f)) + 1.0f;
             } else if (!m_searchQuery.empty()) {
-                caretX += static_cast<float>(m_searchQuery.length()) * config.ScaleF(8.0f);
+                caretX += static_cast<float>(m_searchQuery.length()) * config.ScaleF(7.5f);
             }
             if (caretX > rcSearchText.right - config.ScaleF(4.0f)) {
                 caretX = rcSearchText.right - config.ScaleF(4.0f);
             }
-            float caretY1 = rcSearchText.top + config.ScaleF(3.0f);
-            float caretY2 = rcSearchText.bottom - config.ScaleF(3.0f);
+            float caretY1 = rcSearchText.top + config.ScaleF(5.0f);
+            float caretY2 = rcSearchText.bottom - config.ScaleF(5.0f);
             ID2D1Brush* pCaretBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : pAccentBrush;
             pRT->DrawLine(D2D1::Point2F(caretX, caretY1), D2D1::Point2F(caretX, caretY2), pCaretBrush, 1.5f);
         }
     }
 
-    // 3. Render Left Category Sidebar (Only active categories: Commonly Used, Text Editor, Appearance, Files)
+    // 3. Render Left Category Sidebar (9 Categories covering all major IDE subsystems)
     float bodyTop = top + headerH;
     float bodyH = height - headerH;
-    D2D1_RECT_F rcSidebar = D2D1::RectF(left, bodyTop, left + sidebarW, top + height);
 
     // Vertical Divider
     pRT->DrawLine(
@@ -782,25 +1000,28 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         0.8f
     );
 
-    // Sidebar Category Items (Workbench removed completely as requested)
     struct CatDef {
         SettingCategory cat;
         const wchar_t* name;
         const wchar_t* glyph;
     };
     static const CatDef kCategories[] = {
-        { SettingCategory::CommonlyUsed, L"Commonly Used", L"✦" },
-        { SettingCategory::TextEditor,   L"Text Editor",   L"✎" },
-        { SettingCategory::Appearance,   L"Appearance",    L"🎨" },
-        { SettingCategory::Files,        L"Files",         L"📁" },
-        { SettingCategory::Extensions,   L"Extensions",    L"🧩" }
+        { SettingCategory::CommonlyUsed,     L"Commonly Used",      L"✦" },
+        { SettingCategory::TextEditor,       L"Text Editor",        L"✎" },
+        { SettingCategory::Appearance,       L"Appearance",         L"🎨" },
+        { SettingCategory::Files,            L"Files & Search",     L"📁" },
+        { SettingCategory::Extensions,       L"Extensions",         L"🧩" },
+        { SettingCategory::LanguageLsp,      L"Language & LSP",     L"⚡" },
+        { SettingCategory::TerminalTasks,    L"Terminal & Runner",  L">_" },
+        { SettingCategory::GitSourceControl, L"Git & SCM",          L"⎇" },
+        { SettingCategory::DebugDatabase,    L"Debug, DB & Server", L"🗄" }
     };
     const size_t kCatCount = sizeof(kCategories) / sizeof(kCategories[0]);
 
     m_categoryBounds.clear();
-    const float catItemH = config.ScaleF(38.0f);
-    const float catPadX = config.ScaleF(14.0f);
-    float curCatY = bodyTop + config.ScaleF(16.0f);
+    const float catItemH = config.ScaleF(34.0f);
+    const float catPadX = config.ScaleF(12.0f);
+    float curCatY = bodyTop + config.ScaleF(14.0f);
 
     for (size_t i = 0; i < kCatCount; ++i) {
         D2D1_RECT_F rcCat = D2D1::RectF(left + catPadX, curCatY, left + sidebarW - catPadX, curCatY + catItemH);
@@ -818,21 +1039,21 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 pRT->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.92f, 0.97f, 1.0f), &activeBg);
             }
             if (activeBg) pRT->FillRoundedRectangle(rrcCat, activeBg.Get());
-            // Active left accent indicator bar
-            D2D1_RECT_F rcBar = D2D1::RectF(rcCat.left, rcCat.top + config.ScaleF(8.0f), rcCat.left + config.ScaleF(3.5f), rcCat.bottom - config.ScaleF(8.0f));
+            D2D1_RECT_F rcBar = D2D1::RectF(rcCat.left, rcCat.top + config.ScaleF(7.0f), rcCat.left + config.ScaleF(3.5f), rcCat.bottom - config.ScaleF(7.0f));
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBar, 2.0f, 2.0f), pAccentBrush);
         } else if (isHovered) {
             pRT->FillRoundedRectangle(rrcCat, theme.brushItemHover.Get());
         }
 
         // Category Icon / Glyph + Text
-        D2D1_RECT_F rcCatText = D2D1::RectF(rcCat.left + config.ScaleF(14.0f), rcCat.top, rcCat.right - config.ScaleF(8.0f), rcCat.bottom);
+        D2D1_RECT_F rcCatText = D2D1::RectF(rcCat.left + config.ScaleF(12.0f), rcCat.top, rcCat.right - config.ScaleF(6.0f), rcCat.bottom);
         std::wstring fullLabel = std::wstring(kCategories[i].glyph) + L"  " + kCategories[i].name;
         ID2D1Brush* pTextCol = (isActive || isHovered)
             ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get())
             : theme.brushTextSecondary.Get();
         pRT->DrawText(fullLabel.c_str(), static_cast<UINT32>(fullLabel.length()),
-                      theme.fontBody.Get(), rcCatText, pTextCol);
+                      m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
+                      rcCatText, pTextCol, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
         curCatY += catItemH + config.ScaleF(4.0f);
     }
@@ -840,17 +1061,21 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     // 4. Render Scope Switcher Bar (All Settings | User | Workspace) + Right Content Area
     float contentLeft = left + sidebarW + config.ScaleF(28.0f);
     float contentW = (std::max)(config.ScaleF(560.0f), width - sidebarW - config.ScaleF(56.0f));
-    float scopeBarH = config.ScaleF(36.0f);
+    float scopeBarH = config.ScaleF(30.0f);
 
-    // Draw scope switcher strip
+    // Draw scope switcher strip with DWrite-measured tab widths so labels never clip
     {
         static const wchar_t* kScopeNames[3] = { L"All Settings", L"User", L"Workspace" };
         m_scopeBounds.clear();
         float sx = contentLeft;
-        float sy = bodyTop + config.ScaleF(5.0f);
+        float sy = bodyTop + config.ScaleF(2.0f);
         float sh = config.ScaleF(26.0f);
+        IDWriteTextFormat* pScopeFmt = m_pFontTabCenter.Get() ? m_pFontTabCenter.Get() : (m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get());
         for (int s = 0; s < 3; ++s) {
-            float sw = config.ScaleF(s == 0 ? 96.0f : (s == 1 ? 64.0f : 92.0f));
+            const std::wstring scopeLabel = kScopeNames[s];
+            const float measuredW = MeasureTextWidthDWrite(theme.dwriteFactory.Get(), pScopeFmt, scopeLabel, config.ScaleF(9.0f));
+            const float minTabW = config.ScaleF(s == 0 ? 136.0f : (s == 1 ? 86.0f : 120.0f));
+            const float sw = (std::max)(minTabW, measuredW + config.ScaleF(28.0f));
             D2D1_RECT_F rcS = D2D1::RectF(sx, sy, sx + sw, sy + sh);
             m_scopeBounds.push_back(rcS);
             bool activeS = (m_activeScope == s);
@@ -873,10 +1098,10 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             ID2D1Brush* pSCol = (activeS || hovS)
                 ? (theme.IsDarkMode() ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextPrimary.Get())
                 : theme.brushTextSecondary.Get();
-            if (m_pFontTitle || theme.fontBody.Get()) {
-                pRT->DrawText(kScopeNames[s], static_cast<UINT32>(wcslen(kScopeNames[s])),
-                              theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
-                              D2D1::RectF(rcS.left + config.ScaleF(10.0f), rcS.top, rcS.right - config.ScaleF(6.0f), rcS.bottom),
+            if (pScopeFmt) {
+                pRT->DrawText(scopeLabel.c_str(), static_cast<UINT32>(scopeLabel.length()),
+                              pScopeFmt,
+                              D2D1::RectF(rcS.left + config.ScaleF(4.0f), rcS.top, rcS.right - config.ScaleF(4.0f), rcS.bottom),
                               pSCol, D2D1_DRAW_TEXT_OPTIONS_CLIP);
             }
             pRT->PopAxisAlignedClip();
@@ -884,10 +1109,10 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
         if (m_activeScope == 2) {
             const wchar_t* wsNote = L"Saves to .phide/settings.json (auto-ignored in .gitignore)";
-            D2D1_RECT_F rcNote = D2D1::RectF(sx + config.ScaleF(8.0f), sy, left + width - config.ScaleF(16.0f), sy + sh);
+            D2D1_RECT_F rcNote = D2D1::RectF(sx + config.ScaleF(10.0f), sy, left + width - config.ScaleF(16.0f), sy + sh);
             if (rcNote.right > rcNote.left + config.ScaleF(40.0f)) {
                 pRT->DrawText(wsNote, static_cast<UINT32>(wcslen(wsNote)),
-                              theme.fontHint.Get() ? theme.fontHint.Get() : theme.fontBody.Get(),
+                              m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
                               rcNote, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
             }
         }
@@ -896,8 +1121,8 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                       theme.brushBorderSubtle.Get(), 0.8f);
     }
 
-    float contentTop = bodyTop + scopeBarH + config.ScaleF(14.0f);
-    float contentH = (bodyH - scopeBarH) - config.ScaleF(20.0f);
+    float contentTop = bodyTop + scopeBarH + config.ScaleF(6.0f);
+    float contentH = (bodyH - scopeBarH) - config.ScaleF(14.0f);
 
     D2D1_RECT_F rcContentClip = D2D1::RectF(contentLeft, bodyTop + scopeBarH, left + width - config.ScaleF(8.0f), top + height);
     pRT->PushAxisAlignedClip(rcContentClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -919,22 +1144,23 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     }
 
     float cardY = contentTop - m_scrollOffsetY;
-    D2D1_RECT_F rcSecHeader = D2D1::RectF(contentLeft, cardY, contentLeft + contentW, cardY + config.ScaleF(28.0f));
+    D2D1_RECT_F rcSecHeader = D2D1::RectF(contentLeft, cardY, contentLeft + contentW, cardY + config.ScaleF(24.0f));
     pRT->DrawText(sectionTitle.c_str(), static_cast<UINT32>(sectionTitle.length()),
                   theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get(),
-                  rcSecHeader, theme.brushTextPrimary.Get());
-    cardY += config.ScaleF(34.0f);
+                  rcSecHeader, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    cardY += config.ScaleF(26.0f);
 
     // If no matching settings
     if (filteredIndices.empty()) {
         D2D1_RECT_F rcEmpty = D2D1::RectF(contentLeft, cardY + config.ScaleF(30.0f), contentLeft + contentW, cardY + config.ScaleF(80.0f));
         const wchar_t* emptyMsg = L"No settings found matching your search query.";
         pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)),
-                      theme.fontBody.Get(), rcEmpty, theme.brushTextSecondary.Get());
+                      m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
+                      rcEmpty, theme.brushTextSecondary.Get());
     }
 
-    // Comfortable spacious card height and margin
-    const float cardH = config.ScaleF(86.0f);
+    // Card height and spacing (preserves exact top-card dropdown coordinates)
+    const float cardH = config.ScaleF(82.0f);
     const float cardSpacing = config.ScaleF(12.0f);
 
     for (size_t idx : filteredIndices) {
@@ -963,11 +1189,14 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         const float ctrlRight = contentLeft + contentW - config.ScaleF(24.0f);
         const float ctrlCenterY = cardY + cardH / 2.0f;
 
-        // Scope Tag Badge (e.g. [ EDITOR ], [ FILES ], [ APPEARANCE ])
-        float scopeBadgeW = config.ScaleF(static_cast<float>(it.scope.length() * 7.0f + 14.0f));
+        // Scope Tag Badge with measured text width (never clipped)
+        IDWriteTextFormat* pBadgeFmt = theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontHint.Get();
+        float measuredBadgeW = MeasureTextWidthDWrite(theme.dwriteFactory.Get(), pBadgeFmt, it.scope, config.ScaleF(7.8f));
+        float scopeBadgeW = (std::max)(config.ScaleF(static_cast<float>(it.scope.length()) * 7.8f + 16.0f),
+                                       measuredBadgeW + config.ScaleF(18.0f));
         float scopeBadgeH = config.ScaleF(18.0f);
-        D2D1_RECT_F rcScopeBadge = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(16.0f),
-                                              contentLeft + config.ScaleF(20.0f) + scopeBadgeW, cardY + config.ScaleF(16.0f) + scopeBadgeH);
+        D2D1_RECT_F rcScopeBadge = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(14.0f),
+                                              contentLeft + config.ScaleF(20.0f) + scopeBadgeW, cardY + config.ScaleF(14.0f) + scopeBadgeH);
         D2D1_ROUNDED_RECT rrcScope = D2D1::RoundedRect(rcScopeBadge, 4.0f, 4.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> scopeBg;
         if (theme.IsDarkMode()) {
@@ -977,105 +1206,58 @@ void SettingsView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
         if (scopeBg) pRT->FillRoundedRectangle(rrcScope, scopeBg.Get());
         pRT->DrawText(it.scope.c_str(), static_cast<UINT32>(it.scope.length()),
-                      theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontHint.Get(),
-                      rcScopeBadge, pAccentBrush);
+                      pBadgeFmt, rcScopeBadge, pAccentBrush);
 
-        // Setting Title & Description with reserve space for controls
-        float ctrlReserveW = config.ScaleF(180.0f);
+        // Compute control width upfront so title/description never collide with the control
+        std::wstring dropValStr;
+        float dropW = config.ScaleF(170.0f);
+        float ctrlReserveW = config.ScaleF(170.0f);
         if (it.control == SettingControl::Dropdown) {
+            dropValStr = ReadDropdownSetting(it.id, config, theme);
+            IDWriteTextFormat* pDropFmt = m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get();
+            float maxOptW = MeasureTextWidthDWrite(theme.dwriteFactory.Get(), pDropFmt, dropValStr, config.ScaleF(7.8f));
+            dropW = (std::max)(dropW, (std::min)(config.ScaleF(300.0f), maxOptW + config.ScaleF(46.0f)));
             if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
-                ctrlReserveW = config.ScaleF(280.0f);
+                dropW = (std::max)(dropW, config.ScaleF(260.0f));
             }
+            ctrlReserveW = dropW + config.ScaleF(20.0f);
         }
 
         // Setting Title
         float titleX = rcScopeBadge.right + config.ScaleF(12.0f);
-        D2D1_RECT_F rcCardTitle = D2D1::RectF(titleX, cardY + config.ScaleF(14.0f), ctrlRight - ctrlReserveW, cardY + config.ScaleF(36.0f));
+        float textRightLimit = (std::max)(titleX + config.ScaleF(80.0f), ctrlRight - ctrlReserveW);
+        D2D1_RECT_F rcCardTitle = D2D1::RectF(titleX, cardY + config.ScaleF(12.0f), textRightLimit, cardY + config.ScaleF(34.0f));
         pRT->DrawText(it.title.c_str(), static_cast<UINT32>(it.title.length()),
-                      m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(), rcCardTitle, theme.brushTextPrimary.Get());
+                      m_pFontTitle.Get() ? m_pFontTitle.Get() : theme.fontBody.Get(),
+                      rcCardTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
         // Setting Description
-        D2D1_RECT_F rcDesc = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(44.0f),
-                                         ctrlRight - ctrlReserveW, cardY + cardH - config.ScaleF(12.0f));
+        D2D1_RECT_F rcDesc = D2D1::RectF(contentLeft + config.ScaleF(20.0f), cardY + config.ScaleF(42.0f),
+                                         ctrlRight - ctrlReserveW, cardY + cardH - config.ScaleF(10.0f));
         pRT->DrawText(it.description.c_str(), static_cast<UINT32>(it.description.length()),
                       m_pFontDesc.Get() ? m_pFontDesc.Get() : theme.fontBody.Get(),
-                      rcDesc, theme.brushTextSecondary.Get());
+                      rcDesc, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
         if (it.control == SettingControl::Toggle) {
             const float toggleW = config.ScaleF(46.0f);
             const float toggleH = config.ScaleF(26.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - toggleW, ctrlCenterY - toggleH / 2.0f, ctrlRight, ctrlCenterY + toggleH / 2.0f);
-
-            bool isChecked = false;
-            if (it.id == L"editor.wordWrap") isChecked = config.wordWrap;
-            else if (it.id == L"editor.minimap") isChecked = config.showMinimap;
-            else if (it.id == L"editor.codeLens") isChecked = config.enableCodeLens;
-            else if (it.id == L"editor.lineNumbers") isChecked = config.showLineNumbers;
-            else if (it.id == L"editor.insertSpaces") isChecked = config.insertSpaces;
-            else if (it.id == L"editor.formatOnSave") isChecked = config.formatOnSave;
-            else if (it.id == L"explorer.updateImportsOnRename") isChecked = config.updateImportsOnRename;
-            else if (it.id == L"workbench.breadcrumbs") isChecked = config.showBreadcrumbs;
-            else if (it.id == L"workbench.statusBar") isChecked = config.showStatusBar;
-            else if (it.id == L"workbench.graphColored") isChecked = config.isGraphColored;
-            else if (it.id == L"workbench.markdownPreview") isChecked = config.enableMarkdownPreview;
-            else if (it.id == L"editor.gitLens") isChecked = config.enableGitLens;
-            else if (it.id == L"editor.inlayHints") isChecked = config.enableInlayHints;
-            else if (it.id == L"editor.lspHover") isChecked = config.enableLspHover;
-            else if (it.id == L"editor.signatureHelp") isChecked = config.enableSignatureHelp;
-            else if (it.id == L"linter.externalEnabled") isChecked = config.enableExternalLinters;
-            else if (it.id == L"workbench.zenMode") isChecked = config.zenMode;
-            else if (it.id == L"code-runner.runInTerminal") isChecked = config.codeRunnerRunInTerminal;
-            else if (it.id == L"code-runner.saveFileBeforeRun") isChecked = config.codeRunnerSaveFileBeforeRun;
-            else if (it.id == L"code-runner.clearPreviousOutput") isChecked = config.codeRunnerClearPreviousOutput;
-            else if (it.id == L"python.linting.enabled") isChecked = config.pythonLintingEnabled;
-            else if (it.id == L"python.linting.undefinedVariableCheck") isChecked = config.pythonCheckUndefinedVariables;
-            else if (it.id == L"python.terminal.highlightErrorsInEditor") isChecked = config.pythonHighlightTerminalErrors;
-
+            bool isChecked = ReadBoolSetting(it.id, config);
             DrawToggleSwitch(pRT, theme, config, it.controlBounds, isChecked, isCardHovered);
         } else if (it.control == SettingControl::NumberStepper) {
-            const float stepperW = config.ScaleF(126.0f);
+            const float stepperW = config.ScaleF(136.0f);
             const float stepperH = config.ScaleF(30.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - stepperW, ctrlCenterY - stepperH / 2.0f, ctrlRight, ctrlCenterY + stepperH / 2.0f);
 
-            std::wstring valStr;
-            if (it.id == L"editor.fontSize") {
-                valStr = std::to_wstring(static_cast<int>(config.fontSize)) + it.unit;
-            } else if (it.id == L"editor.tabSize") {
-                valStr = std::to_wstring(config.tabSize) + it.unit;
-            } else if (it.id == L"files.autoSaveDelay") {
-                valStr = std::to_wstring(config.autoSaveDelay) + it.unit;
-            }
-
+            std::wstring valStr = FormatStepperSettingValue(it, config);
             bool hMinus = (isCardHovered && m_hoveredControlSubId == "minus");
             bool hPlus  = (isCardHovered && m_hoveredControlSubId == "plus");
             DrawStepper(pRT, theme, config, it, valStr, hMinus, hPlus);
         } else if (it.control == SettingControl::Dropdown) {
-            float dropW = config.ScaleF(170.0f);
-            if (it.id == L"python.linting.linter" || it.id == L"workbench.colorTheme" || it.id == L"editor.fontFamily") {
-                dropW = config.ScaleF(260.0f);
-            }
             const float dropH = config.ScaleF(32.0f);
             it.controlBounds = D2D1::RectF(ctrlRight - dropW, ctrlCenterY - dropH / 2.0f, ctrlRight, ctrlCenterY + dropH / 2.0f);
-
-            std::wstring valStr;
-            if (it.id == L"files.autoSave") {
-                valStr = config.autoSave;
-            } else if (it.id == L"editor.fontFamily") {
-                valStr = config.fontFamily;
-            } else if (it.id == L"editor.renderWhitespace") {
-                valStr = config.renderWhitespaceMode;
-            } else if (it.id == L"editor.cursorStyle") {
-                valStr = config.cursorStyle;
-            } else if (it.id == L"code-runner.executorMap.python") {
-                valStr = config.codeRunnerExecutorPython;
-            } else if (it.id == L"python.linting.linter") {
-                valStr = config.pythonLinter;
-            } else if (it.id == L"workbench.colorTheme") {
-                valStr = ThemeModeToDisplayName(theme.GetThemeMode());
-            }
-
             bool isOpen = (m_openDropdownItemIdx == static_cast<int>(idx));
-            DrawDropdown(pRT, theme, config, it.controlBounds, valStr, isCardHovered, isOpen);
+            DrawDropdown(pRT, theme, config, it.controlBounds, dropValStr, isCardHovered, isOpen);
         }
 
         cardY += cardH + cardSpacing;
@@ -1250,29 +1432,28 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     const auto& item = m_items[m_openDropdownItemIdx];
     if (item.options.empty()) return;
 
-    // Get current value to display checkmark
-    std::wstring curVal;
-    if (item.id == L"files.autoSave") curVal = config.autoSave;
-    else if (item.id == L"editor.fontFamily") curVal = config.fontFamily;
-    else if (item.id == L"editor.renderWhitespace") curVal = config.renderWhitespaceMode;
-    else if (item.id == L"editor.cursorStyle") curVal = config.cursorStyle;
-    else if (item.id == L"code-runner.executorMap.python") curVal = config.codeRunnerExecutorPython;
-    else if (item.id == L"python.linting.linter") curVal = config.pythonLinter;
-    else if (item.id == L"workbench.colorTheme") curVal = ThemeModeToDisplayName(theme.GetThemeMode());
+    const std::wstring curVal = ReadDropdownSetting(item.id, config, theme);
 
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
     const float menuH = item.options.size() * rowH + padY * 2.0f;
+    float measuredMaxW = config.ScaleF(180.0f);
+    for (const auto& opt : item.options) {
+        measuredMaxW = (std::max)(measuredMaxW, MeasureTextWidthDWrite(theme.dwriteFactory.Get(), theme.fontBody.Get(), opt, config.ScaleF(8.0f)) + config.ScaleF(44.0f));
+    }
     const float minW = (item.id == L"python.linting.linter" || item.id == L"workbench.colorTheme" || item.id == L"editor.fontFamily")
                        ? config.ScaleF(260.0f) : config.ScaleF(180.0f);
-    const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, minW);
+    const float menuW = (std::max)(item.controlBounds.right - item.controlBounds.left, (std::max)(minW, measuredMaxW));
 
     // Place menu directly below control button
     float menuLeft = item.controlBounds.right - menuW;
     float menuTop  = item.controlBounds.bottom + config.ScaleF(4.0f);
-    // If it would exceed bottom of view, flip above
+    // If it would exceed bottom of view, flip above and clamp cleanly inside view
     if (menuTop + menuH > m_viewBounds.bottom - config.ScaleF(10.0f)) {
         menuTop = item.controlBounds.top - menuH - config.ScaleF(4.0f);
+    }
+    if (menuTop < m_viewBounds.top + config.ScaleF(8.0f)) {
+        menuTop = m_viewBounds.top + config.ScaleF(8.0f);
     }
     m_openDropdownBounds = D2D1::RectF(menuLeft, menuTop, menuLeft + menuW, menuTop + menuH);
 
@@ -1470,23 +1651,7 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
             if (relY >= 0.0f && totalH > 0.0f && optCount > 0) {
                 int optIdx = static_cast<int>(relY / (totalH / static_cast<float>(optCount)));
                 if (optIdx >= 0 && optIdx < static_cast<int>(optCount)) {
-                    const auto& selectedOpt = dropItem.options[optIdx];
-                    if (dropItem.id == L"files.autoSave") {
-                        config.autoSave = selectedOpt;
-                    } else if (dropItem.id == L"editor.fontFamily") {
-                        config.fontFamily = selectedOpt;
-                    } else if (dropItem.id == L"editor.renderWhitespace") {
-                        config.renderWhitespaceMode = selectedOpt;
-                        config.renderWhitespace = (selectedOpt != L"none");
-                    } else if (dropItem.id == L"editor.cursorStyle") {
-                        config.cursorStyle = selectedOpt;
-                    } else if (dropItem.id == L"code-runner.executorMap.python") {
-                        config.codeRunnerExecutorPython = selectedOpt;
-                    } else if (dropItem.id == L"python.linting.linter") {
-                        config.pythonLinter = selectedOpt;
-                    } else if (dropItem.id == L"workbench.colorTheme") {
-                        theme.SetThemeMode(DisplayNameToThemeMode(selectedOpt));
-                    }
+                    WriteDropdownSetting(dropItem.id, dropItem.options[optIdx], config, theme);
                     outModifiedSettingId = dropItem.id;
                 }
             }
@@ -1550,55 +1715,11 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
             if (it.control == SettingControl::Toggle) {
                 if (clientPt.x >= it.controlBounds.left && clientPt.x <= it.controlBounds.right &&
                     clientPt.y >= it.controlBounds.top && clientPt.y <= it.controlBounds.bottom) {
-                    if (it.id == L"editor.wordWrap") {
-                        config.wordWrap = !config.wordWrap;
-                    } else if (it.id == L"editor.minimap") {
-                        config.showMinimap = !config.showMinimap;
-                    } else if (it.id == L"editor.codeLens") {
-                        config.enableCodeLens = !config.enableCodeLens;
-                    } else if (it.id == L"editor.lineNumbers") {
-                        config.showLineNumbers = !config.showLineNumbers;
-                    } else if (it.id == L"editor.insertSpaces") {
-                        config.insertSpaces = !config.insertSpaces;
-                    } else if (it.id == L"editor.formatOnSave") {
-                        config.formatOnSave = !config.formatOnSave;
-                    } else if (it.id == L"explorer.updateImportsOnRename") {
-                        config.updateImportsOnRename = !config.updateImportsOnRename;
-                    } else if (it.id == L"workbench.breadcrumbs") {
-                        config.showBreadcrumbs = !config.showBreadcrumbs;
-                    } else if (it.id == L"workbench.statusBar") {
-                        config.showStatusBar = !config.showStatusBar;
-                    } else if (it.id == L"workbench.graphColored") {
-                        config.isGraphColored = !config.isGraphColored;
-                    } else if (it.id == L"workbench.markdownPreview") {
-                        config.enableMarkdownPreview = !config.enableMarkdownPreview;
-                    } else if (it.id == L"code-runner.runInTerminal") {
-                        config.codeRunnerRunInTerminal = !config.codeRunnerRunInTerminal;
-                    } else if (it.id == L"code-runner.saveFileBeforeRun") {
-                        config.codeRunnerSaveFileBeforeRun = !config.codeRunnerSaveFileBeforeRun;
-                    } else if (it.id == L"code-runner.clearPreviousOutput") {
-                        config.codeRunnerClearPreviousOutput = !config.codeRunnerClearPreviousOutput;
-                    } else if (it.id == L"python.linting.enabled") {
-                        config.pythonLintingEnabled = !config.pythonLintingEnabled;
-                    } else if (it.id == L"python.linting.undefinedVariableCheck") {
-                        config.pythonCheckUndefinedVariables = !config.pythonCheckUndefinedVariables;
-                    } else if (it.id == L"python.terminal.highlightErrorsInEditor") {
-                        config.pythonHighlightTerminalErrors = !config.pythonHighlightTerminalErrors;
-                    } else if (it.id == L"editor.gitLens") {
-                        config.enableGitLens = !config.enableGitLens;
-                    } else if (it.id == L"editor.inlayHints") {
-                        config.enableInlayHints = !config.enableInlayHints;
-                    } else if (it.id == L"editor.lspHover") {
-                        config.enableLspHover = !config.enableLspHover;
-                    } else if (it.id == L"editor.signatureHelp") {
-                        config.enableSignatureHelp = !config.enableSignatureHelp;
-                    } else if (it.id == L"linter.externalEnabled") {
-                        config.enableExternalLinters = !config.enableExternalLinters;
-                    } else if (it.id == L"workbench.zenMode") {
-                        config.zenMode = !config.zenMode;
+                    if (bool* pBool = ResolveBoolSettingPtr(it.id, config)) {
+                        *pBool = !(*pBool);
+                        outModifiedSettingId = it.id;
+                        return true;
                     }
-                    outModifiedSettingId = it.id;
-                    return true;
                 }
             }
 
@@ -1609,24 +1730,8 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
                 bool isPlus  = (clientPt.x >= it.plusBounds.left && clientPt.x <= it.plusBounds.right &&
                                 clientPt.y >= it.plusBounds.top && clientPt.y <= it.plusBounds.bottom);
 
-                if (isMinus) {
-                    if (it.id == L"editor.fontSize") {
-                        config.fontSize = (std::max)(it.minVal, config.fontSize - it.stepVal);
-                    } else if (it.id == L"editor.tabSize") {
-                        config.tabSize = (std::max)(static_cast<int>(it.minVal), config.tabSize - static_cast<int>(it.stepVal));
-                    } else if (it.id == L"files.autoSaveDelay") {
-                        config.autoSaveDelay = (std::max)(static_cast<int>(it.minVal), config.autoSaveDelay - static_cast<int>(it.stepVal));
-                    }
-                    outModifiedSettingId = it.id;
-                    return true;
-                } else if (isPlus) {
-                    if (it.id == L"editor.fontSize") {
-                        config.fontSize = (std::min)(it.maxVal, config.fontSize + it.stepVal);
-                    } else if (it.id == L"editor.tabSize") {
-                        config.tabSize = (std::min)(static_cast<int>(it.maxVal), config.tabSize + static_cast<int>(it.stepVal));
-                    } else if (it.id == L"files.autoSaveDelay") {
-                        config.autoSaveDelay = (std::min)(static_cast<int>(it.maxVal), config.autoSaveDelay + static_cast<int>(it.stepVal));
-                    }
+                if (isMinus || isPlus) {
+                    StepNumericSettingValue(it, isMinus ? -1 : 1, config);
                     outModifiedSettingId = it.id;
                     return true;
                 }
@@ -1736,6 +1841,14 @@ LPCWSTR SettingsView::GetCursorForPoint(POINT clientPt) const {
     if (clientPt.x >= m_searchBoxBounds.left && clientPt.x <= m_searchBoxBounds.right &&
         clientPt.y >= m_searchBoxBounds.top && clientPt.y <= m_searchBoxBounds.bottom) {
         return IDC_IBEAM;
+    }
+
+    // 3b. Scope switcher tabs
+    for (const auto& rc : m_scopeBounds) {
+        if (clientPt.x >= rc.left && clientPt.x <= rc.right &&
+            clientPt.y >= rc.top && clientPt.y <= rc.bottom) {
+            return IDC_HAND;
+        }
     }
 
     // 4. Sidebar categories (full row width)

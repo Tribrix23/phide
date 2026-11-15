@@ -44,24 +44,53 @@ public:
         m_isCancelHovered = false;
         m_isCloseHovered = false;
 
-        // Parse primary error message and secondary details
+        // Parse primary error message and secondary details, skipping trailing `git status` noise
         m_title = L"Git: ";
         m_details.clear();
+
+        auto trimLine = [](std::wstring s) {
+            while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'\t')) s.pop_back();
+            size_t start = 0;
+            while (start < s.size() && (s[start] == L' ' || s[start] == L'\t')) ++start;
+            return s.substr(start);
+        };
+        auto startsWith = [](const std::wstring& s, const wchar_t* prefix) {
+            return s.rfind(prefix, 0) == 0;
+        };
 
         if (output.empty()) {
             m_title += L"Command failed: " + command;
         } else {
             std::wstringstream ss(output);
-            std::wstring line;
+            std::wstring rawLine;
             bool foundPrimary = false;
-            while (std::getline(ss, line)) {
-                while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n')) {
-                    line.pop_back();
-                }
+            bool inStatusTrailer = false;
+            int detailLineCount = 0;
+            while (std::getline(ss, rawLine)) {
+                std::wstring line = trimLine(rawLine);
                 if (line.empty()) continue;
 
+                if (startsWith(line, L"On branch ") ||
+                    startsWith(line, L"Your branch is ") ||
+                    startsWith(line, L"Changes not staged for commit:") ||
+                    startsWith(line, L"Changes to be committed:") ||
+                    startsWith(line, L"Untracked files:") ||
+                    startsWith(line, L"no changes added to commit") ||
+                    startsWith(line, L"nothing to commit")) {
+                    inStatusTrailer = true;
+                    continue;
+                }
+                if (inStatusTrailer) {
+                    continue;
+                }
+                if (startsWith(line, L"(use \"git ") ||
+                    startsWith(line, L"modified:") ||
+                    startsWith(line, L"deleted:") ||
+                    startsWith(line, L"new file:")) {
+                    continue;
+                }
+
                 if (!foundPrimary) {
-                    // Check if line starts with fatal: or error:
                     if (line.find(L"fatal:") != std::wstring::npos || line.find(L"error:") != std::wstring::npos) {
                         m_title += line;
                         foundPrimary = true;
@@ -69,9 +98,10 @@ public:
                         m_title += line;
                         foundPrimary = true;
                     }
-                } else {
-                    if (!m_details.empty()) m_details += L" ";
+                } else if (detailLineCount < 6) {
+                    if (!m_details.empty()) m_details += L"\n";
                     m_details += line;
+                    ++detailLineCount;
                 }
             }
             if (!foundPrimary) {
@@ -126,6 +156,14 @@ public:
     [[nodiscard]] const std::wstring& GetCommand() const noexcept { return m_command; }
     [[nodiscard]] const std::wstring& GetOutput() const noexcept { return m_output; }
     [[nodiscard]] const std::wstring& GetRepoDir() const noexcept { return m_repoDir; }
+    [[nodiscard]] const std::wstring& GetTitle() const noexcept { return m_title; }
+    [[nodiscard]] const std::wstring& GetDetails() const noexcept { return m_details; }
+    [[nodiscard]] D2D1_RECT_F GetCardBounds() const noexcept { return m_cardBounds; }
+    [[nodiscard]] D2D1_RECT_F GetTitleBounds() const noexcept { return m_titleBounds; }
+    [[nodiscard]] D2D1_RECT_F GetDetailsBounds() const noexcept { return m_detailsBounds; }
+    [[nodiscard]] D2D1_RECT_F GetGitLogBtnBounds() const noexcept { return m_gitLogBtnBounds; }
+    [[nodiscard]] D2D1_RECT_F GetShowOutputBtnBounds() const noexcept { return m_showOutputBtnBounds; }
+    [[nodiscard]] D2D1_RECT_F GetCancelBtnBounds() const noexcept { return m_cancelBtnBounds; }
 
     [[nodiscard]] bool HitTestButtons(POINT pt) const noexcept {
         if (!m_isOpen) return false;
@@ -152,9 +190,66 @@ public:
             pRT->FillRectangle(D2D1::RectF(0.0f, 0.0f, clientW, clientH), backdropBrush.Get());
         }
 
-        // 2. Card Placement
-        const float cardW = config.ScaleF(620.0f);
-        const float cardH = config.ScaleF(220.0f);
+        auto measureTextBlockHeight = [&](IDWriteTextFormat* fmt, const std::wstring& text, float maxW, float fallbackH) -> float {
+            if (!fmt || text.empty() || !theme.dwriteFactory) return fallbackH;
+            DWRITE_WORD_WRAPPING prevWrap = fmt->GetWordWrapping();
+            DWRITE_TEXT_ALIGNMENT prevAlign = fmt->GetTextAlignment();
+            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = fmt->GetParagraphAlignment();
+            fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            float measuredH = fallbackH;
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt, maxW, 2000.0f, &layout)) && layout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(layout->GetMetrics(&tm))) {
+                    measuredH = (std::max)(fallbackH, tm.height + 2.0f);
+                }
+            }
+            fmt->SetWordWrapping(prevWrap);
+            fmt->SetTextAlignment(prevAlign);
+            fmt->SetParagraphAlignment(prevPAlign);
+            return measuredH;
+        };
+        auto measureSingleLineWidth = [&](IDWriteTextFormat* fmt, const wchar_t* text, float fallbackW) -> float {
+            if (!fmt || !text || !theme.dwriteFactory) return fallbackW;
+            float measuredW = fallbackW;
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+            const UINT32 len = static_cast<UINT32>(wcslen(text));
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(text, len, fmt, 2000.0f, 100.0f, &layout)) && layout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(layout->GetMetrics(&tm))) {
+                    measuredW = (std::max)(fallbackW, tm.widthIncludingTrailingWhitespace);
+                }
+            }
+            return measuredW;
+        };
+
+        IDWriteTextFormat* pFmtTitle = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
+        IDWriteTextFormat* pFmtHint = theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get();
+        IDWriteTextFormat* pFmtBody = theme.fontBody ? theme.fontBody.Get() : (theme.fontHint ? theme.fontHint.Get() : pFmtHint);
+        IDWriteTextFormat* pFmtBtn = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontMenuItem.Get();
+
+        // 2. Adaptive Card Placement (prevents title/body/button overlap)
+        const float cardW = (std::min)(config.ScaleF(640.0f), (std::max)(config.ScaleF(420.0f), clientW - config.ScaleF(40.0f)));
+        const float closeBtnSize = config.ScaleF(24.0f);
+        const float textLeftOffset = config.ScaleF(62.0f);
+        const float textRightInset = closeBtnSize + config.ScaleF(22.0f);
+        const float textMaxW = (std::max)(config.ScaleF(160.0f), cardW - textLeftOffset - textRightInset);
+
+        const float topPad = config.ScaleF(20.0f);
+        const float midGap = config.ScaleF(10.0f);
+        const float botGap = config.ScaleF(14.0f);
+        const float botPad = config.ScaleF(18.0f);
+        const float btnH = config.ScaleF(28.0f);
+
+        const float rawTitleH = measureTextBlockHeight(pFmtTitle, m_title, textMaxW, config.ScaleF(22.0f));
+        const float titleH = (std::min)(config.ScaleF(96.0f), (std::max)(config.ScaleF(24.0f), rawTitleH));
+        const float rawDetailsH = measureTextBlockHeight(pFmtBody, m_details, textMaxW, config.ScaleF(36.0f));
+        const float desiredCardH = topPad + titleH + midGap + rawDetailsH + botGap + btnH + botPad;
+        const float maxCardH = (std::min)(config.ScaleF(360.0f), (std::max)(config.ScaleF(210.0f), clientH - config.ScaleF(40.0f)));
+        const float cardH = std::clamp(desiredCardH, config.ScaleF(210.0f), (std::max)(config.ScaleF(210.0f), maxCardH));
+
         const float cardX = (std::max)(0.0f, (clientW - cardW) * 0.5f);
         const float cardY = (std::max)(0.0f, (clientH - cardH) * 0.5f);
         m_cardBounds = D2D1::RectF(cardX, cardY, cardX + cardW, cardY + cardH);
@@ -179,7 +274,6 @@ public:
         if (cardBorder) pRT->DrawRoundedRectangle(rrcCard, cardBorder.Get(), 1.0f);
 
         // 3. Top-Right Close Button
-        const float closeBtnSize = config.ScaleF(24.0f);
         m_closeBtnBounds = D2D1::RectF(
             cardX + cardW - closeBtnSize - config.ScaleF(10.0f),
             cardY + config.ScaleF(10.0f),
@@ -196,7 +290,6 @@ public:
                 pRT->FillRoundedRectangle(D2D1::RoundedRect(m_closeBtnBounds, 4.0f, 4.0f), closeHover.Get());
             }
         }
-        IDWriteTextFormat* pFmtHint = theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get();
         if (pFmtHint) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtHint->GetTextAlignment();
             DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtHint->GetParagraphAlignment();
@@ -214,7 +307,7 @@ public:
 
         // 4. Red Circular (X) Badge Icon on Left (Image 2)
         const float iconCx = cardX + config.ScaleF(36.0f);
-        const float iconCy = cardY + config.ScaleF(38.0f);
+        const float iconCy = cardY + config.ScaleF(34.0f);
         const float iconR = config.ScaleF(13.0f);
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> redCircleBrush;
@@ -231,60 +324,69 @@ public:
             pRT->DrawLine(D2D1::Point2F(iconCx + crossR, iconCy - crossR), D2D1::Point2F(iconCx - crossR, iconCy + crossR), whiteCrossBrush.Get(), 1.8f);
         }
 
-        // 5. Text Area
-        const float textLeft = cardX + config.ScaleF(62.0f);
+        // 5. Text Area (strictly top-aligned with DWRITE_PARAGRAPH_ALIGNMENT_NEAR + clipped rects)
+        const float btnY = cardY + cardH - btnH - botPad;
+        const float textLeft = cardX + textLeftOffset;
         const float textRight = m_closeBtnBounds.left - config.ScaleF(12.0f);
 
-        // Primary Error Title Line (Bold/Primary)
-        IDWriteTextFormat* pFmtTitle = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get();
         ID2D1Brush* textPrimary = theme.IsDarkMode()
             ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
             : theme.brushTextPrimary.Get();
 
-        D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, cardY + config.ScaleF(20.0f), textRight, cardY + config.ScaleF(64.0f));
+        D2D1_RECT_F rcTitle = D2D1::RectF(textLeft, cardY + topPad, textRight, cardY + topPad + titleH);
+        m_titleBounds = rcTitle;
         if (pFmtTitle && textPrimary) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtTitle->GetTextAlignment();
+            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtTitle->GetParagraphAlignment();
             DWRITE_WORD_WRAPPING prevWrap = pFmtTitle->GetWordWrapping();
             pFmtTitle->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pFmtTitle->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             pFmtTitle->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            pRT->DrawText(m_title.c_str(), static_cast<UINT32>(m_title.length()), pFmtTitle, rcTitle, textPrimary);
+            pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(m_title.c_str(), static_cast<UINT32>(m_title.length()), pFmtTitle, rcTitle, textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->PopAxisAlignedClip();
             pFmtTitle->SetTextAlignment(prevAlign);
+            pFmtTitle->SetParagraphAlignment(prevPAlign);
             pFmtTitle->SetWordWrapping(prevWrap);
         }
 
-        // Secondary Details Body Text (Muted, multi-line)
-        const float btnH = config.ScaleF(28.0f);
-        IDWriteTextFormat* pFmtBody = theme.fontBody ? theme.fontBody.Get() : (theme.fontHint ? theme.fontHint.Get() : pFmtHint);
         ID2D1Brush* textMuted = theme.brushTextMuted ? theme.brushTextMuted.Get() : textPrimary;
-        D2D1_RECT_F rcDetails = D2D1::RectF(textLeft, cardY + config.ScaleF(68.0f), textRight, cardY + cardH - btnH - config.ScaleF(28.0f));
+        const float detailsTop = rcTitle.bottom + midGap;
+        const float detailsBottom = (std::max)(detailsTop + config.ScaleF(20.0f), btnY - botGap);
+        D2D1_RECT_F rcDetails = D2D1::RectF(textLeft, detailsTop, textRight, detailsBottom);
+        m_detailsBounds = rcDetails;
         if (pFmtBody && textMuted) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
+            DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
             DWRITE_WORD_WRAPPING prevWrap = pFmtBody->GetWordWrapping();
             pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             pFmtBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            pRT->DrawText(m_details.c_str(), static_cast<UINT32>(m_details.length()), pFmtBody, rcDetails, textMuted);
+            pRT->PushAxisAlignedClip(rcDetails, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(m_details.c_str(), static_cast<UINT32>(m_details.length()), pFmtBody, rcDetails, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->PopAxisAlignedClip();
             pFmtBody->SetTextAlignment(prevAlign);
+            pFmtBody->SetParagraphAlignment(prevPAlign);
             pFmtBody->SetWordWrapping(prevWrap);
         }
 
-        // 6. Action Buttons at Bottom Right (Image 2)
+        // 6. Action Buttons at Bottom Right (measured widths so labels never clip)
         // [ Open Git Log ]  [ Show Command Output ]  [ Cancel ]
-        const float btnY = cardY + cardH - btnH - config.ScaleF(18.0f);
         const float gap = config.ScaleF(8.0f);
         float curRight = cardX + cardW - config.ScaleF(20.0f);
 
         // Cancel Button (Rightmost)
-        const float cancelBtnW = config.ScaleF(72.0f);
+        const float cancelBtnW = (std::max)(config.ScaleF(72.0f), measureSingleLineWidth(pFmtBtn, L"Cancel", config.ScaleF(44.0f)) + config.ScaleF(24.0f));
         m_cancelBtnBounds = D2D1::RectF(curRight - cancelBtnW, btnY, curRight, btnY + btnH);
         curRight -= (cancelBtnW + gap);
 
         // Show Command Output Button (Middle)
-        const float showOutputBtnW = config.ScaleF(164.0f);
+        const float showOutputBtnW = (std::max)(config.ScaleF(164.0f), measureSingleLineWidth(pFmtBtn, L"Show Command Output", config.ScaleF(140.0f)) + config.ScaleF(26.0f));
         m_showOutputBtnBounds = D2D1::RectF(curRight - showOutputBtnW, btnY, curRight, btnY + btnH);
         curRight -= (showOutputBtnW + gap);
 
         // Open Git Log Button (Left of middle, Primary Blue)
-        const float gitLogBtnW = config.ScaleF(124.0f);
+        const float gitLogBtnW = (std::max)(config.ScaleF(124.0f), measureSingleLineWidth(pFmtBtn, L"Open Git Log", config.ScaleF(96.0f)) + config.ScaleF(26.0f));
         m_gitLogBtnBounds = D2D1::RectF(curRight - gitLogBtnW, btnY, curRight, btnY + btnH);
 
         // Render [ Open Git Log ] (Primary Accent)
@@ -449,6 +551,8 @@ private:
     std::wstring m_details;
 
     D2D1_RECT_F m_cardBounds{};
+    D2D1_RECT_F m_titleBounds{};
+    D2D1_RECT_F m_detailsBounds{};
     D2D1_RECT_F m_gitLogBtnBounds{};
     D2D1_RECT_F m_showOutputBtnBounds{};
     D2D1_RECT_F m_cancelBtnBounds{};

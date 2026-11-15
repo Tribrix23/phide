@@ -742,7 +742,18 @@ public:
     void StartRefreshActiveSqlSchemaAsync();
     void StartExecuteActiveSqlQueryAsync();
     void StartDiscoverSqlServersAsync();
+    void StartToggleActiveSqlServerAsync();
     void UpdateMysqlProfilesPort(int newPort);
+    void SetSqlSelectedProfileIndex(size_t idx) noexcept {
+        if (idx < m_sqlProfiles.size()) m_sqlSelectedProfileIdx = idx;
+    }
+    void SetSqlPageSize(size_t pageSize) noexcept {
+        m_sqlPageSize = (std::max<size_t>)(10, (std::min<size_t>)(500, pageSize));
+        m_sqlPage = 0;
+    }
+    [[nodiscard]] std::wstring GetActiveSqlServerActionLabel() const;
+    [[nodiscard]] const D2D1_RECT_F& GetSqlServerToggleButtonBounds() const noexcept { return m_rcSqlStartMysqlBtn; }
+    [[nodiscard]] const std::wstring& GetSqlStatusBanner() const noexcept { return m_sqlStatusBanner; }
     [[nodiscard]] bool IsSqlBusy() const noexcept { return m_sqlIsBusy; }
     [[nodiscard]] const phide::db::SqlQueryResult& GetSqlQueryResult() const noexcept { return m_sqlResult; }
     [[nodiscard]] const std::vector<phide::db::SqlConnectionProfile>& GetSqlProfiles() const noexcept { return m_sqlProfiles; }
@@ -757,6 +768,7 @@ public:
     bool HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd);
     std::function<void(const std::wstring&)> onSqlStatusToast;
     std::function<void()> onRequestEnsureMysqlRunning;
+    std::function<void(int port, bool running)> onMysqlServerStateChanged;
 
     // #49 GUI Snippet Editor View (`snippet_editor`)
     void BindSnippetManager(editor::SnippetManager* pMgr);
@@ -1260,6 +1272,7 @@ private:
         uint64_t schemaReqGen = 0;
         uint64_t queryReqGen = 0;
         uint64_t discoverReqGen = 0;
+        uint64_t serverToggleReqGen = 0;
         bool hasSchemaUpdate = false;
         size_t schemaProfileIdx = 0;
         std::vector<phide::db::SqlTableInfo> schemaTables;
@@ -1270,11 +1283,18 @@ private:
         bool refreshSchemaAfterQuery = false;
         bool hasDiscoverUpdate = false;
         std::vector<phide::db::SqlConnectionProfile> discoveredProfiles;
+        bool hasServerToggleUpdate = false;
+        size_t toggledProfileIdx = 0;
+        bool toggledConnected = false;
+        int toggledPort = 0;
+        bool toggledSuccess = false;
+        std::wstring serverToggleMessage;
     };
     std::shared_ptr<SqlAsyncInbox> m_sqlAsyncInbox = std::make_shared<SqlAsyncInbox>();
     uint64_t m_sqlSchemaReqGen = 0;
     uint64_t m_sqlQueryReqGen = 0;
     uint64_t m_sqlDiscoverReqGen = 0;
+    uint64_t m_sqlServerToggleReqGen = 0;
     bool m_sqlIsBusy = false;
     HWND m_sqlNotifyHwnd = nullptr;
     std::wstring m_sqlMysqlHost = L"localhost";

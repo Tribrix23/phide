@@ -20253,6 +20253,111 @@ run_test_129:
             gitDrawer.RefreshGitState(false);
             assert(gitDrawer.GetGitStashes().empty());
 
+            // 2b. Stash with tracked .phide modification + untracked file, then Apply -> Pop
+            {
+                std::wstring gitErrorCaptured;
+                gitDrawer.SetOnGitError([&](const std::wstring&, const std::wstring& out, const std::wstring&) {
+                    gitErrorCaptured = out;
+                });
+                fs::create_directories(repoDir / L".phide", ec129);
+                {
+                    std::ofstream ofs(repoDir / L".phide" / L"user_adaptive_profile.json", std::ios::binary);
+                    ofs << "{\"v\":1}\n";
+                }
+                assert(runGitSync(L"add -f .phide/user_adaptive_profile.json") == 0);
+                assert(runGitSync(L"commit -m \"track phide\"") == 0);
+                {
+                    std::ofstream ofs(repoDir / L".phide" / L"user_adaptive_profile.json", std::ios::binary);
+                    ofs << "{\"v\":2}\n";
+                }
+                {
+                    std::ofstream ofs(repoDir / L"nc.tsx", std::ios::binary);
+                    ofs << "export const Nc = () => <div/>;\n";
+                }
+
+                gitDrawer.StashChangesWithMessageAsync(L"stash with untracked nc");
+                waitDrawer();
+                gitDrawer.RefreshGitState(false);
+                assert(gitDrawer.GetGitStashes().size() == 1);
+                assert(gitErrorCaptured.empty());
+
+                // Simulate AdaptiveCodeEngine rewriting .phide before Apply
+                {
+                    std::ofstream ofs(repoDir / L".phide" / L"user_adaptive_profile.json", std::ios::binary);
+                    ofs << "{\"v\":3}\n";
+                }
+                gitDrawer.ApplyStashAsync(0);
+                waitDrawer();
+                gitDrawer.RefreshGitState(false);
+                assert(gitErrorCaptured.empty());
+                assert(fs::exists(repoDir / L"nc.tsx"));
+                assert(gitDrawer.GetGitStashes().size() == 1 && "Apply keeps stash entry in Stashes");
+
+                // Simulate AdaptiveCodeEngine rewriting .phide again + nc.tsx already existing -> Pop must still succeed & remove stash!
+                {
+                    std::ofstream ofs(repoDir / L".phide" / L"user_adaptive_profile.json", std::ios::binary);
+                    ofs << "{\"v\":4}\n";
+                }
+                gitDrawer.PopStashAsync(0);
+                waitDrawer();
+                gitDrawer.RefreshGitState(false);
+                assert(gitErrorCaptured.empty() && "Pop after Apply must not fail on existing untracked file or .phide");
+                assert(fs::exists(repoDir / L"nc.tsx"));
+                assert(gitDrawer.GetGitStashes().empty() && "Pop must remove entry from Stashes");
+                gitDrawer.SetOnGitError(nullptr);
+
+                // Clean untracked nc.tsx and restore .phide cleanly
+                fs::remove(repoDir / L"nc.tsx", ec129);
+                runGitSync(L"checkout -- .phide");
+            }
+
+            // 2c. GitErrorModal non-overlapping layout & status trailer filtering
+            {
+                phide::ui::GitErrorModal errModal;
+                const std::wstring sampleOut =
+                    L"error: Your local changes to the following files would be overwritten by merge:\n"
+                    L"\t.phide/user_adaptive_profile.json\n"
+                    L"Please commit your changes or stash them before you merge.\n"
+                    L"Aborting\n"
+                    L"nc.tsx already exists, no checkout\n"
+                    L"error: could not restore untracked files from stash\n"
+                    L"On branch main\n"
+                    L"Your branch is up to date with 'origin/main'.\n"
+                    L"\n"
+                    L"Changes not staged for commit:\n"
+                    L"  (use \"git add <file>...\" to update what will be committed)\n"
+                    L"\tmodified:   .phide/user_adaptive_profile.json\n"
+                    L"no changes added to commit (use \"git add\" and/or \"git commit -a\")\n";
+                errModal.Open(L"git stash pop", sampleOut, repoDir.wstring());
+                assert(errModal.GetTitle().find(L"Your local changes") != std::wstring::npos);
+                assert(errModal.GetDetails().find(L"On branch main") == std::wstring::npos);
+                assert(errModal.GetDetails().find(L"Changes not staged for commit") == std::wstring::npos);
+                assert(errModal.GetDetails().find(L"Aborting") != std::wstring::npos);
+
+                Microsoft::WRL::ComPtr<IWICBitmap> wicErr;
+                pWicFactory->CreateBitmap(1280, 800, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicErr);
+                D2D1_RENDER_TARGET_PROPERTIES rtPropsE = D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTE;
+                pD2DFactory->CreateWicBitmapRenderTarget(wicErr.Get(), rtPropsE, &pRTE);
+                phide::ui::Theme themeE;
+                themeE.SetThemeMode(phide::ui::ThemeMode::Dark);
+                themeE.CreateDeviceResources(pRTE.Get(), pDWriteFactory.Get());
+                phide::app::AppConfig cfgE;
+
+                pRTE->BeginDraw();
+                pRTE->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+                errModal.Render(pRTE.Get(), themeE, cfgE, 1280.0f, 800.0f);
+                assert(SUCCEEDED(pRTE->EndDraw()));
+
+                const D2D1_RECT_F rcT = errModal.GetTitleBounds();
+                const D2D1_RECT_F rcD = errModal.GetDetailsBounds();
+                const D2D1_RECT_F rcBtn = errModal.GetCancelBtnBounds();
+                assert(rcT.bottom < rcD.top && "Title and Details must never overlap!");
+                assert(rcD.bottom < rcBtn.top && "Details and Buttons must never overlap!");
+            }
+
             // 3. Amend Commit
             assert(runGitSync(L"add app.txt") == 0);
             gitDrawer.SetCommitAmend(true);
@@ -20864,6 +20969,93 @@ run_test_131:
             }
         }
 
+        // Verify dynamic Start/Stop <Selected Engine> toolbar button behavior in SQL Console
+        {
+            phide::ui::EditorCanvas ecDyn;
+            phide::db::SqlConnectionProfile pSqlite;
+            pSqlite.dialect = phide::db::SqlDialect::SQLite;
+            pSqlite.sqlitePath = (tmpRoot / L"dyn.sqlite").wstring();
+            pSqlite.name = L"SQLite: dyn.sqlite";
+            pSqlite.isConnected = true;
+
+            phide::db::SqlConnectionProfile pMysql;
+            pMysql.dialect = phide::db::SqlDialect::MySQL;
+            pMysql.host = L"localhost";
+            pMysql.port = 3307;
+            pMysql.name = L"MySQL (localhost:3307)";
+            pMysql.isConnected = false;
+
+            phide::db::SqlConnectionProfile pPg;
+            pPg.dialect = phide::db::SqlDialect::PostgreSQL;
+            pPg.host = L"localhost";
+            pPg.port = 5432;
+            pPg.name = L"PostgreSQL (localhost:5432)";
+            pPg.isConnected = true;
+
+            phide::db::SqlConnectionProfile pMssql;
+            pMssql.dialect = phide::db::SqlDialect::SQLServer;
+            pMssql.host = L"localhost";
+            pMssql.port = 1433;
+            pMssql.name = L"SQL Server (localhost:1433)";
+            pMssql.isConnected = false;
+
+            ecDyn.SetSqlProfiles({ pSqlite, pMysql, pPg, pMssql });
+
+            // 0 = SQLite -> no Start/Stop button
+            ecDyn.SetSqlSelectedProfileIndex(0);
+            assert(ecDyn.GetActiveSqlServerActionLabel().empty());
+
+            // 1 = MySQL (stopped) -> "Start MySQL"
+            ecDyn.SetSqlSelectedProfileIndex(1);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Start MySQL");
+
+            // 2 = PostgreSQL (running) -> "Stop PostgreSQL" (never "Start MySQL"!)
+            ecDyn.SetSqlSelectedProfileIndex(2);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Stop PostgreSQL");
+
+            // 3 = SQL Server (stopped) -> "Start SQL Server"
+            ecDyn.SetSqlSelectedProfileIndex(3);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Start SQL Server");
+
+            // Stopped PostgreSQL -> "Start PostgreSQL", Connected MySQL -> "Stop MySQL"
+            pPg.isConnected = false;
+            pMysql.isConnected = true;
+            pMssql.isConnected = true;
+            ecDyn.SetSqlProfiles({ pSqlite, pMysql, pPg, pMssql });
+            ecDyn.SetSqlSelectedProfileIndex(1);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Stop MySQL");
+            ecDyn.SetSqlSelectedProfileIndex(2);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Start PostgreSQL");
+            ecDyn.SetSqlSelectedProfileIndex(3);
+            assert(ecDyn.GetActiveSqlServerActionLabel() == L"Stop SQL Server");
+
+            Microsoft::WRL::ComPtr<IWICBitmap> wicDyn;
+            pWicFactory->CreateBitmap(1024, 640, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicDyn);
+            D2D1_RENDER_TARGET_PROPERTIES rtPropsD = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> pRTD;
+            pD2DFactory->CreateWicBitmapRenderTarget(wicDyn.Get(), rtPropsD, &pRTD);
+            phide::ui::Theme themeD;
+            themeD.SetThemeMode(phide::ui::ThemeMode::Dark);
+            themeD.CreateDeviceResources(pRTD.Get(), pDWriteFactory.Get());
+            phide::app::AppConfig cfgD;
+
+            pRTD->BeginDraw();
+            pRTD->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            ecDyn.RenderSqlConsoleView(pRTD.Get(), themeD, cfgD, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTD->EndDraw()));
+            const D2D1_RECT_F rcToggle = ecDyn.GetSqlServerToggleButtonBounds();
+            assert(rcToggle.right > rcToggle.left && rcToggle.bottom > rcToggle.top);
+
+            ecDyn.SetSqlSelectedProfileIndex(0);
+            pRTD->BeginDraw();
+            ecDyn.RenderSqlConsoleView(pRTD.Get(), themeD, cfgD, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTD->EndDraw()));
+            const D2D1_RECT_F rcSqliteToggle = ecDyn.GetSqlServerToggleButtonBounds();
+            assert(rcSqliteToggle.right == rcSqliteToggle.left);
+        }
+
         fs::remove_all(tmpRoot, ec131);
         assert(!fs::exists(tmpRoot, ec131));
         std::cout << "  Passed: All [TEST 131] Phase 3 LiveServer & SQL Query Console checks passed!" << std::endl;
@@ -21191,11 +21383,111 @@ run_test_132:
             assert(SUCCEEDED(pRTU->EndDraw()));
 
             phide::ui::SettingsView setView;
+            setView.SetActiveScope(0);
+            pRTU->BeginDraw();
+            pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            setView.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+            assert(SUCCEEDED(pRTU->EndDraw()));
+
+            // Verify extensive catalog >= 100 settings across all 9 categories and non-clipped scope tabs
+            const auto& allSetItems = setView.GetItems();
+            assert(allSetItems.size() >= 100);
+            bool catSeen[9] = {};
+            for (const auto& si : allSetItems) {
+                int ci = static_cast<int>(si.category);
+                assert(ci >= 0 && ci < 9);
+                catSeen[ci] = true;
+                if (si.isCommonlyUsed) catSeen[0] = true;
+                if (si.isAppearance) catSeen[2] = true;
+            }
+            for (int ci = 0; ci < 9; ++ci) assert(catSeen[ci]);
+            assert(setView.GetCategoryBounds().size() == 9);
+
+            const auto& scopeRects = setView.GetScopeBounds();
+            assert(scopeRects.size() == 3);
+            assert((scopeRects[0].right - scopeRects[0].left) >= 120.0f); // "All Settings" must not clip
+            assert(scopeRects[0].right <= scopeRects[1].left);
+            assert(scopeRects[1].right <= scopeRects[2].left);
+            for (const auto& sr : scopeRects) {
+                POINT ptScope{ static_cast<LONG>((sr.left + sr.right) * 0.5f),
+                               static_cast<LONG>((sr.top + sr.bottom) * 0.5f) };
+                assert(setView.GetCursorForPoint(ptScope) == IDC_HAND);
+            }
+
+            auto renderAndFindSetting = [&](const std::wstring& id) -> phide::ui::SettingItem {
+                setView.SetSearchQuery(id);
+                pRTU->BeginDraw();
+                pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+                setView.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+                assert(SUCCEEDED(pRTU->EndDraw()));
+                for (const auto& si : setView.GetItems()) {
+                    if (si.id == id) return si;
+                }
+                assert(false && "Expected setting item not found");
+                return {};
+            };
+            auto midPt = [](const D2D1_RECT_F& r) -> POINT {
+                return { static_cast<LONG>((r.left + r.right) * 0.5f),
+                         static_cast<LONG>((r.top + r.bottom) * 0.5f) };
+            };
+
+            std::wstring modSetting;
+            {
+                bool origSticky = cfgU.enableStickyScroll;
+                auto si = renderAndFindSetting(L"editor.stickyScroll.enabled");
+                assert(setView.HandleLButtonDown(midPt(si.controlBounds), cfgU, themeU, modSetting));
+                assert(modSetting == L"editor.stickyScroll.enabled");
+                assert(cfgU.enableStickyScroll == !origSticky);
+            }
+            {
+                bool origMask = cfgU.enablePrivacyMask;
+                auto si = renderAndFindSetting(L"security.privacyMask");
+                assert(setView.HandleLButtonDown(midPt(si.controlBounds), cfgU, themeU, modSetting));
+                assert(modSetting == L"security.privacyMask");
+                assert(cfgU.enablePrivacyMask == !origMask);
+            }
+            {
+                float origLh = cfgU.lineHeightMultiplier;
+                auto si = renderAndFindSetting(L"editor.lineHeight");
+                assert(setView.HandleLButtonDown(midPt(si.plusBounds), cfgU, themeU, modSetting));
+                assert(modSetting == L"editor.lineHeight");
+                assert(cfgU.lineHeightMultiplier > origLh);
+            }
+            {
+                int origPage = cfgU.sqlPageSize;
+                auto si = renderAndFindSetting(L"database.sqlPageSize");
+                assert(setView.HandleLButtonDown(midPt(si.plusBounds), cfgU, themeU, modSetting));
+                assert(modSetting == L"database.sqlPageSize");
+                assert(cfgU.sqlPageSize > origPage);
+            }
+            {
+                auto si = renderAndFindSetting(L"terminal.integrated.dockPosition");
+                assert(setView.HandleLButtonDown(midPt(si.controlBounds), cfgU, themeU, modSetting));
+                assert(setView.IsDropdownOpen());
+                pRTU->BeginDraw();
+                setView.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
+                assert(SUCCEEDED(pRTU->EndDraw()));
+                // Select option index 1 ("editor" -> terminalDockPosition == 1)
+                POINT ptOpt1{ static_cast<LONG>((si.controlBounds.left + si.controlBounds.right) * 0.5f),
+                              static_cast<LONG>(si.controlBounds.bottom + 4.0f + 6.0f + 32.0f + 16.0f) };
+                assert(setView.HandleLButtonDown(ptOpt1, cfgU, themeU, modSetting));
+                assert(modSetting == L"terminal.integrated.dockPosition");
+                assert(cfgU.terminalDockPosition == 1);
+            }
+
+            setView.SetSearchQuery(L"");
             setView.SetActiveScope(2);
             pRTU->BeginDraw();
             pRTU->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
             setView.Render(pRTU.Get(), themeU, cfgU, 0.0f, 1024.0f, 0.0f, 640.0f);
             assert(SUCCEEDED(pRTU->EndDraw()));
+
+            phide::ui::PopupMenu moreMenu;
+            moreMenu.OpenMoreActionsMenu(50.0f, 200.0f, cfgU);
+            for (const auto& mi : moreMenu.GetItems()) {
+                assert(mi.actionId != phide::ui::MenuActionId::MoreDependencyGraph);
+                assert(mi.label != L"Dependency Graph");
+            }
 
             phide::ui::EditorCanvas ecSnip;
             ecSnip.BindSnippetManager(&snipMgr);

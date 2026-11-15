@@ -109,6 +109,95 @@ struct AppConfig {
     std::wstring lspPathPhp;                              ///< Optional custom executable path for PHP LSP server
     std::wstring lspPathCpp;                              ///< Optional custom executable path for C/C++ LSP server
 
+    // --- Editor Editing Behavior ---
+    std::wstring autoClosingBrackets = L"always";         ///< "always", "languageDefined", "never"
+    std::wstring autoClosingQuotes = L"always";           ///< "always", "languageDefined", "never"
+    bool enableLinkedEditing = true;                      ///< Auto-update matching HTML/JSX closing tags
+    bool enableBracketPairColorization = true;            ///< Colorize matching bracket pairs by nesting depth
+    bool enableCodeFolding = true;                        ///< Show gutter fold chevrons and allow collapsing blocks
+    std::wstring multiCursorModifier = L"alt";            ///< "alt" or "ctrlCmd"
+
+    // --- Files, Formatting & Workspace Search ---
+    std::wstring defaultEol = L"auto";                    ///< "auto", "LF", "CRLF"
+    std::wstring defaultEncoding = L"UTF-8";              ///< "UTF-8", "UTF-8 with BOM", "UTF-16 LE", "ISO-8859-1"
+    bool trimTrailingWhitespace = false;                  ///< Trim trailing whitespace on save
+    bool insertFinalNewline = false;                      ///< Append final newline when saving files
+    bool enableEditorConfig = true;                       ///< Respect .editorconfig rules per workspace file
+    bool autoIgnorePhideDir = true;                       ///< Ensure .phide/ is excluded in .gitignore and ignore files
+    bool searchUseIgnoreFiles = true;                     ///< Respect .gitignore / .ignore during workspace search
+    int largeFileMmapThresholdMB = 8;                     ///< Threshold (MB) above which files open via memory-mapped viewer
+
+    // --- Language & IntelliSense Providers ---
+    bool enableEmmet = true;                              ///< Enable Emmet abbreviation expansion in HTML/JSX/CSS
+    bool enableTailwindIntelliSense = true;               ///< Suggest Tailwind CSS utility classes
+    bool enableDbSchemaIntelliSense = true;               ///< Suggest tables/columns from active SQL connection
+
+    // --- Git & Source Control ---
+    bool gitDiffSideBySide = true;                        ///< Prefer side-by-side diff viewer in Git drawer
+    bool gitSmartStashExcludePhide = true;                ///< Exclude .phide state and recover untracked overlaps on stash Apply/Pop
+    bool gitAutoRefreshGraph = true;                      ///< Refresh File Network graph automatically on workspace changes
+
+    // --- Debug, Database & Live Server ---
+    bool debugInlineValues = true;                        ///< Display runtime variable values inline while debugging
+    bool debugOpenOnBreak = true;                         ///< Focus paused file/line automatically when breakpoint hits
+    int sqlPageSize = 50;                                 ///< Rows displayed per page in SQL Query Console
+    int liveServerPort = 5500;                            ///< Default HTTP port for integrated Live Server
+    bool liveServerHotReload = true;                      ///< Broadcast CSS/HTML hot-reload events over WebSocket/SSE
+
+    // Extended Editor, Appearance, Search, Terminal, Extensions, Git & Debug Settings
+    bool smoothScrolling = true;
+    bool scrollBeyondLastLine = true;
+    std::wstring cursorBlinking = L"blink";               ///< "blink", "smooth", "phase", "solid"
+    bool highlightActiveIndentGuide = true;
+    bool showIndentGuides = true;
+    bool highlightMatchingBrackets = true;
+    bool formatOnPaste = false;
+    bool trimAutoWhitespace = true;
+
+    bool showActivityBar = true;
+    bool showEditorTabs = true;
+    bool showCommandCenter = true;
+    int explorerTreeIndent = 14;
+
+    std::wstring hotExit = L"onExit";                     ///< "off", "onExit", "onExitAndWindowClose"
+    bool explorerHideDotfiles = false;
+    bool searchDefaultCaseSensitive = false;
+    bool searchDefaultWholeWord = false;
+    int searchMaxResults = 2000;
+
+    bool enableQuickSuggestions = true;
+    bool enableSnippetSuggestions = true;
+    bool cycleParameterHints = true;
+    bool validateDiagnosticsOnType = true;
+
+    std::wstring terminalDefaultShell = L"PowerShell";    ///< "PowerShell", "Command Prompt", "Git Bash", "WSL"
+    int terminalFontSize = 14;
+    int terminalScrollbackLines = 5000;
+    std::wstring terminalCursorStyle = L"block";          ///< "block", "line", "underline"
+    bool terminalCopyOnSelection = false;
+    bool codeRunnerPreserveFocus = true;
+
+    bool extensionsAutoCheckUpdates = true;
+    bool extensionsAutoUpdate = false;
+    bool phpLintingEnabled = true;
+    bool jsTsLintingEnabled = true;
+    bool cssLintingEnabled = true;
+    bool markdownLintEnabled = true;
+
+    bool gitEnabled = true;
+    bool gitAutoFetch = false;
+    bool gitConfirmSync = true;
+    bool gitSmartCommit = true;
+    bool gitShowInlineBlame = true;
+    bool gitExplorerDecorations = true;
+
+    bool debugBreakpointsEverywhere = false;
+    bool debugFloatingToolbar = true;
+    bool dbAutoDiscoverServers = true;
+    int dbQueryTimeoutSec = 15;
+    bool liveServerAutoOpenBrowser = true;
+    std::wstring liveServerRoot = L"/";
+
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.
     int promptBarHeight = 44;   ///< Height of the floating prompt pill.

@@ -610,6 +610,241 @@ bool Window::GetDocInsertSpaces(const editor::OpenDocument* pDoc) const {
     return m_config.insertSpaces;
 }
 
+namespace {
+
+struct BoolSettingBinding {
+    const wchar_t* settingId;
+    const wchar_t* sessionKey;
+    bool app::AppConfig::* member;
+    bool serializeInSession;
+};
+
+struct StringSettingBinding {
+    const wchar_t* settingId;
+    const wchar_t* sessionKey;
+    std::wstring app::AppConfig::* member;
+    bool serializeInSession;
+    bool lspAutoDetect;
+};
+
+struct IntSettingBinding {
+    const wchar_t* settingId;
+    const wchar_t* sessionKey;
+    int app::AppConfig::* member;
+    int minVal;
+    int maxVal;
+    bool serializeInSession;
+};
+
+struct FloatSettingBinding {
+    const wchar_t* settingId;
+    const wchar_t* sessionKey;
+    float app::AppConfig::* member;
+    float minVal;
+    float maxVal;
+    bool serializeInSession;
+};
+
+constexpr BoolSettingBinding kBoolSettingBindings[] = {
+    { L"editor.insertSpaces",                   L"insertSpaces",                   &app::AppConfig::insertSpaces,                   false },
+    { L"editor.wordWrap",                       L"wordWrap",                       &app::AppConfig::wordWrap,                       false },
+    { L"editor.minimap",                        L"showMinimap",                    &app::AppConfig::showMinimap,                    false },
+    { L"editor.codeLens",                       L"enableCodeLens",                 &app::AppConfig::enableCodeLens,                 false },
+    { L"editor.lineNumbers",                    L"showLineNumbers",                &app::AppConfig::showLineNumbers,                false },
+    { L"editor.formatOnSave",                   L"formatOnSave",                   &app::AppConfig::formatOnSave,                   false },
+    { L"explorer.updateImportsOnRename",        L"updateImportsOnRename",          &app::AppConfig::updateImportsOnRename,          false },
+    { L"workbench.breadcrumbs",                 L"showBreadcrumbs",                &app::AppConfig::showBreadcrumbs,                false },
+    { L"workbench.statusBar",                   L"showStatusBar",                  &app::AppConfig::showStatusBar,                  false },
+    { L"workbench.graphColored",                L"isGraphColored",                 &app::AppConfig::isGraphColored,                 false },
+    { L"workbench.markdownPreview",             L"enableMarkdownPreview",          &app::AppConfig::enableMarkdownPreview,          false },
+    { L"editor.gitLens",                        L"enableGitLens",                  &app::AppConfig::enableGitLens,                  false },
+    { L"editor.inlayHints",                     L"enableInlayHints",               &app::AppConfig::enableInlayHints,               false },
+    { L"security.privacyMask",                  L"enablePrivacyMask",              &app::AppConfig::enablePrivacyMask,              false },
+    { L"editor.lspHover",                       L"enableLspHover",                 &app::AppConfig::enableLspHover,                 false },
+    { L"editor.signatureHelp",                  L"enableSignatureHelp",            &app::AppConfig::enableSignatureHelp,            false },
+    { L"linter.externalEnabled",                L"enableExternalLinters",          &app::AppConfig::enableExternalLinters,          false },
+    { L"editor.stickyScroll.enabled",           L"enableStickyScroll",             &app::AppConfig::enableStickyScroll,             true  },
+    { L"editor.renderControlCharacters",        L"renderControlChars",             &app::AppConfig::renderControlChars,             true  },
+    { L"editor.linkedEditing",                  L"enableLinkedEditing",            &app::AppConfig::enableLinkedEditing,            true  },
+    { L"editor.bracketPairColorization.enabled",L"enableBracketPairColorization",  &app::AppConfig::enableBracketPairColorization,  true  },
+    { L"editor.folding",                        L"enableCodeFolding",              &app::AppConfig::enableCodeFolding,              true  },
+    { L"files.trimTrailingWhitespace",          L"trimTrailingWhitespace",         &app::AppConfig::trimTrailingWhitespace,         true  },
+    { L"files.insertFinalNewline",              L"insertFinalNewline",             &app::AppConfig::insertFinalNewline,             true  },
+    { L"files.enableEditorConfig",              L"enableEditorConfig",             &app::AppConfig::enableEditorConfig,             true  },
+    { L"files.autoIgnorePhide",                 L"autoIgnorePhideDir",             &app::AppConfig::autoIgnorePhideDir,             true  },
+    { L"search.useIgnoreFiles",                 L"searchUseIgnoreFiles",           &app::AppConfig::searchUseIgnoreFiles,           true  },
+    { L"workbench.menuBar",                     L"showMenuBar",                    &app::AppConfig::showMenuBar,                    true  },
+    { L"workbench.centeredLayout",              L"centeredLayout",                 &app::AppConfig::centeredLayout,                 true  },
+    { nullptr,                                  L"sideBarOnRight",                 &app::AppConfig::sideBarOnRight,                 true  },
+    { L"emmet.enabled",                         L"enableEmmet",                    &app::AppConfig::enableEmmet,                    true  },
+    { L"intellisense.tailwindClasses",          L"enableTailwindIntelliSense",     &app::AppConfig::enableTailwindIntelliSense,     true  },
+    { L"intellisense.databaseSchema",           L"enableDbSchemaIntelliSense",     &app::AppConfig::enableDbSchemaIntelliSense,     true  },
+    { L"code-runner.runInTerminal",             L"codeRunnerRunInTerminal",        &app::AppConfig::codeRunnerRunInTerminal,        true  },
+    { L"code-runner.saveFileBeforeRun",         L"codeRunnerSaveFileBeforeRun",    &app::AppConfig::codeRunnerSaveFileBeforeRun,    true  },
+    { L"code-runner.clearPreviousOutput",       L"codeRunnerClearPreviousOutput",  &app::AppConfig::codeRunnerClearPreviousOutput,  true  },
+    { L"python.linting.enabled",                L"pythonLintingEnabled",           &app::AppConfig::pythonLintingEnabled,           true  },
+    { L"python.linting.undefinedVariableCheck", L"pythonCheckUndefinedVariables",  &app::AppConfig::pythonCheckUndefinedVariables,  true  },
+    { L"python.terminal.highlightErrorsInEditor",L"pythonHighlightTerminalErrors", &app::AppConfig::pythonHighlightTerminalErrors,  true  },
+    { L"git.diffSideBySide",                   L"gitDiffSideBySide",              &app::AppConfig::gitDiffSideBySide,              true  },
+    { L"git.stashExcludePhide",                L"gitSmartStashExcludePhide",      &app::AppConfig::gitSmartStashExcludePhide,      true  },
+    { L"git.autoRefreshGraph",                  L"gitAutoRefreshGraph",            &app::AppConfig::gitAutoRefreshGraph,            true  },
+    { L"debug.inlineValues",                    L"debugInlineValues",              &app::AppConfig::debugInlineValues,              true  },
+    { L"debug.openDebugOnBreak",                L"debugOpenOnBreak",               &app::AppConfig::debugOpenOnBreak,               true  },
+    { L"liveServer.hotReload",                  L"liveServerHotReload",            &app::AppConfig::liveServerHotReload,            true  },
+    { L"editor.smoothScrolling",                L"smoothScrolling",                &app::AppConfig::smoothScrolling,                true  },
+    { L"editor.scrollBeyondLastLine",           L"scrollBeyondLastLine",           &app::AppConfig::scrollBeyondLastLine,           true  },
+    { L"editor.highlightActiveIndentGuide",     L"highlightActiveIndentGuide",     &app::AppConfig::highlightActiveIndentGuide,     true  },
+    { L"editor.guides.indentation",             L"showIndentGuides",               &app::AppConfig::showIndentGuides,               true  },
+    { L"editor.matchBrackets",                  L"highlightMatchingBrackets",      &app::AppConfig::highlightMatchingBrackets,      true  },
+    { L"editor.formatOnPaste",                  L"formatOnPaste",                  &app::AppConfig::formatOnPaste,                  true  },
+    { L"editor.trimAutoWhitespace",             L"trimAutoWhitespace",             &app::AppConfig::trimAutoWhitespace,             true  },
+    { L"workbench.activityBar.visible",         L"showActivityBar",                &app::AppConfig::showActivityBar,                true  },
+    { L"workbench.editor.showTabs",             L"showEditorTabs",                 &app::AppConfig::showEditorTabs,                 true  },
+    { L"workbench.commandCenter",               L"showCommandCenter",              &app::AppConfig::showCommandCenter,              true  },
+    { L"files.excludeDotfiles",                 L"explorerHideDotfiles",           &app::AppConfig::explorerHideDotfiles,           true  },
+    { L"search.caseSensitive",                  L"searchDefaultCaseSensitive",     &app::AppConfig::searchDefaultCaseSensitive,     true  },
+    { L"search.wholeWord",                      L"searchDefaultWholeWord",         &app::AppConfig::searchDefaultWholeWord,         true  },
+    { L"editor.quickSuggestions",               L"enableQuickSuggestions",         &app::AppConfig::enableQuickSuggestions,         true  },
+    { L"editor.suggest.snippets",               L"enableSnippetSuggestions",       &app::AppConfig::enableSnippetSuggestions,       true  },
+    { L"editor.parameterHints.cycle",           L"cycleParameterHints",            &app::AppConfig::cycleParameterHints,            true  },
+    { L"editor.diagnostics.onType",              L"validateDiagnosticsOnType",      &app::AppConfig::validateDiagnosticsOnType,      true  },
+    { L"terminal.integrated.copyOnSelection",    L"terminalCopyOnSelection",        &app::AppConfig::terminalCopyOnSelection,        true  },
+    { L"code-runner.preserveFocus",             L"codeRunnerPreserveFocus",        &app::AppConfig::codeRunnerPreserveFocus,        true  },
+    { L"extensions.autoCheckUpdates",           L"extensionsAutoCheckUpdates",     &app::AppConfig::extensionsAutoCheckUpdates,     true  },
+    { L"extensions.autoUpdate",                 L"extensionsAutoUpdate",           &app::AppConfig::extensionsAutoUpdate,           true  },
+    { L"php.validate.enable",                   L"phpLintingEnabled",              &app::AppConfig::phpLintingEnabled,              true  },
+    { L"javascript.validate.enable",            L"jsTsLintingEnabled",             &app::AppConfig::jsTsLintingEnabled,             true  },
+    { L"css.validate.enable",                   L"cssLintingEnabled",              &app::AppConfig::cssLintingEnabled,              true  },
+    { L"markdown.lint.enable",                 L"markdownLintEnabled",            &app::AppConfig::markdownLintEnabled,            true  },
+    { L"git.enabled",                           L"gitEnabled",                     &app::AppConfig::gitEnabled,                     true  },
+    { L"git.autofetch",                         L"gitAutoFetch",                   &app::AppConfig::gitAutoFetch,                   true  },
+    { L"git.confirmSync",                       L"gitConfirmSync",                 &app::AppConfig::gitConfirmSync,                 true  },
+    { L"git.enableSmartCommit",                 L"gitSmartCommit",                 &app::AppConfig::gitSmartCommit,                 true  },
+    { L"git.showInlineBlame",                   L"gitShowInlineBlame",             &app::AppConfig::gitShowInlineBlame,             true  },
+    { L"git.decorations.enabled",               L"gitExplorerDecorations",         &app::AppConfig::gitExplorerDecorations,         true  },
+    { L"debug.allowBreakpointsEverywhere",      L"debugBreakpointsEverywhere",     &app::AppConfig::debugBreakpointsEverywhere,     true  },
+    { L"debug.showSubSessionsInToolBar",        L"debugFloatingToolbar",           &app::AppConfig::debugFloatingToolbar,           true  },
+    { L"database.autoDiscoverServers",          L"dbAutoDiscoverServers",          &app::AppConfig::dbAutoDiscoverServers,          true  },
+    { L"liveServer.autoOpenBrowser",            L"liveServerAutoOpenBrowser",      &app::AppConfig::liveServerAutoOpenBrowser,      true  },
+};
+
+constexpr StringSettingBinding kStringSettingBindings[] = {
+    { L"editor.fontFamily",              L"fontFamily",               &app::AppConfig::fontFamily,               false, false },
+    { L"editor.renderWhitespace",        L"renderWhitespaceMode",     &app::AppConfig::renderWhitespaceMode,     false, false },
+    { L"editor.cursorStyle",             L"cursorStyle",              &app::AppConfig::cursorStyle,              false, false },
+    { L"files.autoSave",                 L"autoSave",                 &app::AppConfig::autoSave,                 false, false },
+    { L"lsp.typescript.executable",      L"lspPathTypeScript",        &app::AppConfig::lspPathTypeScript,        false, true  },
+    { L"lsp.python.executable",          L"lspPathPython",            &app::AppConfig::lspPathPython,            false, true  },
+    { L"lsp.php.executable",             L"lspPathPhp",               &app::AppConfig::lspPathPhp,               false, true  },
+    { L"lsp.cpp.executable",             L"lspPathCpp",               &app::AppConfig::lspPathCpp,               false, true  },
+    { L"editor.autoClosingBrackets",     L"autoClosingBrackets",      &app::AppConfig::autoClosingBrackets,      true,  false },
+    { L"editor.autoClosingQuotes",       L"autoClosingQuotes",        &app::AppConfig::autoClosingQuotes,        true,  false },
+    { L"editor.multiCursorModifier",     L"multiCursorModifier",      &app::AppConfig::multiCursorModifier,      true,  false },
+    { L"files.eol",                      L"defaultEol",               &app::AppConfig::defaultEol,               true,  false },
+    { L"files.encoding",                 L"defaultEncoding",          &app::AppConfig::defaultEncoding,          true,  false },
+    { L"code-runner.executorMap.python", L"codeRunnerExecutorPython", &app::AppConfig::codeRunnerExecutorPython, true,  false },
+    { L"python.linting.linter",          L"pythonLinter",             &app::AppConfig::pythonLinter,             true,  false },
+    { L"editor.cursorBlinking",          L"cursorBlinking",           &app::AppConfig::cursorBlinking,           true,  false },
+    { L"files.hotExit",                  L"hotExit",                  &app::AppConfig::hotExit,                  true,  false },
+    { L"terminal.integrated.shell.windows", L"terminalDefaultShell",  &app::AppConfig::terminalDefaultShell,     true,  false },
+    { L"terminal.integrated.cursorStyle",L"terminalCursorStyle",      &app::AppConfig::terminalCursorStyle,      true,  false },
+    { L"liveServer.root",                L"liveServerRoot",           &app::AppConfig::liveServerRoot,           true,  false },
+};
+
+constexpr IntSettingBinding kIntSettingBindings[] = {
+    { L"editor.tabSize",                   L"tabSize",                    &app::AppConfig::tabSize,                    1,    16,    false },
+    { L"files.autoSaveDelay",              L"autoSaveDelay",              &app::AppConfig::autoSaveDelay,              100,  60000, false },
+    { L"workbench.drawerWidth",            L"drawerWidth",                &app::AppConfig::drawerWidth,                180,  600,   false },
+    { L"files.largeFileMmapThresholdMB",   L"largeFileMmapThresholdMB",   &app::AppConfig::largeFileMmapThresholdMB,   1,    512,   true  },
+    { L"database.sqlPageSize",             L"sqlPageSize",                &app::AppConfig::sqlPageSize,                10,   500,   true  },
+    { L"liveServer.port",                  L"liveServerPort",             &app::AppConfig::liveServerPort,             1024, 65535, true  },
+    { L"workbench.tree.indent",            L"explorerTreeIndent",         &app::AppConfig::explorerTreeIndent,         8,    28,    true  },
+    { L"search.maxResults",                L"searchMaxResults",           &app::AppConfig::searchMaxResults,           500,  10000, true  },
+    { L"terminal.integrated.fontSize",     L"terminalFontSize",           &app::AppConfig::terminalFontSize,           10,   24,    true  },
+    { L"terminal.integrated.scrollback",   L"terminalScrollbackLines",    &app::AppConfig::terminalScrollbackLines,    1000, 20000, true  },
+    { L"database.queryTimeoutSec",         L"dbQueryTimeoutSec",          &app::AppConfig::dbQueryTimeoutSec,          5,    120,   true  },
+};
+
+constexpr FloatSettingBinding kFloatSettingBindings[] = {
+    { L"editor.fontSize",                   L"fontSize",             &app::AppConfig::fontSize,             8.0f,   48.0f,  false },
+    { L"editor.lineHeight",                 L"lineHeightMultiplier", &app::AppConfig::lineHeightMultiplier, 1.0f,   3.0f,   true  },
+    { L"terminal.integrated.defaultHeight", L"terminalHeight",       &app::AppConfig::terminalHeight,       120.0f, 800.0f, false },
+    { L"terminal.integrated.rightWidth",    L"terminalRightWidth",   &app::AppConfig::terminalRightWidth,   200.0f, 900.0f, false },
+};
+
+static bool MatchSessionJsonKey(const std::wstring& line, const wchar_t* key, size_t& outColonPos) {
+    if (!key) return false;
+    outColonPos = line.find(L':');
+    if (outColonPos == std::wstring::npos) return false;
+    std::wstring quoted = std::wstring(L"\"") + key + L"\"";
+    size_t keyPos = line.find(quoted);
+    return keyPos != std::wstring::npos && keyPos < outColonPos;
+}
+
+static void WriteExtendedSessionSettings(std::wofstream& out, const app::AppConfig& cfg) {
+    for (const auto& b : kBoolSettingBindings) {
+        if (b.serializeInSession) {
+            out << L"  \"" << b.sessionKey << L"\": " << ((cfg.*(b.member)) ? L"true" : L"false") << L",\n";
+        }
+    }
+    for (const auto& s : kStringSettingBindings) {
+        if (s.serializeInSession) {
+            out << L"  \"" << s.sessionKey << L"\": \"" << EscapeJson(cfg.*(s.member)) << L"\",\n";
+        }
+    }
+    for (const auto& iv : kIntSettingBindings) {
+        if (iv.serializeInSession) {
+            out << L"  \"" << iv.sessionKey << L"\": " << (cfg.*(iv.member)) << L",\n";
+        }
+    }
+    for (const auto& fv : kFloatSettingBindings) {
+        if (fv.serializeInSession) {
+            out << L"  \"" << fv.sessionKey << L"\": " << (cfg.*(fv.member)) << L",\n";
+        }
+    }
+}
+
+static bool TryLoadExtendedSessionSettingLine(const std::wstring& line, app::AppConfig& cfg) {
+    size_t colon = std::wstring::npos;
+    for (const auto& b : kBoolSettingBindings) {
+        if (b.serializeInSession && MatchSessionJsonKey(line, b.sessionKey, colon)) {
+            cfg.*(b.member) = (line.find(L"true", colon) != std::wstring::npos);
+            return true;
+        }
+    }
+    for (const auto& s : kStringSettingBindings) {
+        if (s.serializeInSession && MatchSessionJsonKey(line, s.sessionKey, colon)) {
+            auto q1 = line.find(L'"', colon);
+            auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
+            if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                cfg.*(s.member) = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+            }
+            return true;
+        }
+    }
+    for (const auto& iv : kIntSettingBindings) {
+        if (iv.serializeInSession && MatchSessionJsonKey(line, iv.sessionKey, colon)) {
+            int val = _wtoi(line.substr(colon + 1).c_str());
+            if (val >= iv.minVal && val <= iv.maxVal) {
+                cfg.*(iv.member) = val;
+            }
+            return true;
+        }
+    }
+    for (const auto& fv : kFloatSettingBindings) {
+        if (fv.serializeInSession && MatchSessionJsonKey(line, fv.sessionKey, colon)) {
+            float val = static_cast<float>(_wtof(line.substr(colon + 1).c_str()));
+            if (val >= fv.minVal && val <= fv.maxVal) {
+                cfg.*(fv.member) = val;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 void Window::ApplyWorkspaceSettingsToConfig(const workspace::WorkspaceSettingsOverride& settings) {
     auto parseBool = [](const std::wstring& v, bool fallback) {
         if (v == L"true" || v == L"1") return true;
@@ -617,62 +852,73 @@ void Window::ApplyWorkspaceSettingsToConfig(const workspace::WorkspaceSettingsOv
         return fallback;
     };
     for (const auto& [k, v] : settings.values) {
-        if (k == L"editor.tabSize") {
-            int n = _wtoi(v.c_str());
-            if (n >= 1 && n <= 16) m_config.tabSize = n;
-        } else if (k == L"editor.insertSpaces") {
-            m_config.insertSpaces = parseBool(v, m_config.insertSpaces);
-        } else if (k == L"editor.wordWrap") {
-            m_config.wordWrap = parseBool(v, m_config.wordWrap);
-        } else if (k == L"editor.minimap") {
-            m_config.showMinimap = parseBool(v, m_config.showMinimap);
-        } else if (k == L"editor.codeLens") {
-            m_config.enableCodeLens = parseBool(v, m_config.enableCodeLens);
-        } else if (k == L"editor.lineNumbers") {
-            m_config.showLineNumbers = parseBool(v, m_config.showLineNumbers);
-        } else if (k == L"editor.formatOnSave") {
-            m_config.formatOnSave = parseBool(v, m_config.formatOnSave);
-        } else if (k == L"editor.fontSize") {
-            float f = static_cast<float>(_wtof(v.c_str()));
-            if (f >= 8.0f && f <= 48.0f) {
-                m_config.fontSize = f;
-                m_config.zoomLevel = f / 15.0f;
+        bool handled = false;
+        for (const auto& b : kBoolSettingBindings) {
+            if (b.settingId && k == b.settingId) {
+                m_config.*(b.member) = parseBool(v, m_config.*(b.member));
+                handled = true;
+                break;
             }
-        } else if (k == L"editor.fontFamily" && !v.empty()) {
-            m_config.fontFamily = v;
-        } else if (k == L"editor.renderWhitespace" && !v.empty()) {
-            m_config.renderWhitespaceMode = v;
-            m_config.renderWhitespace = (v != L"none");
-        } else if (k == L"editor.cursorStyle" && !v.empty()) {
-            m_config.cursorStyle = v;
-        } else if (k == L"files.autoSave" && !v.empty()) {
-            m_config.autoSave = v;
-            m_autoSave = (v != L"off");
-        } else if (k == L"files.autoSaveDelay") {
-            int d = _wtoi(v.c_str());
-            if (d >= 100) m_config.autoSaveDelay = d;
-        } else if (k == L"explorer.updateImportsOnRename") {
-            m_config.updateImportsOnRename = parseBool(v, m_config.updateImportsOnRename);
-        } else if (k == L"workbench.breadcrumbs") {
-            m_config.showBreadcrumbs = parseBool(v, m_config.showBreadcrumbs);
-        } else if (k == L"workbench.statusBar") {
-            m_config.showStatusBar = parseBool(v, m_config.showStatusBar);
-        } else if (k == L"workbench.graphColored") {
-            m_config.isGraphColored = parseBool(v, m_config.isGraphColored);
-        } else if (k == L"workbench.markdownPreview") {
-            m_config.enableMarkdownPreview = parseBool(v, m_config.enableMarkdownPreview);
-        } else if (k == L"editor.gitLens") {
-            m_config.enableGitLens = parseBool(v, m_config.enableGitLens);
-        } else if (k == L"editor.inlayHints") {
-            m_config.enableInlayHints = parseBool(v, m_config.enableInlayHints);
-        } else if (k == L"editor.lspHover") {
-            m_config.enableLspHover = parseBool(v, m_config.enableLspHover);
-        } else if (k == L"editor.signatureHelp") {
-            m_config.enableSignatureHelp = parseBool(v, m_config.enableSignatureHelp);
-        } else if (k == L"linter.externalEnabled") {
-            m_config.enableExternalLinters = parseBool(v, m_config.enableExternalLinters);
+        }
+        if (handled) continue;
+
+        for (const auto& s : kStringSettingBindings) {
+            if (s.settingId && k == s.settingId) {
+                if (s.lspAutoDetect) {
+                    m_config.*(s.member) = (v == L"auto-detect") ? L"" : v;
+                } else if (!v.empty()) {
+                    m_config.*(s.member) = v;
+                    if (k == L"editor.renderWhitespace") {
+                        m_config.renderWhitespace = (v != L"none");
+                    } else if (k == L"files.autoSave") {
+                        m_autoSave = (v != L"off");
+                    }
+                }
+                handled = true;
+                break;
+            }
+        }
+        if (handled) continue;
+
+        for (const auto& iv : kIntSettingBindings) {
+            if (iv.settingId && k == iv.settingId) {
+                int val = _wtoi(v.c_str());
+                if (val >= iv.minVal && val <= iv.maxVal) {
+                    m_config.*(iv.member) = val;
+                }
+                handled = true;
+                break;
+            }
+        }
+        if (handled) continue;
+
+        for (const auto& fv : kFloatSettingBindings) {
+            if (fv.settingId && k == fv.settingId) {
+                float val = static_cast<float>(_wtof(v.c_str()));
+                if (val >= fv.minVal && val <= fv.maxVal) {
+                    m_config.*(fv.member) = val;
+                    if (k == L"editor.fontSize") {
+                        m_config.zoomLevel = val / 15.0f;
+                    }
+                }
+                handled = true;
+                break;
+            }
+        }
+        if (handled) continue;
+
+        if (k == L"workbench.sideBar.location" && !v.empty()) {
+            m_config.sideBarOnRight = (v == L"right");
+        } else if (k == L"terminal.integrated.dockPosition" && !v.empty()) {
+            if (v == L"editor") m_config.terminalDockPosition = 1;
+            else if (v == L"right") m_config.terminalDockPosition = 2;
+            else m_config.terminalDockPosition = 0;
         }
     }
+    m_editor.SetSqlPageSize(static_cast<size_t>(m_config.sqlPageSize));
+    m_terminal.SetDockPosition(m_config.terminalDockPosition);
+    m_terminal.SetHeight(m_config.terminalHeight);
+    m_terminal.SetRightWidth(m_config.terminalRightWidth);
 }
 
 void Window::LoadAndApplyWorkspaceSettings(const std::wstring& workspaceRoot) {
@@ -687,30 +933,58 @@ void Window::SaveCurrentWorkspaceSetting(const std::wstring& settingId) {
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     if (wsRoot.empty() || settingId.empty()) return;
     auto bstr = [](bool b) { return std::wstring(b ? L"true" : L"false"); };
-    if (settingId == L"editor.tabSize") m_workspaceSettings.values[settingId] = std::to_wstring(m_config.tabSize);
-    else if (settingId == L"editor.insertSpaces") m_workspaceSettings.values[settingId] = bstr(m_config.insertSpaces);
-    else if (settingId == L"editor.wordWrap") m_workspaceSettings.values[settingId] = bstr(m_config.wordWrap);
-    else if (settingId == L"editor.minimap") m_workspaceSettings.values[settingId] = bstr(m_config.showMinimap);
-    else if (settingId == L"editor.codeLens") m_workspaceSettings.values[settingId] = bstr(m_config.enableCodeLens);
-    else if (settingId == L"editor.lineNumbers") m_workspaceSettings.values[settingId] = bstr(m_config.showLineNumbers);
-    else if (settingId == L"editor.formatOnSave") m_workspaceSettings.values[settingId] = bstr(m_config.formatOnSave);
-    else if (settingId == L"editor.fontSize") m_workspaceSettings.values[settingId] = std::to_wstring(static_cast<int>(m_config.fontSize));
-    else if (settingId == L"editor.fontFamily") m_workspaceSettings.values[settingId] = m_config.fontFamily;
-    else if (settingId == L"editor.renderWhitespace") m_workspaceSettings.values[settingId] = m_config.renderWhitespaceMode;
-    else if (settingId == L"editor.cursorStyle") m_workspaceSettings.values[settingId] = m_config.cursorStyle;
-    else if (settingId == L"files.autoSave") m_workspaceSettings.values[settingId] = m_config.autoSave;
-    else if (settingId == L"files.autoSaveDelay") m_workspaceSettings.values[settingId] = std::to_wstring(m_config.autoSaveDelay);
-    else if (settingId == L"explorer.updateImportsOnRename") m_workspaceSettings.values[settingId] = bstr(m_config.updateImportsOnRename);
-    else if (settingId == L"workbench.breadcrumbs") m_workspaceSettings.values[settingId] = bstr(m_config.showBreadcrumbs);
-    else if (settingId == L"workbench.statusBar") m_workspaceSettings.values[settingId] = bstr(m_config.showStatusBar);
-    else if (settingId == L"workbench.graphColored") m_workspaceSettings.values[settingId] = bstr(m_config.isGraphColored);
-    else if (settingId == L"workbench.markdownPreview") m_workspaceSettings.values[settingId] = bstr(m_config.enableMarkdownPreview);
-    else if (settingId == L"editor.gitLens") m_workspaceSettings.values[settingId] = bstr(m_config.enableGitLens);
-    else if (settingId == L"editor.inlayHints") m_workspaceSettings.values[settingId] = bstr(m_config.enableInlayHints);
-    else if (settingId == L"editor.lspHover") m_workspaceSettings.values[settingId] = bstr(m_config.enableLspHover);
-    else if (settingId == L"editor.signatureHelp") m_workspaceSettings.values[settingId] = bstr(m_config.enableSignatureHelp);
-    else if (settingId == L"linter.externalEnabled") m_workspaceSettings.values[settingId] = bstr(m_config.enableExternalLinters);
-    else return;
+
+    bool found = false;
+    for (const auto& b : kBoolSettingBindings) {
+        if (b.settingId && settingId == b.settingId) {
+            m_workspaceSettings.values[settingId] = bstr(m_config.*(b.member));
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        for (const auto& s : kStringSettingBindings) {
+            if (s.settingId && settingId == s.settingId) {
+                const std::wstring& val = m_config.*(s.member);
+                m_workspaceSettings.values[settingId] = (s.lspAutoDetect && val.empty()) ? L"auto-detect" : val;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        for (const auto& iv : kIntSettingBindings) {
+            if (iv.settingId && settingId == iv.settingId) {
+                m_workspaceSettings.values[settingId] = std::to_wstring(m_config.*(iv.member));
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        for (const auto& fv : kFloatSettingBindings) {
+            if (fv.settingId && settingId == fv.settingId) {
+                if (settingId == L"editor.lineHeight") {
+                    m_workspaceSettings.values[settingId] = std::to_wstring(m_config.*(fv.member));
+                } else {
+                    m_workspaceSettings.values[settingId] = std::to_wstring(static_cast<int>(m_config.*(fv.member)));
+                }
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        if (settingId == L"workbench.sideBar.location") {
+            m_workspaceSettings.values[settingId] = m_config.sideBarOnRight ? L"right" : L"left";
+            found = true;
+        } else if (settingId == L"terminal.integrated.dockPosition") {
+            m_workspaceSettings.values[settingId] = (m_config.terminalDockPosition == 1) ? L"editor"
+                                                  : (m_config.terminalDockPosition == 2) ? L"right" : L"bottom";
+            found = true;
+        }
+    }
+    if (!found) return;
 
     workspace::WorkspaceConfigEngine::SaveWorkspaceSettings(wsRoot, m_workspaceSettings);
 }
@@ -956,6 +1230,7 @@ void Window::SaveSessionState() {
     out << L"  \"lspPathPython\": \"" << EscapeJson(m_config.lspPathPython) << L"\",\n";
     out << L"  \"lspPathPhp\": \"" << EscapeJson(m_config.lspPathPhp) << L"\",\n";
     out << L"  \"lspPathCpp\": \"" << EscapeJson(m_config.lspPathCpp) << L"\",\n";
+    WriteExtendedSessionSettings(out, m_config);
     out << L"  \"activeDocIdx\": " << GetActiveGroup().activeDocIdx << L",\n";
     out << L"  \"splitLayout\": " << static_cast<int>(m_splitState.layout) << L",\n";
     out << L"  \"splitX1\": " << m_splitState.splitX1 << L",\n";
@@ -1554,6 +1829,7 @@ void Window::LoadSessionState() {
             auto q2 = (q1 != std::wstring::npos) ? line.rfind(L'"') : std::wstring::npos;
             if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1)
                 m_config.lspPathCpp = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+        } else if (!inEditorGroups && currentArray.empty() && TryLoadExtendedSessionSettingLine(line, m_config)) {
         } else if (line.find(L"\"openDocs\"") != std::wstring::npos) {
             currentArray = L"openDocs";
         } else if (line.find(L"\"expandedDirs\"") != std::wstring::npos) {
@@ -1791,6 +2067,8 @@ void Window::LoadSessionState() {
         m_config.terminalRightWidth = savedTerminalRightWidth;
     }
     m_config.isTerminalOpen = savedIsTerminalOpen;
+    m_config.zoomLevel = m_config.fontSize / 15.0f;
+    m_editor.SetSqlPageSize(static_cast<size_t>(m_config.sqlPageSize));
 
     if (!isNewWindowClean && savedIsTerminalOpen) {
         std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
@@ -10497,6 +10775,27 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             m_editor.StartDiscoverSqlServersAsync();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         };
+        m_editor.onMysqlServerStateChanged = [this](int port, bool running) {
+            if (port > 0 && port < 65536) {
+                m_mysqlPort = port;
+                m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+                SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(m_mysqlPort).c_str());
+            }
+            if (!running && m_hMysqlProcess) {
+                DWORD exitCode = STILL_ACTIVE;
+                if (GetExitCodeProcess(m_hMysqlProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                    CloseHandle(m_hMysqlProcess);
+                    m_hMysqlProcess = nullptr;
+                }
+            }
+            UpdateDatabaseModalRuntimeStatus();
+            if (running) {
+                RefreshDatabaseSchemaAsync();
+            } else {
+                m_header.SetDatabaseState(ui::DatabaseState::Stopped);
+            }
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
 
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
     m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
@@ -16831,10 +17130,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 if (m_autoSave) {
                                     FlushPendingAutoSaves();
                                 }
-                            } else if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily") {
+                            } else if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily" || modifiedId == L"editor.lineHeight") {
                                 m_config.zoomLevel = m_config.fontSize / 15.0f;
                                 m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
+                            } else if (modifiedId == L"terminal.integrated.dockPosition") {
+                                m_terminal.SetDockPosition(m_config.terminalDockPosition);
+                            } else if (modifiedId == L"terminal.integrated.defaultHeight") {
+                                m_terminal.SetHeight(m_config.terminalHeight);
+                            } else if (modifiedId == L"terminal.integrated.rightWidth") {
+                                m_terminal.SetRightWidth(m_config.terminalRightWidth);
+                            } else if (modifiedId == L"database.sqlPageSize") {
+                                m_editor.SetSqlPageSize(static_cast<size_t>(m_config.sqlPageSize));
+                            } else if (modifiedId == L"workbench.zenMode") {
+                                m_config.zenMode = !m_config.zenMode;
+                                ToggleZenMode();
                             } else if (modifiedId == L"workbench.colorTheme") {
                                 BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
                                 DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));

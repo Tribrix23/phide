@@ -7637,6 +7637,124 @@ void DrawerPanel::FetchAllRemotesAsync() {
     }).detach();
 }
 
+namespace {
+
+static std::string GitWideToUtf8(const std::wstring& w) {
+    if (w.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return "";
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static bool IsPhideRelPath(std::wstring rel) {
+    for (auto& c : rel) {
+        if (c == L'\\') c = L'/';
+        c = static_cast<wchar_t>(towlower(c));
+    }
+    return rel == L".phide" || rel.rfind(L".phide/", 0) == 0;
+}
+
+static void SanitizePhideDirForGitStash(const std::wstring& dir) {
+    if (dir.empty()) return;
+    phide::workspace::IgnoreEngine::EnsurePhideIgnored(dir);
+    auto trackedPhide = RunGitCmd(L"ls-files -- .phide", dir);
+    if (trackedPhide.exitCode == 0 && !TrimWideWhitespace(trackedPhide.output).empty()) {
+        RunGitCmd(L"reset HEAD -- .phide", dir);
+        RunGitCmd(L"checkout -- .phide", dir);
+    }
+}
+
+static GitCmdResult ExecuteStashApplyOrPopWithFallback(const std::wstring& dir, size_t stashIdx, bool isPop) {
+    const std::wstring stashRef = L"stash@{" + std::to_wstring(stashIdx) + L"}";
+    SanitizePhideDirForGitStash(dir);
+
+    GitCmdResult res = RunGitCmd(std::wstring(isPop ? L"stash pop " : L"stash apply ") + stashRef, dir);
+    if (res.exitCode == 0) {
+        SanitizePhideDirForGitStash(dir);
+        return res;
+    }
+
+    const bool hasOverwriteAbort =
+        (res.output.find(L"would be overwritten") != std::wstring::npos) ||
+        (res.output.find(L"Aborting") != std::wstring::npos);
+    const bool hasUntrackedExists =
+        (res.output.find(L"already exists, no checkout") != std::wstring::npos) ||
+        (res.output.find(L"could not restore untracked files from stash") != std::wstring::npos);
+    const bool mentionsPhide = (res.output.find(L".phide") != std::wstring::npos);
+
+    if (!hasOverwriteAbort && !hasUntrackedExists) {
+        return res;
+    }
+
+    SanitizePhideDirForGitStash(dir);
+
+    if (hasOverwriteAbort) {
+        // Tracked patch was not applied because git aborted on local changes.
+        // Recover if it is already applied (e.g., Pop immediately after Apply)
+        // or if .phide caused the spurious overwrite error.
+        auto diffRes = RunGitCmd(L"diff --binary " + stashRef + L"^1 " + stashRef + L" -- . \":(exclude).phide\"", dir);
+        if (diffRes.exitCode != 0) {
+            return res;
+        }
+        if (!TrimWideWhitespace(diffRes.output).empty()) {
+            const std::string diffUtf8 = GitWideToUtf8(diffRes.output);
+            auto revCheck = RunGitCmdWithInput(L"apply --reverse --check -", dir, diffUtf8);
+            if (revCheck.exitCode != 0) {
+                if (!mentionsPhide) {
+                    return res;
+                }
+                auto applyRes = RunGitCmdWithInput(L"apply --whitespace=nowarn -", dir, diffUtf8);
+                if (applyRes.exitCode != 0) {
+                    return applyRes;
+                }
+            }
+        }
+    }
+
+    auto hasUntracked = RunGitCmd(L"rev-parse --verify --quiet " + stashRef + L"^3", dir);
+    if (hasUntracked.exitCode == 0) {
+        auto uFiles = RunGitCmd(L"ls-tree -r --name-only " + stashRef + L"^3", dir);
+        if (uFiles.exitCode == 0) {
+            std::wstringstream uss(uFiles.output);
+            std::wstring relPath;
+            std::error_code ec;
+            while (std::getline(uss, relPath)) {
+                relPath = TrimWideWhitespace(relPath);
+                if (relPath.empty() || IsPhideRelPath(relPath)) continue;
+                std::wstring nativeRel = relPath;
+                for (auto& c : nativeRel) if (c == L'/') c = L'\\';
+                std::filesystem::path diskPath = std::filesystem::path(dir) / nativeRel;
+                if (std::filesystem::exists(diskPath, ec)) {
+                    // Already exists on disk (e.g., restored by a prior Apply); keep working copy intact.
+                    continue;
+                }
+                std::wstring gitRel = relPath;
+                for (auto& c : gitRel) if (c == L'\\') c = L'/';
+                auto coRes = RunGitCmd(L"checkout " + stashRef + L"^3 -- \"" + gitRel + L"\"", dir);
+                if (coRes.exitCode != 0) {
+                    res = coRes;
+                    return res;
+                }
+                RunGitCmd(L"reset HEAD -- \"" + gitRel + L"\"", dir);
+            }
+        }
+    }
+
+    if (isPop) {
+        auto dropRes = RunGitCmd(L"stash drop " + stashRef, dir);
+        if (dropRes.exitCode != 0) {
+            return dropRes;
+        }
+    }
+    SanitizePhideDirForGitStash(dir);
+    res.exitCode = 0;
+    return res;
+}
+
+} // namespace
+
 void DrawerPanel::StashChangesAsync() {
     StashChangesWithMessageAsync(L"");
 }
@@ -7656,6 +7774,7 @@ void DrawerPanel::StashChangesWithMessageAsync(const std::wstring& message) {
             if (alive && alive->load()) {
                 m_isGitLoading = true;
                 std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+                SanitizePhideDirForGitStash(dir);
                 std::wstring cleanMsg = TrimWideWhitespace(message);
                 GitCmdResult res;
                 if (cleanMsg.empty()) {
@@ -7670,7 +7789,13 @@ void DrawerPanel::StashChangesWithMessageAsync(const std::wstring& message) {
                 }
                 if (alive && alive->load()) {
                     RefreshGitState(false);
-                    ShowGitNotification(res.exitCode == 0 ? L"\u2713 Stashed working tree changes" : L"Stash failed");
+                    if (res.exitCode == 0) {
+                        bool noChanges = (res.output.find(L"No local changes to save") != std::wstring::npos);
+                        ShowGitNotification(noChanges ? L"No changes to stash" : L"\u2713 Stashed working tree changes");
+                    } else {
+                        ShowGitNotification(L"Stash failed");
+                        if (m_onGitError) m_onGitError(L"git stash push", res.output, dir);
+                    }
                 }
             }
         } catch (...) {}
@@ -7690,7 +7815,7 @@ void DrawerPanel::ApplyStashAsync(size_t stashIdx) {
         if (alive && alive->load()) {
             m_isGitLoading = true;
             std::wstring dir = NormalizeDirForGit(m_openFolderPath);
-            auto res = RunGitCmd(L"stash apply stash@{" + std::to_wstring(stashIdx) + L"}", dir);
+            auto res = ExecuteStashApplyOrPopWithFallback(dir, stashIdx, false);
             if (alive && alive->load()) {
                 RefreshGitState(false);
                 if (res.exitCode == 0) {
@@ -7716,7 +7841,7 @@ void DrawerPanel::PopStashAsync(size_t stashIdx) {
         if (alive && alive->load()) {
             m_isGitLoading = true;
             std::wstring dir = NormalizeDirForGit(m_openFolderPath);
-            auto res = RunGitCmd(L"stash pop stash@{" + std::to_wstring(stashIdx) + L"}", dir);
+            auto res = ExecuteStashApplyOrPopWithFallback(dir, stashIdx, true);
             if (alive && alive->load()) {
                 RefreshGitState(false);
                 if (res.exitCode == 0) {

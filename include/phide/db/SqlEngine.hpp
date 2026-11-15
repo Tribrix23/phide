@@ -78,6 +78,16 @@ public:
     static int ResolveDynamicMysqlPort(int preferredPort = 3306, const std::wstring& workspaceRoot = L"");
 
     /**
+     * @brief Starts the local database server for the given profile (MySQL, PostgreSQL, or SQL Server).
+     */
+    static bool StartDatabaseServer(const SqlConnectionProfile& profile, std::wstring& outMessage, int* outResolvedPort = nullptr);
+
+    /**
+     * @brief Stops the local database server for the given profile (MySQL, PostgreSQL, or SQL Server).
+     */
+    static bool StopDatabaseServer(const SqlConnectionProfile& profile, std::wstring& outMessage);
+
+    /**
      * @brief Lists user databases/schemas available on the connected server profile.
      */
     static std::vector<std::wstring> ListDatabases(const SqlConnectionProfile& profile, std::wstring& outError);

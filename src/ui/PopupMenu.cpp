@@ -390,7 +390,6 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.push_back({ MenuActionId::MoreCodeHierarchy, L"Document Outline", L"Ctrl+Shift+O", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreTraceCode, L"Trace Call Path", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCodeMetrics, L"Code Metrics", L"", false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::MoreDependencyGraph, L"Dependency Graph", L"", false, false, false, true, {}, {} });
 
     const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(220.0f));
     LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
