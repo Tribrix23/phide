@@ -31,6 +31,8 @@
 #include <iterator>
 #include <tlhelp32.h>
 #include <iphlpapi.h>
+#include <psapi.h>
+#include <malloc.h>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -40,12 +42,25 @@
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "psapi.lib")
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
 namespace phide::app {
+
+struct CachedCssTextEntry {
+    std::filesystem::file_time_type mtime{};
+    std::wstring text;
+};
+static std::unordered_map<std::wstring, CachedCssTextEntry> s_cssTextCache;
+static std::unordered_map<std::wstring, std::pair<std::wstring, std::wstring>> s_nodeModuleSizeCache;
+
+static void ClearWindowStaticCaches() {
+    s_cssTextCache.clear();
+    s_nodeModuleSizeCache.clear();
+}
 
 static std::wstring NormalizeRecentPath(std::wstring p) {
     while (!p.empty() && (p.back() == L'\\' || p.back() == L'/')) {
@@ -1970,6 +1985,8 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"student", L"Learning Hub");
                 } else if (vType == L"monitor") {
                     OpenSpecialView(L"monitor", L"Performance Monitor");
+                } else if (vType == L"heatmap") {
+                    OpenSpecialView(L"heatmap", L"Activity Heatmap");
                 } else if (vType == L"test_explorer") {
                     OpenSpecialView(L"test_explorer", L"Test Explorer");
                 } else if (vType == L"sql_console") {
@@ -2055,8 +2072,21 @@ void Window::LoadSessionState() {
 
     // Restore terminal dock position, size, and open state
     if (savedTerminalDockPosition >= 0 && savedTerminalDockPosition <= 2) {
+        if (savedTerminalDockPosition == 1 && !HasAnyTerminalEditorTab() && !savedIsTerminalOpen) {
+            savedTerminalDockPosition = 0;
+        }
         m_terminal.SetDockPosition(savedTerminalDockPosition);
         m_config.terminalDockPosition = savedTerminalDockPosition;
+    }
+    if (HasAnyTerminalEditorTab()) {
+        std::wstring wsFolder = !lastOpenFolder.empty() ? lastOpenFolder : m_drawer.GetOpenFolderPath();
+        m_terminal.SetDockPosition(1);
+        m_config.terminalDockPosition = 1;
+        m_terminal.Open(wsFolder);
+        m_terminal.SetIsOpen(true);
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
     }
     if (savedTerminalHeight >= 50.0f) {
         m_terminal.SetHeight(savedTerminalHeight);
@@ -3758,6 +3788,25 @@ void Window::SyncActiveTabWithDrawer() {
 }
 
 void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& title) {
+    if (viewType == L"terminal") {
+        for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+            for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
+                if (m_editorGroups[g].docs[i].isSpecialView && m_editorGroups[g].docs[i].viewType == L"terminal") {
+                    m_focusedGroupIdx = static_cast<int>(g);
+                    m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                    m_terminal.SetDockPosition(1);
+                    m_terminal.SetIsOpen(true);
+                    m_targetTerminalProgress = 0.0f;
+                    m_terminalAnimProgress = 0.0f;
+                    m_isTerminalAnimating = false;
+                    ClearExplorerSelectionOverride();
+                    SyncActiveTabWithDrawer();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
+        }
+    }
     auto& group = GetActiveGroup();
     for (size_t i = 0; i < group.docs.size(); ++i) {
         if (group.docs[i].isSpecialView && group.docs[i].viewType == viewType) {
@@ -3771,6 +3820,9 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             } else if (viewType == L"monitor") {
                 SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            } else if (viewType == L"heatmap") {
+                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                m_editor.GetActivityHeatmapView().StartRefreshAsync(wsFolder, m_hwnd, WM_USER + 226);
             } else if (viewType == L"test_explorer") {
                 RefreshWorkspaceTestsAsync();
             } else if (viewType == L"sql_console") {
@@ -3824,6 +3876,9 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     } else if (viewType == L"monitor") {
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    } else if (viewType == L"heatmap") {
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_editor.GetActivityHeatmapView().StartRefreshAsync(wsFolder, m_hwnd, WM_USER + 226);
     } else if (viewType == L"test_explorer") {
         RefreshWorkspaceTestsAsync();
     } else if (viewType == L"sql_console") {
@@ -4148,6 +4203,39 @@ void Window::OpenExtensionDetail(const std::wstring& extId) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+bool Window::HasAnyTerminalEditorTab() const noexcept {
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (doc.isSpecialView && doc.viewType == L"terminal") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int Window::FindVisibleTerminalEditorGroup() const noexcept {
+    if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+        const auto& fg = m_editorGroups[static_cast<size_t>(m_focusedGroupIdx)];
+        if (fg.activeDocIdx >= 0 && fg.activeDocIdx < static_cast<int>(fg.docs.size())) {
+            const auto& fd = fg.docs[static_cast<size_t>(fg.activeDocIdx)];
+            if (fd.isSpecialView && fd.viewType == L"terminal") {
+                return m_focusedGroupIdx;
+            }
+        }
+    }
+    for (int g = 0; g < static_cast<int>(m_editorGroups.size()); ++g) {
+        const auto& grp = m_editorGroups[static_cast<size_t>(g)];
+        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+            const auto& doc = grp.docs[static_cast<size_t>(grp.activeDocIdx)];
+            if (doc.isSpecialView && doc.viewType == L"terminal") {
+                return g;
+            }
+        }
+    }
+    return -1;
+}
+
 void Window::CloseTerminalEditorTab() {
     for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
         for (int i = static_cast<int>(m_editorGroups[g].docs.size()) - 1; i >= 0; --i) {
@@ -4242,10 +4330,11 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
 
     bool wasTerminalTab = (group.docs[docIdx].isSpecialView && group.docs[docIdx].viewType == L"terminal");
     group.docs.erase(group.docs.begin() + docIdx);
-    if (wasTerminalTab) {
+    if (wasTerminalTab && !HasAnyTerminalEditorTab()) {
         if (m_terminal.GetDockPosition() == 1) {
             m_terminal.SetDockPosition(0);
             m_terminal.SetIsOpen(false);
+            m_terminal.ClearBounds();
             m_isTerminalFocused = false;
         }
     }
@@ -4967,6 +5056,10 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
     if (actionCmd == L"cmd_sql_console") {
         OpenSpecialView(L"sql_console", L"SQL Query Console");
+        return;
+    }
+    if (actionCmd == L"cmd_heatmap") {
+        OpenSpecialView(L"heatmap", L"Activity Heatmap");
         return;
     }
     if (actionCmd == L"cmd_snippet_editor") {
@@ -6299,9 +6392,24 @@ void Window::RunManualGarbageCollection() {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
             doc.buffer.RunGarbageCollection();
+            doc.diffOriginalBuffer.RunGarbageCollection();
+            doc.mergeCurrentBuffer.RunGarbageCollection();
+            doc.mergeIncomingBuffer.RunGarbageCollection();
             doc.diagnostics.shrink_to_fit();
             doc.inlayHints.shrink_to_fit();
             doc.breakpoints.shrink_to_fit();
+            doc.breakpointConditions.shrink_to_fit();
+            doc.gutterTestBadges.shrink_to_fit();
+            doc.secondarySelections.shrink_to_fit();
+            doc.diffHunks.shrink_to_fit();
+            doc.diffHunkActionHits.shrink_to_fit();
+            doc.mergeConflicts.shrink_to_fit();
+            doc.mergePaneActionHits.shrink_to_fit();
+            doc.cssPeek.lines.shrink_to_fit();
+            if (!doc.cssPeek.active) {
+                doc.cssPeek.lines.clear();
+                doc.cssPeek.lines.shrink_to_fit();
+            }
             doc.originalDiskText.shrink_to_fit();
             if (doc.notebookDoc) {
                 doc.notebookDoc->RunGarbageCollection();
@@ -6316,12 +6424,18 @@ void Window::RunManualGarbageCollection() {
         group.docs.shrink_to_fit();
     }
     m_editorGroups.shrink_to_fit();
+    m_cachedLspCompletions.items.shrink_to_fit();
+    m_cachedFilteredProblems.shrink_to_fit();
+    m_problemsRowBounds.shrink_to_fit();
+    ClearWindowStaticCaches();
     m_editor.RunGarbageCollection();
     m_drawer.ClearSearchResults();
     m_drawer.RunGarbageCollection();
     m_terminal.RunGarbageCollection();
     m_extensionsPanel.RunGarbageCollection();
     CoFreeUnusedLibraries();
+    _heapmin();
+    EmptyWorkingSet(GetCurrentProcess());
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }
 
@@ -6587,12 +6701,43 @@ void Window::DoShowSourceControl() {
 
 void Window::AnimateTerminalOpen() {
     m_bottomProblemsActive = false;
+    if (m_terminal.GetDockPosition() == 1) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(true);
+        if (FindVisibleTerminalEditorGroup() < 0) {
+            OpenSpecialView(L"terminal", L"Terminal");
+        }
+        return;
+    }
+    if (m_terminal.GetDockPosition() == 2) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(true);
+        return;
+    }
     m_targetTerminalProgress = 1.0f;
     m_isTerminalAnimating = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
 }
 
 void Window::AnimateTerminalClose() {
+    if (m_terminal.GetDockPosition() == 1) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        CloseTerminalEditorTab();
+        return;
+    }
+    if (m_terminal.GetDockPosition() == 2) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(false);
+        return;
+    }
     m_targetTerminalProgress = 0.0f;
     m_isTerminalAnimating = true;
     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
@@ -9009,7 +9154,9 @@ void Window::ExecuteDiscardOrRestoreAsync(const std::wstring& targetPath, const 
         }
 
         auto* pRes = new DiscardRestoreTaskResult{ targetPath, targetFileName, targetStatus };
-        PostMessageW(hwnd, WM_USER + 204, 0, reinterpret_cast<LPARAM>(pRes));
+        if (!PostMessageW(hwnd, WM_USER + 204, 0, reinterpret_cast<LPARAM>(pRes))) {
+            delete pRes;
+        }
     }).detach();
 }
 
@@ -9119,7 +9266,9 @@ void Window::ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder) {
         }
 
         auto* pRes = new DeleteTaskResult{ targetPath, isFolder, success };
-        PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes));
+        if (!PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes))) {
+            delete pRes;
+        }
     }).detach();
 }
 
@@ -9180,7 +9329,9 @@ void Window::ExecuteDeleteBatchAsync(const std::vector<std::wstring>& targetPath
         pRes->batchPaths = std::move(deletedPaths);
         pRes->batchSuccessCount = okCount;
         pRes->success = (okCount > 0);
-        PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes));
+        if (!PostMessageW(hwnd, WM_USER + 205, 0, reinterpret_cast<LPARAM>(pRes))) {
+            delete pRes;
+        }
     }).detach();
 }
 
@@ -11165,8 +11316,16 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Animate terminal close when '-' minimize button is clicked in integrated terminal
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
-        if (m_terminal.GetDockPosition() == 2) {
+        if (m_terminal.GetDockPosition() == 1) {
+            CloseTerminalEditorTab();
+            m_terminal.SetDockPosition(0);
             m_terminal.SetIsOpen(false);
+            m_terminal.ClearBounds();
+            SaveSessionState();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else if (m_terminal.GetDockPosition() == 2) {
+            m_terminal.SetIsOpen(false);
+            m_terminal.ClearBounds();
             SaveSessionState();
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else {
@@ -11236,6 +11395,17 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     });
 
     m_editor.SetOnRenderTerminalInEditor([this](ID2D1RenderTarget* pRT, float x, float y, float w, float h) {
+        if (m_terminal.GetDockPosition() != 1) {
+            m_terminal.SetDockPosition(1);
+        }
+        if (!m_terminal.IsOpen()) {
+            if (m_terminal.GetTabCount() == 0) {
+                std::wstring wsDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+                m_terminal.Open(wsDir);
+            } else {
+                m_terminal.SetIsOpen(true);
+            }
+        }
         RECT rc{};
         GetClientRect(m_hwnd, &rc);
         float clientH = static_cast<float>(rc.bottom - rc.top);
@@ -11244,6 +11414,25 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     m_editor.SetOnTriggerGarbageCollection([this]() {
         RunManualGarbageCollection();
+    });
+
+    m_editor.GetActivityHeatmapView().SetOnOpenCommitDiff([this](const std::wstring& hash) {
+        OpenCommitDiffDocument(hash, L"");
+    });
+    m_editor.GetActivityHeatmapView().SetOnRequestRefresh([this]() {
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_editor.GetActivityHeatmapView().StartRefreshAsync(wsFolder, m_hwnd, WM_USER + 226);
+    });
+    m_editor.onSqlQueryExecuted = [this]() {
+        m_editor.GetActivityHeatmapView().RecordSqlQuery();
+    };
+    m_drawer.SetOnOpenActivityHeatmap([this]() {
+        OpenSpecialView(L"heatmap", L"Activity Heatmap");
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    });
+    m_drawer.SetOnGitCommitSucceeded([this]() {
+        if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 227, 0, 0);
     });
 
     // Initialize user snippets engine and adaptive learning engine
@@ -12107,6 +12296,9 @@ void Window::OnPaint() {
     }
 
     // 3. Integrated Bottom Dock (Problems Panel OR Integrated Terminal Panel)
+    if (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0) {
+        m_terminal.ClearBounds();
+    }
     if (IsBottomProblemsVisible()) {
         RenderBottomProblemsPanel(m_pRenderTarget.Get(), clientW, clientH, statusBarH, terminalLeft);
     } else if (m_terminal.IsOpen()) {
@@ -12120,6 +12312,8 @@ void Window::OnPaint() {
         } else if (m_terminal.GetDockPosition() == 0 && m_terminalAnimProgress > 0.001f) {
             m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH - statusBarH, terminalLeft, currentTermH);
         }
+    } else {
+        m_terminal.ClearBounds();
     }
 
     // Live Server Status Card: Bigger, longer, and modern flat design with progression (per user request)
@@ -14212,8 +14406,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     }
 
     bool isTermClosing = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
-    auto* curDocMove = GetActiveDoc();
-    bool isTermMoveInactive = (m_terminal.GetDockPosition() == 1 && (!curDocMove || !curDocMove->isSpecialView || curDocMove->viewType != L"terminal"));
+    bool isTermMoveInactive = (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0);
     if (!topDropdownHit && m_terminal.IsOpen() && !isTermClosing && !isTermMoveInactive) {
         RECT rcClient;
         GetClientRect(m_hwnd, &rcClient);
@@ -14788,6 +14981,20 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    // Check Activity Heatmap scrollbar dragging
+    if (m_editor.GetActivityHeatmapView().IsDraggingScrollbar()) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            m_editor.GetActivityHeatmapView().ReleaseScrollbarDrag();
+            ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        if (m_editor.GetActivityHeatmapView().HandleMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check vertical scrollbar dragging
     if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
         if ((wParam & MK_LBUTTON) == 0) {
@@ -14915,12 +15122,32 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetWelcomeView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"heatmap") {
+            if (m_editor.GetActivityHeatmapView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         } else if (pActiveDoc->viewType == L"sql_console") {
             if (m_editor.UpdateSqlConsoleHover(clientPt)) {
                 needRepaint = true;
             }
         }
-    } else {
+    }
+    // Also route hover tooltips smoothly when Activity Heatmap is visible in any unfocused split pane
+    if (!m_editorGroups.empty()) {
+        int hovG = FindEditorGroupAtPoint(clientPt);
+        if (hovG >= 0 && hovG < static_cast<int>(m_editorGroups.size())) {
+            const auto& hg = m_editorGroups[hovG];
+            if (hg.activeDocIdx >= 0 && hg.activeDocIdx < static_cast<int>(hg.docs.size())) {
+                const auto& hDoc = hg.docs[hg.activeDocIdx];
+                if (hDoc.isSpecialView && hDoc.viewType == L"heatmap" && (&hDoc != pActiveDoc)) {
+                    if (m_editor.GetActivityHeatmapView().HandleMouseMove(clientPt)) {
+                        needRepaint = true;
+                    }
+                }
+            }
+        }
+    }
+    if (!pActiveDoc) {
         // No active documents -> check watermark cheat-sheet row hover
         RECT rcClient{};
         GetClientRect(m_hwnd, &rcClient);
@@ -15382,8 +15609,21 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                             CloseProblemsPanel();
                             break;
                         }
+                        if (m_terminal.GetDockPosition() == 1) {
+                            if (HasAnyTerminalEditorTab()) {
+                                CloseTerminalEditorTab();
+                                m_isTerminalFocused = false;
+                                SaveSessionState();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                            } else {
+                                DoCreateTerminal();
+                            }
+                            break;
+                        }
                         if (m_terminal.IsOpen()) {
-                            m_terminal.SetIsOpen(false);
+                            AnimateTerminalClose();
+                            m_isTerminalFocused = false;
+                            SaveSessionState();
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                         } else {
                             DoCreateTerminal();
@@ -15394,14 +15634,24 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::PanelPositionBottom:
+                        CloseTerminalEditorTab();
                         m_terminal.SetDockPosition(0);
                         m_config.terminalDockPosition = 0;
+                        m_terminal.SetIsOpen(true);
+                        m_terminalAnimProgress = 1.0f;
+                        m_targetTerminalProgress = 1.0f;
+                        m_isTerminalAnimating = false;
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::PanelPositionRight:
+                        CloseTerminalEditorTab();
+                        m_targetTerminalProgress = 0.0f;
+                        m_terminalAnimProgress = 0.0f;
+                        m_isTerminalAnimating = false;
                         m_terminal.SetDockPosition(2);
                         m_config.terminalDockPosition = 2;
+                        m_terminal.SetIsOpen(true);
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
@@ -15860,6 +16110,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                             }
                         }
                         if (!buildLabel.empty() && ExecuteWorkspaceTaskByLabel(buildLabel)) {
+                            m_editor.GetActivityHeatmapView().RecordBuild();
                             break;
                         }
                         if (!m_terminal.IsOpen()) {
@@ -15867,6 +16118,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         }
                         auto* tab = m_terminal.GetActiveTab();
                         if (tab) tab->SendInput("cmd.exe /c scripts\\build.bat\r\n");
+                        m_editor.GetActivityHeatmapView().RecordBuild();
                         break;
                     }
                     case ui::MenuActionId::ToolsRunTests: {
@@ -15993,6 +16245,11 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::ViewSqlConsole:
                         OpenSpecialView(L"sql_console", L"SQL Query Console");
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ViewHeatmap:
+                        OpenSpecialView(L"heatmap", L"Activity Heatmap");
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
@@ -16733,11 +16990,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // Check Terminal Panel Clicks (Image 1, 2, 3, 4)
     bool isTermClosingDown = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
-    auto* curDocDown = GetActiveDoc();
-    bool isTermTabInactive = (m_terminal.GetDockPosition() == 1 && (!curDocDown || !curDocDown->isSpecialView || curDocDown->viewType != L"terminal"));
+    int visibleTermGrp = (m_terminal.GetDockPosition() == 1) ? FindVisibleTerminalEditorGroup() : -1;
+    bool isTermTabInactive = (m_terminal.GetDockPosition() == 1 && visibleTermGrp < 0);
     if (m_terminal.IsOpen() && !isTermClosingDown && !isTermTabInactive &&
         !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
-        m_terminal.HitTest(clientPt)) {
+        (m_terminal.HitTest(clientPt) || m_terminal.HitTestMenuArea(clientPt))) {
+        if (m_terminal.GetDockPosition() == 1 && visibleTermGrp >= 0) {
+            m_focusedGroupIdx = visibleTermGrp;
+        }
         m_isTerminalFocused = true;
         std::wstring dir;
         if (m_drawer.HasOpenFolder()) dir = m_drawer.GetOpenFolderPath();
@@ -16748,9 +17008,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     } else if (!m_terminal.HasOpenMenu()) {
-        if (m_terminal.GetDockPosition() != 1 || (curDocDown && curDocDown->isSpecialView && curDocDown->viewType == L"terminal")) {
-            m_isTerminalFocused = false;
-        }
+        m_isTerminalFocused = false;
         m_terminal.CloseMenus();
     }
 
@@ -17437,6 +17695,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"heatmap") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetActivityHeatmapView().HandleLButtonDown(clientPt, m_config)) {
+                        if (m_editor.GetActivityHeatmapView().IsDraggingScrollbar()) {
+                            SetCapture(m_hwnd);
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"test_explorer") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleTestExplorerMouseDown(clientPt, m_config)) {
@@ -17473,7 +17740,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
                             } else if (modifiedId == L"terminal.integrated.dockPosition") {
+                                if (m_config.terminalDockPosition != 1 && HasAnyTerminalEditorTab()) {
+                                    CloseTerminalEditorTab();
+                                }
                                 m_terminal.SetDockPosition(m_config.terminalDockPosition);
+                                if (m_config.terminalDockPosition == 1) {
+                                    m_terminalAnimProgress = 0.0f;
+                                    m_targetTerminalProgress = 0.0f;
+                                    m_isTerminalAnimating = false;
+                                    m_terminal.ClearBounds();
+                                } else {
+                                    const float prog = m_terminal.IsOpen() ? 1.0f : 0.0f;
+                                    m_terminalAnimProgress = prog;
+                                    m_targetTerminalProgress = prog;
+                                    m_isTerminalAnimating = false;
+                                }
                             } else if (modifiedId == L"terminal.integrated.defaultHeight") {
                                 m_terminal.SetHeight(m_config.terminalHeight);
                             } else if (modifiedId == L"terminal.integrated.rightWidth") {
@@ -18753,6 +19034,12 @@ void Window::HandleLButtonUp(POINT clientPt) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    if (m_editor.GetActivityHeatmapView().IsDraggingScrollbar()) {
+        m_editor.GetActivityHeatmapView().ReleaseScrollbarDrag();
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     if (m_drawer.IsDraggingExplorerScrollbar()) {
         m_drawer.ReleaseExplorerScrollbarDrag();
         ReleaseCapture();
@@ -19758,12 +20045,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // Performance Monitor interactive elements (Refresh button, pagination, process rows)
+                // Performance Monitor & Activity Heatmap interactive elements (including split panes)
                 auto* pMonitorActiveDoc = GetActiveDoc();
                 if (pMonitorActiveDoc && pMonitorActiveDoc->isSpecialView && pMonitorActiveDoc->viewType == L"monitor") {
                     if (m_editor.HitTestMonitorInteractive(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
+                    }
+                }
+                if (!m_editorGroups.empty()) {
+                    int hovG = FindEditorGroupAtPoint(pt);
+                    if (hovG >= 0 && hovG < static_cast<int>(m_editorGroups.size())) {
+                        const auto& hg = m_editorGroups[hovG];
+                        if (hg.activeDocIdx >= 0 && hg.activeDocIdx < static_cast<int>(hg.docs.size())) {
+                            const auto& hDoc = hg.docs[hg.activeDocIdx];
+                            if (hDoc.isSpecialView && hDoc.viewType == L"heatmap") {
+                                if (LPCWSTR hc = m_editor.GetActivityHeatmapView().GetCursorForPoint(pt)) {
+                                    SetCursor(LoadCursor(nullptr, hc));
+                                    return TRUE;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -19967,7 +20269,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Terminal Panel cursor handling (Images 1, 2, 3, 4, 5)
                 bool isTermClosingCursor = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
-                if (m_terminal.IsOpen() && !isTermClosingCursor &&
+                bool isTermCursorInactive = (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0);
+                if (m_terminal.IsOpen() && !isTermClosingCursor && !isTermCursorInactive &&
                     !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
                     m_terminal.HitTest(pt)) {
                     if (m_terminal.HitTestMenuArea(pt)) {
@@ -20314,8 +20617,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            auto* curDocWheel = GetActiveDoc();
-            bool isTermWheelInactive = (m_terminal.GetDockPosition() == 1 && (!curDocWheel || !curDocWheel->isSpecialView || curDocWheel->viewType != L"terminal"));
+            bool isTermWheelInactive = (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0);
             if (m_terminal.IsOpen() && !isTermWheelInactive &&
                 !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
                 m_terminal.HitTest(pt)) {
@@ -20460,6 +20762,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"monitor") {
                     if (m_editor.HandleMonitorMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"heatmap") {
+                    if (m_editor.GetActivityHeatmapView().HandleMouseWheel(delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -23151,7 +23458,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (std::abs(diffTerm) < 0.005f) {
                     m_terminalAnimProgress = m_targetTerminalProgress;
                     m_isTerminalAnimating = false;
-                    if (m_terminalAnimProgress <= 0.001f && m_terminal.IsOpen()) {
+                    if (m_terminalAnimProgress <= 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0) {
                         m_terminal.Close();
                     }
                 } else {
@@ -23668,6 +23975,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             m_editor.SetTestResults(itemsCopy, summaryCopy);
             SyncTestResultsToOpenDocs(itemsCopy);
+            if (wParam == 1) {
+                m_editor.GetActivityHeatmapView().RecordTestRun(summaryCopy.failed == 0 && summaryCopy.exitCode == 0);
+            }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
         }
@@ -23718,6 +24028,31 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 225: {
             if (!m_isDestroying.load() && m_editor.ApplyPendingSqlAsyncResults()) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_USER + 226: {
+            if (!m_isDestroying.load() && m_editor.GetActivityHeatmapView().ApplyPendingRefresh()) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_USER + 227: {
+            if (!m_isDestroying.load()) {
+                m_editor.GetActivityHeatmapView().RecordCommitMilestone();
+                for (const auto& grp : m_editorGroups) {
+                    if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                        const auto& d = grp.docs[grp.activeDocIdx];
+                        if (d.isSpecialView && d.viewType == L"heatmap") {
+                            std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                            m_editor.GetActivityHeatmapView().StartRefreshAsync(wsFolder, m_hwnd, WM_USER + 226);
+                            break;
+                        }
+                    }
+                }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
             return 0;
@@ -24035,19 +24370,14 @@ std::vector<std::wstring> Window::SearchCssInText(const std::wstring& selector, 
 }
 
 static const std::wstring& GetCachedCssFileText(const std::filesystem::path& p) {
-    struct CachedText {
-        std::filesystem::file_time_type mtime{};
-        std::wstring text;
-    };
-    static std::unordered_map<std::wstring, CachedText> s_cache;
     static const std::wstring s_empty;
 
     std::error_code ec;
     if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec)) return s_empty;
     auto mtime = std::filesystem::last_write_time(p, ec);
     std::wstring key = p.wstring();
-    auto it = s_cache.find(key);
-    if (it != s_cache.end() && it->second.mtime == mtime) {
+    auto it = s_cssTextCache.find(key);
+    if (it != s_cssTextCache.end() && it->second.mtime == mtime) {
         return it->second.text;
     }
 
@@ -24064,7 +24394,10 @@ static const std::wstring& GetCachedCssFileText(const std::filesystem::path& p) 
             ws.assign(s.begin(), s.end());
         }
     }
-    auto& entry = s_cache[key];
+    if (s_cssTextCache.size() >= 64) {
+        s_cssTextCache.clear();
+    }
+    auto& entry = s_cssTextCache[key];
     entry.mtime = mtime;
     entry.text = std::move(ws);
     return entry.text;
@@ -24514,10 +24847,9 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
                 displaySize = it->second.first;
                 displayGzip = it->second.second;
             } else if (!wsFolder.empty()) {
-                static std::unordered_map<std::wstring, std::pair<std::wstring, std::wstring>> s_cachedNodeModuleSizes;
                 std::wstring cacheKey = wsFolder + L"|" + pkgName;
-                auto itCached = s_cachedNodeModuleSizes.find(cacheKey);
-                if (itCached != s_cachedNodeModuleSizes.end()) {
+                auto itCached = s_nodeModuleSizeCache.find(cacheKey);
+                if (itCached != s_nodeModuleSizeCache.end()) {
                     displaySize = itCached->second.first;
                     displayGzip = itCached->second.second;
                 } else {
@@ -24551,7 +24883,10 @@ void Window::CalculateImportCosts(editor::OpenDocument& doc) {
                             displayGzip = buf2;
                         }
                     }
-                    s_cachedNodeModuleSizes[cacheKey] = { displaySize, displayGzip };
+                    if (s_nodeModuleSizeCache.size() >= 256) {
+                        s_nodeModuleSizeCache.clear();
+                    }
+                    s_nodeModuleSizeCache[cacheKey] = { displaySize, displayGzip };
                 }
             }
 
@@ -24732,7 +25067,9 @@ void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::
         std::wstring err;
         pRes->success = ui::remote::DownloadRemoteSshFile(host, remotePath, resolvedCache, err);
         pRes->errorMsg = std::move(err);
-        PostMessageW(hwnd, WM_USER + 207, 0, reinterpret_cast<LPARAM>(pRes));
+        if (!PostMessageW(hwnd, WM_USER + 207, 0, reinterpret_cast<LPARAM>(pRes))) {
+            delete pRes;
+        }
     }).detach();
 }
 
@@ -24780,7 +25117,9 @@ void Window::SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc) {
                 auto* pErr = new std::wstring(
                     L"Failed to upload remote file '" + remotePath + L"' (" + sess.label + L").\n\n" + err
                 );
-                PostMessageW(hwnd, WM_USER + 209, 0, reinterpret_cast<LPARAM>(pErr));
+                if (!PostMessageW(hwnd, WM_USER + 209, 0, reinterpret_cast<LPARAM>(pErr))) {
+                    delete pErr;
+                }
             }
         }
     }).detach();
@@ -25056,6 +25395,7 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
             RefreshDatabaseSchemaAsync();
         }
         if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+            m_editor.GetActivityHeatmapView().RecordSave();
             ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
         }
     }
@@ -27187,7 +27527,7 @@ void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
                 m_workspaceTests = std::move(items);
                 m_workspaceTestSummary = std::move(summary);
             }
-            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 0, 0);
+            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 1, 0);
         }
         m_testsRunningAsync.store(false);
         std::lock_guard<std::mutex> lk(m_bgWorkersMutex);

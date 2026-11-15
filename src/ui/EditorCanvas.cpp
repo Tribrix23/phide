@@ -925,6 +925,8 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         RenderStudentView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"graph") {
         m_graphView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"heatmap") {
+        m_activityHeatmapView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"monitor") {
         RenderMonitorView(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"test_explorer") {
@@ -1260,6 +1262,8 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
         } else if (doc.isSpecialView && doc.viewType == L"graph") {
             m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+        } else if (doc.isSpecialView && doc.viewType == L"heatmap") {
+            m_icons.DrawGitCommit(pRT, iconBounds, theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get(), 1.4f);
         } else if (doc.isSpecialView && doc.viewType == L"monitor") {
             m_icons.DrawMonitorAppIcon(pRT, iconBounds);
         } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
@@ -1535,6 +1539,9 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"graph") {
         segments.push_back(L"File Network");
         segments.push_back(L"Graph view");
+    } else if (doc.isSpecialView && doc.viewType == L"heatmap") {
+        segments.push_back(L"Insights");
+        segments.push_back(L"Activity Heatmap");
     } else if (doc.isSpecialView && doc.viewType == L"monitor") {
         segments.push_back(L"Diagnostics");
         segments.push_back(L"Performance Monitor");
@@ -13732,6 +13739,7 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
 
     if (hasQry && seenQryGen == m_sqlQueryReqGen) {
         m_sqlResult = std::move(qryRes);
+        if (onSqlQueryExecuted) onSqlQueryExecuted();
         m_sqlPage = 0;
         m_sqlSortCol = -1;
         m_sqlGridScrollY = 0.0f;

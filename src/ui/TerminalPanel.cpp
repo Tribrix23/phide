@@ -1250,8 +1250,22 @@ void TerminalTab::RunGarbageCollection() {
     for (auto& l : lines) {
         l.spans.shrink_to_fit();
         l.rawText.shrink_to_fit();
+        l.problemFile.shrink_to_fit();
+    }
+    if (!conPtyUseAltScreen && !conPtyAltSavedLines.empty()) {
+        conPtyAltSavedLines.clear();
+    }
+    conPtyAltSavedLines.shrink_to_fit();
+    if (commandHistory.size() > 500) {
+        commandHistory.erase(commandHistory.begin(), commandHistory.begin() + (commandHistory.size() - 500));
     }
     commandHistory.shrink_to_fit();
+    conPtyPendingUtf8.shrink_to_fit();
+    conPtyPendingEsc.shrink_to_fit();
+    currentInputLine.shrink_to_fit();
+    lastErrorText.shrink_to_fit();
+    pendingErrorFile.shrink_to_fit();
+    pendingErrorToken.shrink_to_fit();
     if (splitTab) {
         splitTab->RunGarbageCollection();
     }
@@ -1493,6 +1507,16 @@ void TerminalPanel::RunGarbageCollection() {
         }
     }
     m_availableProfiles.shrink_to_fit();
+    m_visibleUrls.shrink_to_fit();
+    m_visibleProblemLinks.shrink_to_fit();
+    m_debugStackHits.shrink_to_fit();
+    m_debugVarHits.shrink_to_fit();
+    m_debugWatchDelHits.shrink_to_fit();
+    m_optionsItemBounds.shrink_to_fit();
+    m_engineSubmenuItemBounds.shrink_to_fit();
+    m_viewModeSubmenuItemBounds.shrink_to_fit();
+    m_moveToSubmenuItemBounds.shrink_to_fit();
+    m_resizeSubmenuItemBounds.shrink_to_fit();
 }
 
 void TerminalPanel::SetActiveTabIdx(int idx) noexcept {

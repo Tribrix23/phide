@@ -465,6 +465,12 @@ public:
     void SetDockPosition(int pos) noexcept { m_dockPosition = pos; }
 
     // Hit-testing & Mouse Event Handling
+    void ClearBounds() noexcept {
+        m_panelBounds = D2D1::RectF(0, 0, 0, 0);
+        m_splitterBounds = D2D1::RectF(0, 0, 0, 0);
+        m_headerBounds = D2D1::RectF(0, 0, 0, 0);
+        m_textAreaBounds = D2D1::RectF(0, 0, 0, 0);
+    }
     [[nodiscard]] bool HitTest(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestSplitter(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestButtons(POINT pt) const noexcept;

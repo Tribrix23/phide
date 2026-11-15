@@ -7686,6 +7686,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
             m_commitMessage.clear();
             m_commitAmend = false;
         }
+        if (m_onGitCommitSucceeded) m_onGitCommitSucceeded();
         RefreshGitState(false);
         finish();
     }).detach();
@@ -8688,6 +8689,9 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             break;
                         case 24: // Run Garbage Collection (git gc)
                             RunGarbageCollectionAsync();
+                            break;
+                        case 25: // Open Git & Activity Heatmap view
+                            if (m_onOpenActivityHeatmap) m_onOpenActivityHeatmap();
                             break;
                         case 30: // Stash Changes with Message...
                             OpenGitPromptModal(GitPromptKind::StashMessage, L"Stash Changes (Optional Message)", L"");
@@ -11725,6 +11729,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 31, L"🌿 Create Branch..." });
             m_gitMenuItems.push_back({ 33, L"🏷  Create Tag..." });
             m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 25, L"▦  Activity Heatmap..." });
         } else {
             // Header Views
             anchor = m_gitHeaderMoreBounds;
@@ -11732,6 +11738,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 2, m_showChangesSection ? L"✓  Changes" : L"    Changes", false, false, m_showChangesSection });
             m_gitMenuItems.push_back({ 3, m_showGraphSection ? L"✓  Graph" : L"    Graph", false, false, m_showGraphSection });
             m_gitMenuItems.push_back({ 0, L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 25, L"▦  Activity Heatmap..." });
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 5, L"🔄 Refresh All" });
         }

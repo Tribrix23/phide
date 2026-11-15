@@ -249,6 +249,7 @@ enum class MenuActionId {
     ViewMonitor,
     ViewTestExplorer,
     ViewSqlConsole,
+    ViewHeatmap,
     MoreTraceCode,
     MoreDependencyGraph,
     MoreCallHierarchy,

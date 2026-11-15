@@ -32,6 +32,7 @@
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
 #include "phide/ui/GraphView.hpp"
+#include "phide/ui/ActivityHeatmapView.hpp"
 #include "phide/ui/SettingsView.hpp"
 #include "phide/ui/ApiTesterView.hpp"
 #include "phide/ui/InteractiveGuideView.hpp"
@@ -314,6 +315,8 @@ public:
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
     GraphView& GetGraphView() noexcept { return m_graphView; }
+    ActivityHeatmapView& GetActivityHeatmapView() noexcept { return m_activityHeatmapView; }
+    const ActivityHeatmapView& GetActivityHeatmapView() const noexcept { return m_activityHeatmapView; }
     SettingsView& GetSettingsView() noexcept { return m_settingsView; }
     ApiTesterView& GetApiTesterView() noexcept { return m_apiTesterView; }
     InteractiveGuideView& GetInteractiveGuideView() noexcept { return m_interactiveGuideView; }
@@ -421,6 +424,7 @@ private:
     PackageManagerView m_packageManagerView;
     NotebookView m_notebookView;
     GraphView m_graphView;
+    ActivityHeatmapView m_activityHeatmapView;
     SettingsView m_settingsView;
     ApiTesterView m_apiTesterView;
     InteractiveGuideView m_interactiveGuideView;
@@ -767,6 +771,7 @@ public:
     bool HandleSqlConsoleChar(wchar_t ch);
     bool HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd);
     std::function<void(const std::wstring&)> onSqlStatusToast;
+    std::function<void()> onSqlQueryExecuted;
     std::function<void()> onRequestEnsureMysqlRunning;
     std::function<void(int port, bool running)> onMysqlServerStateChanged;
 
@@ -952,8 +957,42 @@ public:
         m_learningHubBitmaps.clear();
         m_learningCourses.shrink_to_fit();
         m_renderedCourseCards.shrink_to_fit();
+        m_breadcrumbHits.shrink_to_fit();
+        m_breadcrumbDropdownItems.shrink_to_fit();
+        m_activeCodeLensActions.shrink_to_fit();
+        m_activeDocSymbols.shrink_to_fit();
+        m_testRowHits.shrink_to_fit();
+        m_visibleGutterTests.shrink_to_fit();
+        m_testItems.shrink_to_fit();
+        m_monitorRowHits.shrink_to_fit();
+        m_cachedDevPorts.shrink_to_fit();
+        if (!m_peekPanel.isOpen) {
+            m_peekPanel.items.clear();
+            m_peekPanel.previewLines.clear();
+        }
+        m_peekPanel.items.shrink_to_fit();
+        m_peekPanel.previewLines.shrink_to_fit();
+        if (!m_findBar.isOpen) {
+            m_findBar.matches.clear();
+        }
+        m_findBar.matches.shrink_to_fit();
+        m_findBar.query.shrink_to_fit();
+        m_findBar.replaceQuery.shrink_to_fit();
+        m_sqlResult.columns.shrink_to_fit();
+        m_sqlResult.rows.shrink_to_fit();
+        for (auto& r : m_sqlResult.rows) {
+            r.shrink_to_fit();
+        }
+        m_sqlTables.shrink_to_fit();
+        m_sqlProfiles.shrink_to_fit();
+        m_sqlProfileHits.shrink_to_fit();
+        m_sqlDbHits.shrink_to_fit();
+        m_sqlTableHits.shrink_to_fit();
+        m_sqlColHeaderHits.shrink_to_fit();
+        m_snipListHits.shrink_to_fit();
         m_packageManagerView.RunGarbageCollection();
         m_notebookView.RunGarbageCollection();
+        m_activityHeatmapView.RunGarbageCollection();
     }
     [[nodiscard]] const ColorSwatchHit* HitTestColorSwatch(POINT pt) const;
 

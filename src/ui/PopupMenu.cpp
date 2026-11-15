@@ -384,6 +384,7 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.push_back({ MenuActionId::ViewMonitor, L"Monitor", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewTestExplorer, L"Test Explorer", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewSqlConsole, L"SQL Query Console...", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ViewHeatmap, L"Activity Heatmap...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
     m_items.push_back({ MenuActionId::CodeFindReferences, L"Find All References", L"Shift+F12", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::MoreCallHierarchy, L"Call Hierarchy", L"", false, false, false, true, {}, {} });

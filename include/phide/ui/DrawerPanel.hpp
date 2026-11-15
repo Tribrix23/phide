@@ -1150,6 +1150,12 @@ public:
     void SetOnOpenExtensionDetail(std::function<void(const std::wstring& extId)> cb) {
         m_onOpenExtensionDetail = std::move(cb);
     }
+    void SetOnOpenActivityHeatmap(std::function<void()> cb) {
+        m_onOpenActivityHeatmap = std::move(cb);
+    }
+    void SetOnGitCommitSucceeded(std::function<void()> cb) {
+        m_onGitCommitSucceeded = std::move(cb);
+    }
     bool HitTestExtensions(POINT pt, const app::AppConfig& config, std::wstring& outExtId);
     bool HandleExtensionsWheel(short delta);
     void UpdateExtensionsHover(POINT pt);
@@ -1170,6 +1176,8 @@ private:
     int m_hoveredExtensionIdx = -1;
     bool m_extensionsInitialized = false;
     std::function<void(const std::wstring& extId)> m_onOpenExtensionDetail;
+    std::function<void()> m_onOpenActivityHeatmap;
+    std::function<void()> m_onGitCommitSucceeded;
 
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
     workspace::IgnoreEngine m_ignoreEngine;

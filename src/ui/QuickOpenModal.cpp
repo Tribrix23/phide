@@ -364,6 +364,7 @@ void QuickOpenModal::FilterItems() {
             { L"Debug: Edit Breakpoint Condition / Logpoint", L"Shift + F9", L"cmd_edit_breakpoint_condition" },
             { L"View: Test Explorer", L"", L"cmd_test_explorer" },
             { L"View: SQL Query Console", L"", L"cmd_sql_console" },
+            { L"View: Git & Activity Heatmap", L"", L"cmd_heatmap" },
             { L"Testing: Run All Tests", L"", L"cmd_run_all_tests" },
             { L"Git: Commit", L"Ctrl + Enter", L"cmd_git_commit" },
             { L"Git: Refresh", L"Ctrl + Shift + R", L"cmd_git_refresh" }

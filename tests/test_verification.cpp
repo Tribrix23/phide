@@ -38,6 +38,7 @@
 #include "phide/ui/PackageManagerView.hpp"
 #include "phide/ui/NotebookView.hpp"
 #include "phide/ui/GraphView.hpp"
+#include "phide/ui/ActivityHeatmapView.hpp"
 #include "phide/editor/NotebookModel.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
@@ -382,6 +383,12 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 134) {
         goto run_test_134;
+    }
+    if (targetTest == 135) {
+        goto run_test_135;
+    }
+    if (targetTest == 136) {
+        goto run_test_136;
     }
 
     if (targetTest == 66) {
@@ -22004,6 +22011,445 @@ run_test_134:
 
         if (targetTest == 134) {
             std::cout << "Target test 134 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_135:
+    // [TEST 135] Editor-Docked Terminal Persistence & Multi-Pane Split + GC Memory Reclamation
+    if (targetTest == 0 || targetTest == 135) {
+        std::cout << "\n[TEST 135] Testing Editor-Docked Terminal Persistence, 2x2 Split Routing & GC Memory Reclamation..." << std::endl;
+
+        // Part 1: Editor-docked terminal survival, self-healing & 2x2 split hit-testing
+        {
+            const UINT w135 = 1200;
+            const UINT h135 = 760;
+            ComPtr<IWICBitmap> wic135;
+            assert(SUCCEEDED(pWicFactory->CreateBitmap(w135, h135, GUID_WICPixelFormat32bppPBGRA,
+                                                       WICBitmapCacheOnDemand, &wic135)));
+            D2D1_RENDER_TARGET_PROPERTIES rtProps135 = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            ComPtr<ID2D1RenderTarget> pRT135;
+            assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(wic135.Get(), rtProps135, &pRT135)));
+
+            phide::ui::Theme theme135;
+            theme135.SetThemeMode(phide::ui::ThemeMode::Dark);
+            theme135.CreateDeviceResources(pRT135.Get(), pDWriteFactory.Get());
+
+            phide::app::AppConfig cfg135 = config;
+            cfg135.terminalDockPosition = 1;
+
+            phide::ui::TerminalPanel term135;
+            term135.SetUseConPtyForShells(false);
+            term135.SetDockPosition(1);
+            term135.Open(L"");
+            assert(term135.IsOpen());
+            auto* t135 = term135.GetActiveTab();
+            assert(t135 != nullptr);
+            {
+                std::lock_guard<std::mutex> lk(t135->bufferMutex);
+                t135->lines.clear();
+                t135->lines.push_back({});
+            }
+            const char* termOutput = "$ echo PHIDE_EDITOR_SPLIT_OK\r\nPHIDE_EDITOR_SPLIT_OK\r\n";
+            t135->AppendOutput(termOutput, std::strlen(termOutput));
+
+            phide::ui::EditorCanvas ec135;
+            ec135.GetSplitState().layout = phide::editor::EditorSplitLayout::Grid2x2;
+            bool callbackInvoked = false;
+            ec135.SetOnRenderTerminalInEditor([&](ID2D1RenderTarget* pRT, float x, float y, float w, float h) {
+                callbackInvoked = true;
+                if (term135.GetDockPosition() == 1 && !term135.IsOpen()) {
+                    term135.SetIsOpen(true);
+                }
+                if (term135.GetDockPosition() != 1) {
+                    term135.SetDockPosition(1);
+                }
+                term135.RenderBounds(pRT, theme135, cfg135, D2D1::RectF(x, y, x + w, y + h), static_cast<float>(h135), false);
+            });
+
+            std::vector<phide::editor::EditorGroup> groups135(4);
+            {
+                phide::editor::OpenDocument d0;
+                d0.filePath = L"app/layout.tsx";
+                d0.fileName = L"layout.tsx";
+                d0.buffer.SetText(L"export default function RootLayout() { return null; }\n");
+                groups135[0].docs.push_back(std::move(d0));
+                groups135[0].activeDocIdx = 0;
+
+                phide::editor::OpenDocument dNb;
+                dNb.fileName = L"Notebook 1.ipynb";
+                dNb.isSpecialView = true;
+                dNb.viewType = L"notebook";
+                groups135[1].docs.push_back(std::move(dNb));
+                groups135[1].activeDocIdx = 0;
+
+                phide::editor::OpenDocument dCss;
+                dCss.filePath = L"app/globals.css";
+                dCss.fileName = L"globals.css";
+                dCss.buffer.SetText(L"body { margin: 0; }\n");
+                groups135[2].docs.push_back(std::move(dCss));
+
+                phide::editor::OpenDocument dTerm;
+                dTerm.fileName = L"Terminal";
+                dTerm.isSpecialView = true;
+                dTerm.viewType = L"terminal";
+                groups135[2].docs.push_back(std::move(dTerm));
+                groups135[2].activeDocIdx = 1; // Top-Right Group 2 displays Terminal while Group 0 has focus
+
+                phide::editor::OpenDocument dMon;
+                dMon.fileName = L"Performance Monitor";
+                dMon.isSpecialView = true;
+                dMon.viewType = L"monitor";
+                groups135[3].docs.push_back(std::move(dMon));
+                groups135[3].activeDocIdx = 0;
+            }
+
+            // Simulate the bug scenario: another subsystem sets m_isOpen = false while docked in editor
+            term135.SetIsOpen(false);
+            callbackInvoked = false;
+
+            pRT135->BeginDraw();
+            pRT135->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            ec135.Render(pRT135.Get(), theme135, cfg135, groups135, 0, 0.0f, static_cast<float>(w135), static_cast<float>(h135));
+            assert(SUCCEEDED(pRT135->EndDraw()));
+
+            // Verify self-healing revived terminal state and rendered pixels into Top-Right pane (Group 2)
+            assert(callbackInvoked);
+            assert(term135.IsOpen());
+            assert(term135.GetDockPosition() == 1);
+
+            WICRect rcTopRight = { 615, 70, 560, 240 };
+            std::vector<BYTE> pxBuf(static_cast<size_t>(rcTopRight.Width) * rcTopRight.Height * 4);
+            assert(SUCCEEDED(wic135->CopyPixels(&rcTopRight, rcTopRight.Width * 4, static_cast<UINT>(pxBuf.size()), pxBuf.data())));
+            int brightPixels = 0;
+            for (size_t i = 0; i + 3 < pxBuf.size(); i += 4) {
+                BYTE b = pxBuf[i], g = pxBuf[i + 1], r = pxBuf[i + 2];
+                if (r > 100 || g > 100 || b > 100) {
+                    ++brightPixels;
+                }
+            }
+            assert(brightPixels > 50);
+
+            // HitTest succeeds inside unfocused Top-Right Group 2's Terminal content area and fails in Group 0 (layout.tsx)
+            assert(term135.HitTest(POINT{ 850, 200 }));
+            assert(!term135.HitTest(POINT{ 200, 200 }));
+
+            // Switching Group 2 away from Terminal to globals.css + ClearBounds() prevents stale hit interception
+            groups135[2].activeDocIdx = 0;
+            term135.ClearBounds();
+            pRT135->BeginDraw();
+            pRT135->Clear(D2D1::ColorF(0.08f, 0.09f, 0.11f));
+            ec135.Render(pRT135.Get(), theme135, cfg135, groups135, 0, 0.0f, static_cast<float>(w135), static_cast<float>(h135));
+            assert(SUCCEEDED(pRT135->EndDraw()));
+            assert(!term135.HitTest(POINT{ 850, 200 }));
+
+            std::cout << "  Passed: Editor-docked terminal survived SetIsOpen(false), rendered " << brightPixels
+                      << " glyph pixels in 2x2 split Group 2, and ClearBounds() cleared hidden hit rect" << std::endl;
+        }
+
+        // Part 2: Memory Leak & Stagnant Memory GC Verification + Window Terminal Editor-Tab Deduplication
+        {
+            phide::ui::TerminalPanel termGc;
+            termGc.SetUseConPtyForShells(false);
+            termGc.Open(L"");
+            auto* gcTab = termGc.GetActiveTab();
+            assert(gcTab != nullptr);
+            {
+                std::lock_guard<std::mutex> lk(gcTab->bufferMutex);
+                gcTab->conPtyUseAltScreen = false;
+                for (int i = 0; i < 1200; ++i) {
+                    decltype(gcTab->lines)::value_type savedLine;
+                    savedLine.rawText = L"alt_saved_line_" + std::to_wstring(i);
+                    gcTab->conPtyAltSavedLines.push_back(std::move(savedLine));
+                }
+                for (int i = 0; i < 750; ++i) {
+                    gcTab->commandHistory.push_back(L"cmd_" + std::to_wstring(i));
+                }
+                gcTab->conPtyPendingUtf8.assign(2048, 'x');
+                gcTab->conPtyPendingUtf8.clear();
+                gcTab->conPtyPendingEsc.assign(2048, L'x');
+                gcTab->conPtyPendingEsc.clear();
+                gcTab->lastErrorText.assign(2048, L'e');
+                gcTab->lastErrorText.clear();
+                gcTab->pendingErrorFile.assign(2048, L'f');
+                gcTab->pendingErrorFile.clear();
+                gcTab->pendingErrorToken.assign(2048, L't');
+                gcTab->pendingErrorToken.clear();
+                gcTab->currentInputLine = L"echo active_cmd";
+                gcTab->lines.clear();
+                decltype(gcTab->lines)::value_type liveLine;
+                liveLine.rawText = L"LIVE_OUTPUT_KEEP";
+                gcTab->lines.push_back(std::move(liveLine));
+            }
+            const size_t capUtf8Before = gcTab->conPtyPendingUtf8.capacity();
+            const size_t capEscBefore = gcTab->conPtyPendingEsc.capacity();
+            const size_t capErrBefore = gcTab->lastErrorText.capacity();
+            const size_t capFileBefore = gcTab->pendingErrorFile.capacity();
+            const size_t capTokBefore = gcTab->pendingErrorToken.capacity();
+
+            termGc.RunGarbageCollection();
+            {
+                std::lock_guard<std::mutex> lk(gcTab->bufferMutex);
+                assert(gcTab->conPtyAltSavedLines.empty());
+                assert(gcTab->conPtyAltSavedLines.capacity() == 0);
+                assert(gcTab->commandHistory.size() == 500);
+                assert(gcTab->commandHistory.front() == L"cmd_250");
+                assert(gcTab->commandHistory.back() == L"cmd_749");
+                assert(gcTab->conPtyPendingUtf8.capacity() < capUtf8Before);
+                assert(gcTab->conPtyPendingEsc.capacity() < capEscBefore);
+                assert(gcTab->lastErrorText.capacity() < capErrBefore);
+                assert(gcTab->pendingErrorFile.capacity() < capFileBefore);
+                assert(gcTab->pendingErrorToken.capacity() < capTokBefore);
+                assert(gcTab->currentInputLine == L"echo active_cmd");
+                assert(gcTab->lines.size() == 1 && gcTab->lines[0].rawText == L"LIVE_OUTPUT_KEEP");
+
+                // When actively in alt-screen, alt-saved scrollback must NOT be cleared by GC
+                gcTab->conPtyUseAltScreen = true;
+                decltype(gcTab->lines)::value_type keepSaved;
+                keepSaved.rawText = L"active_alt_saved";
+                gcTab->conPtyAltSavedLines.push_back(std::move(keepSaved));
+            }
+            termGc.RunGarbageCollection();
+            {
+                std::lock_guard<std::mutex> lk(gcTab->bufferMutex);
+                assert(gcTab->conPtyAltSavedLines.size() == 1);
+            }
+
+            phide::editor::Buffer bufGc;
+            bufGc.SetText(L"line one\nline two\n");
+            bufGc.RunGarbageCollection();
+            assert(bufGc.GetLine(0) == L"line one");
+            assert(bufGc.GetLine(1) == L"line two");
+
+            phide::ui::EditorCanvas ecGc;
+            ecGc.RunGarbageCollection();
+
+            phide::ui::DrawerPanel drawerGc;
+            drawerGc.RunGarbageCollection();
+
+            // Verify Window::OpenSpecialView(L"terminal", ...) focuses existing terminal tab rather than duplicating it
+            {
+                phide::app::Window win135;
+                win135.OpenVirtualDocument(L"alpha.ts", L"export const a = 1;\n");
+                win135.OpenSpecialView(L"terminal", L"Terminal");
+                auto* firstTerm = win135.GetActiveDoc();
+                assert(firstTerm != nullptr && firstTerm->isSpecialView && firstTerm->viewType == L"terminal");
+
+                win135.OpenSpecialView(L"monitor", L"Performance Monitor");
+                auto* monDoc = win135.GetActiveDoc();
+                assert(monDoc != nullptr && monDoc->viewType == L"monitor");
+
+                win135.OpenSpecialView(L"terminal", L"Terminal");
+                int termCount = 0;
+                for (const auto& doc : win135.GetActiveGroup().docs) {
+                    if (doc.isSpecialView && doc.viewType == L"terminal") {
+                        ++termCount;
+                    }
+                }
+                assert(termCount == 1);
+                assert(win135.GetActiveDoc() != nullptr && win135.GetActiveDoc()->viewType == L"terminal");
+            }
+
+            std::cout << "  Passed: GC reclaimed stagnant terminal/buffer/canvas memory safely and Window preserved unique Terminal editor tab" << std::endl;
+        }
+
+        if (targetTest == 135) {
+            std::cout << "Target test 135 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_136:
+    // [TEST 136] GitHub-style Commit, Code Churn & IDE Activity Heatmap (Responsive Grid, Streak Math, Persistence & Commit Diff Drill-down)
+    if (targetTest == 0 || targetTest == 136) {
+        std::cout << "\n[TEST 136] Testing Activity Heatmap Calendar Math, Git Parsing, Persistence, Responsive Rendering & Drill-down..." << std::endl;
+
+        using phide::ui::ActivityHeatmapView;
+        using phide::ui::HeatmapCommitEntry;
+        using phide::ui::HeatmapDayRecord;
+        using phide::ui::HeatmapMetric;
+        using phide::ui::HeatmapRange;
+
+        // 1. Civil calendar & leap-year arithmetic
+        assert(ActivityHeatmapView::AddDaysYmd(L"2024-02-29", 1) == L"2024-03-01");
+        assert(ActivityHeatmapView::AddDaysYmd(L"2026-11-15", -364) == L"2025-11-16");
+        assert(ActivityHeatmapView::DayOfWeekYmd(L"2026-11-15") == 0); // Sunday
+        assert(ActivityHeatmapView::DayOfWeekYmd(L"2026-11-14") == 6); // Saturday
+
+        // 2. Git log & numstat parsing + My Commits filtering
+        std::map<std::wstring, HeatmapDayRecord> parsedDays;
+        std::unordered_map<std::wstring, std::vector<HeatmapCommitEntry>> parsedCommits;
+        std::wstring sampleLog =
+            L"1111111111111111111111111111111111111111\x001F" L"1111111\x001F" L"2026-11-15\x001F" L"John Perez\x001F" L"feat(ui): add responsive heatmap\n"
+            L"2222222222222222222222222222222222222222\x001F" L"2222222\x001F" L"2026-11-14\x001F" L"John Perez\x001F" L"fix(gc): tighten idle buffers\n"
+            L"3333333333333333333333333333333333333333\x001F" L"3333333\x001F" L"2026-11-14\x001F" L"Alex Teammate\x001F" L"docs: update readme\n"
+            L"4444444444444444444444444444444444444444\x001F" L"4444444\x001F" L"2026-11-13\x001F" L"John Perez\x001F" L"chore: benchmark churn\n"
+            L"5555555555555555555555555555555555555555\x001F" L"5555555\x001F" L"2026-11-10\x001F" L"John Perez\x001F" L"init: baseline commit\n";
+        ActivityHeatmapView::ParseGitLogOutput(sampleLog, L"John Perez", parsedDays, parsedCommits);
+
+        std::wstring sampleStat =
+            L"@HM@1111111111111111111111111111111111111111\x001F" L"2026-11-15\x001F" L"John Perez\n"
+            L"120\t15\tsrc/ui/ActivityHeatmapView.cpp\n"
+            L"@HM@2222222222222222222222222222222222222222\x001F" L"2026-11-14\x001F" L"John Perez\n"
+            L"45\t10\tsrc/app/Window.cpp\n"
+            L"@HM@3333333333333333333333333333333333333333\x001F" L"2026-11-14\x001F" L"Alex Teammate\n"
+            L"800\t200\tREADME.md\n";
+        ActivityHeatmapView::ParseGitNumstatOutput(sampleStat, L"John Perez", parsedDays, parsedCommits);
+
+        assert(parsedDays[L"2026-11-14"].commitCount == 2);
+        assert(parsedDays[L"2026-11-14"].myCommitCount == 1);
+        assert(parsedDays[L"2026-11-14"].linesAdded == 845 && parsedDays[L"2026-11-14"].linesDeleted == 210);
+        assert(parsedDays[L"2026-11-14"].myLinesAdded == 45 && parsedDays[L"2026-11-14"].myLinesDeleted == 10);
+        assert(parsedCommits[L"2026-11-14"].size() == 2);
+        assert(parsedCommits[L"2026-11-14"][0].additions == 45);
+
+        // 3. Persistence round-trip + Streaks & Peak Day math
+        std::filesystem::path tmpStore = std::filesystem::temp_directory_path() / L"phide_test136_heatmap.json";
+        std::error_code ecClean;
+        std::filesystem::remove(tmpStore, ecClean);
+
+        {
+            ActivityHeatmapView hm;
+            hm.SetReferenceDateForTesting(L"2026-11-15");
+            hm.SetStoragePathForTesting(tmpStore.wstring());
+            hm.ApplyGitScanForTesting(L"C:\\repo", true, L"John Perez", parsedDays, parsedCommits);
+
+            // Commits stats for all authors: 5 total across 4 active days, peak 2 on 2026-11-14, streak 3 (Nov 13, 14, 15)
+            auto stAll = hm.ComputeStats(52, L"2026-11-15");
+            assert(stAll.totalValue == 5);
+            assert(stAll.activeDays == 4);
+            assert(stAll.currentStreak == 3);
+            assert(stAll.longestStreak == 3);
+            assert(stAll.peakValue == 2 && stAll.peakDate == L"2026-11-14");
+
+            // My Commits filter drops Alex Teammate's commit on Nov 14
+            hm.SetOnlyMyCommits(true);
+            auto myDayCommits = hm.GetCommitsForDate(L"2026-11-14");
+            assert(myDayCommits.size() == 1 && myDayCommits[0].shortHash == L"2222222");
+            assert(hm.GetValueForDate(L"2026-11-14") == 1);
+
+            // Code Churn mode reflects author filter accurately too
+            hm.SetMetric(HeatmapMetric::CodeChurn);
+            assert(hm.GetValueForDate(L"2026-11-14") == 55);
+            hm.SetOnlyMyCommits(false);
+            assert(hm.GetValueForDate(L"2026-11-14") == 1055);
+
+            // Record discrete IDE milestones & force flush
+            hm.RecordSave();
+            hm.RecordSave();
+            hm.RecordBuild();
+            hm.RecordTestRun(true);
+            hm.RecordSqlQuery();
+            hm.RecordCommitMilestone();
+            hm.SaveIdeHistoryIfDirty(true);
+            assert(std::filesystem::exists(tmpStore, ecClean));
+
+            // Reload into fresh instance and verify IDE Activity counters persisted intact
+            ActivityHeatmapView hmReloaded;
+            hmReloaded.SetReferenceDateForTesting(L"2026-11-15");
+            hmReloaded.SetStoragePathForTesting(tmpStore.wstring());
+            hmReloaded.EnsureLoaded();
+            hmReloaded.SetMetric(HeatmapMetric::IdeActivity);
+            assert(hmReloaded.GetValueForDate(L"2026-11-15") == 6); // 2 saves + 1 build + 1 test + 1 sql + 1 commit
+
+            // 4. Responsive Direct2D Render check: Narrow 2x2 split pane (520x420) vs Full width (1200x750)
+            hm.SetMetric(HeatmapMetric::Commits);
+            hm.SetRange(HeatmapRange::Auto);
+            std::wstring openedCommitHash;
+            hm.SetOnOpenCommitDiff([&](const std::wstring& h) { openedCommitHash = h; });
+
+            auto renderAtSize = [&](UINT w, UINT h, int& outWeeks, float& outCellSize) {
+                ComPtr<IWICBitmap> wic;
+                assert(SUCCEEDED(pWicFactory->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wic)));
+                D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                ComPtr<ID2D1RenderTarget> rt;
+                assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(wic.Get(), props, &rt)));
+                phide::ui::Theme t;
+                t.SetThemeMode(phide::ui::ThemeMode::Dark);
+                t.CreateDeviceResources(rt.Get(), pDWriteFactory.Get());
+                phide::app::AppConfig cfg136 = config;
+                rt->BeginDraw();
+                hm.Render(rt.Get(), t, cfg136, 0.0f, static_cast<float>(w), 35.0f, static_cast<float>(h));
+                assert(SUCCEEDED(rt->EndDraw()));
+                outWeeks = hm.GetLastRenderedWeeks();
+                outCellSize = hm.GetLastCellSize();
+            };
+
+            // Narrow split pane: Auto-adaptation MUST keep square cell size >= 11px and reduce visible weeks cleanly (no squeeze!)
+            int narrowWeeks = 0;
+            float narrowCell = 0.0f;
+            renderAtSize(520, 420, narrowWeeks, narrowCell);
+            assert(narrowWeeks < 52 && narrowWeeks >= 16);
+            assert(narrowCell >= 11.0f);
+
+            // Wide pane: shows all 52 weeks cleanly with generous cell size >= 11px
+            int wideWeeks = 0;
+            float wideCell = 0.0f;
+            renderAtSize(1200, 750, wideWeeks, wideCell);
+            assert(wideWeeks == 52);
+            assert(wideCell >= 11.0f);
+
+            // Verify every rendered cell fits strictly inside [0, 1200] without clipping
+            for (const auto& cell : hm.GetCellHits()) {
+                assert(cell.bounds.left >= 0.0f && cell.bounds.right <= 1200.0f);
+                assert(cell.bounds.top >= 35.0f);
+            }
+
+            // 5. Interactive Hover + Click Cell + Click Commit Diff
+            POINT nov14Pt{ -1, -1 };
+            for (const auto& cell : hm.GetCellHits()) {
+                if (cell.date == L"2026-11-14") {
+                    nov14Pt.x = static_cast<LONG>((cell.bounds.left + cell.bounds.right) * 0.5f);
+                    nov14Pt.y = static_cast<LONG>((cell.bounds.top + cell.bounds.bottom) * 0.5f);
+                    break;
+                }
+            }
+            assert(nov14Pt.x > 0);
+            assert(hm.HandleMouseMove(nov14Pt));
+            assert(hm.GetHoveredDate() == L"2026-11-14");
+            assert(hm.GetCursorForPoint(nov14Pt) == IDC_HAND);
+            assert(hm.HandleLButtonDown(nov14Pt, config));
+            assert(hm.GetSelectedDate() == L"2026-11-14");
+
+            // Re-render to populate commit drill-down hits for 2026-11-14
+            int dummyWeeks = 0;
+            float dummyCell = 0.0f;
+            renderAtSize(1200, 750, dummyWeeks, dummyCell);
+            assert(hm.GetCommitHits().size() == 2);
+            const auto& firstCommitRc = hm.GetCommitHits()[0].bounds;
+            POINT commitClickPt{
+                static_cast<LONG>((firstCommitRc.left + firstCommitRc.right) * 0.5f),
+                static_cast<LONG>((firstCommitRc.top + firstCommitRc.bottom) * 0.5f)
+            };
+            assert(hm.GetCursorForPoint(commitClickPt) == IDC_HAND);
+            assert(hm.HandleLButtonDown(commitClickPt, config));
+            assert(openedCommitHash == L"2222222222222222222222222222222222222222");
+
+            hm.RunGarbageCollection();
+        }
+        std::filesystem::remove(tmpStore, ecClean);
+
+        // 6. Verify Window::OpenSpecialView(L"heatmap", ...) creates unique special tab
+        {
+            phide::app::Window win136;
+            win136.OpenSpecialView(L"heatmap", L"Activity Heatmap");
+            auto* hDoc = win136.GetActiveDoc();
+            assert(hDoc != nullptr && hDoc->isSpecialView && hDoc->viewType == L"heatmap");
+            win136.OpenSpecialView(L"heatmap", L"Activity Heatmap");
+            int hmCount = 0;
+            for (const auto& d : win136.GetActiveGroup().docs) {
+                if (d.isSpecialView && d.viewType == L"heatmap") ++hmCount;
+            }
+            assert(hmCount == 1);
+        }
+
+        std::cout << "  Passed: All [TEST 136] Activity Heatmap math, persistence, responsive grid, tooltip & commit drill-down checks passed!" << std::endl;
+        if (targetTest == 136) {
+            std::cout << "Target test 136 finished successfully." << std::endl;
             return 0;
         }
     }

@@ -1140,6 +1140,8 @@ private:
     bool  m_isRightSidebarAnimating    = false;
 
     void CloseTerminalEditorTab();
+    [[nodiscard]] bool HasAnyTerminalEditorTab() const noexcept;
+    [[nodiscard]] int FindVisibleTerminalEditorGroup() const noexcept;
 
     [[nodiscard]] float GetCurrentTerminalHeight(float clientH) const noexcept {
         if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
