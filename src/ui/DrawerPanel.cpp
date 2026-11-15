@@ -7568,7 +7568,45 @@ std::wstring DrawerPanel::GetCommitFileContent(const std::wstring& commitHash, c
     return L"";
 }
 
-void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGuard) {
+bool DrawerPanel::TriggerCommitAction(int postCommitAction) {
+    if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
+        return true; // Ignore repeated clicks while loading (prevent spam click)
+    }
+    if (m_isCommitEditMsgOpen) {
+        return true; // Button disabled and locked while COMMIT_EDITMSG is open
+    }
+    if (!IsGitHubLoggedIn()) {
+        ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
+        OpenGitHubLoginModal();
+        return true;
+    }
+    bool needsPublish = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty()) ||
+                        (m_isGitRepo && m_gitChanges.empty() && !m_hasGitRemote);
+    if (needsPublish) {
+        OpenPublishRepoModal();
+        return true;
+    }
+    if (!m_gitChanges.empty() || m_commitAmend) {
+        std::wstring trimmed = m_commitMessage;
+        size_t f = trimmed.find_first_not_of(L" \t\r\n");
+        if (f == std::wstring::npos) {
+            m_focusedGitInput = 1;
+            m_gitTooltipText = L"Please provide a commit message before committing.";
+            m_gitTooltipTarget = m_gitMsgBoxBounds;
+            m_showGitTooltip = true;
+            ShowGitNotification(L"Please provide a commit message before committing.");
+            return true;
+        }
+        CommitChangesAsync(m_commitMessage, false, postCommitAction);
+        return true;
+    } else if (m_unpushedCommitsCount > 0) {
+        PushCommitsAsync();
+        return true;
+    }
+    return true;
+}
+
+void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGuard, int postCommitAction) {
     std::wstring msg = message;
     // Trim whitespace
     size_t first = msg.find_first_not_of(L" \t\r\n");
@@ -7595,7 +7633,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
-    std::thread([this, alive, workers, msg, amendCommit]() {
+    std::thread([this, alive, workers, msg, amendCommit, postCommitAction]() {
         auto finish = [&]() {
             if (alive && alive->load()) {
                 m_isGitLoading = false;
@@ -7687,6 +7725,39 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
             m_commitAmend = false;
         }
         if (m_onGitCommitSucceeded) m_onGitCommitSucceeded();
+
+        if (postCommitAction == 1 || postCommitAction == 2) {
+            auto resRemote = RunGitCmd(L"remote", dir);
+            if (resRemote.exitCode != 0 || TrimWideWhitespace(resRemote.output).empty()) {
+                ShowGitNotification(L"Committed locally, but no remote is configured to push.");
+                if (m_onGitError) {
+                    m_onGitError(L"git push", L"No remote repository (such as 'origin') is configured in this repository.", dir);
+                }
+            } else {
+                bool canPush = true;
+                if (postCommitAction == 2) {
+                    auto resPull = RunGitCmd(L"pull --rebase", dir);
+                    if (resPull.exitCode != 0) {
+                        canPush = false;
+                        if (m_onGitError) {
+                            m_onGitError(L"git pull --rebase", resPull.output, dir);
+                        }
+                    }
+                }
+                if (canPush) {
+                    auto resPush = RunGitCmd(L"push", dir);
+                    if (resPush.exitCode != 0 &&
+                        (resPush.output.find(L"--set-upstream") != std::wstring::npos ||
+                         resPush.output.find(L"no upstream branch") != std::wstring::npos)) {
+                        resPush = RunGitCmd(L"push -u origin HEAD", dir);
+                    }
+                    if (resPush.exitCode != 0 && m_onGitError) {
+                        m_onGitError(L"git push", resPush.output, dir);
+                    }
+                }
+            }
+        }
+
         RefreshGitState(false);
         finish();
     }).detach();
@@ -8733,6 +8804,27 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                         case 35: // Rebase Onto Branch...
                             OpenGitPromptModal(GitPromptKind::RebaseOnto, L"Rebase Current Branch Onto...", L"main");
                             break;
+                        case 40: // Commit
+                            m_activeGitMenu = GitMenuType::None;
+                            m_showGitViewMenu = false;
+                            TriggerCommitAction(0);
+                            return true;
+                        case 41: // Commit (Amend)
+                            m_commitAmend = true;
+                            m_activeGitMenu = GitMenuType::None;
+                            m_showGitViewMenu = false;
+                            TriggerCommitAction(0);
+                            return true;
+                        case 42: // Commit & Push
+                            m_activeGitMenu = GitMenuType::None;
+                            m_showGitViewMenu = false;
+                            TriggerCommitAction(1);
+                            return true;
+                        case 43: // Commit & Sync
+                            m_activeGitMenu = GitMenuType::None;
+                            m_showGitViewMenu = false;
+                            TriggerCommitAction(2);
+                            return true;
                         default:
                             break;
                     }
@@ -8833,44 +8925,22 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             return true;
         }
 
+        // Commit Split-Button Dropdown Chevron (must be checked BEFORE m_gitCommitBtnBounds)
+        if (m_gitCommitDropdownBounds.right > m_gitCommitDropdownBounds.left &&
+            pt.x >= m_gitCommitDropdownBounds.left && pt.x <= m_gitCommitDropdownBounds.right &&
+            pt.y >= m_gitCommitDropdownBounds.top && pt.y <= m_gitCommitDropdownBounds.bottom) {
+            if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load() || m_isCommitEditMsgOpen) {
+                return true;
+            }
+            m_activeGitMenu = (m_activeGitMenu == GitMenuType::CommitMenu) ? GitMenuType::None : GitMenuType::CommitMenu;
+            m_showGitViewMenu = false;
+            return true;
+        }
+
         // Primary Commit / Sync Changes / Publish Button
         if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
             pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
-            if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
-                return true; // Ignore repeated clicks while loading (prevent spam click)
-            }
-            if (m_isCommitEditMsgOpen) {
-                return true; // Button disabled and locked while COMMIT_EDITMSG is open
-            }
-            if (!IsGitHubLoggedIn()) {
-                ShowGitNotification(L"No GitHub account detected. Please log in to GitHub before committing.");
-                OpenGitHubLoginModal();
-                return true;
-            }
-            bool needsPublish = !m_isGitRepo || (!m_gitChanges.empty() && m_gitCommits.empty()) ||
-                                (m_isGitRepo && m_gitChanges.empty() && !m_hasGitRemote);
-            if (needsPublish) {
-                OpenPublishRepoModal();
-                return true;
-            }
-            if (!m_gitChanges.empty() || m_commitAmend) {
-                std::wstring trimmed = m_commitMessage;
-                size_t f = trimmed.find_first_not_of(L" \t\r\n");
-                if (f == std::wstring::npos) {
-                    m_focusedGitInput = 1;
-                    m_gitTooltipText = L"Please provide a commit message before committing.";
-                    m_gitTooltipTarget = m_gitMsgBoxBounds;
-                    m_showGitTooltip = true;
-                    ShowGitNotification(L"Please provide a commit message before committing.");
-                    return true;
-                }
-                CommitChangesAsync(m_commitMessage);
-                return true;
-            } else if (m_unpushedCommitsCount > 0) {
-                PushCommitsAsync();
-                return true;
-            }
-            return true; // Disabled when 0 changes, 0 unpushed, and remote connected
+            return TriggerCommitAction(0);
         }
 
         // Staged Changes Header buttons & chevron
@@ -9218,6 +9288,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
         m_gitTooltipTarget = m_gitSyncBtnBounds;
         m_showGitTooltip = true;
     }
+    else if (checkBtn(m_gitCommitDropdownBounds, L"More Commit Actions...")) { m_hoveredGitButton = L"commitDropdown"; }
     else if (pt.x >= m_gitCommitBtnBounds.left && pt.x <= m_gitCommitBtnBounds.right &&
              pt.y >= m_gitCommitBtnBounds.top && pt.y <= m_gitCommitBtnBounds.bottom) {
         if (m_isCommitting.load()) {
@@ -10430,6 +10501,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         if (isCommitting) {
             // Loading Spinner State for Commit Button (clearly disabled, blurred/translucent color)
             DrawButtonSpinner(pRT, m_gitCommitBtnBounds, L"Committing...", theme, config);
+            m_gitCommitDropdownBounds = {};
             m_gitSyncBtnBounds = {};
         } else if (m_isCommitEditMsgOpen) {
             // Disabled Muted Commit Button while waiting for COMMIT_EDITMSG
@@ -10452,6 +10524,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float dchY = curY + commitH / 2.0f;
             pRT->DrawLine(D2D1::Point2F(dchX - 3.0f, dchY - 1.5f), D2D1::Point2F(dchX, dchY + 2.0f), theme.brushTextMuted.Get(), 1.4f);
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextMuted.Get(), 1.4f);
+            m_gitCommitDropdownBounds = {};
             m_gitSyncBtnBounds = {};
         } else if (hasChanges) {
             // Active Commit Button (Blue)
@@ -10467,6 +10540,14 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
             // Vertical divider and chevron dropdown
             float divX = m_gitCommitBtnBounds.right - config.ScaleF(26.0f);
+            m_gitCommitDropdownBounds = D2D1::RectF(divX, curY, m_gitCommitBtnBounds.right, curY + commitH);
+            if (m_hoveredGitButton == L"commitDropdown" || m_activeGitMenu == GitMenuType::CommitMenu) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDropHover;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f), &brushDropHover);
+                if (brushDropHover) {
+                    pRT->FillRectangle(D2D1::RectF(divX + 1.0f, curY + 1.0f, m_gitCommitBtnBounds.right - 1.0f, curY + commitH - 1.0f), brushDropHover.Get());
+                }
+            }
             pRT->DrawLine(D2D1::Point2F(divX, curY + 4.0f), D2D1::Point2F(divX, curY + commitH - 4.0f),
                           theme.brushBorderSubtle.Get(), 1.0f);
             float dchX = (divX + m_gitCommitBtnBounds.right) / 2.0f;
@@ -10478,6 +10559,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitSyncBtnBounds = {};
         } else if (hasUnpushed) {
             // Primary Sync Changes Button (when 0 changes and > 0 unpushed commits)
+            m_gitCommitDropdownBounds = {};
             m_gitSyncBtnBounds = m_gitCommitBtnBounds;
             if (isSyncing) {
                 DrawButtonSpinner(pRT, m_gitCommitBtnBounds, L"Syncing Changes...", theme, config);
@@ -10504,6 +10586,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             }
         } else if (m_isGitRepo && !m_hasGitRemote) {
             // Active Publish to GitHub Button when local repo has no remote connected yet
+            m_gitCommitDropdownBounds = {};
             m_gitSyncBtnBounds = {};
             pRT->FillRoundedRectangle(rrcCommit, theme.brushBrandAccent.Get());
 
@@ -10524,6 +10607,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             pRT->DrawLine(D2D1::Point2F(dchX, dchY + 2.0f), D2D1::Point2F(dchX + 3.0f, dchY - 1.5f), theme.brushTextWhite.Get(), 1.4f);
         } else {
             // Disabled Muted Commit Button (0 changes, 0 unpushed, and remote connected or no folder open)
+            m_gitCommitDropdownBounds = {};
             m_gitSyncBtnBounds = {};
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushDisabled;
             pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.6f), &brushDisabled);
@@ -11779,6 +11863,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
             m_gitMenuItems.push_back({ 25, L"▦  Activity Heatmap..." });
+        } else if (m_activeGitMenu == GitMenuType::CommitMenu) {
+            anchor = m_gitCommitDropdownBounds;
+            m_gitMenuItems.push_back({ 40, L"Commit" });
+            m_gitMenuItems.push_back({ 41, L"Commit (Amend)" });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 42, L"Commit & Push" });
+            m_gitMenuItems.push_back({ 43, L"Commit & Sync" });
         } else {
             // Header Views
             anchor = m_gitHeaderMoreBounds;

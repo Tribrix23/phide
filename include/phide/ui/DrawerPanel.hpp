@@ -236,7 +236,7 @@ public:
     DrawerPanel();
     ~DrawerPanel();
 
-    enum class GitMenuType { None, HeaderViews, ChangesMore, GraphMore };
+    enum class GitMenuType { None, HeaderViews, ChangesMore, GraphMore, CommitMenu };
     struct GitMenuItemDef {
         int id = 0;
         std::wstring label;
@@ -260,7 +260,8 @@ public:
     void UnstageFileAsync(const std::wstring& relPath);
     void DiscardFileAsync(const std::wstring& relPath);
     bool DiscardFile(const std::wstring& relPath);
-    void CommitChangesAsync(const std::wstring& message, bool bypassGuard = false);
+    void CommitChangesAsync(const std::wstring& message, bool bypassGuard = false, int postCommitAction = 0);
+    bool TriggerCommitAction(int postCommitAction = 0);
     void UncommitLastCommitAsync();
     void PushCommitsAsync();
     void PullCommitsAsync();
@@ -491,6 +492,9 @@ public:
     [[nodiscard]] const D2D1_RECT_F& GetGitDiscardAllBounds() const noexcept { return m_gitDiscardAllBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetGitStashSaveBtnBounds() const noexcept { return m_gitStashSaveBtnBounds; }
     [[nodiscard]] const D2D1_RECT_F& GetGitChangesMoreBounds() const noexcept { return m_gitChangesMoreBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitCommitDropdownBounds() const noexcept { return m_gitCommitDropdownBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetGitMenuBounds() const noexcept { return m_gitMenuBounds; }
+    [[nodiscard]] const std::vector<GitMenuItemDef>& GetGitMenuItems() const noexcept { return m_gitMenuItems; }
     [[nodiscard]] bool HitTestCommitCard(POINT pt) const noexcept {
         return IsCommitCardVisible() &&
                m_commitCardBounds.right > m_commitCardBounds.left &&

@@ -393,6 +393,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 137) {
         goto run_test_137;
     }
+    if (targetTest == 138) {
+        goto run_test_138;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -22646,6 +22649,88 @@ run_test_137:
         std::cout << "  Passed: All [TEST 137] Commit Card, Git button states, cursor priority & flat loading UI checks passed!" << std::endl;
         if (targetTest == 137) {
             std::cout << "Target test 137 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_138:
+    // [TEST 138] Commit Split-Button Dropdown Menu
+    if (targetTest == 0 || targetTest == 138) {
+        std::cout << "\n[TEST 138] Testing Commit split-button chevron dropdown menu..." << std::endl;
+        phide::app::AppConfig cfg138 = config;
+        cfg138.activeRailTab = 2; // Source Control
+
+        Microsoft::WRL::ComPtr<IWICBitmap> wicBmp138;
+        assert(SUCCEEDED(pWicFactory->CreateBitmap(800, 820, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &wicBmp138)));
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> rt138;
+        D2D1_RENDER_TARGET_PROPERTIES rtProps138 = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        assert(SUCCEEDED(pD2DFactory->CreateWicBitmapRenderTarget(wicBmp138.Get(), rtProps138, &rt138)));
+        phide::ui::Theme theme138;
+        theme138.SetThemeMode(phide::ui::ThemeMode::Dark);
+        assert(SUCCEEDED(theme138.CreateDeviceResources(rt138.Get(), pDWriteFactory.Get())));
+
+        phide::ui::DrawerPanel drawer;
+        drawer.SetOpenFolderPath(L"C:\\mock_repo");
+        drawer.SetGitRepo(true);
+
+        phide::ui::GitChangeItem change;
+        change.path = L"LICENSE.md";
+        change.fileName = L"LICENSE.md";
+        change.status = L"U";
+        change.isStaged = false;
+        drawer.GetGitChangesMutable().push_back(change);
+
+        rt138->BeginDraw();
+        drawer.Render(rt138.Get(), theme138, cfg138, 820.0f, 300.0f, true);
+        assert(SUCCEEDED(rt138->EndDraw()));
+
+        const auto dropRc = drawer.GetGitCommitDropdownBounds();
+        assert(dropRc.right > dropRc.left);
+        assert(dropRc.bottom > dropRc.top);
+
+        POINT dropPt{
+            static_cast<LONG>((dropRc.left + dropRc.right) * 0.5f),
+            static_cast<LONG>((dropRc.top + dropRc.bottom) * 0.5f)
+        };
+        assert(drawer.HitTestGitButtons(dropPt));
+        assert(drawer.HandleGitMouseMove(dropPt, false, &theme138, &cfg138));
+        assert(drawer.GetHoveredGitButton() == L"commitDropdown");
+        assert(drawer.GetGitTooltipText() == L"More Commit Actions...");
+
+        std::wstring dummyOpen138;
+        assert(drawer.HitTestGit(dropPt, cfg138, dummyOpen138));
+        assert(drawer.GetActiveGitMenu() == phide::ui::DrawerPanel::GitMenuType::CommitMenu);
+        assert(drawer.GetGitNotificationText().find(L"Please provide a commit message") == std::wstring::npos);
+
+        // Render again to populate CommitMenu bounds & items
+        rt138->BeginDraw();
+        drawer.Render(rt138.Get(), theme138, cfg138, 820.0f, 300.0f, true);
+        assert(SUCCEEDED(rt138->EndDraw()));
+
+        const auto& menuRc = drawer.GetGitMenuBounds();
+        assert(menuRc.right > menuRc.left);
+        assert(menuRc.bottom > menuRc.top);
+        const auto& items = drawer.GetGitMenuItems();
+        assert(items.size() == 5);
+        assert(items[0].id == 40 && items[0].label == L"Commit");
+        assert(items[1].id == 41 && items[1].label == L"Commit (Amend)");
+        assert(items[2].isSeparator);
+        assert(items[3].id == 42 && items[3].label == L"Commit & Push");
+        assert(items[4].id == 43 && items[4].label == L"Commit & Sync");
+
+        // Clicking Commit (Amend) closes menu & activates amend mode (or shows empty-message guard cleanly)
+        POINT amendPt{
+            static_cast<LONG>((items[1].bounds.left + items[1].bounds.right) * 0.5f),
+            static_cast<LONG>((items[1].bounds.top + items[1].bounds.bottom) * 0.5f)
+        };
+        assert(drawer.HitTestGit(amendPt, cfg138, dummyOpen138));
+        assert(drawer.GetActiveGitMenu() == phide::ui::DrawerPanel::GitMenuType::None);
+
+        std::cout << "  Passed: All [TEST 138] Commit split-button dropdown menu checks passed!" << std::endl;
+        if (targetTest == 138) {
+            std::cout << "Target test 138 finished successfully." << std::endl;
             return 0;
         }
     }
