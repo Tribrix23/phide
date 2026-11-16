@@ -456,6 +456,9 @@ int main(int argc, char* argv[]) {
     if (targetTest == 155) {
         goto run_test_155;
     }
+    if (targetTest == 156) {
+        goto run_test_156;
+    }
 
     if (targetTest == 66) {
         goto run_test_66;
@@ -23971,6 +23974,93 @@ run_test_155:
         std::cout << "  Passed: All [TEST 155] Configurable MMap & Chunked Search (#50) checks passed!" << std::endl;
         if (targetTest == 155) {
             std::cout << "Target test 155 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_156:
+    // [TEST 156] Keyboard Shortcuts completeness, zero default conflicts, remap dispatch & persistence + non-debuggable CSS guard
+    if (targetTest == 0 || targetTest == 156) {
+        std::cout << "\n[TEST 156] Testing KeyboardShortcutsView completeness, conflict-free defaults, remap & persistence..." << std::endl;
+
+        using phide::ui::KeyboardShortcutsView;
+        KeyboardShortcutsView kb;
+        const auto& items = kb.GetShortcuts();
+        assert(items.size() >= 85);
+
+        // 1. Every shortcut must have a non-empty unique ID and zero default conflicts
+        std::set<std::wstring> seenIds;
+        for (const auto& it : items) {
+            assert(!it.id.empty());
+            assert(seenIds.insert(it.id).second);
+            assert(it.conflictCommand.empty());
+        }
+
+        // Verify key IDs are present (including exact sidebar/terminal/multi-cursor/tab entries)
+        for (const auto* requiredId : {
+            L"cmd_toggle_sidebar", L"cmd_new_terminal", L"cmd_toggle_terminal",
+            L"cmd_add_next_occurrence", L"cmd_select_all_occurrences",
+            L"cmd_add_cursor_up", L"cmd_toggle_problems", L"cmd_next_tab", L"cmd_prev_tab",
+            L"cmd_toggle_zen_mode", L"cmd_toggle_markdown_preview", L"cmd_start_debugging",
+            L"cmd_debug_continue", L"cmd_toggle_fullscreen", L"cmd_indent_line", L"cmd_emmet_expand"
+        }) {
+            assert(seenIds.count(requiredId) == 1);
+            assert(kb.IsActionDefaultUnchanged(requiredId));
+        }
+
+        // 2. Test recording remap for Toggle Primary Side Bar (Ctrl+B -> Ctrl+M), commit via Enter, persist & reload
+        std::error_code ec156;
+        std::filesystem::path tmpKb = std::filesystem::temp_directory_path(ec156) / L"phide_test_156_kbd.json";
+        std::filesystem::remove(tmpKb, ec156);
+        kb.LoadUserKeybindings(tmpKb.wstring()); // Sets userKeybindingsPath even before file exists
+
+        int sidebarIdx = -1;
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (items[i].id == L"cmd_toggle_sidebar") {
+                sidebarIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        assert(sidebarIdx >= 0);
+        kb.BeginRecordingItem(sidebarIdx);
+        assert(kb.IsRecordingKeybinding());
+        assert(kb.HandleKeyRecording('M', true, false, false)); // Ctrl+M
+        assert(kb.IsRecordingKeybinding());
+        assert(kb.HandleKeyRecording(VK_RETURN, false, false, false)); // Enter saves & commits to tmpKb
+        assert(!kb.IsRecordingKeybinding());
+        assert(!kb.IsActionDefaultUnchanged(L"cmd_toggle_sidebar")); // Old Ctrl+B now disabled!
+        assert(std::filesystem::exists(tmpKb, ec156));
+
+        // New key Ctrl+M resolves to cmd_toggle_sidebar, old Ctrl+B resolves to nothing
+        assert(kb.ResolveOverrideActionForKey(true, false, false, 'M', true) == L"cmd_toggle_sidebar");
+        assert(kb.ResolveOverrideActionForKey(true, false, false, 'B', true).empty());
+
+        // Reload in fresh instance (simulates app restart / folder switch)
+        KeyboardShortcutsView kbRestarted;
+        assert(kbRestarted.LoadUserKeybindings(tmpKb.wstring()));
+        assert(!kbRestarted.IsActionDefaultUnchanged(L"cmd_toggle_sidebar"));
+        assert(kbRestarted.ResolveOverrideActionForKey(true, false, false, 'M', true) == L"cmd_toggle_sidebar");
+
+        // Reset restores default and clears User override on disk
+        int reloadedSidebarIdx = -1;
+        for (size_t i = 0; i < kbRestarted.GetShortcuts().size(); ++i) {
+            if (kbRestarted.GetShortcuts()[i].id == L"cmd_toggle_sidebar") {
+                reloadedSidebarIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        assert(reloadedSidebarIdx >= 0);
+        assert(kbRestarted.ResetItemToDefault(reloadedSidebarIdx));
+        assert(kbRestarted.IsActionDefaultUnchanged(L"cmd_toggle_sidebar"));
+        std::filesystem::remove(tmpKb, ec156);
+
+        // 3. Verify launch.json ${file} python config is NOT matched to .css
+        assert(phide::dev::DapClient::DetectAdapterForFile(L"C:\\proj\\app\\globals.css") == phide::dev::DapAdapterType::None);
+        assert(phide::dev::DapClient::DetectAdapterForFile(L"C:\\proj\\main.py") == phide::dev::DapAdapterType::Python);
+
+        std::cout << "  Passed: All [TEST 156] KeyboardShortcuts & Debug File Adapter checks passed!" << std::endl;
+        if (targetTest == 156) {
+            std::cout << "Target test 156 finished successfully." << std::endl;
             return 0;
         }
     }

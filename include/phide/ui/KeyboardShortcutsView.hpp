@@ -95,7 +95,10 @@ public:
     bool SaveUserKeybindings(const std::wstring& jsonPath) const;
 
     [[nodiscard]] static std::vector<std::wstring> BuildKeyPillsFromEvent(bool isCtrl, bool isShift, bool isAlt, UINT vk);
-    [[nodiscard]] std::wstring ResolveOverrideActionForKey(bool isCtrl, bool isShift, bool isAlt, UINT vk, bool hasOpenEditor);
+    [[nodiscard]] std::wstring ResolveOverrideActionForKey(
+        bool isCtrl, bool isShift, bool isAlt, UINT vk, bool hasOpenEditor,
+        bool isDebugActive = false, bool isTerminalFocused = false,
+        bool isExplorerFocused = false, bool isScmFocused = false);
     [[nodiscard]] bool IsActionDefaultUnchanged(const std::wstring& actionId) const;
 
 private:

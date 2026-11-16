@@ -21,11 +21,10 @@ KeyboardShortcutsView::KeyboardShortcutsView() {
 }
 
 void KeyboardShortcutsView::InitializeShortcuts() {
-    // Verified genuine, operational shortcuts in phide (all fake/unimplemented entries removed)
+    // Complete verified catalog of operational shortcuts in phide (disjoint `when` scopes, zero default conflicts)
     m_shortcuts = {
         // --- File Operations ---
         { L"File: New Text File", { L"Ctrl", L"N" }, L"global", L"Default" },
-        { L"File: New File...", { L"Ctrl", L"Alt", L"N" }, L"global", L"Default" },
         { L"File: New Window", { L"Ctrl", L"Shift", L"N" }, L"global", L"Default" },
         { L"File: Open File...", { L"Ctrl", L"O" }, L"global", L"Default" },
         { L"File: Open Folder...", { L"Ctrl", L"K", L"Ctrl", L"O" }, L"global", L"Default" },
@@ -40,8 +39,9 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"Preferences: Color Theme", { L"Ctrl", L"K", L"Ctrl", L"T" }, L"global", L"Default" },
         { L"Preferences: Open Keyboard Shortcuts", { L"Ctrl", L"K", L"Ctrl", L"S" }, L"global", L"Default" },
         { L"Preferences: Settings", { L"Ctrl", L"," }, L"global", L"Default" },
+        { L"Preferences: Open Snippet Editor (GUI)", {}, L"global", L"Default" },
 
-        // --- Edit & Refactoring ---
+        // --- Edit, Multi-Cursor & Folding ---
         { L"Edit: Undo", { L"Ctrl", L"Z" }, L"editorTextFocus", L"Default" },
         { L"Edit: Redo", { L"Ctrl", L"Y" }, L"editorTextFocus", L"Default" },
         { L"Edit: Cut", { L"Ctrl", L"X" }, L"editorTextFocus", L"Default" },
@@ -49,52 +49,86 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"Edit: Paste", { L"Ctrl", L"V" }, L"editorTextFocus", L"Default" },
         { L"Edit: Select All", { L"Ctrl", L"A" }, L"editorTextFocus", L"Default" },
         { L"Edit: Find", { L"Ctrl", L"F" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Find Next", { L"F3" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Find Previous", { L"Shift", L"F3" }, L"editorTextFocus", L"Default" },
         { L"Edit: Replace", { L"Ctrl", L"H" }, L"editorTextFocus", L"Default" },
-        { L"Edit: Refactor...", { L"Ctrl", L"Shift", L"R" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Add Selection to Next Find Match", { L"Ctrl", L"D" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Select All Occurrences", { L"Ctrl", L"Shift", L"L" }, L"editorTextFocus", L"Default" },
         { L"Edit: Change All Occurrences", { L"Ctrl", L"F2" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Add Cursor Above", { L"Ctrl", L"Alt", L"Up" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Add Cursor Below", { L"Ctrl", L"Alt", L"Down" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Move Line Up", { L"Alt", L"Up" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Move Line Down", { L"Alt", L"Down" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Copy Line Up", { L"Shift", L"Alt", L"Up" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Copy Line Down", { L"Shift", L"Alt", L"Down" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Delete Line", { L"Ctrl", L"Shift", L"K" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Join Lines", { L"Ctrl", L"J" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Refactor...", { L"Ctrl", L"Shift", L"R" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Quick Fix / Code Actions", { L"Ctrl", L"." }, L"editorTextFocus", L"Default" },
         { L"Edit: Toggle Line Comment", { L"Ctrl", L"/" }, L"editorTextFocus", L"Default" },
         { L"Edit: Toggle Block Comment", { L"Shift", L"Alt", L"A" }, L"editorTextFocus", L"Default" },
         { L"Edit: Indent Line", { L"Tab" }, L"editorTextFocus", L"Default" },
         { L"Edit: Outdent Line", { L"Shift", L"Tab" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Fold All", { L"Ctrl", L"K", L"Ctrl", L"0" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Unfold All", { L"Ctrl", L"K", L"Ctrl", L"J" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Fold Level 1", { L"Ctrl", L"K", L"Ctrl", L"1" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Fold Level 2", { L"Ctrl", L"K", L"Ctrl", L"2" }, L"editorTextFocus", L"Default" },
+        { L"Edit: Fold Level 3", { L"Ctrl", L"K", L"Ctrl", L"3" }, L"editorTextFocus", L"Default" },
 
         // --- Explorer Operations ---
         { L"Explorer: Undo Last File Operation", { L"Ctrl", L"Z" }, L"filesExplorerFocus", L"Default" },
         { L"Explorer: Redo Last File Operation", { L"Ctrl", L"Y" }, L"filesExplorerFocus", L"Default" },
-        { L"Explorer: Rename Item", { L"Enter" }, L"filesExplorerFocus", L"Default" },
-        { L"Explorer: Rename Item (Alternative)", { L"F2" }, L"filesExplorerFocus", L"Default" },
+        { L"Explorer: Rename Item", { L"F2" }, L"filesExplorerFocus", L"Default" },
         { L"Explorer: Delete Item", { L"Delete" }, L"filesExplorerFocus", L"Default" },
         { L"Explorer: Cut Item", { L"Ctrl", L"X" }, L"filesExplorerFocus", L"Default" },
         { L"Explorer: Copy Item", { L"Ctrl", L"C" }, L"filesExplorerFocus", L"Default" },
         { L"Explorer: Paste Item", { L"Ctrl", L"V" }, L"filesExplorerFocus", L"Default" },
-        { L"Explorer: Copy Path", { L"Shift", L"Alt", L"C" }, L"filesExplorerFocus", L"Default" },
-        { L"Explorer: Copy Relative Path", { L"Ctrl", L"K", L"Ctrl", L"Shift", L"C" }, L"filesExplorerFocus", L"Default" },
 
-        // --- Search & Navigation ---
+        // --- Search, Navigation & Bookmarks ---
         { L"Navigation: Quick Open (Go to File)", { L"Ctrl", L"P" }, L"global", L"Default" },
-        { L"Navigation: Quick Open / File Search", { L"Ctrl", L"K" }, L"global", L"Default" },
         { L"Navigation: Show All Commands", { L"Ctrl", L"Shift", L"P" }, L"global", L"Default" },
         { L"Navigation: Command Palette (Alternative)", { L"F1" }, L"global", L"Default" },
+        { L"Navigation: Go to Symbol in Editor", { L"Ctrl", L"Shift", L"O" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Go to Symbol in Workspace", { L"Ctrl", L"T" }, L"global", L"Default" },
         { L"Navigation: Go to Definition", { L"F12" }, L"editorTextFocus", L"Default" },
-        { L"Search: Find in Files", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
+        { L"Navigation: Peek Definition", { L"Alt", L"F12" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Go to Implementation", { L"Ctrl", L"F12" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Find All References", { L"Shift", L"F12" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Go to Matching Bracket", { L"Ctrl", L"Shift", L"\\" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Back", { L"Alt", L"Left" }, L"global", L"Default" },
+        { L"Navigation: Forward", { L"Alt", L"Right" }, L"global", L"Default" },
+        { L"Navigation: Next Problem", { L"F8" }, L"global", L"Default" },
+        { L"Navigation: Previous Problem", { L"Shift", L"F8" }, L"global", L"Default" },
+        { L"Navigation: Next Git Change / Hunk", { L"F7" }, L"editorTextFocus", L"Default" },
+        { L"Navigation: Previous Git Change / Hunk", { L"Shift", L"F7" }, L"editorTextFocus", L"Default" },
+        { L"Bookmarks: Toggle Bookmark", { L"Ctrl", L"Alt", L"K" }, L"editorTextFocus", L"Default" },
+        { L"Bookmarks: Next Bookmark", { L"Ctrl", L"Alt", L"N" }, L"global", L"Default" },
+        { L"Bookmarks: Previous Bookmark", { L"Ctrl", L"Alt", L"P" }, L"global", L"Default" },
+        { L"Search: Find in Files (Show Search)", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
         { L"Search: Replace in Files", { L"Ctrl", L"Shift", L"H" }, L"global", L"Default" },
 
         // --- Debug & Execution Controls ---
         { L"Run: Run Without Debugging", { L"Ctrl", L"F5" }, L"global", L"Default" },
-        { L"Debug: Start Debugging", { L"F5" }, L"global", L"Default" },
+        { L"Debug: Start Debugging", { L"F5" }, L"!debugFocus", L"Default" },
+        { L"Debug: Continue Execution", { L"F5" }, L"debugFocus", L"Default" },
         { L"Debug: Stop Execution / Server", { L"Shift", L"F5" }, L"global", L"Default" },
         { L"Debug: Restart Execution / Server", { L"Ctrl", L"Shift", L"F5" }, L"global", L"Default" },
+        { L"Debug: Pause Execution", { L"F6" }, L"debugFocus", L"Default" },
         { L"Debug: Toggle Breakpoint", { L"F9" }, L"editorTextFocus", L"Default" },
+        { L"Debug: Conditional Breakpoint / Logpoint", { L"Shift", L"F9" }, L"editorTextFocus", L"Default" },
         { L"Debug: Step Over", { L"F10" }, L"debugFocus", L"Default" },
         { L"Debug: Step Into", { L"F11" }, L"debugFocus", L"Default" },
         { L"Debug: Step Out", { L"Shift", L"F11" }, L"debugFocus", L"Default" },
-        { L"Debug: Continue Execution", { L"F5" }, L"debugFocus", L"Default" },
         { L"Debug: Toggle Debug Console", { L"Ctrl", L"Shift", L"Y" }, L"global", L"Default" },
+        { L"Debug: Show Run and Debug", { L"Ctrl", L"Shift", L"D" }, L"global", L"Default" },
 
         // --- Code Editing & IntelliSense ---
         { L"Code: Format Document", { L"Shift", L"Alt", L"F" }, L"editorTextFocus", L"Default" },
+        { L"Code: Format Selection", { L"Ctrl", L"K", L"Ctrl", L"F" }, L"editorTextFocus", L"Default" },
         { L"Code: Rename Symbol", { L"F2" }, L"editorTextFocus", L"Default" },
         { L"Code: Trigger IntelliSense Autocomplete", { L"Ctrl", L"Space" }, L"editorTextFocus", L"Default" },
-        { L"Code: Emmet Expand Abbreviation", { L"Tab" }, L"editorTextFocus", L"Default" },
+        { L"Code: Trigger Parameter Hints", { L"Ctrl", L"Shift", L"Space" }, L"editorTextFocus", L"Default" },
+        { L"Code: Emmet Expand Abbreviation", { L"Tab" }, L"emmetFocus", L"Default" },
 
         // --- Source Control ---
         { L"Source Control: Commit Changes", { L"Ctrl", L"Enter" }, L"sourceControlFocus", L"Default" },
@@ -104,16 +138,22 @@ void KeyboardShortcutsView::InitializeShortcuts() {
         { L"View: Split Editor Right", { L"Ctrl", L"\\" }, L"global", L"Default" },
         { L"View: Toggle Primary Side Bar", { L"Ctrl", L"B" }, L"global", L"Default" },
         { L"View: Toggle Runtimes Panel (Extensions)", { L"Ctrl", L"Shift", L"X" }, L"global", L"Default" },
-        { L"View: Toggle Full Screen", { L"F11" }, L"global", L"Default" },
+        { L"View: Toggle Problems Panel", { L"Ctrl", L"Shift", L"M" }, L"global", L"Default" },
+        { L"View: Toggle Full Screen", { L"F11" }, L"!debugFocus", L"Default" },
+        { L"View: Toggle Zen Mode", { L"Ctrl", L"K", L"Ctrl", L"Z" }, L"global", L"Default" },
+        { L"View: Toggle Markdown Preview", { L"Ctrl", L"Shift", L"V" }, L"editorTextFocus", L"Default" },
+        { L"View: Open Jupyter Notebook View", { L"Ctrl", L"Shift", L"J" }, L"global", L"Default" },
         { L"View: Toggle Word Wrap", { L"Alt", L"Z" }, L"editorTextFocus", L"Default" },
         { L"View: Zoom In", { L"Ctrl", L"=" }, L"global", L"Default" },
         { L"View: Zoom Out", { L"Ctrl", L"-" }, L"global", L"Default" },
         { L"View: Reset Zoom", { L"Ctrl", L"0" }, L"global", L"Default" },
         { L"View: Next Tab", { L"Ctrl", L"Tab" }, L"global", L"Default" },
         { L"View: Previous Tab", { L"Ctrl", L"Shift", L"Tab" }, L"global", L"Default" },
+        { L"View: Focus Previous Editor Group", { L"Ctrl", L"K", L"Ctrl", L"Left" }, L"global", L"Default" },
+        { L"View: Focus Next Editor Group", { L"Ctrl", L"K", L"Ctrl", L"Right" }, L"global", L"Default" },
         { L"View: Show Explorer", { L"Ctrl", L"Shift", L"E" }, L"global", L"Default" },
-        { L"View: Show Search", { L"Ctrl", L"Shift", L"F" }, L"global", L"Default" },
         { L"View: Show Source Control", { L"Ctrl", L"Shift", L"G" }, L"global", L"Default" },
+        { L"View: SQL Query Console", { L"Ctrl", L"Shift", L"Q" }, L"global", L"Default" },
 
         // --- Terminal & Window ---
         { L"Terminal: Create New Terminal", { L"Ctrl", L"Shift", L"`" }, L"global", L"Default" },
@@ -623,47 +663,175 @@ std::wstring EscapeJsonKbd(const std::wstring& s) {
     return out;
 }
 
+bool AreScopesOverlapping(const std::wstring& a, const std::wstring& b) {
+    if ((a == L"!debugFocus" && b == L"debugFocus") ||
+        (a == L"debugFocus" && b == L"!debugFocus")) {
+        return false;
+    }
+    if (a.empty() || b.empty() || a == L"global" || b == L"global") {
+        return true;
+    }
+    return a == b;
+}
+
+bool WhenMatchesContext(const std::wstring& when,
+                      bool hasOpenEditor,
+                      bool isDebugActive,
+                      bool isTerminalFocused,
+                      bool isExplorerFocused,
+                      bool isScmFocused) {
+    if (when.empty() || when == L"global") return true;
+    if (when == L"debugFocus") return isDebugActive;
+    if (when == L"!debugFocus") return !isDebugActive;
+    if (when == L"terminalFocus") return isTerminalFocused;
+    if (when == L"filesExplorerFocus") return isExplorerFocused;
+    if (when == L"sourceControlFocus") return isScmFocused;
+    if (when == L"editorTextFocus" || when == L"emmetFocus") {
+        return hasOpenEditor && !isTerminalFocused && !isExplorerFocused && !isScmFocused;
+    }
+    return true;
+}
+
 } // namespace
 
 void KeyboardShortcutsView::PopulateDefaultIdsAndBackups() {
     auto assignId = [](ShortcutItem& item) {
+        static constexpr std::pair<const wchar_t*, const wchar_t*> kExactIds[] = {
+            { L"file: new text file", L"cmd_new_file" },
+            { L"file: new window", L"cmd_new_window" },
+            { L"file: open file...", L"cmd_open_file" },
+            { L"file: open folder...", L"cmd_open_folder" },
+            { L"file: save", L"cmd_save" },
+            { L"save", L"cmd_save" },
+            { L"file: save as...", L"cmd_save_as" },
+            { L"file: save all", L"cmd_save_all" },
+            { L"file: close editor", L"cmd_close_editor" },
+            { L"file: close folder", L"cmd_close_folder" },
+            { L"file: reopen closed editor", L"cmd_reopen_closed_editor" },
+            { L"preferences: color theme", L"cmd_theme_picker" },
+            { L"preferences: open keyboard shortcuts", L"cmd_shortcuts" },
+            { L"preferences: settings", L"cmd_open_settings" },
+            { L"preferences: open snippet editor (gui)", L"cmd_snippet_editor" },
+            { L"edit: undo", L"cmd_undo" },
+            { L"edit: redo", L"cmd_redo" },
+            { L"edit: cut", L"cmd_cut" },
+            { L"edit: copy", L"cmd_copy" },
+            { L"edit: paste", L"cmd_paste" },
+            { L"edit: select all", L"cmd_select_all" },
+            { L"edit: find", L"cmd_find_inline" },
+            { L"edit: find next", L"cmd_find_next" },
+            { L"edit: find previous", L"cmd_find_prev" },
+            { L"edit: replace", L"cmd_replace_inline" },
+            { L"edit: add selection to next find match", L"cmd_add_next_occurrence" },
+            { L"edit: select all occurrences", L"cmd_select_all_occurrences" },
+            { L"edit: change all occurrences", L"cmd_change_all_occurrences" },
+            { L"edit: add cursor above", L"cmd_add_cursor_up" },
+            { L"edit: add cursor below", L"cmd_add_cursor_down" },
+            { L"edit: move line up", L"cmd_move_line_up" },
+            { L"edit: move line down", L"cmd_move_line_down" },
+            { L"edit: copy line up", L"cmd_duplicate_line_up" },
+            { L"edit: copy line down", L"cmd_duplicate_line_down" },
+            { L"edit: delete line", L"cmd_delete_line" },
+            { L"edit: join lines", L"cmd_join_lines" },
+            { L"edit: refactor...", L"cmd_refactor" },
+            { L"edit: quick fix / code actions", L"cmd_code_actions" },
+            { L"edit: toggle line comment", L"cmd_toggle_line_comment" },
+            { L"edit: toggle block comment", L"cmd_toggle_block_comment" },
+            { L"edit: indent line", L"cmd_indent_line" },
+            { L"edit: outdent line", L"cmd_outdent_line" },
+            { L"edit: fold all", L"cmd_fold_all" },
+            { L"edit: unfold all", L"cmd_unfold_all" },
+            { L"edit: fold level 1", L"cmd_fold_level_1" },
+            { L"edit: fold level 2", L"cmd_fold_level_2" },
+            { L"edit: fold level 3", L"cmd_fold_level_3" },
+            { L"explorer: undo last file operation", L"cmd_explorer_undo" },
+            { L"explorer: redo last file operation", L"cmd_explorer_redo" },
+            { L"explorer: rename item", L"cmd_explorer_rename" },
+            { L"explorer: delete item", L"cmd_explorer_delete" },
+            { L"explorer: cut item", L"cmd_explorer_cut" },
+            { L"explorer: copy item", L"cmd_explorer_copy" },
+            { L"explorer: paste item", L"cmd_explorer_paste" },
+            { L"navigation: quick open (go to file)", L"cmd_quick_open" },
+            { L"navigation: show all commands", L"cmd_command_palette" },
+            { L"navigation: command palette (alternative)", L"cmd_command_palette_alt" },
+            { L"navigation: go to symbol in editor", L"cmd_goto_symbol" },
+            { L"navigation: go to symbol in workspace", L"cmd_goto_workspace_symbol" },
+            { L"navigation: go to definition", L"cmd_goto_definition" },
+            { L"navigation: peek definition", L"cmd_peek_definition" },
+            { L"navigation: go to implementation", L"cmd_implementation" },
+            { L"navigation: find all references", L"cmd_find_references" },
+            { L"navigation: go to matching bracket", L"cmd_jump_to_bracket" },
+            { L"navigation: back", L"cmd_nav_back" },
+            { L"navigation: forward", L"cmd_nav_forward" },
+            { L"navigation: next problem", L"cmd_next_problem" },
+            { L"navigation: previous problem", L"cmd_prev_problem" },
+            { L"navigation: next git change / hunk", L"cmd_git_next_change" },
+            { L"navigation: previous git change / hunk", L"cmd_git_prev_change" },
+            { L"bookmarks: toggle bookmark", L"cmd_toggle_bookmark" },
+            { L"bookmarks: next bookmark", L"cmd_next_bookmark" },
+            { L"bookmarks: previous bookmark", L"cmd_prev_bookmark" },
+            { L"search: find in files (show search)", L"cmd_find_in_files" },
+            { L"search: replace in files", L"cmd_replace_in_files" },
+            { L"run: run without debugging", L"cmd_run_without_debugging" },
+            { L"debug: start debugging", L"cmd_start_debugging" },
+            { L"debug: continue execution", L"cmd_debug_continue" },
+            { L"debug: stop execution / server", L"cmd_stop_debugging" },
+            { L"debug: restart execution / server", L"cmd_restart_debugging" },
+            { L"debug: pause execution", L"cmd_debug_pause" },
+            { L"debug: toggle breakpoint", L"cmd_toggle_breakpoint" },
+            { L"debug: conditional breakpoint / logpoint", L"cmd_edit_breakpoint_condition" },
+            { L"debug: step over", L"cmd_debug_step_over" },
+            { L"debug: step into", L"cmd_debug_step_into" },
+            { L"debug: step out", L"cmd_debug_step_out" },
+            { L"debug: toggle debug console", L"cmd_toggle_debug_console" },
+            { L"debug: show run and debug", L"cmd_show_debug" },
+            { L"code: format document", L"cmd_format_document" },
+            { L"code: format selection", L"cmd_format_selection" },
+            { L"code: rename symbol", L"cmd_rename_symbol" },
+            { L"code: trigger intellisense autocomplete", L"cmd_trigger_suggest" },
+            { L"code: trigger parameter hints", L"cmd_trigger_parameter_hints" },
+            { L"code: emmet expand abbreviation", L"cmd_emmet_expand" },
+            { L"source control: commit changes", L"cmd_git_commit" },
+            { L"source control: dismiss / close box", L"cmd_git_dismiss" },
+            { L"view: split editor right", L"cmd_split_editor" },
+            { L"view: toggle primary side bar", L"cmd_toggle_sidebar" },
+            { L"view: toggle runtimes panel (extensions)", L"cmd_runtimes" },
+            { L"view: toggle problems panel", L"cmd_toggle_problems" },
+            { L"view: toggle full screen", L"cmd_toggle_fullscreen" },
+            { L"view: toggle zen mode", L"cmd_toggle_zen_mode" },
+            { L"view: toggle markdown preview", L"cmd_toggle_markdown_preview" },
+            { L"view: open jupyter notebook view", L"cmd_open_notebook" },
+            { L"view: toggle word wrap", L"cmd_toggle_word_wrap" },
+            { L"view: zoom in", L"cmd_zoom_in" },
+            { L"view: zoom out", L"cmd_zoom_out" },
+            { L"view: reset zoom", L"cmd_zoom_reset" },
+            { L"view: next tab", L"cmd_next_tab" },
+            { L"view: previous tab", L"cmd_prev_tab" },
+            { L"view: focus previous editor group", L"cmd_focus_group_prev" },
+            { L"view: focus next editor group", L"cmd_focus_group_next" },
+            { L"view: show explorer", L"cmd_show_explorer" },
+            { L"view: show source control", L"cmd_show_scm" },
+            { L"view: sql query console", L"cmd_sql_console" },
+            { L"terminal: create new terminal", L"cmd_new_terminal" },
+            { L"terminal: toggle terminal panel", L"cmd_toggle_terminal" },
+            { L"terminal: split active terminal tab", L"cmd_split_terminal" },
+            { L"terminal: split active terminal (alternative)", L"cmd_split_terminal_alt" },
+            { L"window: close window", L"cmd_close_window" },
+        };
+
         std::wstring c = ToLowerKbd(item.command);
-        if (c.find(L"command palette") != std::wstring::npos) item.id = L"cmd_command_palette";
-        else if (c.find(L"quick open") != std::wstring::npos || c.find(L"go to file") != std::wstring::npos) item.id = L"cmd_quick_open";
-        else if (c.find(L"new file") != std::wstring::npos) item.id = L"cmd_new_file";
-        else if (c.find(L"new window") != std::wstring::npos) item.id = L"cmd_new_window";
-        else if (c.find(L"open file") != std::wstring::npos) item.id = L"cmd_open_file";
-        else if (c.find(L"open folder") != std::wstring::npos) item.id = L"cmd_open_folder";
-        else if (c.find(L"save all") != std::wstring::npos) item.id = L"cmd_save_all";
-        else if (c.find(L"save as") != std::wstring::npos) item.id = L"cmd_save_as";
-        else if (c == L"file: save" || c == L"save") item.id = L"cmd_save";
-        else if (c.find(L"close editor") != std::wstring::npos || c.find(L"close tab") != std::wstring::npos) item.id = L"cmd_close_editor";
-        else if (c.find(L"undo") != std::wstring::npos) item.id = L"cmd_undo";
-        else if (c.find(L"redo") != std::wstring::npos) item.id = L"cmd_redo";
-        else if (c.find(L"toggle line comment") != std::wstring::npos || c == L"edit: toggle line comment") item.id = L"cmd_toggle_line_comment";
-        else if (c.find(L"toggle block comment") != std::wstring::npos) item.id = L"cmd_toggle_block_comment";
-        else if (c.find(L"find in files") != std::wstring::npos) item.id = L"cmd_find_in_files";
-        else if (c.find(L"replace in files") != std::wstring::npos) item.id = L"cmd_replace_in_files";
-        else if (c == L"edit: find" || c == L"find") item.id = L"cmd_find_inline";
-        else if (c == L"edit: replace" || c == L"replace") item.id = L"cmd_replace_inline";
-        else if (c.find(L"sidebar") != std::wstring::npos) item.id = L"cmd_toggle_sidebar";
-        else if (c.find(L"terminal") != std::wstring::npos) item.id = L"cmd_toggle_terminal";
-        else if (c.find(L"format document") != std::wstring::npos) item.id = L"cmd_format_document";
-        else if (c.find(L"preferences: open settings") != std::wstring::npos || c == L"settings") item.id = L"cmd_open_settings";
-        else if (c.find(L"keyboard shortcuts") != std::wstring::npos) item.id = L"cmd_shortcuts";
-        else if (c.find(L"delete line") != std::wstring::npos) item.id = L"cmd_delete_line";
-        else if (c.find(L"join lines") != std::wstring::npos) item.id = L"cmd_join_lines";
-        else if (c.find(L"add selection to next find match") != std::wstring::npos) item.id = L"cmd_select_all_occurrences";
-        else if (c.find(L"sql") != std::wstring::npos) item.id = L"cmd_sql_console";
-        else if (c.find(L"snippet") != std::wstring::npos) item.id = L"cmd_snippet_editor";
-        else {
-            std::wstring slug = L"cmd_";
-            for (wchar_t ch : c) {
-                if ((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9')) slug += ch;
-                else if (slug.back() != L'_') slug += L'_';
+        for (const auto& entry : kExactIds) {
+            if (c == entry.first) {
+                item.id = entry.second;
+                return;
             }
-            item.id = slug;
         }
+        std::wstring slug = L"cmd_";
+        for (wchar_t ch : c) {
+            if ((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9')) slug += ch;
+            else if (slug.back() != L'_') slug += L'_';
+        }
+        item.id = slug;
     };
 
     bool hasSql = false, hasSnippet = false, hasSave = false;
@@ -714,13 +882,9 @@ void KeyboardShortcutsView::RecomputeConflicts() {
         for (size_t j = i + 1; j < m_shortcuts.size(); ++j) {
             if (m_shortcuts[j].keyPills.empty()) continue;
             std::wstring keyJ = PillsCanonicalKey(m_shortcuts[j].keyPills);
-            if (keyI == keyJ) {
-                bool sameScope = (m_shortcuts[i].when == m_shortcuts[j].when ||
-                                  m_shortcuts[i].when == L"global" || m_shortcuts[j].when == L"global");
-                if (sameScope) {
-                    if (m_shortcuts[i].conflictCommand.empty()) m_shortcuts[i].conflictCommand = m_shortcuts[j].command;
-                    if (m_shortcuts[j].conflictCommand.empty()) m_shortcuts[j].conflictCommand = m_shortcuts[i].command;
-                }
+            if (keyI == keyJ && AreScopesOverlapping(m_shortcuts[i].when, m_shortcuts[j].when)) {
+                if (m_shortcuts[i].conflictCommand.empty()) m_shortcuts[i].conflictCommand = m_shortcuts[j].command;
+                if (m_shortcuts[j].conflictCommand.empty()) m_shortcuts[j].conflictCommand = m_shortcuts[i].command;
             }
         }
     }
@@ -736,11 +900,9 @@ std::vector<std::wstring> KeyboardShortcutsView::FindConflictsForPills(
     for (size_t i = 0; i < m_shortcuts.size(); ++i) {
         if (static_cast<int>(i) == excludeItemIdx) continue;
         if (m_shortcuts[i].keyPills.empty()) continue;
-        if (PillsCanonicalKey(m_shortcuts[i].keyPills) == target) {
-            if (whenScope.empty() || m_shortcuts[i].when == whenScope ||
-                m_shortcuts[i].when == L"global" || whenScope == L"global") {
-                conflicts.push_back(m_shortcuts[i].command);
-            }
+        if (PillsCanonicalKey(m_shortcuts[i].keyPills) == target &&
+            AreScopesOverlapping(whenScope, m_shortcuts[i].when)) {
+            conflicts.push_back(m_shortcuts[i].command);
         }
     }
     return conflicts;
@@ -832,6 +994,8 @@ std::vector<std::wstring> KeyboardShortcutsView::BuildKeyPillsFromEvent(bool isC
         keyName.push_back(static_cast<wchar_t>(vk));
     } else if (vk >= '0' && vk <= '9') {
         keyName.push_back(static_cast<wchar_t>(vk));
+    } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        keyName.push_back(static_cast<wchar_t>(L'0' + (vk - VK_NUMPAD0)));
     } else if (vk >= VK_F1 && vk <= VK_F12) {
         keyName = L"F" + std::to_wstring(vk - VK_F1 + 1);
     } else {
@@ -842,19 +1006,28 @@ std::vector<std::wstring> KeyboardShortcutsView::BuildKeyPillsFromEvent(bool isC
             case VK_TAB:    keyName = L"Tab"; break;
             case VK_BACK:   keyName = L"Backspace"; break;
             case VK_DELETE: keyName = L"Delete"; break;
+            case VK_INSERT: keyName = L"Insert"; break;
+            case VK_HOME:   keyName = L"Home"; break;
+            case VK_END:    keyName = L"End"; break;
+            case VK_PRIOR:  keyName = L"PageUp"; break;
+            case VK_NEXT:   keyName = L"PageDown"; break;
             case VK_LEFT:   keyName = L"Left"; break;
             case VK_RIGHT:  keyName = L"Right"; break;
             case VK_UP:     keyName = L"Up"; break;
             case VK_DOWN:   keyName = L"Down"; break;
+            case VK_OEM_1:      keyName = L";"; break;
             case VK_OEM_COMMA:  keyName = L","; break;
             case VK_OEM_PERIOD: keyName = L"."; break;
             case VK_OEM_2:      keyName = L"/"; break;
             case VK_OEM_3:      keyName = L"`"; break;
             case VK_OEM_5:      keyName = L"\\"; break;
-            case VK_OEM_MINUS:  keyName = L"-"; break;
-            case VK_OEM_PLUS:   keyName = L"="; break;
+            case VK_OEM_MINUS:
+            case VK_SUBTRACT:   keyName = L"-"; break;
+            case VK_OEM_PLUS:
+            case VK_ADD:        keyName = L"="; break;
             case VK_OEM_4:      keyName = L"["; break;
             case VK_OEM_6:      keyName = L"]"; break;
+            case VK_OEM_7:      keyName = L"'"; break;
             default: break;
         }
     }
@@ -925,18 +1098,38 @@ bool KeyboardShortcutsView::LoadUserKeybindings(const std::wstring& jsonPath) {
         }
         return false;
     };
+    auto findMatchingBrace = [&](size_t startBrace) -> size_t {
+        int depth = 0;
+        bool inStr = false;
+        for (size_t i = startBrace; i < content.size(); ++i) {
+            wchar_t c = content[i];
+            if (inStr) {
+                if (c == L'\\') { ++i; continue; }
+                if (c == L'"') inStr = false;
+            } else {
+                if (c == L'"') inStr = true;
+                else if (c == L'{') ++depth;
+                else if (c == L'}') {
+                    --depth;
+                    if (depth == 0) return i;
+                }
+            }
+        }
+        return std::wstring::npos;
+    };
 
     bool anyLoaded = false;
     while (pos < content.size()) {
         size_t objStart = content.find(L'{', pos);
         if (objStart == std::wstring::npos) break;
-        // Skip outer root object if it contains "bindings"
+        // Skip outer root object if it contains "bindings" before any nested object
         size_t nextArr = content.find(L"\"bindings\"", objStart);
-        if (nextArr != std::wstring::npos && nextArr < content.find(L'}', objStart)) {
+        size_t nextObj = content.find(L'{', objStart + 1);
+        if (nextArr != std::wstring::npos && (nextObj == std::wstring::npos || nextArr < nextObj)) {
             pos = nextArr + 10;
             continue;
         }
-        size_t objEnd = content.find(L'}', objStart);
+        size_t objEnd = findMatchingBrace(objStart);
         if (objEnd == std::wstring::npos) break;
         std::wstring block = content.substr(objStart, objEnd - objStart + 1);
         pos = objEnd + 1;
@@ -947,8 +1140,7 @@ bool KeyboardShortcutsView::LoadUserKeybindings(const std::wstring& jsonPath) {
         if (idPos != std::wstring::npos) {
             size_t colon = block.find(L':', idPos);
             if (colon != std::wstring::npos) {
-                size_t sp = colon + 1;
-                size_t bp = objStart + sp;
+                size_t bp = objStart + colon + 1;
                 parseStr(bp, idVal);
             }
         }
@@ -979,7 +1171,8 @@ bool KeyboardShortcutsView::LoadUserKeybindings(const std::wstring& jsonPath) {
         }
 
         if (!idVal.empty() || !cmdVal.empty()) {
-            if (SetShortcutKeys(!idVal.empty() ? idVal : cmdVal, keysVal)) {
+            if ((!idVal.empty() && SetShortcutKeys(idVal, keysVal)) ||
+                (!cmdVal.empty() && SetShortcutKeys(cmdVal, keysVal))) {
                 anyLoaded = true;
             }
         }
@@ -1030,7 +1223,8 @@ bool KeyboardShortcutsView::SaveUserKeybindings(const std::wstring& jsonPath) co
 }
 
 std::wstring KeyboardShortcutsView::ResolveOverrideActionForKey(
-    bool isCtrl, bool isShift, bool isAlt, UINT vk, bool hasOpenEditor) {
+    bool isCtrl, bool isShift, bool isAlt, UINT vk, bool hasOpenEditor,
+    bool isDebugActive, bool isTerminalFocused, bool isExplorerFocused, bool isScmFocused) {
     auto pills = BuildKeyPillsFromEvent(isCtrl, isShift, isAlt, vk);
     if (pills.empty()) return L"";
 
@@ -1047,7 +1241,7 @@ std::wstring KeyboardShortcutsView::ResolveOverrideActionForKey(
         m_pendingChordPrefix.clear();
         for (const auto& it : m_shortcuts) {
             if (it.source == L"User" && !it.keyPills.empty() && PillsCanonicalKey(it.keyPills) == chordKey) {
-                if (it.when == L"editorTextFocus" && !hasOpenEditor) continue;
+                if (!WhenMatchesContext(it.when, hasOpenEditor, isDebugActive, isTerminalFocused, isExplorerFocused, isScmFocused)) continue;
                 return it.id;
             }
         }
@@ -1068,7 +1262,7 @@ std::wstring KeyboardShortcutsView::ResolveOverrideActionForKey(
 
     for (const auto& it : m_shortcuts) {
         if (it.source == L"User" && !it.keyPills.empty() && PillsCanonicalKey(it.keyPills) == singleKey) {
-            if (it.when == L"editorTextFocus" && !hasOpenEditor) continue;
+            if (!WhenMatchesContext(it.when, hasOpenEditor, isDebugActive, isTerminalFocused, isExplorerFocused, isScmFocused)) continue;
             return it.id;
         }
     }

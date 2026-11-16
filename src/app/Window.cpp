@@ -5993,6 +5993,188 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
     if (actionCmd == L"cmd_toggle_structured_viewer") { ToggleActiveStructuredViewer(true); return; }
     if (actionCmd == L"cmd_type_hierarchy") { DoTypeHierarchy(); return; }
+    if (actionCmd == L"cmd_close_folder") { DoCloseFolder(); return; }
+    if (actionCmd == L"cmd_reopen_closed_editor") { DoReopenClosedEditor(); return; }
+    if (actionCmd == L"cmd_select_all") { DoSelectAll(); return; }
+    if (actionCmd == L"cmd_find_next" || actionCmd == L"cmd_find_prev") {
+        if (!m_editor.GetFindBar().isOpen) DoFind();
+        if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView && m_editor.GetFindBar().isOpen) {
+            m_editor.StepInlineFindMatch(*pFD, actionCmd == L"cmd_find_next");
+            EnsureCursorVisible();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_add_next_occurrence") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && pDoc->AddNextOccurrence()) {
+            EnsureCursorVisible();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_change_all_occurrences") { DoChangeAllOccurrences(); return; }
+    if (actionCmd == L"cmd_refactor") { DoRefactor(); return; }
+    if (actionCmd == L"cmd_code_actions") { DoCodeActions(); return; }
+    if (actionCmd == L"cmd_command_palette_alt") { DoCommandPalette(); return; }
+    if (actionCmd == L"cmd_goto_definition") { DoGoToDefinition(); return; }
+    if (actionCmd == L"cmd_next_problem" || actionCmd == L"cmd_prev_problem") {
+        NavigateNextProblem(actionCmd == L"cmd_prev_problem");
+        return;
+    }
+    if (actionCmd == L"cmd_debug_continue" || actionCmd == L"cmd_debug_pause" ||
+        actionCmd == L"cmd_debug_step_over" || actionCmd == L"cmd_debug_step_into" ||
+        actionCmd == L"cmd_debug_step_out") {
+        if (m_terminal.IsDebugActive()) {
+            ui::DebugAction act = ui::DebugAction::Continue;
+            if (actionCmd == L"cmd_debug_pause") act = ui::DebugAction::Pause;
+            else if (actionCmd == L"cmd_debug_step_over") act = ui::DebugAction::StepOver;
+            else if (actionCmd == L"cmd_debug_step_into") act = ui::DebugAction::StepInto;
+            else if (actionCmd == L"cmd_debug_step_out") act = ui::DebugAction::StepOut;
+            m_terminal.TriggerDebugAction(act);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_stop_debugging") { DoStopServer(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_restart_debugging") { DoRestartServer(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_toggle_breakpoint") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
+            size_t curLine = pDoc->buffer.GetCursor().line;
+            auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+            if (it != pDoc->breakpoints.end()) {
+                pDoc->breakpoints.erase(it);
+                pDoc->RemoveBreakpointCondition(curLine);
+                SyncAllBreakpointsToDebugger();
+            } else if (IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
+                pDoc->breakpoints.push_back(curLine);
+                SyncAllBreakpointsToDebugger();
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_debug_console") {
+        if (!m_terminal.IsOpen()) {
+            std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            m_terminal.Open(dir);
+        }
+        m_terminal.ShowDebugConsole();
+        m_isTerminalFocused = true;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_show_debug") {
+        constexpr int kDebugTab = static_cast<int>(ui::RailTabId::Debug);
+        if (m_config.isDrawerOpen && m_config.activeRailTab == kDebugTab) {
+            ToggleSidebar();
+        } else {
+            m_config.activeRailTab = kDebugTab;
+            if (!m_config.isDrawerOpen) ToggleSidebar();
+            m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
+        }
+        SaveSessionState();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_trigger_suggest") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !IsCursorInComment(pDoc)) {
+            auto pos = pDoc->buffer.GetCursor();
+            const auto& lineText = pDoc->buffer.GetLine(pos.line);
+            auto items = QueryCombinedCompletions(pDoc, lineText, pos.col);
+            RequestLspCompletionsAsync(pDoc, lineText, pos.col);
+            if (!items.empty()) m_editor.ShowAutocomplete(items);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_trigger_parameter_hints") { TriggerSignatureHelpAsync(GetActiveDoc(), true); return; }
+    if (actionCmd == L"cmd_emmet_expand") {
+        if (m_editor.IsAutocompleteVisible()) {
+            CommitAutocompleteSelection();
+            m_editor.ClearPrediction();
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_git_dismiss") { m_drawer.DismissCommitCard(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_split_editor") { ToggleSplitEditor(); return; }
+    if (actionCmd == L"cmd_toggle_problems") { ToggleProblemsPanel(); return; }
+    if (actionCmd == L"cmd_toggle_fullscreen") {
+        ShowWindow(m_hwnd, IsZoomed(m_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_markdown_preview") { ToggleMarkdownPreview(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_open_notebook") { OpenNotebookView(); return; }
+    if (actionCmd == L"cmd_toggle_word_wrap") { DoToggleWordWrap(); return; }
+    if (actionCmd == L"cmd_zoom_in") { DoZoomIn(); return; }
+    if (actionCmd == L"cmd_zoom_out") { DoZoomOut(); return; }
+    if (actionCmd == L"cmd_zoom_reset") { DoResetZoom(); return; }
+    if (actionCmd == L"cmd_next_tab" || actionCmd == L"cmd_prev_tab") {
+        if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+            auto& grp = m_editorGroups[m_focusedGroupIdx];
+            if (grp.docs.size() > 1) {
+                int n = static_cast<int>(grp.docs.size());
+                int delta = (actionCmd == L"cmd_prev_tab") ? -1 : 1;
+                grp.activeDocIdx = (grp.activeDocIdx + delta + n) % n;
+                RefreshActiveDocOutlineAndBreadcrumbs();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_show_explorer") { DoShowExplorer(); return; }
+    if (actionCmd == L"cmd_show_scm") { DoShowSourceControl(); return; }
+    if (actionCmd == L"cmd_split_terminal" || actionCmd == L"cmd_split_terminal_alt") {
+        if (m_terminal.IsOpen()) {
+            m_terminal.SplitActiveTab();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_close_window") { PostMessageW(m_hwnd, WM_CLOSE, 0, 0); return; }
+    if (actionCmd == L"cmd_explorer_undo") { DoExplorerUndo(); return; }
+    if (actionCmd == L"cmd_explorer_redo") { DoExplorerRedo(); return; }
+    if (actionCmd == L"cmd_explorer_delete") { DoDeleteSelectedExplorerItem(); return; }
+    if (actionCmd == L"cmd_explorer_rename") {
+        int hovered = m_drawer.GetHoveredIndex();
+        if (hovered >= 0) {
+            m_drawer.StartInlineRename(hovered);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_explorer_cut") { DoCut(); return; }
+    if (actionCmd == L"cmd_explorer_copy") { DoCopy(); return; }
+    if (actionCmd == L"cmd_explorer_paste") { DoPaste(); return; }
+    if (actionCmd == L"cmd_indent_line" || actionCmd == L"cmd_outdent_line") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->buffer.IsMemoryMappedReadOnly()) {
+            bool isOutdent = (actionCmd == L"cmd_outdent_line");
+            int tSize = GetDocTabSize(pDoc);
+            std::wstring indentStr = GetDocInsertSpaces(pDoc) ? std::wstring(tSize, L' ') : L"\t";
+            size_t sLine = pDoc->buffer.GetCursor().line, eLine = sLine, sCol = 0, eCol = 0;
+            if (pDoc->HasSelection()) {
+                pDoc->GetSelectionRange(sLine, sCol, eLine, eCol);
+                if (eCol == 0 && eLine > sLine) --eLine;
+            }
+            pDoc->buffer.PushUndo();
+            for (size_t l = sLine; l <= eLine && l < pDoc->buffer.GetLineCount(); ++l) {
+                const std::wstring& ln = pDoc->buffer.GetLine(l);
+                if (isOutdent) {
+                    size_t rm = (!ln.empty() && ln[0] == L'\t') ? 1 : 0;
+                    if (rm == 0) {
+                        while (rm < static_cast<size_t>(tSize) && rm < ln.length() && ln[rm] == L' ') ++rm;
+                    }
+                    if (rm > 0) pDoc->buffer.SetLine(l, ln.substr(rm));
+                } else {
+                    pDoc->buffer.SetLine(l, indentStr + ln);
+                }
+            }
+            pDoc->buffer.IncrementVersion();
+            MarkDocumentModified(pDoc);
+            if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
     if (phide::plugin::PluginManager::Instance().ExecuteCommand(actionCmd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -23432,13 +23614,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (wParam == VK_SNAPSHOT || winDown) {
                 return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
             }
-            if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
-                m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
-            if (wParam == 'Z') {
-                DoToggleWordWrap();
+            if (auto* pKeyRecDoc = GetActiveDoc();
+                pKeyRecDoc && pKeyRecDoc->isSpecialView && pKeyRecDoc->viewType == L"keybindings" &&
+                m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
+                HandleMessage(WM_KEYDOWN, wParam, lParam);
                 return 0;
             }
             if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f) {
@@ -23464,14 +23643,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
             }
+            if (wParam == VK_F4 && (GetKeyState(VK_MENU) & 0x8000) != 0 &&
+                !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) &&
+                !m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_close_window")) {
+                return 0;
+            }
             if ((GetKeyState(VK_MENU) & 0x8000) != 0 &&
                 wParam != VK_F4 && wParam != VK_SPACE && wParam != VK_TAB && wParam != VK_MENU) {
-                if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT ||
-                    wParam == VK_HOME || wParam == VK_END || wParam == 'A' || wParam == 'F' ||
-                    wParam == VK_F12) {
-                    HandleMessage(WM_KEYDOWN, wParam, lParam);
-                    return 0;
-                }
+                HandleMessage(WM_KEYDOWN, wParam, lParam);
+                return 0;
             }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
         }
@@ -23525,6 +23705,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (wParam == VK_ESCAPE) {
                     m_dbSettingsModal.Close();
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
+            // Keybinding Recorder interception (#49) - runs before global F-keys/chords so ANY key can be recorded
+            if (auto* pKeyRecDoc = GetActiveDoc();
+                pKeyRecDoc && pKeyRecDoc->isSpecialView && pKeyRecDoc->viewType == L"keybindings" &&
+                m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
+                bool isCtrlRec = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool isShiftRec = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool isAltRec = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().HandleKeyRecording(wParam, isCtrlRec, isShiftRec, isAltRec)) {
+                    if (wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU) {
+                        m_suppressNextChar = true;
+                    }
+                    if (!m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
+                        SaveUserKeybindings();
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -23651,14 +23850,54 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // Dynamic user-remapped keyboard shortcut overrides (#49) - evaluated before global F-keys/chords when no modal/rename is active
+            {
+                bool modalBlocking = m_confirmDiscardModal.IsOpen() || m_gitErrorModal.IsOpen() ||
+                    m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_drawer.IsRenaming() ||
+                    m_drawer.IsCreating() || m_colorPicker.IsOpen() ||
+                    m_editor.GetRenameWidget().isOpen || m_editor.GetPeekPanel().isOpen;
+                bool isCtrlOv = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool isShiftOv = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool isAltOv = (GetKeyState(VK_MENU) & 0x8000) != 0;
+                bool isSpecialOv = (wParam >= VK_F1 && wParam <= VK_F12) || wParam == VK_TAB ||
+                    wParam == VK_DELETE || wParam == VK_INSERT || wParam == VK_HOME || wParam == VK_END ||
+                    wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_RETURN || wParam == VK_ESCAPE;
+                auto* pOvDoc = GetActiveDoc();
+                bool inlineInputFocused = (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) ||
+                    (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) ||
+                    (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) && m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) ||
+                    (m_editor.GetFindBar().isOpen && m_editor.GetFindBar().focusedInput > 0) ||
+                    (pOvDoc && pOvDoc->isSpecialView && pOvDoc->viewType == L"keybindings" && m_editor.GetKeyboardShortcutsView().IsSearchFocused()) ||
+                    (pOvDoc && pOvDoc->isSpecialView && pOvDoc->viewType == L"settings" && m_editor.GetSettingsView().IsSearchFocused());
+                if (!modalBlocking && (!inlineInputFocused || isCtrlOv || isAltOv || (wParam >= VK_F1 && wParam <= VK_F12)) &&
+                    (isCtrlOv || isAltOv || isSpecialOv)) {
+                    bool hasEd = (pOvDoc && !pOvDoc->isSpecialView && !pOvDoc->isFolderView);
+                    bool isDbg = m_terminal.IsDebugActive();
+                    bool isTermFoc = m_terminal.IsOpen() && m_isTerminalFocused;
+                    bool isExpFoc = IsExplorerKeyboardFocused();
+                    bool isScmFoc = (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused());
+                    std::wstring overrideAct = m_editor.GetKeyboardShortcutsView().ResolveOverrideActionForKey(
+                        isCtrlOv, isShiftOv, isAltOv, static_cast<UINT>(wParam), hasEd, isDbg, isTermFoc, isExpFoc, isScmFoc);
+                    if (!overrideAct.empty()) {
+                        m_suppressNextChar = true;
+                        if (overrideAct != L"__CHORD_PREFIX__") {
+                            ExecuteQuickOpenAction(overrideAct);
+                        }
+                        return 0;
+                    }
+                }
+            }
+
             // Ctrl+Shift+Space Signature Parameter Help (must run before Ctrl+Space)
-            if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) && wParam == VK_SPACE) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) && wParam == VK_SPACE &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_trigger_parameter_hints")) {
                 TriggerSignatureHelpAsync(GetActiveDoc(), true);
                 return 0;
             }
 
             // Ctrl+Space IntelliSense Trigger
-            if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && wParam == VK_SPACE) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && wParam == VK_SPACE &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_trigger_suggest")) {
                 auto* pDoc = GetActiveDoc();
                 if (pDoc && !IsCursorInComment(pDoc)) {
                     auto pos = pDoc->buffer.GetCursor();
@@ -23673,32 +23912,60 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // F5 execution shortcuts (Ctrl+F5 = Run, F5 = Debug, Shift+F5 = Stop, Ctrl+Shift+F5 = Restart)
+            // F1: Command Palette (Alternative)
+            if (wParam == VK_F1 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_command_palette_alt")) {
+                DoCommandPalette();
+                return 0;
+            }
+
+            // Ctrl+Tab / Ctrl+Shift+Tab: Next / Previous Tab
+            if (wParam == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000) != 0 && !(GetKeyState(VK_MENU) & 0x8000)) {
+                bool prevTab = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                const wchar_t* tabCmd = prevTab ? L"cmd_prev_tab" : L"cmd_next_tab";
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(tabCmd)) {
+                    ExecuteQuickOpenAction(tabCmd);
+                    return 0;
+                }
+            }
+
+            // F5 execution shortcuts (Ctrl+F5 = Run, F5 = Debug/Continue, Shift+F5 = Stop, Ctrl+Shift+F5 = Restart)
             if (wParam == VK_F5) {
-                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                    DoRestartServer();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
-                } else if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                    DoStopServer();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
-                } else if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-                    DoRunActiveDocument();
-                    return 0;
-                } else {
-                    if (m_terminal.IsDebugActive()) {
-                        m_terminal.TriggerDebugAction(ui::DebugAction::Continue);
-                    } else {
-                        DoDebugActiveDocument();
+                bool ctrlF5 = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shiftF5 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (ctrlF5 && shiftF5) {
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_restart_debugging")) {
+                        DoRestartServer();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
                     }
+                } else if (shiftF5) {
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_stop_debugging")) {
+                        DoStopServer();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (ctrlF5) {
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_run_without_debugging")) {
+                        DoRunActiveDocument();
+                        return 0;
+                    }
+                } else if (m_terminal.IsDebugActive()) {
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_debug_continue")) {
+                        m_terminal.TriggerDebugAction(ui::DebugAction::Continue);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_start_debugging")) {
+                    DoDebugActiveDocument();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
             }
 
             // F6: Pause active debugger
-            if (wParam == VK_F6 && m_terminal.IsDebugActive()) {
+            if (wParam == VK_F6 && m_terminal.IsDebugActive() &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_debug_pause")) {
                 m_terminal.TriggerDebugAction(ui::DebugAction::Pause);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -23706,63 +23973,63 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // F7 / Shift+F7: Navigate Next / Previous Diff Hunk / Git Change
             if (wParam == VK_F7 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
-                DoNavigateDiffHunk((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-                return 0;
+                bool shiftF7 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(shiftF7 ? L"cmd_git_prev_change" : L"cmd_git_next_change")) {
+                    DoNavigateDiffHunk(shiftF7);
+                    return 0;
+                }
             }
 
             // F8 / Shift+F8: Navigate Next / Previous Diagnostic Problem
             if (wParam == VK_F8 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
-                NavigateNextProblem((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-                return 0;
+                bool shiftF8 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(shiftF8 ? L"cmd_prev_problem" : L"cmd_next_problem")) {
+                    NavigateNextProblem(shiftF8);
+                    return 0;
+                }
             }
 
             // F9 Toggle Breakpoint (Shift+F9: Conditional / Hit-Count / Logpoint)
             if (wParam == VK_F9) {
-                auto* pDoc = GetActiveDoc();
-                if (pDoc && !pDoc->isSpecialView) {
-                    size_t curLine = pDoc->buffer.GetCursor().line;
-                    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                        bool hasExisting = (std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine) != pDoc->breakpoints.end());
-                        if (hasExisting || IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
-                            OpenBreakpointConditionPrompt(curLine);
-                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                bool shiftF9 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(shiftF9 ? L"cmd_edit_breakpoint_condition" : L"cmd_toggle_breakpoint")) {
+                    auto* pDoc = GetActiveDoc();
+                    if (pDoc && !pDoc->isSpecialView) {
+                        size_t curLine = pDoc->buffer.GetCursor().line;
+                        if (shiftF9) {
+                            bool hasExisting = (std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine) != pDoc->breakpoints.end());
+                            if (hasExisting || IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
+                                OpenBreakpointConditionPrompt(curLine);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                            }
+                            return 0;
                         }
+                        auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
+                        if (it != pDoc->breakpoints.end()) {
+                            pDoc->breakpoints.erase(it);
+                            pDoc->RemoveBreakpointCondition(curLine);
+                            SyncAllBreakpointsToDebugger();
+                        } else if (IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
+                            pDoc->breakpoints.push_back(curLine);
+                            SyncAllBreakpointsToDebugger();
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
-                    auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
-                    if (it != pDoc->breakpoints.end()) {
-                        pDoc->breakpoints.erase(it);
-                        pDoc->RemoveBreakpointCondition(curLine);
-                        SyncAllBreakpointsToDebugger();
-                    } else if (IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
-                        pDoc->breakpoints.push_back(curLine);
-                        SyncAllBreakpointsToDebugger();
-                    }
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
                 }
             }
 
             // Ctrl+Shift+D Run & Debug Sidebar toggle
             if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
-                !(GetKeyState(VK_MENU) & 0x8000) && (wParam == 'D' || wParam == 'd')) {
-                constexpr int kDebugTab = static_cast<int>(ui::RailTabId::Debug);
-                if (m_config.isDrawerOpen && m_config.activeRailTab == kDebugTab) {
-                    ToggleSidebar();
-                } else {
-                    m_config.activeRailTab = kDebugTab;
-                    if (!m_config.isDrawerOpen) {
-                        ToggleSidebar();
-                    }
-                    m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
-                }
-                SaveSessionState();
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+                !(GetKeyState(VK_MENU) & 0x8000) && (wParam == 'D' || wParam == 'd') &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_show_debug")) {
+                ExecuteQuickOpenAction(L"cmd_show_debug");
                 return 0;
             }
 
             // Ctrl+Shift+X Runtimes Panel toggle (Images 1 & 2)
-            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'X' || wParam == 'x')) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'X' || wParam == 'x') &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_runtimes")) {
                 if (m_extensionsPanel.IsOpen()) {
                     AnimateRightSidebarClose();
                 } else {
@@ -23773,48 +24040,52 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Ctrl+Shift+V Markdown Preview toggle
-            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'V' || wParam == 'v')) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'V' || wParam == 'v') &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_markdown_preview")) {
                 ToggleMarkdownPreview();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 
             // Ctrl+Shift+Y Debug Console toggle
-            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'Y' || wParam == 'y')) {
-                if (!m_terminal.IsOpen()) {
-                    std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
-                    m_terminal.Open(dir);
-                }
-                m_terminal.ShowDebugConsole();
-                m_isTerminalFocused = true;
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 && (wParam == 'Y' || wParam == 'y') &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_debug_console")) {
+                ExecuteQuickOpenAction(L"cmd_toggle_debug_console");
                 return 0;
             }
 
-            if (wParam == VK_F10 && m_terminal.IsDebugActive()) {
+            if (wParam == VK_F10 && m_terminal.IsDebugActive() &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_debug_step_over")) {
                 m_terminal.TriggerDebugAction(ui::DebugAction::StepOver);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 
             if (wParam == VK_F11 && m_terminal.IsDebugActive()) {
-                if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                    m_terminal.TriggerDebugAction(ui::DebugAction::StepOut);
-                } else {
-                    m_terminal.TriggerDebugAction(ui::DebugAction::StepInto);
+                bool shiftF11 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(shiftF11 ? L"cmd_debug_step_out" : L"cmd_debug_step_into")) {
+                    m_terminal.TriggerDebugAction(shiftF11 ? ui::DebugAction::StepOut : ui::DebugAction::StepInto);
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
             }
 
             // Toggle integrated terminal panel via Ctrl+` (VK_OEM_3)
-            if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == VK_OEM_3) {
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && wParam == VK_OEM_3 &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_terminal")) {
                 DoCreateTerminal();
+                return 0;
+            }
+            if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && wParam == VK_OEM_3 &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_new_terminal")) {
+                ExecuteQuickOpenAction(L"cmd_new_terminal");
                 return 0;
             }
 
             // Split active terminal via Ctrl+Shift+5 or Ctrl+Shift+\ (Images 4 & 5)
-            if (m_terminal.IsOpen() && m_isTerminalFocused && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && (wParam == '5' || wParam == VK_OEM_5)) {
+            if (m_terminal.IsOpen() && m_isTerminalFocused && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) &&
+                ((wParam == '5' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_split_terminal")) ||
+                 (wParam == VK_OEM_5 && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_split_terminal_alt")))) {
                 m_terminal.SplitActiveTab();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -24039,24 +24310,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // Keybinding Recorder interception (#49) - capture arbitrary chords before global shortcuts
-            if (auto* pKeyRecDoc = GetActiveDoc();
-                pKeyRecDoc && pKeyRecDoc->isSpecialView && pKeyRecDoc->viewType == L"keybindings" &&
-                m_editor.GetKeyboardShortcutsView().IsRecordingKeybinding()) {
-                bool isCtrlRec = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                bool isShiftRec = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                bool isAltRec = (GetKeyState(VK_MENU) & 0x8000) != 0;
-                if (m_editor.GetKeyboardShortcutsView().HandleKeyRecording(wParam, isCtrlRec, isShiftRec, isAltRec)) {
-                    if (wParam != VK_CONTROL && wParam != VK_SHIFT && wParam != VK_MENU) {
-                        m_suppressNextChar = true;
-                    }
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
             // F2 inline rename trigger when hovering over tree item in File Explorer
-            if (wParam == VK_F2 && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
+            if (wParam == VK_F2 && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_rename")) {
                 int hovered = m_drawer.GetHoveredIndex();
                 if (hovered >= 0) {
                     m_drawer.StartInlineRename(hovered);
@@ -24065,12 +24321,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // Delete key: deletes selected file/folder in File Explorer (User request: "the del keyboard key doesnt work i click the file and click on the keyboard the del ut the fiule is not deleted")
+            // Delete key: deletes selected file/folder in File Explorer
             auto* pActiveDocCheck = GetActiveDoc();
             bool docHasSelection = (pActiveDocCheck && pActiveDocCheck->HasSelection());
             bool isSpecialViewActive = (pActiveDocCheck && pActiveDocCheck->isSpecialView);
             if (wParam == VK_DELETE && m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f &&
-                (m_explorerHasFocus || (!m_selectedExplorerPath.empty() && !docHasSelection && !isSpecialViewActive))) {
+                (m_explorerHasFocus || (!m_selectedExplorerPath.empty() && !docHasSelection && !isSpecialViewActive)) &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_delete")) {
                 DoDeleteSelectedExplorerItem();
                 return 0;
             }
@@ -24321,24 +24578,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // Dynamic user-remapped keyboard shortcut overrides (#49)
-            {
-                bool isCtrlOv = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                bool isShiftOv = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                bool isAltOv = (GetKeyState(VK_MENU) & 0x8000) != 0;
-                if (isCtrlOv || isAltOv || (wParam >= VK_F1 && wParam <= VK_F12)) {
-                    bool hasEd = (pDoc && !pDoc->isSpecialView && !pDoc->isFolderView);
-                    std::wstring overrideAct = m_editor.GetKeyboardShortcutsView().ResolveOverrideActionForKey(
-                        isCtrlOv, isShiftOv, isAltOv, static_cast<UINT>(wParam), hasEd);
-                    if (!overrideAct.empty()) {
-                        m_suppressNextChar = true;
-                        ExecuteQuickOpenAction(overrideAct);
-                        return 0;
-                    }
+            // Non-Ctrl/Alt Ctrl+K second-chord handling (e.g. Ctrl+K S = Save All, Ctrl+K F = Close Folder)
+            if (m_chordCtrlK && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+                !(GetKeyState(VK_SHIFT) & 0x8000) && wParam != VK_SHIFT && wParam != VK_CONTROL && wParam != VK_MENU) {
+                if (wParam == 'S' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save_all")) {
+                    m_chordCtrlK = false;
+                    m_suppressNextChar = true;
+                    DoSaveAll();
+                    return 0;
+                }
+                if (wParam == 'F' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_close_folder")) {
+                    m_chordCtrlK = false;
+                    m_suppressNextChar = true;
+                    DoCloseFolder();
+                    return 0;
                 }
             }
 
-            if (wParam == VK_F11) {
+            if (wParam == VK_F11 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) &&
+                !(GetKeyState(VK_MENU) & 0x8000) && !m_terminal.IsDebugActive() &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_fullscreen")) {
                 if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
                 else ShowWindow(m_hwnd, SW_MAXIMIZE);
                 return 0;
@@ -24367,11 +24626,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 auto* pEdDoc = GetActiveDoc();
                 if (pEdDoc && !pEdDoc->isSpecialView) {
                     if (ctrlAlt && !shiftAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
-                        if (pEdDoc->AddCursorVertical(wParam == VK_UP)) {
-                            EnsureCursorVisible();
-                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        const wchar_t* curId = (wParam == VK_UP) ? L"cmd_add_cursor_up" : L"cmd_add_cursor_down";
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(curId)) {
+                            if (pEdDoc->AddCursorVertical(wParam == VK_UP)) {
+                                EnsureCursorVisible();
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                            }
+                            return 0;
                         }
-                        return 0;
                     }
                     if (shiftAlt && (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_HOME || wParam == VK_END ||
                                      ((ctrlAlt || pEdDoc->isColumnSelection) && (wParam == VK_UP || wParam == VK_DOWN)))) {
@@ -24381,33 +24643,44 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
                     if (shiftAlt && !ctrlAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
-                        DoDuplicateLines(wParam == VK_UP);
-                        return 0;
+                        const wchar_t* dupId = (wParam == VK_UP) ? L"cmd_duplicate_line_up" : L"cmd_duplicate_line_down";
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(dupId)) {
+                            DoDuplicateLines(wParam == VK_UP);
+                            return 0;
+                        }
                     }
                     if (!ctrlAlt && !shiftAlt && (wParam == VK_UP || wParam == VK_DOWN)) {
-                        DoMoveLines(wParam == VK_UP);
-                        return 0;
+                        const wchar_t* mvId = (wParam == VK_UP) ? L"cmd_move_line_up" : L"cmd_move_line_down";
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(mvId)) {
+                            DoMoveLines(wParam == VK_UP);
+                            return 0;
+                        }
                     }
                     if (!ctrlAlt && !shiftAlt && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
-                        if (wParam == VK_LEFT) NavigateBack();
-                        else NavigateForward();
-                        return 0;
+                        const wchar_t* navId = (wParam == VK_LEFT) ? L"cmd_nav_back" : L"cmd_nav_forward";
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(navId)) {
+                            if (wParam == VK_LEFT) NavigateBack();
+                            else NavigateForward();
+                            return 0;
+                        }
                     }
                 }
             }
 
             // F3 / Shift+F3: Find Next / Previous Match
-            if (wParam == VK_F3) {
+            if (wParam == VK_F3 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
                 bool shiftF3 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-                if (!m_editor.GetFindBar().isOpen) {
-                    DoFind();
+                if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(shiftF3 ? L"cmd_find_prev" : L"cmd_find_next")) {
+                    if (!m_editor.GetFindBar().isOpen) {
+                        DoFind();
+                    }
+                    if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView && m_editor.GetFindBar().isOpen) {
+                        m_editor.StepInlineFindMatch(*pFD, !shiftF3);
+                        EnsureCursorVisible();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
                 }
-                if (auto* pFD = GetActiveDoc(); pFD && !pFD->isSpecialView && m_editor.GetFindBar().isOpen) {
-                    m_editor.StepInlineFindMatch(*pFD, !shiftF3);
-                    EnsureCursorVisible();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
             }
 
             // F12 variants: F12 Go to Definition, Alt+F12 Peek Definition, Shift+F12 References, Ctrl+F12 Implementation
@@ -24416,27 +24689,39 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 bool shiftF12 = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                 bool altF12 = (GetKeyState(VK_MENU) & 0x8000) != 0;
                 if (altF12 && !ctrlF12 && !shiftF12) {
-                    DoPeekDefinition();
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_peek_definition")) {
+                        DoPeekDefinition();
+                        return 0;
+                    }
                 } else if (shiftF12 && !ctrlF12 && !altF12) {
-                    DoFindReferences();
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_references")) {
+                        DoFindReferences();
+                        return 0;
+                    }
                 } else if (ctrlF12 && !shiftF12 && !altF12) {
-                    DoImplementation();
-                } else {
-                    DoGoToDefinition();
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_implementation")) {
+                        DoImplementation();
+                        return 0;
+                    }
+                } else if (!ctrlF12 && !shiftF12 && !altF12) {
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_goto_definition")) {
+                        DoGoToDefinition();
+                        return 0;
+                    }
                 }
-                return 0;
             }
 
             // F2: Rename Symbol
-            if (wParam == VK_F2) {
+            if (wParam == VK_F2 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_rename_symbol")) {
                 DoRenameSymbol();
                 return 0;
             }
 
             // Alt+Z: Toggle Word Wrap
-            if ((GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'Z') {
-                m_wordWrap = !m_wordWrap;
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+            if ((GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && wParam == 'Z' &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_word_wrap")) {
+                DoToggleWordWrap();
                 return 0;
             }
 
@@ -24453,7 +24738,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Ctrl+D: Add Selection To Next Find Match (Multi-Cursor Occurrence Selection)
-                if (wParam == 'D' || wParam == 'd') {
+                if ((wParam == 'D' || wParam == 'd') && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_add_next_occurrence")) {
                     auto* pDoc = GetActiveDoc();
                     if (pDoc) {
                         if (pDoc->AddNextOccurrence()) {
@@ -24465,12 +24751,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Zoom In: Ctrl+= / Ctrl++ (VK_OEM_PLUS or VK_ADD)
-                if (wParam == VK_OEM_PLUS || wParam == VK_ADD) {
+                if ((wParam == VK_OEM_PLUS || wParam == VK_ADD) && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_zoom_in")) {
                     DoZoomIn();
                     return 0;
                 }
                 // Zoom Out: Ctrl+- (VK_OEM_MINUS or VK_SUBTRACT)
-                if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) {
+                if ((wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT) && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_zoom_out")) {
                     DoZoomOut();
                     return 0;
                 }
@@ -24478,17 +24766,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (wParam == '0' || wParam == VK_NUMPAD0) {
                     if (m_chordCtrlK) {
                         m_chordCtrlK = false;
-                        DoFoldAll();
-                    } else {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_fold_all")) {
+                            DoFoldAll();
+                            return 0;
+                        }
+                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_zoom_reset")) {
                         DoResetZoom();
+                        return 0;
                     }
-                    return 0;
                 }
                 if (m_chordCtrlK && (wParam == '1' || wParam == '2' || wParam == '3')) {
                     int lvl = static_cast<int>(wParam - '0');
                     m_chordCtrlK = false;
-                    DoFoldLevel(lvl);
-                    return 0;
+                    std::wstring foldId = L"cmd_fold_level_" + std::to_wstring(lvl);
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(foldId)) {
+                        DoFoldLevel(lvl);
+                        return 0;
+                    }
                 }
                 if (!m_chordCtrlK && !shiftDown && !altDown &&
                     (wParam == '1' || wParam == '2' || wParam == '3' || wParam == '4')) {
@@ -24499,104 +24793,119 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (m_chordCtrlK && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
                     m_chordCtrlK = false;
-                    FocusAdjacentEditorGroup(wParam == VK_RIGHT);
-                    return 0;
+                    const wchar_t* fgId = (wParam == VK_RIGHT) ? L"cmd_focus_group_next" : L"cmd_focus_group_prev";
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(fgId)) {
+                        FocusAdjacentEditorGroup(wParam == VK_RIGHT);
+                        return 0;
+                    }
                 }
 
                 // Ctrl+/ (VK_OEM_2): Toggle Line Comment
-                if (wParam == VK_OEM_2) {
+                if (wParam == VK_OEM_2 && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_line_comment")) {
                     DoToggleLineComment();
                     return 0;
                 }
 
-                if (wParam == VK_OEM_5) {
-                    if (shiftDown) { // Ctrl+Shift+\ (Jump to Matching Bracket)
+                if (wParam == VK_OEM_5 && !altDown) {
+                    if (shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_jump_to_bracket")) {
                         DoJumpToMatchingBracket();
-                    } else {         // Ctrl+\ (Split Editor Right, Images 3 & 4)
+                        return 0;
+                    } else if (!shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_split_editor")) {
                         ToggleSplitEditor();
+                        return 0;
                     }
-                    return 0;
                 }
-                if (wParam == VK_F2) {
+                if (wParam == VK_F2 && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_change_all_occurrences")) {
                     DoChangeAllOccurrences();
                     return 0;
                 }
-                if (wParam == 'R' && shiftDown) {
+                if (wParam == 'R' && shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_refactor")) {
                     DoRefactor();
                     return 0;
                 }
-                if (wParam == 'M' && shiftDown && !altDown) {
+                if (wParam == 'M' && shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_problems")) {
                     ToggleProblemsPanel();
                     return 0;
                 }
-                if (wParam == VK_OEM_PERIOD && !shiftDown && !altDown) {
+                if (wParam == VK_OEM_PERIOD && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_code_actions")) {
                     DoCodeActions();
                     return 0;
                 }
-                if (wParam == VK_OEM_COMMA && !shiftDown && !altDown) {
+                if (wParam == VK_OEM_COMMA && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_open_settings")) {
                     DoOpenSettings();
                     return 0;
                 }
                 if (wParam == 'P') {
-                    if (altDown && !shiftDown) {
+                    if (altDown && !shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_prev_bookmark")) {
                         DoPrevBookmark();
                         return 0;
-                    } else if (shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_command_palette")) {
+                    } else if (shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_command_palette")) {
                         DoCommandPalette();
                         return 0;
-                    } else if (!shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_quick_open")) {
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_quick_open")) {
                         DoQuickOpenFileSearch();
                         return 0;
                     }
                 }
-                if (wParam == 'B' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_sidebar")) {
+                if (wParam == 'B' && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_sidebar")) {
                     ToggleSidebar();
                     return 0;
                 }
                 if (wParam == 'N') {
-                    if (shiftDown) {
+                    if (shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_new_window")) {
                         DoNewWindow();
-                    } else if (altDown) {
+                        return 0;
+                    } else if (altDown && !shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_next_bookmark")) {
                         DoNextBookmark();
-                    } else {
+                        return 0;
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_new_file")) {
                         DoNewTextFile();
+                        return 0;
                     }
-                    return 0;
                 }
                 if (wParam == 'O') {
-                    if (shiftDown && !altDown && !m_chordCtrlK) {
+                    if (shiftDown && !altDown && !m_chordCtrlK &&
+                        m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_goto_symbol")) {
                         DoGoToSymbolInEditor();
                         return 0;
                     }
                     if (m_chordCtrlK) {
-                        DoOpenFolder();
-                    } else {
+                        m_chordCtrlK = false;
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_open_folder")) {
+                            DoOpenFolder();
+                            return 0;
+                        }
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_open_file")) {
                         DoOpenFile();
+                        return 0;
                     }
-                    m_chordCtrlK = false;
-                    return 0;
                 }
                 if (wParam == 'S') {
                     if (m_chordCtrlK) {
-                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save_all")) {
-                            DoSaveAll();
-                            m_chordCtrlK = false;
+                        m_chordCtrlK = false;
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_shortcuts")) {
+                            DoOpenKeyboardShortcuts();
                             return 0;
                         }
-                    } else if (shiftDown) {
+                    } else if (shiftDown && !altDown) {
                         if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save_as")) {
                             DoSaveFileAs();
-                            m_chordCtrlK = false;
                             return 0;
                         }
-                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save")) {
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_save")) {
                         DoSaveFile();
-                        m_chordCtrlK = false;
                         return 0;
                     }
-                    m_chordCtrlK = false;
                 }
-                if (wParam == 'W' || wParam == VK_F4) {
+                if ((wParam == 'W' || wParam == VK_F4) && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_close_editor")) {
                     DoCloseEditor();
                     return 0;
                 }
@@ -24604,137 +24913,152 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (m_chordCtrlK) {
                         m_chordCtrlK = false;
                         if (pDoc && !pDoc->isSpecialView && pDoc->HasSelection()) {
-                            DoFormatSelection();
-                        } else {
+                            if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_format_selection")) {
+                                DoFormatSelection();
+                                return 0;
+                            }
+                        } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_close_folder")) {
                             DoCloseFolder();
+                            return 0;
                         }
-                        return 0;
-                    } else if (shiftDown) {
+                    } else if (shiftDown && !altDown) {
                         if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_in_files")) {
                             DoShowSearch();
                             return 0;
                         }
-                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_inline")) {
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_find_inline")) {
                         DoFind();
                         return 0;
                     }
                 }
                 if (wParam == 'H') {
-                    if (shiftDown) {
+                    if (shiftDown && !altDown) {
                         if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_replace_in_files")) {
                             DoShowReplace();
                             return 0;
                         }
-                    } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_replace_inline")) {
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_replace_inline")) {
                         DoReplace();
                         return 0;
                     }
                 }
-                if (wParam == 'E') {
-                    if (shiftDown) {
-                        DoShowExplorer();
-                        return 0;
-                    }
+                if (wParam == 'E' && shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_show_explorer")) {
+                    DoShowExplorer();
+                    return 0;
                 }
-                if (wParam == 'G') {
-                    if (shiftDown) {
-                        DoShowSourceControl();
-                        return 0;
-                    }
+                if (wParam == 'G' && shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_show_scm")) {
+                    DoShowSourceControl();
+                    return 0;
                 }
                 if (wParam == 'J') {
                     if (m_chordCtrlK) {
                         m_chordCtrlK = false;
-                        DoUnfoldAll();
-                        return 0;
-                    } else if (shiftDown) {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_unfold_all")) {
+                            DoUnfoldAll();
+                            return 0;
+                        }
+                    } else if (shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_open_notebook")) {
                         OpenNotebookView();
                         return 0;
-                    } else {
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_join_lines")) {
                         DoJoinLines();
                         return 0;
                     }
                 }
-                if (wParam == VK_OEM_3) { // Backtick (`)
+                if (wParam == VK_OEM_3 && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_terminal")) { // Backtick (`)
                     DoCreateTerminal();
                     return 0;
                 }
                 if (wParam == 'T') {
-                    if (shiftDown) {
+                    if (shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_reopen_closed_editor")) {
                         DoReopenClosedEditor();
                         return 0;
                     } else if (m_chordCtrlK) {
-                        DoToggleThemeModal();
                         m_chordCtrlK = false;
-                        return 0;
-                    } else if (!altDown) {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_theme_picker")) {
+                            DoToggleThemeModal();
+                            return 0;
+                        }
+                    } else if (!shiftDown && !altDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_goto_workspace_symbol")) {
                         DoGoToWorkspaceSymbol();
                         return 0;
                     }
                 }
-                if (wParam == VK_OEM_COMMA) {
-                    DoOpenSettings();
-                    return 0;
-                }
                 if (wParam == 'Z') {
                     if (m_chordCtrlK) {
-                        ToggleZenMode();
                         m_chordCtrlK = false;
-                        return 0;
-                    }
-                    if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_zen_mode")) {
+                            ToggleZenMode();
+                            return 0;
+                        }
+                    } else if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
                         if (shiftDown) {
-                            DoExplorerRedo();
-                        } else {
+                            if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_redo")) { DoExplorerRedo(); return 0; }
+                        } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_undo")) {
                             DoExplorerUndo();
+                            return 0;
                         }
                     } else if (pDoc && !pDoc->isSpecialView) {
                         if (shiftDown) {
-                            DoRedo();
-                        } else {
+                            if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_redo")) { DoRedo(); return 0; }
+                        } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_undo")) {
                             DoUndo();
+                            return 0;
                         }
                     } else if (m_explorerHasFocus) {
                         if (shiftDown) {
-                            DoExplorerRedo();
-                        } else {
+                            if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_redo")) { DoExplorerRedo(); return 0; }
+                        } else if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_undo")) {
                             DoExplorerUndo();
+                            return 0;
                         }
                     }
-                    return 0;
                 }
                 if (wParam == 'Y') {
                     if (m_drawer.IsRenaming() || (m_explorerHasFocus && (!pDoc || pDoc->isSpecialView))) {
-                        DoExplorerRedo();
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_redo")) { DoExplorerRedo(); return 0; }
                     } else if (pDoc && !pDoc->isSpecialView) {
-                        DoRedo();
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_redo")) { DoRedo(); return 0; }
                     } else if (m_explorerHasFocus) {
-                        DoExplorerRedo();
+                        if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_explorer_redo")) { DoExplorerRedo(); return 0; }
                     }
-                    return 0;
                 }
                 if (wParam == 'X') {
-                    DoCut();
-                    return 0;
+                    const wchar_t* cutId = m_explorerHasFocus ? L"cmd_explorer_cut" : L"cmd_cut";
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(cutId)) {
+                        DoCut();
+                        return 0;
+                    }
                 }
                 if (wParam == 'C') {
-                    DoCopy();
-                    return 0;
+                    const wchar_t* copyId = m_explorerHasFocus ? L"cmd_explorer_copy" : L"cmd_copy";
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(copyId)) {
+                        DoCopy();
+                        return 0;
+                    }
                 }
                 if (wParam == 'V') {
-                    DoPaste();
-                    return 0;
+                    const wchar_t* pasteId = m_explorerHasFocus ? L"cmd_explorer_paste" : L"cmd_paste";
+                    if (m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(pasteId)) {
+                        DoPaste();
+                        return 0;
+                    }
                 }
-                if (wParam == 'A') {
+                if (wParam == 'A' && !shiftDown && !altDown &&
+                    m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_select_all")) {
                     DoSelectAll();
                     return 0;
                 }
                 if (wParam == 'K') {
-                    if (altDown && !shiftDown) {
+                    if (altDown && !shiftDown && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_bookmark")) {
                         DoToggleBookmark();
                         return 0;
                     }
-                    if (shiftDown && pDoc && !pDoc->isSpecialView) {
+                    if (shiftDown && pDoc && !pDoc->isSpecialView &&
+                        m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_delete_line")) {
                         // Ctrl+Shift+K: Delete entire line (undoable)
                         pDoc->buffer.DeleteLine(pDoc->buffer.GetCursor().line);
                         pDoc->ClearSelection();
@@ -24757,7 +25081,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
 
             // Close Editor via Ctrl+F4
-            if (wParam == VK_F4 && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            if (wParam == VK_F4 && (GetKeyState(VK_CONTROL) & 0x8000) &&
+                m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_close_editor")) {
                 DoCloseEditor();
                 return 0;
             }
@@ -25059,6 +25384,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else if (wParam == VK_TAB) {
                     if (pDoc->buffer.IsMemoryMappedReadOnly()) return 0;
                     bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (!m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(isShiftPressed ? L"cmd_outdent_line" : L"cmd_indent_line")) {
+                        return 0;
+                    }
                     int tSize = GetDocTabSize(pDoc);
                     std::wstring indentStr = GetDocInsertSpaces(pDoc) ? std::wstring(tSize, L' ') : L"\t";
 
@@ -26360,6 +26688,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             s_editDebouncePending = false;
             UpdateDrawerErrorFiles();
             SaveSessionState();
+            SaveUserKeybindings();
             DestroyWindow(m_hwnd);
             return 0;
         }
@@ -27233,7 +27562,22 @@ void Window::SetupRemoteCallbacks() {
         if (!wsRoot.empty()) {
             cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath);
         }
+        auto normCmp = [](std::wstring s) {
+            for (auto& ch : s) {
+                if (ch == L'/') ch = L'\\';
+                ch = static_cast<wchar_t>(::towlower(ch));
+            }
+            return s;
+        };
+        std::wstring activeCmp = normCmp(activePath);
         auto expected = !activePath.empty() ? phide::dev::DapClient::DetectAdapterForFile(activePath) : phide::dev::DapAdapterType::None;
+        if (!activeCmp.empty()) {
+            std::erase_if(cfgs, [&](const phide::dev::LaunchConfig& c) {
+                if (normCmp(c.program) != activeCmp) return false;
+                auto cfgAdapter = phide::dev::DapClient::AdapterFromTypeString(c.type);
+                return expected == phide::dev::DapAdapterType::None || cfgAdapter != expected;
+            });
+        }
         if (expected != phide::dev::DapAdapterType::None) {
             bool hasMatch = false;
             for (const auto& c : cfgs) {
@@ -27254,6 +27598,13 @@ void Window::SetupRemoteCallbacks() {
                 else if (expected == phide::dev::DapAdapterType::GdbMi) autoCfg.type = L"cppdbg";
                 cfgs.push_back(std::move(autoCfg));
             }
+        } else if (!activePath.empty()) {
+            std::wstring ext = std::filesystem::path(activePath).extension().wstring();
+            phide::dev::LaunchConfig noDbg;
+            noDbg.name = !ext.empty() ? (L"No Debugger (" + ext + L")") : L"No Debugger";
+            noDbg.program = activePath;
+            noDbg.cwd = std::filesystem::path(activePath).parent_path().wstring();
+            cfgs.insert(cfgs.begin(), std::move(noDbg));
         }
         return cfgs;
     };
@@ -27272,6 +27623,7 @@ void Window::SetupRemoteCallbacks() {
         outConfigs = buildEffectiveDebugConfigs(wsRoot, activePath);
         if (activePath != *lastDbgActiveFile) {
             *lastDbgActiveFile = activePath;
+            outSelectedCfg = 0;
             auto expected = !activePath.empty() ? phide::dev::DapClient::DetectAdapterForFile(activePath) : phide::dev::DapAdapterType::None;
             if (expected != phide::dev::DapAdapterType::None) {
                 for (size_t idx = 0; idx < outConfigs.size(); ++idx) {
