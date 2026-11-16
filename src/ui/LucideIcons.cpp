@@ -12,6 +12,8 @@ namespace phide::ui {
 
 LucideIcons::LucideIcons() = default;
 
+static inline void EnsureStrokeStyle(ID2D1RenderTarget* pRT, ComPtr<ID2D1StrokeStyle>& pStyle);
+
 HRESULT LucideIcons::Initialize(ID2D1Factory* pFactory) {
     if (!pFactory) return E_POINTER;
 
@@ -2225,6 +2227,119 @@ void LucideIcons::DrawRefreshCw(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bound
     }
     pRT->DrawLine(MapPoint(19.5f, 3.8f, ox, oy, s), MapPoint(19.5f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
     pRT->DrawLine(MapPoint(19.5f, 8.0f, ox, oy, s), MapPoint(15.2f, 8.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+}
+
+void LucideIcons::DrawDebugActionIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, int actionId, ID2D1Brush* pBrush, float strokeWidth) {
+    if (!pRT || !pBrush) return;
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float minDim = (std::min)(bw, bh);
+    if (minDim <= 2.0f) return;
+
+    const float scale = (std::max)(0.65f, minDim / 18.0f);
+    const float cx = bounds.left + bw * 0.5f;
+    const float cy = bounds.top + bh * 0.5f;
+
+    ComPtr<ID2D1Factory> pFactory;
+    pRT->GetFactory(&pFactory);
+    ComPtr<ID2D1StrokeStyle> roundStyle;
+    if (pFactory) {
+        D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
+            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+            D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_SOLID, 0.0f);
+        pFactory->CreateStrokeStyle(&props, nullptr, 0, &roundStyle);
+    }
+    ID2D1StrokeStyle* st = roundStyle.Get();
+
+    switch (actionId) {
+        case 1: { // Continue (upright crisp play triangle)
+            float r = 4.0f * scale;
+            float dx = 3.5f * scale;
+            pRT->DrawLine(D2D1::Point2F(cx - dx * 0.85f, cy - r), D2D1::Point2F(cx + dx, cy), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx + dx, cy), D2D1::Point2F(cx - dx * 0.85f, cy + r), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx - dx * 0.85f, cy + r), D2D1::Point2F(cx - dx * 0.85f, cy - r), pBrush, strokeWidth, st);
+            break;
+        }
+        case 2: { // Pause (upright twin bars)
+            float dx = 2.4f * scale;
+            float dy = 3.8f * scale;
+            pRT->DrawLine(D2D1::Point2F(cx - dx, cy - dy), D2D1::Point2F(cx - dx, cy + dy), pBrush, strokeWidth * 1.15f, st);
+            pRT->DrawLine(D2D1::Point2F(cx + dx, cy - dy), D2D1::Point2F(cx + dx, cy + dy), pBrush, strokeWidth * 1.15f, st);
+            break;
+        }
+        case 3: { // Step Over (upright arch over center dot)
+            if (pFactory) {
+                ComPtr<ID2D1PathGeometry> pGeo;
+                if (SUCCEEDED(pFactory->CreatePathGeometry(&pGeo))) {
+                    ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(pGeo->Open(&sink))) {
+                        sink->BeginFigure(D2D1::Point2F(cx - 4.4f * scale, cy + 0.8f * scale), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddArc(D2D1::ArcSegment(
+                            D2D1::Point2F(cx + 4.4f * scale, cy + 0.8f * scale),
+                            D2D1::SizeF(4.6f * scale, 4.6f * scale),
+                            0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        pRT->DrawGeometry(pGeo.Get(), pBrush, strokeWidth, st);
+                    }
+                }
+            } else {
+                pRT->DrawLine(D2D1::Point2F(cx - 4.0f * scale, cy + 1.0f * scale), D2D1::Point2F(cx - 2.0f * scale, cy - 3.0f * scale), pBrush, strokeWidth, st);
+                pRT->DrawLine(D2D1::Point2F(cx - 2.0f * scale, cy - 3.0f * scale), D2D1::Point2F(cx + 2.0f * scale, cy - 3.0f * scale), pBrush, strokeWidth, st);
+                pRT->DrawLine(D2D1::Point2F(cx + 2.0f * scale, cy - 3.0f * scale), D2D1::Point2F(cx + 4.0f * scale, cy + 1.0f * scale), pBrush, strokeWidth, st);
+            }
+            pRT->DrawLine(D2D1::Point2F(cx + 1.8f * scale, cy + 0.8f * scale), D2D1::Point2F(cx + 4.4f * scale, cy + 0.8f * scale), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx + 4.4f * scale, cy - 1.8f * scale), D2D1::Point2F(cx + 4.4f * scale, cy + 0.8f * scale), pBrush, strokeWidth, st);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 3.4f * scale), 1.3f * scale, 1.3f * scale), pBrush);
+            break;
+        }
+        case 4: { // Step Into (vertical down arrow onto dot)
+            pRT->DrawLine(D2D1::Point2F(cx, cy - 4.6f * scale), D2D1::Point2F(cx, cy + 1.2f * scale), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx - 2.8f * scale, cy - 1.6f * scale), D2D1::Point2F(cx, cy + 1.2f * scale), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx + 2.8f * scale, cy - 1.6f * scale), D2D1::Point2F(cx, cy + 1.2f * scale), pBrush, strokeWidth, st);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 3.8f * scale), 1.3f * scale, 1.3f * scale), pBrush);
+            break;
+        }
+        case 5: { // Step Out (vertical up arrow from dot)
+            pRT->DrawLine(D2D1::Point2F(cx, cy + 1.6f * scale), D2D1::Point2F(cx, cy - 4.4f * scale), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx - 2.8f * scale, cy - 1.6f * scale), D2D1::Point2F(cx, cy - 4.4f * scale), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx + 2.8f * scale, cy - 1.6f * scale), D2D1::Point2F(cx, cy - 4.4f * scale), pBrush, strokeWidth, st);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 4.0f * scale), 1.3f * scale, 1.3f * scale), pBrush);
+            break;
+        }
+        case 6: { // Restart (upright open circular arc + arrowhead)
+            float r = 4.1f * scale;
+            if (pFactory) {
+                ComPtr<ID2D1PathGeometry> pGeo;
+                if (SUCCEEDED(pFactory->CreatePathGeometry(&pGeo))) {
+                    ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(pGeo->Open(&sink))) {
+                        sink->BeginFigure(D2D1::Point2F(cx + r, cy), D2D1_FIGURE_BEGIN_HOLLOW);
+                        sink->AddArc(D2D1::ArcSegment(
+                            D2D1::Point2F(cx + r * 0.72f, cy - r * 0.70f),
+                            D2D1::SizeF(r, r),
+                            0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        pRT->DrawGeometry(pGeo.Get(), pBrush, strokeWidth, st);
+                    }
+                }
+            } else {
+                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), pBrush, strokeWidth, st);
+            }
+            pRT->DrawLine(D2D1::Point2F(cx + r * 0.72f, cy - r * 0.70f - 2.6f * scale),
+                          D2D1::Point2F(cx + r * 0.72f, cy - r * 0.70f), pBrush, strokeWidth, st);
+            pRT->DrawLine(D2D1::Point2F(cx + r * 0.72f - 2.6f * scale, cy - r * 0.70f),
+                          D2D1::Point2F(cx + r * 0.72f, cy - r * 0.70f), pBrush, strokeWidth, st);
+            break;
+        }
+        case 7: { // Stop (rounded solid square)
+            float hs = 3.5f * scale;
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(cx - hs, cy - hs, cx + hs, cy + hs), 1.6f * scale, 1.6f * scale), pBrush);
+            break;
+        }
+        default: break;
+    }
 }
 
 } // namespace phide::ui

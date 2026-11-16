@@ -9001,6 +9001,17 @@ std::wstring DrawerPanel::GetGitFileContent(const std::wstring& relPath) {
     return L"";
 }
 
+std::wstring DrawerPanel::GetGitStagedFileContent(const std::wstring& relPath) {
+    std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    auto res = RunGitCmd(L"show :\"" + cleanRel + L"\"", dir);
+    if (res.exitCode == 0) {
+        return res.output;
+    }
+    return L"";
+}
+
 void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted) {
     outAdded.clear();
     outDeleted.clear();
@@ -9270,9 +9281,11 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             std::wstring* pOutDiscardFileName,
                             std::wstring* pOutDiscardStatus,
                             size_t* pOutDiscardCount,
-                            bool* pOutPromptEmptyCommit) {
+                            bool* pOutPromptEmptyCommit,
+                            bool* pOutIsStaged) {
     m_gitSmartCommit = config.gitSmartCommit;
     m_gitConfirmSync = config.gitConfirmSync;
+    if (pOutIsStaged) *pOutIsStaged = false;
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     outOpenFile.clear();
     outDiscardedFile.clear();
@@ -9818,6 +9831,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     }
                 }
                 outOpenFile = item.path;
+                if (pOutIsStaged) *pOutIsStaged = item.isStaged;
                 // If it is an untracked file (status "U" or "?") or a .ipynb file, do NOT open as diff!
                 if (item.status == L"U" || item.status == L"?" || item.path.ends_with(L".ipynb")) {
                     outIsDiff = false;
@@ -16328,20 +16342,21 @@ void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
     topY += btnH + config.ScaleF(6.0f);
 
-    // Compact stepping bar when active
+    // Compact stepping bar when active (7 crisp vector buttons matching floating & terminal toolbars)
     if (isDebugActive) {
         float actH = config.ScaleF(24.0f);
-        struct ActDef { DebugHitKind k; const wchar_t* txt; bool enabled; };
-        ActDef acts[6] = {
-            { DebugHitKind::ActContinue, L"▶", isPaused },
-            { DebugHitKind::ActPause, L"⏸", !isPaused },
-            { DebugHitKind::ActStepOver, L"⤵", isPaused },
-            { DebugHitKind::ActStepInto, L"↓", isPaused },
-            { DebugHitKind::ActStepOut, L"↑", isPaused },
-            { DebugHitKind::ActStop, L"■", true }
+        struct ActDef { DebugHitKind k; int iconId; bool enabled; };
+        ActDef acts[7] = {
+            { DebugHitKind::ActContinue, 1, isPaused },
+            { DebugHitKind::ActPause,    2, !isPaused },
+            { DebugHitKind::ActStepOver, 3, isPaused },
+            { DebugHitKind::ActStepInto, 4, isPaused },
+            { DebugHitKind::ActStepOut,  5, isPaused },
+            { DebugHitKind::ActRestart,  6, true },
+            { DebugHitKind::ActStop,     7, true }
         };
-        float gap = config.ScaleF(4.0f);
-        float bw = (innerW - gap * 5.0f) / 6.0f;
+        float gap = config.ScaleF(3.0f);
+        float bw = (innerW - gap * 6.0f) / 7.0f;
         float bx = leftX + padX;
         for (const auto& a : acts) {
             D2D1_RECT_F rcA = D2D1::RectF(bx, topY, bx + bw, topY + actH);
@@ -16350,12 +16365,12 @@ void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const ap
                                           (a.enabled && isHovered(a.k) && m_pDbgBtnHoverBrush) ? m_pDbgBtnHoverBrush.Get() : m_pDbgBtnBrush.Get());
             }
             ID2D1Brush* txtB = (a.k == DebugHitKind::ActStop && m_pDbgRedBrush) ? m_pDbgRedBrush.Get()
+                             : (a.k == DebugHitKind::ActRestart && m_pDbgAmberBrush) ? m_pDbgAmberBrush.Get()
+                             : (a.k == DebugHitKind::ActPause && a.enabled && m_pDbgAmberBrush) ? m_pDbgAmberBrush.Get()
                              : (a.k == DebugHitKind::ActContinue && a.enabled && m_pDbgGreenBrush) ? m_pDbgGreenBrush.Get()
-                             : (a.enabled ? textPrimary : textMuted);
-            if (fmtBody && txtB) {
-                pRT->DrawText(a.txt, static_cast<UINT32>(wcslen(a.txt)), fmtBody,
-                              D2D1::RectF(rcA.left + (bw - config.ScaleF(12.0f)) * 0.5f, rcA.top + config.ScaleF(2.0f), rcA.right, rcA.bottom),
-                              txtB, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                             : (a.enabled ? (m_pDbgCyanBrush ? m_pDbgCyanBrush.Get() : textPrimary) : textMuted);
+            if (txtB) {
+                LucideIcons::DrawDebugActionIcon(pRT, rcA, a.iconId, txtB, 1.40f);
             }
             if (a.enabled) addZone(a.k, -1, false, L"", rcA);
             bx += bw + gap;
@@ -16558,6 +16573,44 @@ void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const ap
     if (m_debugScrollY < 0.0f) m_debugScrollY = 0.0f;
 
     pRT->PopAxisAlignedClip();
+
+    // Render tooltip for hovered debug stepping button in Left Debug Pane
+    const wchar_t* dbgTip = nullptr;
+    D2D1_RECT_F dbgTipTarget{};
+    for (const auto& hz : m_debugHitZones) {
+        if (!isHovered(hz.kind, hz.intArg, hz.strArg)) continue;
+        switch (hz.kind) {
+            case DebugHitKind::ActContinue: dbgTip = L"Continue (F5)"; break;
+            case DebugHitKind::ActPause:    dbgTip = L"Pause (F6)"; break;
+            case DebugHitKind::ActStepOver: dbgTip = L"Step Over (F10)"; break;
+            case DebugHitKind::ActStepInto: dbgTip = L"Step Into (F11)"; break;
+            case DebugHitKind::ActStepOut:  dbgTip = L"Step Out (Shift+F11)"; break;
+            case DebugHitKind::ActRestart:  dbgTip = L"Restart (Ctrl+Shift+F5)"; break;
+            case DebugHitKind::ActStop:     dbgTip = L"Stop (Shift+F5)"; break;
+            default: break;
+        }
+        if (dbgTip) { dbgTipTarget = hz.bounds; break; }
+    }
+    if (dbgTip) {
+        size_t tLen = wcslen(dbgTip);
+        float tipW = config.ScaleF(static_cast<float>(tLen) * 6.8f + 16.0f);
+        float tipH = config.ScaleF(20.0f);
+        float tipX = (std::max)(leftX + config.ScaleF(4.0f), dbgTipTarget.left + ((dbgTipTarget.right - dbgTipTarget.left) - tipW) * 0.5f);
+        if (tipX + tipW > rightX - config.ScaleF(4.0f)) tipX = (std::max)(leftX + config.ScaleF(4.0f), rightX - tipW - config.ScaleF(4.0f));
+        float tipY = dbgTipTarget.bottom + config.ScaleF(4.0f);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH), 4.0f, 4.0f);
+        if (theme.brushTooltipBg || theme.brushMenuBg) {
+            pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushMenuBg.Get());
+        }
+        if (theme.brushTooltipBorder || theme.brushMenuBorder) {
+            pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushMenuBorder.Get(), 0.8f);
+        }
+        IDWriteTextFormat* tf = theme.fontTooltip ? theme.fontTooltip.Get() : (fmtSmall ? fmtSmall : fmtBody);
+        ID2D1Brush* tb = theme.brushTooltipText ? theme.brushTooltipText.Get() : textPrimary;
+        if (tf && tb) {
+            pRT->DrawText(dbgTip, static_cast<UINT32>(tLen), tf, rrcTip.rect, tb, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+    }
 }
 
 bool DrawerPanel::HandleDebugMouseMove(POINT pt) {

@@ -1535,6 +1535,12 @@ struct OpenDocument {
         D2D1_RECT_F bounds{};
     };
     mutable std::vector<DiffHunkActionHit> diffHunkActionHits; ///< Clickable partial hunk stage/revert buttons
+    struct DiffHunkBand {
+        size_t hunkIdx = 0;
+        D2D1_RECT_F bounds{};
+    };
+    mutable std::vector<DiffHunkBand> diffHunkBands; ///< Hover regions corresponding to each rendered diff hunk
+    mutable size_t diffHoveredHunkIdx = static_cast<size_t>(-1);
     bool isDiffStagedMode = false;       ///< True if diff compares HEAD vs Index (staged) for hunk unstaging
     std::wstring diffRepoRelPath;        ///< Repo-relative path for partial hunk git apply operations
 

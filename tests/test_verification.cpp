@@ -20180,6 +20180,15 @@ run_test_129:
             phide::ui::EditorCanvas canvas;
             std::vector<phide::editor::OpenDocument> docs;
             docs.push_back(std::move(diffDoc));
+            // When unhovered, hunk action buttons are hidden (non-obstructing)
+            rt->BeginDraw();
+            canvas.Render(rt.Get(), theme, cfg, docs, 0, 0.0f, 1100.0f, 700.0f, false);
+            rt->EndDraw();
+            assert(docs[0].diffHunkActionHits.empty());
+            assert(!docs[0].diffHunkBands.empty());
+
+            // When hovered on hunk 0, crisp vector Stage/Revert buttons appear cleanly
+            docs[0].diffHoveredHunkIdx = 0;
             rt->BeginDraw();
             canvas.Render(rt.Get(), theme, cfg, docs, 0, 0.0f, 1100.0f, 700.0f, false);
             rt->EndDraw();

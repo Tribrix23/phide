@@ -3340,7 +3340,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
+void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview, bool isStagedMode) {
     if (relPath.empty()) return;
     std::wstring dir = m_drawer.GetOpenFolderPath();
     std::wstring fullPath = dir.empty() ? relPath : (dir + L"\\" + relPath);
@@ -3351,17 +3351,28 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
     std::wstring fileName = std::filesystem::path(relPath).filename().wstring();
 
     std::wstring headContent = m_drawer.GetGitFileContent(relPath);
-    if (headContent.empty()) {
-        // Untracked or no HEAD revision exists — open in normal editor view!
+    std::wstring stagedContent = m_drawer.GetGitStagedFileContent(relPath);
+    if (!isStagedMode && headContent.empty() && stagedContent.empty()) {
+        // Untracked or no HEAD/Index revision exists — open in normal editor view!
         OpenFileDocument(fullPath, isPreview);
         return;
     }
 
     auto& group = GetActiveGroup();
 
-    // Check if diff tab is already open for this file
+    // Check if matching diff tab (Staged vs Working Tree) is already open for this file
     for (size_t i = 0; i < group.docs.size(); ++i) {
-        if (group.docs[i].filePath == fullPath && group.docs[i].isDiffView) {
+        if (group.docs[i].filePath == fullPath && group.docs[i].isDiffView &&
+            group.docs[i].isDiffStagedMode == isStagedMode) {
+            // Refresh buffers cleanly so staged/unstaged hunk changes are always up to date
+            if (isStagedMode) {
+                group.docs[i].diffOriginalBuffer.SetText(headContent);
+                group.docs[i].buffer.SetText(stagedContent);
+            } else {
+                group.docs[i].diffOriginalBuffer.SetText(!stagedContent.empty() ? stagedContent : headContent);
+                group.docs[i].diffOriginalTitle = fileName + (!stagedContent.empty() ? L" (Index)" : L" (HEAD)");
+            }
+            ComputeDiffHunks(group.docs[i]);
             group.activeDocIdx = static_cast<int>(i);
             if (!isPreview) group.docs[i].isPreview = false;
             ClearExplorerSelectionOverride();
@@ -3372,43 +3383,49 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview) {
 
     editor::OpenDocument newDoc;
     newDoc.filePath = fullPath;
-    newDoc.fileName = fileName + L" (Working Tree)";
-    newDoc.diffOriginalTitle = fileName + L" (HEAD)";
-    newDoc.diffWorkingTitle = fileName + L" (Working Tree)";
+    newDoc.fileName = fileName + (isStagedMode ? L" (Staged)" : L" (Working Tree)");
+    newDoc.diffOriginalTitle = fileName + ((!isStagedMode && !stagedContent.empty()) ? L" (Index)" : L" (HEAD)");
+    newDoc.diffWorkingTitle = fileName + (isStagedMode ? L" (Staged Index)" : L" (Working Tree)");
     newDoc.isPreview = isPreview;
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
     newDoc.isDiffView = true;
     newDoc.isDiffLeftReadOnly = true;
-    newDoc.isDiffRightReadOnly = false;
-    newDoc.diffActivePane = 1; // Focus right (editable) pane
+    newDoc.isDiffRightReadOnly = isStagedMode;
+    newDoc.diffActivePane = 1; // Focus right pane
     newDoc.diffRepoRelPath = relPath;
-    newDoc.isDiffStagedMode = false;
+    newDoc.isDiffStagedMode = isStagedMode;
 
-    newDoc.diffOriginalBuffer.SetText(headContent);
-    // If file is currently open in an editor group with unsaved changes, use the in-memory buffer!
-    const editor::OpenDocument* pExisting = nullptr;
-    for (const auto& g : m_editorGroups) {
-        for (const auto& d : g.docs) {
-            if (!d.isDiffView && !d.isSpecialView && !d.filePath.empty()) {
-                if (_wcsicmp(d.filePath.c_str(), fullPath.c_str()) == 0) {
-                    pExisting = &d;
-                    break;
+    if (isStagedMode) {
+        newDoc.diffOriginalBuffer.SetText(headContent);
+        newDoc.buffer.SetText(stagedContent);
+        newDoc.originalDiskText = stagedContent;
+    } else {
+        newDoc.diffOriginalBuffer.SetText(!stagedContent.empty() ? stagedContent : headContent);
+        // If file is currently open in an editor group with unsaved changes, use the in-memory buffer!
+        const editor::OpenDocument* pExisting = nullptr;
+        for (const auto& g : m_editorGroups) {
+            for (const auto& d : g.docs) {
+                if (!d.isDiffView && !d.isSpecialView && !d.filePath.empty()) {
+                    if (_wcsicmp(d.filePath.c_str(), fullPath.c_str()) == 0) {
+                        pExisting = &d;
+                        break;
+                    }
                 }
             }
+            if (pExisting) break;
         }
-        if (pExisting) break;
-    }
 
-    if (pExisting) {
-        newDoc.buffer.SetText(pExisting->buffer.GetText());
-        newDoc.isDirty = pExisting->isDirty;
-    } else if (std::filesystem::exists(fullPath)) {
-        newDoc.buffer.LoadFromFile(fullPath);
-    } else {
-        newDoc.buffer.SetText(L"");
+        if (pExisting) {
+            newDoc.buffer.SetText(pExisting->buffer.GetText());
+            newDoc.isDirty = pExisting->isDirty;
+        } else if (std::filesystem::exists(fullPath)) {
+            newDoc.buffer.LoadFromFile(fullPath);
+        } else {
+            newDoc.buffer.SetText(L"");
+        }
+        newDoc.originalDiskText = newDoc.buffer.GetText();
     }
-    newDoc.originalDiskText = newDoc.buffer.GetText();
 
     bool isBin = IsBinaryDiffPath(relPath) || FileHasBinaryBytes(fullPath) || HasBinaryNullBytes(headContent);
     if (isBin) {
@@ -10948,6 +10965,14 @@ void Window::DoDebugActiveDocument() {
     auto expectedAdapter = phide::dev::DapClient::DetectAdapterForFile(pDoc->filePath);
     if (!wsRoot.empty()) {
         auto cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, pDoc->filePath);
+        auto normCmp = [](std::wstring s) {
+            for (auto& ch : s) {
+                if (ch == L'/') ch = L'\\';
+                ch = static_cast<wchar_t>(towlower(ch));
+            }
+            return s;
+        };
+        std::wstring docCmp = normCmp(pDoc->filePath);
         for (const auto& c : cfgs) {
             auto cfgAdapter = phide::dev::DapClient::AdapterFromTypeString(c.type);
             if (expectedAdapter != phide::dev::DapAdapterType::None && cfgAdapter == expectedAdapter) {
@@ -10957,8 +10982,14 @@ void Window::DoDebugActiveDocument() {
             }
         }
         if (!matchedLaunch && !cfgs.empty() && expectedAdapter == phide::dev::DapAdapterType::None) {
-            chosenCfg = cfgs.front();
-            matchedLaunch = true;
+            // Only fall back to launch.json when it names an explicit target program (never feed CSS/JSON/MD into a ${file} launcher!)
+            for (const auto& c : cfgs) {
+                if (!c.program.empty() && normCmp(c.program) != docCmp) {
+                    chosenCfg = c;
+                    matchedLaunch = true;
+                    break;
+                }
+            }
         }
     }
     if (!matchedLaunch) {
@@ -10974,6 +11005,14 @@ void Window::DoDebugActiveDocument() {
     }
 
     if (chosenCfg.type.empty() && chosenCfg.adapterCommand.empty()) {
+        std::wstring extName = std::filesystem::path(pDoc->filePath).filename().wstring();
+        if (!extName.empty()) {
+            m_terminal.Open(folder);
+            AnimateTerminalOpen();
+            m_terminal.ShowDebugConsole();
+            m_drawer.ShowGitNotification(L"Open a .py, .js, .ts, .php, or C/C++ file to debug");
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
         return;
     }
 
@@ -16895,6 +16934,34 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    // Update Diff View hovered hunk so Stage/Unstage/Revert buttons appear only on hover
+    for (auto& grp : m_editorGroups) {
+        if (grp.activeDocIdx < 0 || grp.activeDocIdx >= static_cast<int>(grp.docs.size())) continue;
+        auto& d = grp.docs[grp.activeDocIdx];
+        if (!d.isDiffView) continue;
+        size_t newHovHunk = static_cast<size_t>(-1);
+        const float fx = static_cast<float>(clientPt.x);
+        const float fy = static_cast<float>(clientPt.y);
+        for (const auto& hb : d.diffHunkBands) {
+            if (fx >= hb.bounds.left && fx <= hb.bounds.right && fy >= hb.bounds.top && fy <= hb.bounds.bottom) {
+                newHovHunk = hb.hunkIdx;
+                break;
+            }
+        }
+        if (newHovHunk == static_cast<size_t>(-1)) {
+            for (const auto& ah : d.diffHunkActionHits) {
+                if (fx >= ah.bounds.left && fx <= ah.bounds.right && fy >= ah.bounds.top && fy <= ah.bounds.bottom) {
+                    newHovHunk = ah.hunkIdx;
+                    break;
+                }
+            }
+        }
+        if (d.diffHoveredHunkIdx != newHovHunk) {
+            d.diffHoveredHunkIdx = newHovHunk;
+            needRepaint = true;
+        }
+    }
+
     if (needRepaint) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -18611,8 +18678,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
         std::wstring discardStatus;
         size_t discardCount = 1;
         bool promptEmptyCommit = false;
+        bool isStagedItem = false;
         if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
-                                &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
+                                &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit, &isStagedItem)) {
             if (promptEmptyCommit) {
                 m_drawer.ClearGitTooltip();
                 DoOpenCommitEditMsg();
@@ -18633,7 +18701,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             } else if (openFile.ends_with(L".ipynb")) {
                 OpenNotebookView(openFile);
             } else if (isDiff && !openFile.empty()) {
-                OpenDiffDocument(openFile, false);
+                OpenDiffDocument(openFile, false, isStagedItem);
             } else if (!openFile.empty()) {
                 OpenFileDocument(openFile, false);
             }
@@ -20331,8 +20399,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
             std::wstring discardStatus;
             size_t discardCount = 1;
             bool promptEmptyCommit = false;
+            bool isStagedItem = false;
             if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
-                                    &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit)) {
+                                    &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit, &isStagedItem)) {
                 if (promptEmptyCommit) {
                     m_drawer.ClearGitTooltip();
                     DoOpenCommitEditMsg();
@@ -20353,7 +20422,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (openFile.ends_with(L".ipynb")) {
                     OpenNotebookView(openFile);
                 } else if (isDiff && !openFile.empty()) {
-                    OpenDiffDocument(openFile, false);
+                    OpenDiffDocument(openFile, false, isStagedItem);
                 } else if (!openFile.empty()) {
                     OpenFileDocument(openFile, false);
                 }
@@ -21664,6 +21733,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
+                // 00.02 Git Prompt / Confirm Sync Modal
+                if (m_drawer.IsGitPromptModalOpen()) {
+                    if (m_drawer.HitTestGitPromptModalButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    if (m_drawer.HitTestGitPromptModalInput(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+
                 // 00. Confirm Discard / Restore / Delete / Notice Modal (Images 2, 3, 4, 5)
                 if (m_confirmDiscardModal.IsOpen()) {
                     if (m_confirmDiscardModal.IsLoading()) {
@@ -21870,6 +21953,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 if (LPCWSTR hc = m_editor.GetActivityHeatmapView().GetCursorForPoint(pt)) {
                                     SetCursor(LoadCursor(nullptr, hc));
                                     return TRUE;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Diff hunk hover action buttons (+ Stage / - Unstage / Revert)
+                if (!m_editorGroups.empty()) {
+                    for (const auto& grp : m_editorGroups) {
+                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                            const auto& dDoc = grp.docs[grp.activeDocIdx];
+                            if (dDoc.isDiffView) {
+                                const float fpx = static_cast<float>(pt.x);
+                                const float fpy = static_cast<float>(pt.y);
+                                for (const auto& ah : dDoc.diffHunkActionHits) {
+                                    if (fpx >= ah.bounds.left && fpx <= ah.bounds.right &&
+                                        fpy >= ah.bounds.top && fpy <= ah.bounds.bottom) {
+                                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                                        return TRUE;
+                                    }
                                 }
                             }
                         }
@@ -25707,28 +25810,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 206: {
-            // Auto-close any working tree diff view whose file no longer has git changes (safely on UI thread)
+            // Auto-refresh or auto-close open staged/unstaged diff views when Git state changes
             const auto& gitChanges = m_drawer.GetGitChanges();
+            auto normPathCmp = [](std::wstring s) {
+                for (auto& c : s) {
+                    if (c == L'/') c = L'\\';
+                    c = static_cast<wchar_t>(towlower(c));
+                }
+                return s;
+            };
             for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
                 if (g >= static_cast<int>(m_editorGroups.size())) continue;
                 for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
                     if (g >= static_cast<int>(m_editorGroups.size())) break;
                     if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
                     auto& doc = m_editorGroups[g].docs[d];
-                    if (doc.isDiffView && !doc.isDiffRightReadOnly) {
-                        bool stillHasChanges = false;
+                    if (doc.isDiffView && !doc.isMultiFileDiff && (!doc.isDiffRightReadOnly || doc.isDiffStagedMode)) {
+                        bool stillHasMatchingState = false;
+                        std::wstring cleanDoc = normPathCmp(doc.filePath);
                         for (const auto& item : gitChanges) {
-                            std::wstring cleanDoc = doc.filePath;
-                            for (auto& c : cleanDoc) if (c == L'/') c = L'\\';
-                            std::wstring cleanItem = item.path;
-                            for (auto& c : cleanItem) if (c == L'/') c = L'\\';
+                            if (item.isStaged != doc.isDiffStagedMode) continue;
+                            std::wstring cleanItem = normPathCmp(item.path);
                             if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
-                                stillHasChanges = true;
+                                stillHasMatchingState = true;
                                 break;
                             }
                         }
-                        if (!stillHasChanges) {
+                        if (!stillHasMatchingState) {
                             CloseDocument(g, d);
+                        } else if (!doc.diffRepoRelPath.empty()) {
+                            std::wstring fileName = std::filesystem::path(doc.diffRepoRelPath).filename().wstring();
+                            std::wstring headC = m_drawer.GetGitFileContent(doc.diffRepoRelPath);
+                            std::wstring stagedC = m_drawer.GetGitStagedFileContent(doc.diffRepoRelPath);
+                            if (doc.isDiffStagedMode) {
+                                doc.diffOriginalBuffer.SetText(headC);
+                                doc.buffer.SetText(stagedC);
+                            } else {
+                                doc.diffOriginalBuffer.SetText(!stagedC.empty() ? stagedC : headC);
+                                doc.diffOriginalTitle = fileName + (!stagedC.empty() ? L" (Index)" : L" (HEAD)");
+                            }
+                            ComputeDiffHunks(doc);
                         }
                     }
                 }
@@ -27107,7 +27228,37 @@ void Window::SetupRemoteCallbacks() {
     m_drawer.SetRemoteCallbacks(std::move(drawerCbs));
 
     ui::DrawerPanel::DebugPaneCallbacks dbgCbs;
-    dbgCbs.fetchState = [this](phide::dev::DapSessionSnapshot& outSnap,
+    auto buildEffectiveDebugConfigs = [this](const std::wstring& wsRoot, const std::wstring& activePath) {
+        std::vector<phide::dev::LaunchConfig> cfgs;
+        if (!wsRoot.empty()) {
+            cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath);
+        }
+        auto expected = !activePath.empty() ? phide::dev::DapClient::DetectAdapterForFile(activePath) : phide::dev::DapAdapterType::None;
+        if (expected != phide::dev::DapAdapterType::None) {
+            bool hasMatch = false;
+            for (const auto& c : cfgs) {
+                if (phide::dev::DapClient::AdapterFromTypeString(c.type) == expected) {
+                    hasMatch = true;
+                    break;
+                }
+            }
+            if (!hasMatch) {
+                phide::dev::LaunchConfig autoCfg;
+                autoCfg.name = L"Auto: " + std::filesystem::path(activePath).filename().wstring();
+                autoCfg.program = activePath;
+                autoCfg.cwd = std::filesystem::path(activePath).parent_path().wstring();
+                if (autoCfg.cwd.empty()) autoCfg.cwd = wsRoot;
+                if (expected == phide::dev::DapAdapterType::Python) autoCfg.type = L"python";
+                else if (expected == phide::dev::DapAdapterType::NodeInspect) autoCfg.type = L"node";
+                else if (expected == phide::dev::DapAdapterType::PhpXdebug) autoCfg.type = L"php";
+                else if (expected == phide::dev::DapAdapterType::GdbMi) autoCfg.type = L"cppdbg";
+                cfgs.push_back(std::move(autoCfg));
+            }
+        }
+        return cfgs;
+    };
+    auto lastDbgActiveFile = std::make_shared<std::wstring>();
+    dbgCbs.fetchState = [this, buildEffectiveDebugConfigs, lastDbgActiveFile](phide::dev::DapSessionSnapshot& outSnap,
                                std::vector<phide::dev::DapBreakpoint>& outBps,
                                std::vector<phide::dev::LaunchConfig>& outConfigs,
                                size_t& outSelectedCfg,
@@ -27118,8 +27269,18 @@ void Window::SetupRemoteCallbacks() {
         std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
         auto* pActive = GetActiveDoc();
         std::wstring activePath = (pActive && !pActive->isSpecialView) ? pActive->filePath : L"";
-        if (!wsRoot.empty()) {
-            outConfigs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath);
+        outConfigs = buildEffectiveDebugConfigs(wsRoot, activePath);
+        if (activePath != *lastDbgActiveFile) {
+            *lastDbgActiveFile = activePath;
+            auto expected = !activePath.empty() ? phide::dev::DapClient::DetectAdapterForFile(activePath) : phide::dev::DapAdapterType::None;
+            if (expected != phide::dev::DapAdapterType::None) {
+                for (size_t idx = 0; idx < outConfigs.size(); ++idx) {
+                    if (phide::dev::DapClient::AdapterFromTypeString(outConfigs[idx].type) == expected) {
+                        outSelectedCfg = idx;
+                        break;
+                    }
+                }
+            }
         }
         if (outSelectedCfg >= outConfigs.size()) {
             outSelectedCfg = 0;
@@ -27127,14 +27288,21 @@ void Window::SetupRemoteCallbacks() {
         outIsActive = m_terminal.IsDebugActive();
         outIsPaused = outIsActive && m_terminal.IsDebugPaused();
     };
-    dbgCbs.onStartDebug = [this](int cfgIdx) {
+    dbgCbs.onStartDebug = [this, buildEffectiveDebugConfigs](int cfgIdx) {
         std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
         auto* pActive = GetActiveDoc();
         std::wstring activePath = (pActive && !pActive->isSpecialView) ? pActive->filePath : L"";
-        auto cfgs = !wsRoot.empty() ? phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath)
-                                    : std::vector<phide::dev::LaunchConfig>{};
+        auto cfgs = buildEffectiveDebugConfigs(wsRoot, activePath);
         if (cfgIdx >= 0 && cfgIdx < static_cast<int>(cfgs.size())) {
-            LaunchDebugWithConfig(cfgs[static_cast<size_t>(cfgIdx)]);
+            const auto& chosen = cfgs[static_cast<size_t>(cfgIdx)];
+            auto expected = !activePath.empty() ? phide::dev::DapClient::DetectAdapterForFile(activePath) : phide::dev::DapAdapterType::None;
+            if (chosen.program == activePath &&
+                (expected == phide::dev::DapAdapterType::None ||
+                 phide::dev::DapClient::AdapterFromTypeString(chosen.type) != expected)) {
+                DoDebugActiveDocument();
+            } else {
+                LaunchDebugWithConfig(chosen);
+            }
         } else {
             DoDebugActiveDocument();
         }

@@ -377,6 +377,7 @@ public:
         return m_commitMessage;
     }
     [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
+    [[nodiscard]] std::wstring GetGitStagedFileContent(const std::wstring& relPath);
     [[nodiscard]] std::wstring GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath);
     void ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted);
     void ComputeGitBlame(const std::wstring& relPath, std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo>& outBlame);
@@ -390,7 +391,8 @@ public:
                     std::wstring* pOutDiscardFileName = nullptr,
                     std::wstring* pOutDiscardStatus = nullptr,
                     size_t* pOutDiscardCount = nullptr,
-                    bool* pOutPromptEmptyCommit = nullptr);
+                    bool* pOutPromptEmptyCommit = nullptr,
+                    bool* pOutIsStaged = nullptr);
     bool HitTestGit(POINT pt, const app::AppConfig& config, std::wstring& outOpenFile, std::wstring& outDiscardedFile) {
         bool isDiff = false;
         std::wstring dummyCommit;
@@ -1443,7 +1445,7 @@ private:
     // Stashes & Tags Section State (#33, #34)
     bool m_commitAmend = false;
     bool m_gitSmartCommit = true;
-    bool m_gitConfirmSync = true;
+    bool m_gitConfirmSync = false;
     bool m_showStashesSection = true;
     bool m_stashesExpanded = false;
     std::vector<GitStashUiItem> m_gitStashes;

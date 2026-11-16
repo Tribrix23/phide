@@ -259,10 +259,9 @@ private:
     void OpenFileDocument(const std::wstring& path, bool isPreview = false);
 
     /**
-     * @brief Opens a side-by-side diff comparison between HEAD and working copy (Images 2, 3, 4, 5).
-     * Left pane is HEAD (read-only); right pane is working tree (editable).
+     * @brief Opens a side-by-side diff comparison between HEAD/Index and working tree (or HEAD vs Staged Index).
      */
-    void OpenDiffDocument(const std::wstring& relPath, bool isPreview = false);
+    void OpenDiffDocument(const std::wstring& relPath, bool isPreview = false, bool isStagedMode = false);
     void OpenCompareFilesDiffDocument(const std::wstring& leftPath, const std::wstring& rightPath);
     void OpenThreeWayMergeDocument(const std::wstring& filePath);
 

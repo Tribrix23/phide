@@ -2740,15 +2740,222 @@ std::vector<phide::lsp::CodeActionItem> CodeActionEngine::GenerateLocalCodeActio
         }
     }
 
-    // --- 9. Refactoring: Wrap Selection / Current Line in try/catch (or try/except) ---
+    // --- 9. Quick Fixes from active line diagnostics (deterministic, zero-LLM) ---
+    bool isCss = (ext == L".css" || ext == L".scss" || ext == L".less");
+    bool isHtml = (ext == L".html" || ext == L".htm" || ext == L".xml" || ext == L".tsx" || ext == L".jsx");
+    for (const auto& d : diagnostics) {
+        if (d.line != selStartLine && !(d.line + 1 == selStartLine)) continue;
+        std::wstring msgLow = ToLowerW(d.message);
+
+        // 9a. Cannot find name 'X' / Undefined symbol -> Declare / Remove stray token
+        std::wstring qSym;
+        size_t q1 = d.message.find(L'\'');
+        size_t q2 = (q1 != std::wstring::npos) ? d.message.find(L'\'', q1 + 1) : std::wstring::npos;
+        if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1) {
+            qSym = d.message.substr(q1 + 1, q2 - q1 - 1);
+        }
+        if (!qSym.empty() && (msgLow.find(L"cannot find name") != std::wstring::npos ||
+                              msgLow.find(L"is not defined") != std::wstring::npos ||
+                              msgLow.find(L"undefined") != std::wstring::npos)) {
+            if (isJs || isPy || isPhp) {
+                phide::lsp::CodeActionItem declAct;
+                std::wstring declLine;
+                if (isJs) declLine = indent + L"const " + qSym + L" = undefined;" + nl;
+                else if (isPy) declLine = indent + qSym + L" = None" + nl;
+                else declLine = indent + L"$" + qSym + L" = null;" + nl;
+                declAct.title = L"Declare '" + qSym + L"' in scope";
+                declAct.kind = L"quickfix";
+                declAct.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, selStartLine, 0, declLine } } });
+                actions.push_back(std::move(declAct));
+            }
+            // If line ends cleanly before stray token like `};s`, offer removing the trailing token
+            std::wstring trimmedCur = TrimW(curLineStr);
+            if (trimmedCur.size() > qSym.size() &&
+                trimmedCur.compare(trimmedCur.size() - qSym.size(), qSym.size(), qSym) == 0) {
+                wchar_t beforeChar = trimmedCur[trimmedCur.size() - qSym.size() - 1];
+                if (!IsIdentCharW(beforeChar)) {
+                    size_t tokPos = curLineStr.rfind(qSym);
+                    if (tokPos != std::wstring::npos) {
+                        phide::lsp::CodeActionItem remAct;
+                        remAct.title = L"Remove stray token '" + qSym + L"'";
+                        remAct.kind = L"quickfix";
+                        remAct.isPreferred = true;
+                        remAct.edit.fileChanges.push_back({ filePath, { { selStartLine, tokPos, selStartLine, tokPos + qSym.size(), L"" } } });
+                        actions.push_back(std::move(remAct));
+                    }
+                }
+            }
+        }
+
+        // 9b. Unused variable -> prefix with `_`
+        if (!qSym.empty() && qSym.front() != L'_' &&
+            (msgLow.find(L"never read") != std::wstring::npos || msgLow.find(L"unused") != std::wstring::npos)) {
+            size_t symPos = curLineStr.find(qSym);
+            if (symPos != std::wstring::npos) {
+                phide::lsp::CodeActionItem unusedAct;
+                unusedAct.title = L"Prefix '" + qSym + L"' with '_'";
+                unusedAct.kind = L"quickfix";
+                unusedAct.edit.fileChanges.push_back({ filePath, { { selStartLine, symPos, selStartLine, symPos, L"_" } } });
+                actions.push_back(std::move(unusedAct));
+            }
+        }
+
+        // 9c. Missing semicolon
+        if ((msgLow.find(L"';' expected") != std::wstring::npos || msgLow.find(L"missing semicolon") != std::wstring::npos) &&
+            curLineStr.find(L';') == std::wstring::npos) {
+            phide::lsp::CodeActionItem semiAct;
+            semiAct.title = L"Insert missing ';'";
+            semiAct.kind = L"quickfix";
+            semiAct.edit.fileChanges.push_back({ filePath, { { selStartLine, curLineStr.size(), selStartLine, curLineStr.size(), L";" } } });
+            actions.push_back(std::move(semiAct));
+        }
+
+        // 9d. Suppression directive
+        if (isJs) {
+            phide::lsp::CodeActionItem supAct;
+            supAct.title = L"Suppress with // @ts-expect-error";
+            supAct.kind = L"quickfix.suppress";
+            supAct.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, selStartLine, 0, indent + L"// @ts-expect-error" + nl } } });
+            actions.push_back(std::move(supAct));
+            break;
+        } else if (isPy) {
+            phide::lsp::CodeActionItem supAct;
+            supAct.title = L"Ignore type/lint on line (# type: ignore)";
+            supAct.kind = L"quickfix.suppress";
+            supAct.edit.fileChanges.push_back({ filePath, { { selStartLine, curLineStr.size(), selStartLine, curLineStr.size(), L"  # type: ignore" } } });
+            actions.push_back(std::move(supAct));
+            break;
+        }
+    }
+
+    // --- 10. Refactorings & Source Actions (No LLM) ---
     {
+        std::wstring tl = TrimW(curLineStr);
+
+        // 10a. Add JSDoc / Python Docstring / Async modifier on function declarations
+        if (!hasSelection && (isJs || isPy) && !tl.empty()) {
+            bool isFuncHeader = (isJs && (tl.rfind(L"function ", 0) == 0 || tl.rfind(L"async function ", 0) == 0 ||
+                                          tl.rfind(L"export function ", 0) == 0 || tl.rfind(L"export default function ", 0) == 0 ||
+                                          ((tl.rfind(L"const ", 0) == 0 || tl.rfind(L"let ", 0) == 0) && tl.find(L"=>") != std::wstring::npos))) ||
+                                (isPy && (tl.rfind(L"def ", 0) == 0 || tl.rfind(L"async def ", 0) == 0));
+            if (isFuncHeader) {
+                phide::lsp::CodeActionItem docAct;
+                docAct.title = isPy ? L"Add Python docstring" : L"Add JSDoc comment (/** ... */)";
+                docAct.kind = L"refactor.doc";
+                if (isPy) {
+                    docAct.edit.fileChanges.push_back({ filePath, { { selStartLine + 1, 0, selStartLine + 1, 0, indent + L"    \"\"\"TODO: describe function.\"\"\"" + nl } } });
+                } else {
+                    docAct.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, selStartLine, 0, indent + L"/**" + nl + indent + L" * TODO: describe." + nl + indent + L" */" + nl } } });
+                }
+                actions.push_back(std::move(docAct));
+
+                if (tl.find(L"async ") == std::wstring::npos) {
+                    phide::lsp::CodeActionItem asyncAct;
+                    asyncAct.title = L"Convert function to async";
+                    asyncAct.kind = L"refactor.rewrite.async";
+                    if (isPy) {
+                        size_t dp = curLineStr.find(L"def ");
+                        if (dp != std::wstring::npos) {
+                            asyncAct.edit.fileChanges.push_back({ filePath, { { selStartLine, dp, selStartLine, dp, L"async " } } });
+                            actions.push_back(std::move(asyncAct));
+                        }
+                    } else if (tl.find(L"function ") != std::wstring::npos) {
+                        size_t fp = curLineStr.find(L"function ");
+                        asyncAct.edit.fileChanges.push_back({ filePath, { { selStartLine, fp, selStartLine, fp, L"async " } } });
+                        actions.push_back(std::move(asyncAct));
+                    } else if (curLineStr.find(L"=>") != std::wstring::npos && curLineStr.find(L'=') != std::wstring::npos) {
+                        size_t eq = curLineStr.find(L'=');
+                        size_t p = eq + 1;
+                        while (p < curLineStr.size() && curLineStr[p] == L' ') ++p;
+                        asyncAct.edit.fileChanges.push_back({ filePath, { { selStartLine, p, selStartLine, p, L"async " } } });
+                        actions.push_back(std::move(asyncAct));
+                    }
+                }
+            }
+        }
+
+        // 10b. CSS px <-> rem conversion on property line (e.g. `height: 20px;`)
+        if (isCss && !tl.empty()) {
+            for (size_t i = 0; i + 2 < curLineStr.size(); ++i) {
+                if (std::iswdigit(curLineStr[i]) && curLineStr.compare(i, 2, L"px") != 0) {
+                    size_t numStart = i;
+                    size_t j = i;
+                    while (j < curLineStr.size() && (std::iswdigit(curLineStr[j]) || curLineStr[j] == L'.')) ++j;
+                    if (j + 2 <= curLineStr.size() && curLineStr.compare(j, 2, L"px") == 0) {
+                        double pxVal = _wtof(curLineStr.substr(numStart, j - numStart).c_str());
+                        if (pxVal > 0.0) {
+                            wchar_t buf[32]{};
+                            swprintf_s(buf, L"%.4grem", pxVal / 16.0);
+                            phide::lsp::CodeActionItem pxAct;
+                            pxAct.title = L"Convert '" + curLineStr.substr(numStart, j - numStart + 2) + L"' to '" + std::wstring(buf) + L"' (16px root)";
+                            pxAct.kind = L"refactor.rewrite.cssUnit";
+                            pxAct.edit.fileChanges.push_back({ filePath, { { selStartLine, numStart, selStartLine, j + 2, buf } } });
+                            actions.push_back(std::move(pxAct));
+                            break;
+                        }
+                    }
+                    i = j;
+                }
+            }
+        }
+
+        // 10c. JSX Wrap in React Fragment (<>...</>)
+        if (isHtml && !tl.empty() && tl.find(L'<') != std::wstring::npos) {
+            size_t wrapEndLine = hasSelection ? selEndLine : selStartLine;
+            if (wrapEndLine < lines.size()) {
+                std::wstring inner;
+                for (size_t ln = selStartLine; ln <= wrapEndLine; ++ln) {
+                    if (ln > selStartLine) inner += nl;
+                    inner += L"    " + lines[ln];
+                }
+                std::wstring wrapped = indent + L"<>" + nl + inner + nl + indent + L"</>";
+                phide::lsp::CodeActionItem fragAct;
+                fragAct.title = (ext == L".tsx" || ext == L".jsx") ? L"Wrap in React Fragment (<>...</>)" : L"Wrap in <div>...</div>";
+                if (!(ext == L".tsx" || ext == L".jsx")) {
+                    wrapped = indent + L"<div>" + nl + inner + nl + indent + L"</div>";
+                }
+                fragAct.kind = L"refactor.surround.jsx";
+                fragAct.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, wrapEndLine, lines[wrapEndLine].size(), wrapped } } });
+                actions.push_back(std::move(fragAct));
+            }
+        }
+
+        // 10d. Log expression / symbol below current line
+        if (!unresolvedSym.empty() && (isJs || isPy || isPhp || isCpp)) {
+            std::wstring logLine;
+            if (isJs) logLine = indent + L"console.log(\"" + unresolvedSym + L":\", " + unresolvedSym + L");" + nl;
+            else if (isPy) logLine = indent + L"print(f\"" + unresolvedSym + L"={" + unresolvedSym + L"}\")" + nl;
+            else if (isPhp) logLine = indent + L"error_log(print_r($" + unresolvedSym + L", true));" + nl;
+            else logLine = indent + L"std::cout << \"" + unresolvedSym + L"=\" << " + unresolvedSym + L" << std::endl;" + nl;
+            phide::lsp::CodeActionItem logAct;
+            logAct.title = L"Insert debug log for '" + unresolvedSym + L"'";
+            logAct.kind = L"refactor.debugLog";
+            size_t insLine = std::min(selStartLine + 1, lines.size());
+            size_t insCol = (insLine == lines.size()) ? lines.back().size() : 0;
+            std::wstring payloadTxt = (insLine == lines.size()) ? (nl + logLine.substr(0, logLine.size() - nl.size())) : logLine;
+            logAct.edit.fileChanges.push_back({ filePath, { { insLine, insCol, insLine, insCol, payloadTxt } } });
+            actions.push_back(std::move(logAct));
+        }
+
+        // 10e. Wrap Selection / Current Line in if (condition) / try/catch & Duplicate Line
         size_t wrapEndLine = hasSelection ? selEndLine : selStartLine;
-        if (wrapEndLine < lines.size()) {
+        if (wrapEndLine < lines.size() && !tl.empty()) {
             std::wstring inner;
             for (size_t ln = selStartLine; ln <= wrapEndLine; ++ln) {
                 if (ln > selStartLine) inner += nl;
                 inner += L"    " + lines[ln];
             }
+            if (isJs || isPy || isPhp || isCpp) {
+                std::wstring ifWrapped;
+                if (isPy) ifWrapped = indent + L"if condition:" + nl + inner;
+                else ifWrapped = indent + L"if (condition) {" + nl + inner + nl + indent + L"}";
+                phide::lsp::CodeActionItem ifAct;
+                ifAct.title = L"Wrap in if (condition) block";
+                ifAct.kind = L"refactor.surround.if";
+                ifAct.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, wrapEndLine, lines[wrapEndLine].size(), ifWrapped } } });
+                actions.push_back(std::move(ifAct));
+            }
+
             std::wstring wrapped;
             if (isPy) {
                 wrapped = indent + L"try:" + nl + inner + nl + indent + L"except Exception as err:" + nl + indent + L"    raise err";
@@ -2762,6 +2969,17 @@ std::vector<phide::lsp::CodeActionItem> CodeActionEngine::GenerateLocalCodeActio
             act.kind = L"refactor.surround.tryCatch";
             act.edit.fileChanges.push_back({ filePath, { { selStartLine, 0, wrapEndLine, lines[wrapEndLine].size(), wrapped } } });
             actions.push_back(std::move(act));
+
+            std::wstring dupText;
+            for (size_t ln = selStartLine; ln <= wrapEndLine; ++ln) {
+                if (ln > selStartLine) dupText += nl;
+                dupText += lines[ln];
+            }
+            phide::lsp::CodeActionItem dupAct;
+            dupAct.title = hasSelection ? L"Duplicate selected lines" : L"Duplicate line below";
+            dupAct.kind = L"refactor.duplicateLine";
+            dupAct.edit.fileChanges.push_back({ filePath, { { wrapEndLine, lines[wrapEndLine].size(), wrapEndLine, lines[wrapEndLine].size(), nl + dupText } } });
+            actions.push_back(std::move(dupAct));
         }
     }
 

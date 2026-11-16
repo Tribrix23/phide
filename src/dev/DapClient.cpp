@@ -2619,6 +2619,20 @@ void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
     syncNodeBreakpoints();
     sendCdpAsync("Runtime.runIfWaitingForDebugger");
 
+    // Drain Node stdout/stderr pipes cleanly without dropping buffered chunks
+    auto drainNodePipe = [&]() {
+        DWORD avail = 0;
+        while (m_hStdoutRead && PeekNamedPipe(m_hStdoutRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+            char pbuf[2048];
+            DWORD rd = 0;
+            if (ReadFile(m_hStdoutRead, pbuf, sizeof(pbuf), &rd, nullptr) && rd > 0 && onOutput) {
+                onOutput(Utf8ToWide(std::string(pbuf, rd)));
+            } else {
+                break;
+            }
+        }
+    };
+
     bool firstBreakHandled = false;
     while (!m_stopRequested.load() && !wsClosed) {
         {
@@ -2684,19 +2698,6 @@ void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
             }
         }
 
-        // Drain Node stdout/stderr pipes cleanly without dropping buffered chunks
-        auto drainNodePipe = [&]() {
-            DWORD avail = 0;
-            while (PeekNamedPipe(m_hStdoutRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
-                char pbuf[2048];
-                DWORD rd = 0;
-                if (ReadFile(m_hStdoutRead, pbuf, sizeof(pbuf), &rd, nullptr) && rd > 0 && onOutput) {
-                    onOutput(Utf8ToWide(std::string(pbuf, rd)));
-                } else {
-                    break;
-                }
-            }
-        };
         drainNodePipe();
 
         bool execContextEnded = false;

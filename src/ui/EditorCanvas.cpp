@@ -6111,12 +6111,21 @@ void EditorCanvas::RenderInlineDiffView(ID2D1RenderTarget* pRT, Theme& theme, co
     D2D1_RECT_F rcClip = D2D1::RectF(canvasLeft, codeTopY, canvasLeft + viewW, clientHeight);
     pRT->PushAxisAlignedClip(rcClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    doc.diffHunkBands.clear();
     size_t lastActionHunk = static_cast<size_t>(-1);
     const size_t endRow = (std::min)(totalRows, doc.scrollLine + visibleCount + 1);
     for (size_t rIdx = doc.scrollLine; rIdx < endRow; ++rIdx) {
         const auto& row = m_cachedInlineDiffRows[rIdx];
         const float rowY = codeTopY + static_cast<float>(rIdx - doc.scrollLine) * lineH;
         D2D1_RECT_F rcRow = D2D1::RectF(canvasLeft, rowY, codeRightX, rowY + lineH);
+
+        if (row.hunkIdx != static_cast<size_t>(-1)) {
+            if (!doc.diffHunkBands.empty() && doc.diffHunkBands.back().hunkIdx == row.hunkIdx) {
+                doc.diffHunkBands.back().bounds.bottom = rowY + lineH;
+            } else {
+                doc.diffHunkBands.push_back({ row.hunkIdx, D2D1::RectF(canvasLeft, rowY, canvasLeft + canvasWidth, rowY + lineH) });
+            }
+        }
 
         if (row.kind == git::GitWorkflowEngine::InlineDiffRow::Kind::Deleted && delBg) {
             pRT->FillRectangle(rcRow, delBg.Get());
@@ -6154,27 +6163,44 @@ void EditorCanvas::RenderInlineDiffView(ID2D1RenderTarget* pRT, Theme& theme, co
                       theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         pRT->PopAxisAlignedClip();
 
-        if (row.hunkIdx != static_cast<size_t>(-1) && row.hunkIdx != lastActionHunk && !doc.isDiffRightReadOnly) {
+        if (row.hunkIdx != static_cast<size_t>(-1) && row.hunkIdx != lastActionHunk &&
+            row.hunkIdx == doc.diffHoveredHunkIdx && (!doc.isDiffRightReadOnly || doc.isDiffStagedMode)) {
             lastActionHunk = row.hunkIdx;
             float btnR = codeRightX - config.ScaleF(8.0f);
-            float btnH = (std::max)(config.ScaleF(16.0f), lineH - 2.0f);
+            float btnH = config.ScaleF(18.0f);
             float btnT = rowY + (lineH - btnH) * 0.5f;
-            float revW = config.ScaleF(24.0f);
-            D2D1_RECT_F rcRev = D2D1::RectF(btnR - revW, btnT, btnR, btnT + btnH);
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRev, 2.5f, 2.5f), theme.brushHeaderBg.Get());
-            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcRev, 2.5f, 2.5f), theme.brushBorderSubtle.Get(), 1.0f);
-            pRT->DrawText(L"\u21A9", 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pLabelFmt,
-                          rcRev, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            doc.diffHunkActionHits.push_back({ row.hunkIdx, editor::OpenDocument::DiffHunkActionHit::Action::Revert, rcRev });
-            btnR = rcRev.left - config.ScaleF(4.0f);
+            float btnW = config.ScaleF(22.0f);
+
+            if (!doc.isDiffRightReadOnly) {
+                D2D1_RECT_F rcRev = D2D1::RectF(btnR - btnW, btnT, btnR, btnT + btnH);
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRev, 3.0f, 3.0f), theme.brushHeaderBg.Get());
+                pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcRev, 3.0f, 3.0f), theme.brushBorderSubtle.Get(), 1.0f);
+                if (theme.brushTextPrimary) {
+                    float rx = (rcRev.left + rcRev.right) * 0.5f;
+                    float ry = (rcRev.top + rcRev.bottom) * 0.5f;
+                    float s = config.ScaleF(1.0f);
+                    pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry + 2.5f * s), D2D1::Point2F(rx - 3.5f * s, ry + 2.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                    pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry - 1.5f * s), D2D1::Point2F(rx + 3.0f * s, ry + 2.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                    pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry - 1.5f * s), D2D1::Point2F(rx - 3.0f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                    pRT->DrawLine(D2D1::Point2F(rx - 1.0f * s, ry - 3.5f * s), D2D1::Point2F(rx - 3.2f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                    pRT->DrawLine(D2D1::Point2F(rx - 1.0f * s, ry + 0.5f * s), D2D1::Point2F(rx - 3.2f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                }
+                doc.diffHunkActionHits.push_back({ row.hunkIdx, editor::OpenDocument::DiffHunkActionHit::Action::Revert, rcRev });
+                btnR = rcRev.left - config.ScaleF(4.0f);
+            }
 
             if (!doc.diffRepoRelPath.empty()) {
-                float stW = config.ScaleF(24.0f);
-                D2D1_RECT_F rcStage = D2D1::RectF(btnR - stW, btnT, btnR, btnT + btnH);
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStage, 2.5f, 2.5f), theme.brushBrandAccent.Get());
-                const wchar_t* sym = doc.isDiffStagedMode ? L"-" : L"+";
-                pRT->DrawText(sym, 1, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pLabelFmt,
-                              rcStage, theme.brushTextWhite.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                D2D1_RECT_F rcStage = D2D1::RectF(btnR - btnW, btnT, btnR, btnT + btnH);
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStage, 3.0f, 3.0f), theme.brushBrandAccent.Get());
+                if (theme.brushTextWhite) {
+                    float sx = (rcStage.left + rcStage.right) * 0.5f;
+                    float sy = (rcStage.top + rcStage.bottom) * 0.5f;
+                    float arm = config.ScaleF(3.6f);
+                    pRT->DrawLine(D2D1::Point2F(sx - arm, sy), D2D1::Point2F(sx + arm, sy), theme.brushTextWhite.Get(), 1.5f);
+                    if (!doc.isDiffStagedMode) {
+                        pRT->DrawLine(D2D1::Point2F(sx, sy - arm), D2D1::Point2F(sx, sy + arm), theme.brushTextWhite.Get(), 1.5f);
+                    }
+                }
                 doc.diffHunkActionHits.push_back({
                     row.hunkIdx,
                     doc.isDiffStagedMode ? editor::OpenDocument::DiffHunkActionHit::Action::Unstage
@@ -11011,6 +11037,7 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
 
     pRT->PushAxisAlignedClip(rcDivider, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     doc.diffHunkActionHits.clear();
+    doc.diffHunkBands.clear();
     for (size_t hunkIdx = 0; hunkIdx < doc.diffHunks.size(); ++hunkIdx) {
         const auto& hunk = doc.diffHunks[hunkIdx];
         float yLStart = codeTopY + (static_cast<float>(hunk.leftStart) - static_cast<float>(doc.scrollLine)) * lineH;
@@ -11020,6 +11047,13 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         float yRStart = codeTopY + (static_cast<float>(hunk.rightStart) - static_cast<float>(doc.scrollLine)) * lineH;
         float yREnd = yRStart + static_cast<float>(hunk.rightCount) * lineH;
         if (hunk.rightCount == 0) yREnd = yRStart;
+
+        if ((yLEnd >= codeTopY && yLStart <= clientHeight) || (yREnd >= codeTopY && yRStart <= clientHeight)) {
+            float bandTop = (std::max)(codeTopY, (std::min)(yLStart, yRStart) - config.ScaleF(6.0f));
+            float bandBot = (std::min)(clientHeight, (std::max)(yLEnd, yREnd) + config.ScaleF(10.0f));
+            if (bandBot < bandTop + lineH) bandBot = bandTop + lineH;
+            doc.diffHunkBands.push_back({ hunkIdx, D2D1::RectF(leftX, bandTop, rightX + halfW, bandBot) });
+        }
 
         if (pFactory && ((yLEnd >= codeTopY && yLStart <= clientHeight) || (yREnd >= codeTopY && yRStart <= clientHeight))) {
             Microsoft::WRL::ComPtr<ID2D1PathGeometry> pBridge;
@@ -11047,34 +11081,56 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
                 }
             }
 
-            // Compact Partial Hunk Actions (+ Stage / - Unstage and Revert) inside divider strip
-            float midY = (std::max)(codeTopY + config.ScaleF(8.0f), (std::min)(clientHeight - config.ScaleF(20.0f), (yRStart + yREnd) * 0.5f));
-            float pillS = config.ScaleF(13.0f);
-            float cx = dividerX + (dividerW - pillS) * 0.5f;
-            if (!doc.diffRepoRelPath.empty() && !doc.isDiffRightReadOnly) {
-                D2D1_RECT_F rcStage = D2D1::RectF(cx, midY - pillS - 1.0f, cx + pillS, midY - 1.0f);
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStage, 2.5f, 2.5f), theme.brushBrandAccent.Get());
-                const wchar_t* sym = doc.isDiffStagedMode ? L"-" : L"+";
-                pRT->DrawText(sym, 1, theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : pLabelFmt,
-                              rcStage, theme.brushTextWhite.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-                editor::OpenDocument::DiffHunkActionHit hit;
-                hit.hunkIdx = hunkIdx;
-                hit.action = doc.isDiffStagedMode ? editor::OpenDocument::DiffHunkActionHit::Action::Unstage
-                                                  : editor::OpenDocument::DiffHunkActionHit::Action::Stage;
-                hit.bounds = rcStage;
-                doc.diffHunkActionHits.push_back(hit);
-            }
-            if (!doc.isDiffRightReadOnly) {
-                D2D1_RECT_F rcRev = D2D1::RectF(cx, midY + 1.0f, cx + pillS, midY + pillS + 1.0f);
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRev, 2.5f, 2.5f), theme.brushHeaderBg.Get());
-                pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcRev, 2.5f, 2.5f), theme.brushBorderSubtle.Get(), 1.0f);
-                pRT->DrawText(L"\u21A9", 1, theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : pLabelFmt,
-                              rcRev, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-                editor::OpenDocument::DiffHunkActionHit hit;
-                hit.hunkIdx = hunkIdx;
-                hit.action = editor::OpenDocument::DiffHunkActionHit::Action::Revert;
-                hit.bounds = rcRev;
-                doc.diffHunkActionHits.push_back(hit);
+            // Hover-only crisp vector hunk actions (+ Stage / - Unstage and Revert) cleanly inside divider
+            if (hunkIdx == doc.diffHoveredHunkIdx && (!doc.isDiffRightReadOnly || doc.isDiffStagedMode)) {
+                const bool showStage = !doc.diffRepoRelPath.empty();
+                const bool showRev = !doc.isDiffRightReadOnly;
+                const float pillW = config.ScaleF(20.0f);
+                const float pillH = config.ScaleF(16.0f);
+                const float cx = dividerX + (dividerW - pillW) * 0.5f;
+                const float centerRefY = (yREnd > yRStart) ? ((yRStart + yREnd) * 0.5f) : ((yLStart + yLEnd) * 0.5f);
+                float midY = (std::max)(codeTopY + pillH + config.ScaleF(4.0f),
+                                        (std::min)(clientHeight - pillH - config.ScaleF(4.0f), centerRefY));
+
+                if (showStage) {
+                    D2D1_RECT_F rcStage = showRev
+                        ? D2D1::RectF(cx, midY - pillH - 1.5f, cx + pillW, midY - 1.5f)
+                        : D2D1::RectF(cx, midY - pillH * 0.5f, cx + pillW, midY + pillH * 0.5f);
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStage, 3.0f, 3.0f), theme.brushBrandAccent.Get());
+                    if (theme.brushTextWhite) {
+                        float sx = (rcStage.left + rcStage.right) * 0.5f;
+                        float sy = (rcStage.top + rcStage.bottom) * 0.5f;
+                        float arm = config.ScaleF(3.5f);
+                        pRT->DrawLine(D2D1::Point2F(sx - arm, sy), D2D1::Point2F(sx + arm, sy), theme.brushTextWhite.Get(), 1.5f);
+                        if (!doc.isDiffStagedMode) {
+                            pRT->DrawLine(D2D1::Point2F(sx, sy - arm), D2D1::Point2F(sx, sy + arm), theme.brushTextWhite.Get(), 1.5f);
+                        }
+                    }
+                    doc.diffHunkActionHits.push_back({
+                        hunkIdx,
+                        doc.isDiffStagedMode ? editor::OpenDocument::DiffHunkActionHit::Action::Unstage
+                                             : editor::OpenDocument::DiffHunkActionHit::Action::Stage,
+                        rcStage });
+                }
+                if (showRev) {
+                    D2D1_RECT_F rcRev = showStage
+                        ? D2D1::RectF(cx, midY + 1.5f, cx + pillW, midY + pillH + 1.5f)
+                        : D2D1::RectF(cx, midY - pillH * 0.5f, cx + pillW, midY + pillH * 0.5f);
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRev, 3.0f, 3.0f), theme.brushHeaderBg.Get());
+                    pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcRev, 3.0f, 3.0f), theme.brushBorderSubtle.Get(), 1.0f);
+                    if (theme.brushTextPrimary) {
+                        float rx = (rcRev.left + rcRev.right) * 0.5f;
+                        float ry = (rcRev.top + rcRev.bottom) * 0.5f;
+                        float s = config.ScaleF(0.95f);
+                        pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry + 2.5f * s), D2D1::Point2F(rx - 3.5f * s, ry + 2.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                        pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry - 1.5f * s), D2D1::Point2F(rx + 3.0f * s, ry + 2.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                        pRT->DrawLine(D2D1::Point2F(rx + 3.0f * s, ry - 1.5f * s), D2D1::Point2F(rx - 3.5f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                        pRT->DrawLine(D2D1::Point2F(rx - 1.0f * s, ry - 3.5f * s), D2D1::Point2F(rx - 3.2f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                        pRT->DrawLine(D2D1::Point2F(rx - 1.0f * s, ry + 0.5f * s), D2D1::Point2F(rx - 3.2f * s, ry - 1.5f * s), theme.brushTextPrimary.Get(), 1.35f);
+                    }
+                    doc.diffHunkActionHits.push_back({
+                        hunkIdx, editor::OpenDocument::DiffHunkActionHit::Action::Revert, rcRev });
+                }
             }
         }
     }
@@ -16914,7 +16970,7 @@ bool EditorCanvas::HandleSnippetEditorKeyDown(WPARAM wParam) {
 
 void EditorCanvas::RenderFloatingDebugToolbar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                               float canvasLeft, float canvasWidth, float headerH) {
-    if (!pRT || canvasWidth < config.ScaleF(200.0f)) return;
+    if (!pRT || canvasWidth < config.ScaleF(220.0f)) return;
     EnsureCachedEditorBrushes(pRT, theme);
     m_floatingDebugBtns.clear();
 
@@ -16923,7 +16979,7 @@ void EditorCanvas::RenderFloatingDebugToolbar(ID2D1RenderTarget* pRT, Theme& the
     const float gripW = config.ScaleF(12.0f);
     const float gap = config.ScaleF(3.0f);
     const float pad = config.ScaleF(6.0f);
-    const int numBtns = 6;
+    const int numBtns = 7;
     const float barW = gripW + numBtns * btnW + (numBtns - 1) * gap + pad * 2.0f;
     const float barH = config.ScaleF(30.0f);
 
@@ -16953,36 +17009,67 @@ void EditorCanvas::RenderFloatingDebugToolbar(ID2D1RenderTarget* pRT, Theme& the
         }
     }
 
-    // 6 buttons: (Continue or Pause), Step Over, Step Into, Step Out, Restart, Stop
-    struct ActSpec { int id; const wchar_t* glyph; ID2D1Brush* brush; bool enabled; };
+    // 7 buttons matching the bottom-right Debug Toolbar 1:1:
+    // Continue (F5), Pause (F6), Step Over (F10), Step Into (F11), Step Out (Shift+F11), Restart (Ctrl+Shift+F5), Stop (Shift+F5)
+    struct ActSpec { int id; const wchar_t* tooltip; ID2D1Brush* brush; bool enabled; };
     ID2D1Brush* stepB = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
     ID2D1Brush* dimB = theme.brushTextMuted ? theme.brushTextMuted.Get() : theme.brushTextSecondary.Get();
-    ActSpec specs[6] = {
-        { m_floatingDebugPaused ? 1 : 2, m_floatingDebugPaused ? L"▶" : L"⏸",
-          m_floatingDebugPaused ? (m_pDebugGutterGreenBrush ? m_pDebugGutterGreenBrush.Get() : stepB)
-                                : (m_pDebugGutterAmberBrush ? m_pDebugGutterAmberBrush.Get() : stepB), true },
-        { 3, L"⤵", m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
-        { 4, L"↓", m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
-        { 5, L"↑", m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
-        { 6, L"↻", m_pDebugGutterGreenBrush ? m_pDebugGutterGreenBrush.Get() : stepB, true },
-        { 7, L"■", m_pDebugGutterRedBrush ? m_pDebugGutterRedBrush.Get() : stepB, true }
+    ID2D1Brush* greenB = m_pDebugGutterGreenBrush ? m_pDebugGutterGreenBrush.Get() : stepB;
+    ID2D1Brush* amberB = m_pDebugGutterAmberBrush ? m_pDebugGutterAmberBrush.Get() : stepB;
+    ID2D1Brush* redB = m_pDebugGutterRedBrush ? m_pDebugGutterRedBrush.Get() : stepB;
+    ActSpec specs[7] = {
+        { 1, L"Continue (F5)",            m_floatingDebugPaused ? greenB : dimB, m_floatingDebugPaused },
+        { 2, L"Pause (F6)",               !m_floatingDebugPaused ? amberB : dimB, !m_floatingDebugPaused },
+        { 3, L"Step Over (F10)",          m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
+        { 4, L"Step Into (F11)",          m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
+        { 5, L"Step Out (Shift+F11)",     m_floatingDebugPaused ? stepB : dimB, m_floatingDebugPaused },
+        { 6, L"Restart (Ctrl+Shift+F5)",  amberB, true },
+        { 7, L"Stop (Shift+F5)",          redB, true }
     };
 
     float curX = barX + pad + gripW;
     float btnY = barY + (barH - btnH) * 0.5f;
-    IDWriteTextFormat* fmt = theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get();
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         D2D1_RECT_F rcB = D2D1::RectF(curX, btnY, curX + btnW, btnY + btnH);
-        if (i == m_hoveredFloatingDbgIdx && specs[i].enabled && theme.brushItemHover) {
+        if (i == m_hoveredFloatingDbgIdx && theme.brushItemHover) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcB, 4.0f, 4.0f), theme.brushItemHover.Get());
         }
-        if (fmt && specs[i].brush) {
-            pRT->DrawText(specs[i].glyph, static_cast<UINT32>(wcslen(specs[i].glyph)), fmt,
-                          D2D1::RectF(rcB.left + config.ScaleF(6.0f), rcB.top + config.ScaleF(2.0f), rcB.right, rcB.bottom),
-                          specs[i].brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (specs[i].brush) {
+            LucideIcons::DrawDebugActionIcon(pRT, rcB, specs[i].id, specs[i].brush, 1.45f);
         }
         m_floatingDebugBtns.push_back({ specs[i].id, rcB });
         curX += btnW + gap;
+    }
+
+    if (m_hoveredFloatingDbgIdx >= 0 && m_hoveredFloatingDbgIdx < 7) {
+        const wchar_t* tipText = specs[m_hoveredFloatingDbgIdx].tooltip;
+        const D2D1_RECT_F& targetRc = m_floatingDebugBtns[static_cast<size_t>(m_hoveredFloatingDbgIdx)].bounds;
+        size_t tipLen = wcslen(tipText);
+        float tipW = config.ScaleF(static_cast<float>(tipLen) * 6.8f + 18.0f);
+        if (theme.dwriteFactory && (theme.fontTooltip || theme.fontHint)) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> tl;
+            IDWriteTextFormat* tf = theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get();
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(tipText, static_cast<UINT32>(tipLen), tf, 400.0f, 30.0f, &tl)) && tl) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(tl->GetMetrics(&tm))) tipW = tm.widthIncludingTrailingWhitespace + config.ScaleF(16.0f);
+            }
+        }
+        float tipH = config.ScaleF(22.0f);
+        float tipX = targetRc.left + ((targetRc.right - targetRc.left) - tipW) * 0.5f;
+        tipX = (std::max)(canvasLeft + config.ScaleF(4.0f), (std::min)(canvasLeft + canvasWidth - tipW - config.ScaleF(4.0f), tipX));
+        float tipY = m_floatingDebugBounds.bottom + config.ScaleF(5.0f);
+        D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH), 4.0f, 4.0f);
+        if (theme.brushTooltipBg || theme.brushMenuBg) {
+            pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg ? theme.brushTooltipBg.Get() : theme.brushMenuBg.Get());
+        }
+        if (theme.brushTooltipBorder || theme.brushMenuBorder) {
+            pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder ? theme.brushTooltipBorder.Get() : theme.brushMenuBorder.Get(), 0.8f);
+        }
+        IDWriteTextFormat* tf = theme.fontTooltip ? theme.fontTooltip.Get() : theme.fontHint.Get();
+        ID2D1Brush* tb = theme.brushTooltipText ? theme.brushTooltipText.Get() : theme.brushTextPrimary.Get();
+        if (tf && tb) {
+            pRT->DrawText(tipText, static_cast<UINT32>(tipLen), tf, rrcTip.rect, tb, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
     }
 }
 
