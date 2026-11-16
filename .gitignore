@@ -31,6 +31,7 @@ webview2.zip
 
 # Visual Studio & IDE Cache
 .vs/
+.vscode/
 *.sln.docstates
 *.suo
 *.user
