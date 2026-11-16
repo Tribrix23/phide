@@ -4594,7 +4594,7 @@ run_test_29:
         auto* dbgTab = term.GetActiveTab();
         assert(dbgTab != nullptr);
         assert(dbgTab->shellType == phide::ui::TerminalShellType::DebugConsole);
-        assert(dbgTab->title == L"🐞 Debug Console");
+        assert(dbgTab->title == L"Debug Console");
 
         // Test debug action triggers (StepOver, StepInto, StepOut, Restart, Stop)
         term.TriggerDebugAction(phide::ui::DebugAction::Continue);
