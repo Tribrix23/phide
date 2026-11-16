@@ -1,13 +1,33 @@
-# Build Artifacts
+# Build Artifacts & Binaries
 bin/
 build/
 installer/payload/
 installer/output/
+installer/test_install/
 *.obj
 *.exe
 *.pdb
 *.ilk
+*.exp
+*.lib
 *.manifest
+vc140.pdb
+
+# Test Directories, Tools & Scratch (Screenshot 2, 3, 4, 5)
+tests/
+tools/
+scratch/
+
+# Planning, Security Notes & Logs
+PLAN.md
+vuln.txt
+*.log
+test_run.log
+test_*_output.txt
+
+# Loose Test Images & Temporary Archives (Screenshot 1)
+/*.png
+webview2.zip
 
 # Visual Studio & IDE Cache
 .vs/
