@@ -36,6 +36,15 @@ struct CursorPosition {
     size_t col  = 0;
 };
 
+enum class CaseTransform {
+    Upper = 0,
+    Lower = 1,
+    Title = 2,
+    Camel = 3,
+    Snake = 4,
+    Kebab = 5
+};
+
 /**
  * @class Buffer
  * @brief Represents an open text document, providing fast line access and syntax highlights.
@@ -44,6 +53,11 @@ class Buffer {
 public:
     Buffer();
     explicit Buffer(const std::wstring& initialContent);
+    ~Buffer();
+    Buffer(const Buffer&) = default;
+    Buffer& operator=(const Buffer&) = default;
+    Buffer(Buffer&& other) noexcept;
+    Buffer& operator=(Buffer&& other) noexcept;
 
     /**
      * @brief Gets the number of lines in the document.
@@ -133,6 +147,7 @@ public:
     void CloseFileMapping() noexcept;
     [[nodiscard]] bool IsMemoryMappedReadOnly() const noexcept { return m_mappedState != nullptr; }
     [[nodiscard]] uint64_t GetMappedByteSize() const noexcept { return m_mappedByteSize; }
+    bool ReadMappedBytes(uint64_t offset, size_t maxBytes, std::vector<uint8_t>& outBytes) const;
 
     /**
      * @brief Saves buffer lines to file on disk.
@@ -216,6 +231,9 @@ public:
 
     [[nodiscard]] uint64_t GetVersion() const noexcept { return m_version; }
     void IncrementVersion() noexcept { ++m_version; }
+
+    /** @brief Transforms string casing cleanly (UPPER, lower, Title, camelCase, snake_case, kebab-case). */
+    [[nodiscard]] static std::wstring TransformTextCase(const std::wstring& text, CaseTransform mode);
 
     /** @brief Manual Garbage Collector: compacts pending undo, reclaims vector capacities and trims memory. */
     void RunGarbageCollection();

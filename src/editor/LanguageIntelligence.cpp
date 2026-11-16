@@ -17,11 +17,13 @@
 #include "phide/editor/WebIntelliSenseData.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -2034,8 +2036,54 @@ std::wstring RunHiddenCliCaptured(const std::wstring& cmdLine, const std::wstrin
 
 } // namespace
 
+namespace {
+
+[[nodiscard]] std::wstring FindNearestTsConfigDir(const std::wstring& filePath, const std::wstring& workspaceRoot) {
+    std::error_code ec;
+    fs::path cur = fs::path(filePath).parent_path();
+    for (int depth = 0; depth < 6 && !cur.empty(); ++depth) {
+        if (fs::exists(cur / L"tsconfig.json", ec)) {
+            return cur.wstring();
+        }
+        fs::path parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = parent;
+    }
+    if (!workspaceRoot.empty() && fs::exists(fs::path(workspaceRoot) / L"tsconfig.json", ec)) {
+        return workspaceRoot;
+    }
+    return L"";
+}
+
+[[nodiscard]] std::string EscapeJsonSarif(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (unsigned char ch : s) {
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (ch < 0x20) {
+                    char buf[8]{};
+                    snprintf(buf, sizeof(buf), "\\u%04x", ch);
+                    out += buf;
+                } else {
+                    out.push_back(static_cast<char>(ch));
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wstring& filePath,
-                                                                   const std::wstring& workspaceRoot) {
+                                                                   const std::wstring& workspaceRoot,
+                                                                   bool bypassTscCooldown) {
     std::vector<ProblemEntry> all;
     if (filePath.empty()) return all;
     std::wstring ext = GetExtLower(filePath);
@@ -2060,6 +2108,60 @@ std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wst
                 workspaceRoot);
             auto es = ParseEslintCompactOutput(out, workspaceRoot);
             all.insert(all.end(), std::make_move_iterator(es.begin()), std::make_move_iterator(es.end()));
+        }
+
+        // Run TypeScript compiler diagnostic check (`tsc --noEmit --pretty false`) when tsconfig.json is present
+        std::wstring tsConfigDir = FindNearestTsConfigDir(filePath, workspaceRoot);
+        if (!tsConfigDir.empty()) {
+            std::wstring tscTool;
+            if (ToolExistsOnDisk(L"tsc.cmd", tsConfigDir, tscTool) ||
+                ToolExistsOnDisk(L"tsc.cmd", workspaceRoot, tscTool) ||
+                ToolExistsOnDisk(L"tsc.exe", workspaceRoot, tscTool)) {
+                static std::mutex s_tscMutex;
+                static std::atomic<bool> s_tscInFlight{false};
+                static ULONGLONG s_lastTscRunTick = 0;
+                static std::wstring s_lastTscDir;
+                static std::vector<ProblemEntry> s_cachedTscProblems;
+
+                std::wstring dirKey = ToLowerW(tsConfigDir);
+                ULONGLONG nowTick = GetTickCount64();
+                bool useCacheOnly = false;
+                std::vector<ProblemEntry> cachedCopy;
+                {
+                    std::lock_guard<std::mutex> lk(s_tscMutex);
+                    bool withinCooldown = (!bypassTscCooldown && s_lastTscDir == dirKey &&
+                                           s_lastTscRunTick != 0 && (nowTick - s_lastTscRunTick) < 8000ULL);
+                    if (withinCooldown || s_tscInFlight.load()) {
+                        useCacheOnly = true;
+                        if (s_lastTscDir == dirKey) {
+                            cachedCopy = s_cachedTscProblems;
+                        }
+                    }
+                }
+
+                if (useCacheOnly) {
+                    all.insert(all.end(), cachedCopy.begin(), cachedCopy.end());
+                } else if (!s_tscInFlight.exchange(true)) {
+                    struct InFlightReset {
+                        std::atomic<bool>& flag;
+                        ~InFlightReset() { flag.store(false); }
+                    } guard{ s_tscInFlight };
+
+                    std::wstring effectiveRoot = workspaceRoot.empty() ? tsConfigDir : workspaceRoot;
+                    std::wstring cmd = L"\"" + tscTool + L"\" --noEmit --pretty false -p \"" +
+                                       (fs::path(tsConfigDir) / L"tsconfig.json").wstring() + L"\"";
+                    std::wstring out = RunHiddenCliCaptured(cmd, tsConfigDir, 5500);
+                    auto tscDiags = ParseTscOutput(out, effectiveRoot);
+                    if (tscDiags.size() > 100) tscDiags.resize(100);
+                    {
+                        std::lock_guard<std::mutex> lk(s_tscMutex);
+                        s_lastTscRunTick = GetTickCount64();
+                        s_lastTscDir = dirKey;
+                        s_cachedTscProblems = tscDiags;
+                    }
+                    all.insert(all.end(), std::make_move_iterator(tscDiags.begin()), std::make_move_iterator(tscDiags.end()));
+                }
+            }
         }
     } else if (ext == L".php") {
         if (ToolExistsOnDisk(L"phpstan.bat", workspaceRoot, toolPath) ||
@@ -2100,6 +2202,148 @@ std::vector<ProblemEntry> ExternalLinterEngine::FilterProblems(const std::vector
         }
         out.push_back(p);
     }
+    return out;
+}
+
+std::vector<ProblemDisplayRow> ExternalLinterEngine::BuildDisplayRows(
+    const std::vector<ProblemEntry>& filteredProblems,
+    bool groupByFile,
+    const std::vector<std::wstring>& collapsedFiles)
+{
+    std::vector<ProblemDisplayRow> rows;
+    if (filteredProblems.empty()) return rows;
+
+    if (!groupByFile) {
+        rows.reserve(filteredProblems.size());
+        for (size_t i = 0; i < filteredProblems.size(); ++i) {
+            ProblemDisplayRow r;
+            r.isFileHeader = false;
+            r.problemIndex = static_cast<int>(i);
+            rows.push_back(std::move(r));
+        }
+        return rows;
+    }
+
+    struct GroupBucket {
+        std::wstring fileKey;
+        std::wstring fileLabel;
+        int errs = 0;
+        int warns = 0;
+        int infos = 0;
+        std::vector<int> indices;
+    };
+    std::vector<GroupBucket> groups;
+    std::unordered_map<std::wstring, size_t> keyToGroupIdx;
+
+    for (size_t i = 0; i < filteredProblems.size(); ++i) {
+        const auto& p = filteredProblems[i];
+        std::wstring key = ToLowerW(p.filePath.empty() ? p.displayPath : p.filePath);
+        std::replace(key.begin(), key.end(), L'/', L'\\');
+        auto it = keyToGroupIdx.find(key);
+        if (it == keyToGroupIdx.end()) {
+            GroupBucket b;
+            b.fileKey = key;
+            b.fileLabel = !p.displayPath.empty() ? p.displayPath
+                : (!p.filePath.empty() ? fs::path(p.filePath).filename().wstring() : L"<untitled>");
+            keyToGroupIdx[key] = groups.size();
+            groups.push_back(std::move(b));
+            it = keyToGroupIdx.find(key);
+        }
+        auto& g = groups[it->second];
+        if (p.severity == 1) ++g.errs;
+        else if (p.severity == 2) ++g.warns;
+        else ++g.infos;
+        g.indices.push_back(static_cast<int>(i));
+    }
+
+    for (const auto& g : groups) {
+        bool isCollapsed = false;
+        for (const auto& cf : collapsedFiles) {
+            std::wstring cfNorm = ToLowerW(cf);
+            std::replace(cfNorm.begin(), cfNorm.end(), L'/', L'\\');
+            if (cfNorm == g.fileKey) { isCollapsed = true; break; }
+        }
+        ProblemDisplayRow hdr;
+        hdr.isFileHeader = true;
+        hdr.fileKey = g.fileKey;
+        hdr.fileLabel = g.fileLabel;
+        hdr.fileErrorCount = g.errs;
+        hdr.fileWarningCount = g.warns;
+        hdr.fileInfoCount = g.infos;
+        hdr.collapsed = isCollapsed;
+        hdr.problemIndex = -1;
+        rows.push_back(std::move(hdr));
+
+        if (!isCollapsed) {
+            for (int idx : g.indices) {
+                ProblemDisplayRow child;
+                child.isFileHeader = false;
+                child.fileKey = g.fileKey;
+                child.problemIndex = idx;
+                rows.push_back(std::move(child));
+            }
+        }
+    }
+    return rows;
+}
+
+std::string ExternalLinterEngine::GenerateSarifJson(const std::vector<ProblemEntry>& problems,
+                                                     const std::wstring& workspaceRoot) {
+    std::string out;
+    out.reserve(problems.size() * 220 + 384);
+    out += "{\n";
+    out += "  \"$schema\": \"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json\",\n";
+    out += "  \"version\": \"2.1.0\",\n";
+    out += "  \"runs\": [\n";
+    out += "    {\n";
+    out += "      \"tool\": {\n";
+    out += "        \"driver\": {\n";
+    out += "          \"name\": \"PHIDE\",\n";
+    out += "          \"version\": \"1.0.0\",\n";
+    out += "          \"informationUri\": \"https://phide.dev\"\n";
+    out += "        }\n";
+    out += "      },\n";
+    out += "      \"results\": [\n";
+
+    const size_t limit = (std::min<size_t>)(problems.size(), 2000);
+    for (size_t i = 0; i < limit; ++i) {
+        const auto& p = problems[i];
+        std::string level = (p.severity == 1) ? "error" : (p.severity == 2 ? "warning" : "note");
+        std::string ruleId = WideToUtf8Str(p.code.empty() ? (p.source.empty() ? L"PHIDE" : p.source) : p.code);
+        std::string msg = WideToUtf8Str(p.message);
+        std::wstring relUriW = !p.displayPath.empty() ? p.displayPath
+            : MakeDisplayRelative(p.filePath, workspaceRoot);
+        if (relUriW.empty()) relUriW = p.filePath;
+        std::replace(relUriW.begin(), relUriW.end(), L'\\', L'/');
+        std::string uri = WideToUtf8Str(relUriW);
+        std::string src = WideToUtf8Str(p.source);
+
+        size_t sLine = p.line + 1;
+        size_t sCol = p.col + 1;
+        size_t eCol = sCol + (std::max<size_t>)(1, p.length);
+
+        out += "        {\n";
+        out += "          \"ruleId\": \"" + EscapeJsonSarif(ruleId) + "\",\n";
+        out += "          \"level\": \"" + level + "\",\n";
+        out += "          \"message\": { \"text\": \"" + EscapeJsonSarif(msg) + "\" },\n";
+        out += "          \"locations\": [\n";
+        out += "            {\n";
+        out += "              \"physicalLocation\": {\n";
+        out += "                \"artifactLocation\": { \"uri\": \"" + EscapeJsonSarif(uri) + "\" },\n";
+        out += "                \"region\": { \"startLine\": " + std::to_string(sLine) +
+               ", \"startColumn\": " + std::to_string(sCol) +
+               ", \"endColumn\": " + std::to_string(eCol) + " }\n";
+        out += "              }\n";
+        out += "            }\n";
+        out += "          ],\n";
+        out += "          \"properties\": { \"source\": \"" + EscapeJsonSarif(src) + "\" }\n";
+        out += (i + 1 < limit) ? "        },\n" : "        }\n";
+    }
+
+    out += "      ]\n";
+    out += "    }\n";
+    out += "  ]\n";
+    out += "}\n";
     return out;
 }
 

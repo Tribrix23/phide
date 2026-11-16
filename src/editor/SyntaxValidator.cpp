@@ -3,6 +3,7 @@
  * @brief High-performance multi-language syntax validator implementation.
  */
 
+#include <windows.h>
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/WebIntelliSenseData.hpp"
 #include "phide/plugin/PluginManager.hpp"
@@ -10,8 +11,11 @@
 #include <cctype>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <stack>
 #include <iostream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace phide::editor {
 
@@ -107,6 +111,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
     std::vector<lsp::Diagnostic> diags;
     if (ext == L".json" || ext == L".jsonc" || ext == L".eslintrc" || ext == L".prettierrc") {
         diags = ValidateJson(buffer);
+        auto schemaDiags = ValidateJsonSchema(filePath, buffer);
+        diags.insert(diags.end(), schemaDiags.begin(), schemaDiags.end());
     } else if (ext == L".css" || ext == L".scss" || ext == L".less") {
         diags = ValidateCss(buffer);
     } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
@@ -124,6 +130,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         diags = ValidatePython(buffer);
     } else if (ext == L".yml" || ext == L".yaml") {
         diags = ValidateYaml(buffer);
+        auto yamlSchemaDiags = ValidateYamlSchema(filePath, buffer);
+        diags.insert(diags.end(), yamlSchemaDiags.begin(), yamlSchemaDiags.end());
     } else if (ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" ||
                ext == L".h" || ext == L".hpp" || ext == L".hxx" || ext == L".cs" ||
                ext == L".java" || ext == L".rs" || ext == L".go") {
@@ -1582,6 +1590,624 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYaml(const Buffer& buffer)
                     checkQuotedScalar(valStart, L"value");
                 }
             }
+        }
+    }
+
+    return diagnostics;
+}
+
+namespace {
+
+[[nodiscard]] std::wstring ToLowerSV(std::wstring s) {
+    for (auto& ch : s) ch = static_cast<wchar_t>(towlower(ch));
+    return s;
+}
+
+[[nodiscard]] std::wstring TrimSV(const std::wstring& s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == L' ' || s[a] == L'\t' || s[a] == L'\r' || s[a] == L'\n')) ++a;
+    size_t b = s.size();
+    while (b > a && (s[b - 1] == L' ' || s[b - 1] == L'\t' || s[b - 1] == L'\r' || s[b - 1] == L'\n')) --b;
+    return s.substr(a, b - a);
+}
+
+enum class JValKind { Unknown, String, Number, Boolean, Null, Object, Array };
+
+struct TopJsonField {
+    std::wstring key;
+    size_t line = 0;
+    size_t keyCol = 0;
+    size_t valLine = 0;
+    size_t valCol = 0;
+    JValKind kind = JValKind::Unknown;
+    std::wstring scalarValue;
+    std::vector<TopJsonField> objectChildren;
+};
+
+struct JsonScanner {
+    const std::vector<std::wstring>& lines;
+    size_t l = 0;
+    size_t c = 0;
+
+    bool Eof() const { return l >= lines.size(); }
+
+    void SkipWsAndComments(bool allowComments) {
+        while (!Eof()) {
+            const auto& ln = lines[l];
+            if (c >= ln.size()) { ++l; c = 0; continue; }
+            wchar_t ch = ln[c];
+            if (ch == L' ' || ch == L'\t' || ch == L'\r') { ++c; continue; }
+            if (allowComments && ch == L'/' && c + 1 < ln.size()) {
+                if (ln[c + 1] == L'/') { ++l; c = 0; continue; }
+                if (ln[c + 1] == L'*') {
+                    c += 2;
+                    while (!Eof()) {
+                        const auto& cln = lines[l];
+                        size_t endp = cln.find(L"*/", c);
+                        if (endp != std::wstring::npos) { c = endp + 2; break; }
+                        ++l; c = 0;
+                    }
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    wchar_t Peek() const {
+        if (Eof() || c >= lines[l].size()) return 0;
+        return lines[l][c];
+    }
+
+    bool ParseString(std::wstring& out) {
+        out.clear();
+        if (Peek() != L'"') return false;
+        ++c;
+        while (!Eof()) {
+            const auto& ln = lines[l];
+            if (c >= ln.size()) { ++l; c = 0; return true; }
+            wchar_t ch = ln[c++];
+            if (ch == L'\\') {
+                if (c < ln.size()) out.push_back(ln[c++]);
+                continue;
+            }
+            if (ch == L'"') return true;
+            out.push_back(ch);
+        }
+        return false;
+    }
+
+    void SkipBalanced(wchar_t openCh, wchar_t closeCh, bool allowComments) {
+        int depth = 1;
+        ++c;
+        bool inStr = false;
+        while (!Eof() && depth > 0) {
+            const auto& ln = lines[l];
+            if (c >= ln.size()) { ++l; c = 0; inStr = false; continue; }
+            wchar_t ch = ln[c++];
+            if (inStr) {
+                if (ch == L'\\') { ++c; continue; }
+                if (ch == L'"') inStr = false;
+                continue;
+            }
+            if (allowComments && ch == L'/' && c < ln.size() && ln[c] == L'/') {
+                ++l; c = 0; continue;
+            }
+            if (ch == L'"') inStr = true;
+            else if (ch == openCh) ++depth;
+            else if (ch == closeCh) --depth;
+        }
+    }
+
+    void ParseValueMeta(JValKind& outKind, std::wstring& outScalar, std::vector<TopJsonField>* outObjChildren,
+                        int objDepth, bool allowComments) {
+        SkipWsAndComments(allowComments);
+        if (Eof()) { outKind = JValKind::Unknown; return; }
+        wchar_t ch = Peek();
+        if (ch == L'"') {
+            outKind = JValKind::String;
+            ParseString(outScalar);
+        } else if (ch == L'{') {
+            outKind = JValKind::Object;
+            if (outObjChildren && objDepth < 2) {
+                *outObjChildren = ParseObjectFields(allowComments, objDepth + 1);
+            } else {
+                SkipBalanced(L'{', L'}', allowComments);
+            }
+        } else if (ch == L'[') {
+            outKind = JValKind::Array;
+            SkipBalanced(L'[', L']', allowComments);
+        } else {
+            size_t startC = c;
+            const auto& ln = lines[l];
+            while (c < ln.size() && ln[c] != L',' && ln[c] != L'}' && ln[c] != L']' &&
+                   ln[c] != L' ' && ln[c] != L'\t' && ln[c] != L'\r' && ln[c] != L'/') {
+                ++c;
+            }
+            outScalar = ln.substr(startC, c - startC);
+            if (outScalar == L"true" || outScalar == L"false") outKind = JValKind::Boolean;
+            else if (outScalar == L"null") outKind = JValKind::Null;
+            else if (!outScalar.empty() && (iswdigit(outScalar[0]) || outScalar[0] == L'-')) outKind = JValKind::Number;
+            else outKind = JValKind::Unknown;
+        }
+    }
+
+    std::vector<TopJsonField> ParseObjectFields(bool allowComments, int objDepth) {
+        std::vector<TopJsonField> fields;
+        SkipWsAndComments(allowComments);
+        if (Peek() != L'{') return fields;
+        ++c;
+        while (!Eof() && fields.size() < 256) {
+            SkipWsAndComments(allowComments);
+            if (Eof()) break;
+            wchar_t ch = Peek();
+            if (ch == L'}') { ++c; break; }
+            if (ch == L',') { ++c; continue; }
+            if (ch != L'"') { ++c; continue; }
+            TopJsonField f;
+            f.line = l;
+            f.keyCol = c;
+            if (!ParseString(f.key)) break;
+            SkipWsAndComments(allowComments);
+            if (Peek() == L':') ++c;
+            SkipWsAndComments(allowComments);
+            f.valLine = l;
+            f.valCol = c;
+            ParseValueMeta(f.kind, f.scalarValue, &f.objectChildren, objDepth, allowComments);
+            fields.push_back(std::move(f));
+        }
+        return fields;
+    }
+};
+
+struct LocalSchemaSpec {
+    std::vector<std::wstring> requiredKeys;
+    struct PropSpec {
+        std::wstring expectedType;
+    };
+    std::unordered_map<std::wstring, PropSpec> properties;
+};
+
+[[nodiscard]] bool ReadLocalSchemaFileBounded(const std::wstring& docPath, const std::wstring& schemaRef,
+                                               LocalSchemaSpec& outSpec) {
+    if (schemaRef.empty()) return false;
+    std::wstring lowRef = ToLowerSV(schemaRef);
+    if (lowRef.rfind(L"http://", 0) == 0 || lowRef.rfind(L"https://", 0) == 0) {
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::path schemaPath(schemaRef);
+    if (schemaPath.is_relative() && !docPath.empty()) {
+        schemaPath = std::filesystem::path(docPath).parent_path() / schemaPath;
+    }
+    if (!std::filesystem::exists(schemaPath, ec) || !std::filesystem::is_regular_file(schemaPath, ec)) {
+        return false;
+    }
+    auto fsz = std::filesystem::file_size(schemaPath, ec);
+    if (ec || fsz > 256 * 1024) return false;
+
+    std::ifstream in(schemaPath, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::string utf8((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (utf8.empty()) return false;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (wlen <= 0) return false;
+    std::wstring wtext(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wtext.data(), wlen);
+
+    std::vector<std::wstring> lines;
+    size_t start = 0;
+    while (start <= wtext.size()) {
+        size_t nl = wtext.find(L'\n', start);
+        if (nl == std::wstring::npos) {
+            lines.push_back(wtext.substr(start));
+            break;
+        }
+        std::wstring ln = wtext.substr(start, nl - start);
+        if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+        lines.push_back(std::move(ln));
+        start = nl + 1;
+    }
+
+    auto extractStringArray = [](const std::vector<std::wstring>& srcLines, const std::wstring& keyName) {
+        std::vector<std::wstring> vals;
+        std::wstring needle = L"\"" + keyName + L"\"";
+        for (size_t i = 0; i < srcLines.size(); ++i) {
+            size_t pos = srcLines[i].find(needle);
+            if (pos == std::wstring::npos) continue;
+            size_t lb = srcLines[i].find(L'[', pos + needle.size());
+            size_t lineIdx = i;
+            if (lb == std::wstring::npos && i + 1 < srcLines.size()) {
+                lb = srcLines[i + 1].find(L'[');
+                lineIdx = i + 1;
+            }
+            if (lb == std::wstring::npos) continue;
+            size_t curC = lb + 1;
+            for (size_t l = lineIdx; l < srcLines.size() && l < lineIdx + 64; ++l) {
+                const auto& ln = srcLines[l];
+                size_t p = (l == lineIdx) ? curC : 0;
+                while (p < ln.size()) {
+                    if (ln[p] == L']') return vals;
+                    if (ln[p] == L'"') {
+                        size_t endQ = p + 1;
+                        while (endQ < ln.size() && ln[endQ] != L'"') {
+                            if (ln[endQ] == L'\\') ++endQ;
+                            ++endQ;
+                        }
+                        if (endQ < ln.size()) {
+                            vals.push_back(ln.substr(p + 1, endQ - p - 1));
+                            p = endQ + 1;
+                            continue;
+                        }
+                    }
+                    ++p;
+                }
+            }
+        }
+        return vals;
+    };
+
+    outSpec.requiredKeys = extractStringArray(lines, L"required");
+
+    JsonScanner sc{ lines };
+    auto rootFields = sc.ParseObjectFields(true, 0);
+    for (const auto& rf : rootFields) {
+        if (rf.key == L"properties") {
+            for (const auto& pf : rf.objectChildren) {
+                LocalSchemaSpec::PropSpec spec;
+                for (size_t li = pf.line; li < lines.size() && li < pf.line + 12; ++li) {
+                    size_t tp = lines[li].find(L"\"type\"");
+                    if (tp != std::wstring::npos) {
+                        size_t q1 = lines[li].find(L'"', tp + 6);
+                        if (q1 != std::wstring::npos) {
+                            size_t q2 = lines[li].find(L'"', q1 + 1);
+                            if (q2 != std::wstring::npos) {
+                                spec.expectedType = ToLowerSV(lines[li].substr(q1 + 1, q2 - q1 - 1));
+                                break;
+                            }
+                        }
+                    }
+                }
+                outSpec.properties[pf.key] = std::move(spec);
+            }
+        }
+    }
+    return !outSpec.requiredKeys.empty() || !outSpec.properties.empty();
+}
+
+[[nodiscard]] bool JsonKindMatchesSchemaType(JValKind k, const std::wstring& expected) {
+    if (expected == L"string") return k == JValKind::String;
+    if (expected == L"number") return k == JValKind::Number;
+    if (expected == L"integer") return k == JValKind::Number;
+    if (expected == L"boolean") return k == JValKind::Boolean;
+    if (expected == L"object") return k == JValKind::Object;
+    if (expected == L"array") return k == JValKind::Array;
+    if (expected == L"null") return k == JValKind::Null;
+    return true;
+}
+
+} // namespace
+
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJsonSchema(const std::wstring& filePath, const Buffer& buffer) {
+    std::vector<lsp::Diagnostic> diagnostics;
+    if (buffer.GetLineCount() == 0) return diagnostics;
+
+    const auto& lines = buffer.GetLines();
+    JsonScanner sc{ lines };
+    sc.SkipWsAndComments(true);
+    if (sc.Peek() != L'{') return diagnostics;
+    auto rootFields = sc.ParseObjectFields(true, 0);
+
+    std::wstring schemaRef;
+    std::unordered_map<std::wstring, const TopJsonField*> rootByKey;
+    for (const auto& f : rootFields) {
+        if (f.key == L"$schema") schemaRef = f.scalarValue;
+        rootByKey[f.key] = &f;
+    }
+
+    std::wstring fileNameLow = ToLowerSV(std::filesystem::path(filePath).filename().wstring());
+    std::wstring schemaLow = ToLowerSV(schemaRef);
+
+    if (!schemaRef.empty()) {
+        LocalSchemaSpec spec;
+        if (ReadLocalSchemaFileBounded(filePath, schemaRef, spec)) {
+            for (const auto& req : spec.requiredKeys) {
+                if (rootByKey.find(req) == rootByKey.end()) {
+                    diagnostics.push_back({ 0, 0, 1,
+                        L"Schema: Missing required property \"" + req + L"\" (from " + schemaRef + L")", 1,
+                        L"$schema", L"missing-required" });
+                }
+            }
+            for (const auto& f : rootFields) {
+                auto it = spec.properties.find(f.key);
+                if (it != spec.properties.end() && !it->second.expectedType.empty() && f.kind != JValKind::Unknown) {
+                    if (!JsonKindMatchesSchemaType(f.kind, it->second.expectedType)) {
+                        diagnostics.push_back({ f.valLine, f.valCol, (std::max<size_t>)(1, f.scalarValue.size()),
+                            L"Schema: Property \"" + f.key + L"\" must be of type \"" + it->second.expectedType + L"\"", 1,
+                            L"$schema", L"schema-type" });
+                    }
+                }
+            }
+        }
+    }
+
+    bool isPackageJson = (fileNameLow == L"package.json") || (schemaLow.find(L"package.schema.json") != std::wstring::npos);
+    if (isPackageJson) {
+        auto checkObjType = [&](const wchar_t* k) {
+            auto it = rootByKey.find(k);
+            if (it != rootByKey.end() && it->second->kind != JValKind::Object && it->second->kind != JValKind::Unknown) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, 4,
+                    std::wstring(L"Schema (package.json): \"") + k + L"\" must be a JSON object", 1,
+                    L"schema:package.json", L"package-type" });
+            }
+        };
+        auto checkArrType = [&](const wchar_t* k) {
+            auto it = rootByKey.find(k);
+            if (it != rootByKey.end() && it->second->kind != JValKind::Array && it->second->kind != JValKind::Unknown) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, 4,
+                    std::wstring(L"Schema (package.json): \"") + k + L"\" must be a JSON array", 1,
+                    L"schema:package.json", L"package-type" });
+            }
+        };
+
+        bool isPrivate = false;
+        if (auto it = rootByKey.find(L"private"); it != rootByKey.end()) {
+            if (it->second->kind != JValKind::Boolean) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, 5,
+                    L"Schema (package.json): \"private\" must be a boolean (true or false)", 1,
+                    L"schema:package.json", L"package-type" });
+            } else {
+                isPrivate = (it->second->scalarValue == L"true");
+            }
+        }
+        if (auto it = rootByKey.find(L"name"); it != rootByKey.end()) {
+            if (it->second->kind != JValKind::String || it->second->scalarValue.empty()) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, 4,
+                    L"Schema (package.json): \"name\" must be a non-empty lowercase string", 1,
+                    L"schema:package.json", L"package-name" });
+            } else {
+                for (wchar_t ch : it->second->scalarValue) {
+                    if (ch >= L'A' && ch <= L'Z') {
+                        diagnostics.push_back({ it->second->valLine, it->second->valCol, it->second->scalarValue.size() + 2,
+                            L"Schema (package.json): \"name\" cannot contain uppercase letters", 1,
+                            L"schema:package.json", L"package-name-case" });
+                        break;
+                    }
+                    if (ch == L' ') {
+                        diagnostics.push_back({ it->second->valLine, it->second->valCol, it->second->scalarValue.size() + 2,
+                            L"Schema (package.json): \"name\" cannot contain whitespace", 1,
+                            L"schema:package.json", L"package-name-ws" });
+                        break;
+                    }
+                }
+            }
+        } else if (!isPrivate) {
+            diagnostics.push_back({ 0, 0, 1,
+                L"Schema (package.json): Missing recommended \"name\" field (or set \"private\": true)", 2,
+                L"schema:package.json", L"package-missing-name" });
+        }
+        if (auto it = rootByKey.find(L"version"); it != rootByKey.end()) {
+            if (it->second->kind != JValKind::String) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, 4,
+                    L"Schema (package.json): \"version\" must be a semver string", 1,
+                    L"schema:package.json", L"package-version" });
+            } else if (std::count(it->second->scalarValue.begin(), it->second->scalarValue.end(), L'.') < 2) {
+                diagnostics.push_back({ it->second->valLine, it->second->valCol, it->second->scalarValue.size() + 2,
+                    L"Schema (package.json): \"version\" should follow semver format (major.minor.patch)", 2,
+                    L"schema:package.json", L"package-semver" });
+            }
+        }
+        checkObjType(L"scripts");
+        checkObjType(L"dependencies");
+        checkObjType(L"devDependencies");
+        checkObjType(L"peerDependencies");
+        checkObjType(L"optionalDependencies");
+        checkObjType(L"engines");
+        checkArrType(L"keywords");
+        checkArrType(L"files");
+    }
+
+    bool isTsConfig = (fileNameLow == L"tsconfig.json" || fileNameLow == L"jsconfig.json" ||
+                       fileNameLow.rfind(L"tsconfig.", 0) == 0 ||
+                       schemaLow.find(L"tsconfig") != std::wstring::npos);
+    if (isTsConfig) {
+        static const std::unordered_set<std::wstring> kValidTsTopKeys = {
+            L"$schema", L"compilerOptions", L"files", L"include", L"exclude", L"extends",
+            L"references", L"watchOptions", L"typeAcquisition", L"buildOptions", L"ts-node"
+        };
+        for (const auto& f : rootFields) {
+            if (kValidTsTopKeys.find(f.key) == kValidTsTopKeys.end()) {
+                diagnostics.push_back({ f.line, f.keyCol, f.key.size() + 2,
+                    L"Schema (tsconfig.json): Unknown top-level property \"" + f.key + L"\"", 2,
+                    L"schema:tsconfig.json", L"tsconfig-unknown-key" });
+            }
+        }
+        if (auto it = rootByKey.find(L"compilerOptions"); it != rootByKey.end()) {
+            const auto* co = it->second;
+            if (co->kind != JValKind::Object) {
+                diagnostics.push_back({ co->valLine, co->valCol, 4,
+                    L"Schema (tsconfig.json): \"compilerOptions\" must be a JSON object", 1,
+                    L"schema:tsconfig.json", L"tsconfig-type" });
+            } else {
+                static const std::unordered_set<std::wstring> kBoolOpts = {
+                    L"strict", L"noemit", L"esmoduleinterop", L"skiplibcheck", L"allowjs", L"checkjs",
+                    L"declaration", L"declarationmap", L"sourcemap", L"isolatedmodules",
+                    L"forceconsistentcasinginfilenames", L"resolvejsonmodule", L"incremental",
+                    L"nounusedlocals", L"nounusedparameters", L"noimplicitany", L"strictnullchecks"
+                };
+                static const std::unordered_set<std::wstring> kValidTargets = {
+                    L"es3", L"es5", L"es6", L"es2015", L"es2016", L"es2017", L"es2018", L"es2019",
+                    L"es2020", L"es2021", L"es2022", L"es2023", L"es2024", L"esnext"
+                };
+                static const std::unordered_set<std::wstring> kValidModules = {
+                    L"none", L"commonjs", L"amd", L"umd", L"system", L"es6", L"es2015", L"es2020",
+                    L"es2022", L"esnext", L"node16", L"nodenext", L"preserve"
+                };
+                static const std::unordered_set<std::wstring> kValidJsx = {
+                    L"preserve", L"react", L"react-jsx", L"react-jsxdev", L"react-native"
+                };
+                for (const auto& opt : co->objectChildren) {
+                    std::wstring keyLow = ToLowerSV(opt.key);
+                    if (kBoolOpts.count(keyLow) > 0 && opt.kind != JValKind::Boolean && opt.kind != JValKind::Unknown) {
+                        diagnostics.push_back({ opt.valLine, opt.valCol, 5,
+                            L"Schema (tsconfig.json): \"compilerOptions." + opt.key + L"\" expects a boolean", 1,
+                            L"schema:tsconfig.json", L"tsconfig-bool" });
+                    } else if (keyLow == L"target" && opt.kind == JValKind::String) {
+                        if (kValidTargets.count(ToLowerSV(opt.scalarValue)) == 0) {
+                            diagnostics.push_back({ opt.valLine, opt.valCol, opt.scalarValue.size() + 2,
+                                L"Schema (tsconfig.json): Unrecognized compilerOptions.target \"" + opt.scalarValue + L"\"", 2,
+                                L"schema:tsconfig.json", L"tsconfig-target" });
+                        }
+                    } else if (keyLow == L"module" && opt.kind == JValKind::String) {
+                        if (kValidModules.count(ToLowerSV(opt.scalarValue)) == 0) {
+                            diagnostics.push_back({ opt.valLine, opt.valCol, opt.scalarValue.size() + 2,
+                                L"Schema (tsconfig.json): Unrecognized compilerOptions.module \"" + opt.scalarValue + L"\"", 2,
+                                L"schema:tsconfig.json", L"tsconfig-module" });
+                        }
+                    } else if (keyLow == L"jsx" && opt.kind == JValKind::String) {
+                        if (kValidJsx.count(ToLowerSV(opt.scalarValue)) == 0) {
+                            diagnostics.push_back({ opt.valLine, opt.valCol, opt.scalarValue.size() + 2,
+                                L"Schema (tsconfig.json): Invalid compilerOptions.jsx \"" + opt.scalarValue + L"\"", 1,
+                                L"schema:tsconfig.json", L"tsconfig-jsx" });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return diagnostics;
+}
+
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYamlSchema(const std::wstring& filePath, const Buffer& buffer) {
+    std::vector<lsp::Diagnostic> diagnostics;
+    if (buffer.GetLineCount() == 0) return diagnostics;
+
+    const auto& lines = buffer.GetLines();
+    std::wstring schemaRef;
+    for (size_t i = 0; i < (std::min<size_t>)(lines.size(), 12); ++i) {
+        size_t pos = lines[i].find(L"$schema=");
+        if (pos != std::wstring::npos && lines[i].find(L'#') < pos) {
+            schemaRef = TrimSV(lines[i].substr(pos + 8));
+            break;
+        }
+    }
+
+    struct YamlTopKey {
+        std::wstring key;
+        size_t line = 0;
+        std::wstring valueText;
+        JValKind inferredKind = JValKind::Unknown;
+    };
+    std::vector<YamlTopKey> topKeys;
+    std::unordered_map<std::wstring, YamlTopKey> topByKey;
+
+    for (size_t l = 0; l < lines.size(); ++l) {
+        const auto& ln = lines[l];
+        if (ln.empty() || ln[0] == L' ' || ln[0] == L'\t' || ln[0] == L'#') continue;
+        if (ln.rfind(L"---", 0) == 0 || ln.rfind(L"...", 0) == 0) continue;
+        size_t colon = ln.find(L':');
+        if (colon == std::wstring::npos) continue;
+        std::wstring key = TrimSV(ln.substr(0, colon));
+        if (key.empty()) continue;
+        if ((key.front() == L'"' && key.back() == L'"') || (key.front() == L'\'' && key.back() == L'\'')) {
+            if (key.size() >= 2) key = key.substr(1, key.size() - 2);
+        }
+        std::wstring val = TrimSV(ln.substr(colon + 1));
+        JValKind kind = JValKind::Unknown;
+        if (val.empty() || val[0] == L'#') {
+            if (l + 1 < lines.size() && (lines[l + 1].rfind(L"  -", 0) == 0 || lines[l + 1].rfind(L"\t-", 0) == 0 || lines[l + 1].rfind(L"- ", 0) == 0)) {
+                kind = JValKind::Array;
+            } else if (l + 1 < lines.size() && (lines[l + 1].rfind(L"  ", 0) == 0 || lines[l + 1].rfind(L"\t", 0) == 0)) {
+                kind = JValKind::Object;
+            }
+        } else if (val.front() == L'[') {
+            kind = JValKind::Array;
+        } else if (val.front() == L'{') {
+            kind = JValKind::Object;
+        } else if (val == L"true" || val == L"false") {
+            kind = JValKind::Boolean;
+        } else {
+            bool allDigits = !val.empty();
+            for (wchar_t ch : val) {
+                if (!iswdigit(ch) && ch != L'.' && ch != L'-') { allDigits = false; break; }
+            }
+            kind = allDigits ? JValKind::Number : JValKind::String;
+        }
+        YamlTopKey yk{ key, l, val, kind };
+        topByKey[key] = yk;
+        topKeys.push_back(std::move(yk));
+    }
+
+    if (!schemaRef.empty()) {
+        LocalSchemaSpec spec;
+        if (ReadLocalSchemaFileBounded(filePath, schemaRef, spec)) {
+            for (const auto& req : spec.requiredKeys) {
+                if (topByKey.find(req) == topByKey.end()) {
+                    diagnostics.push_back({ 0, 0, 1,
+                        L"YAML Schema: Missing required top-level key \"" + req + L"\" (from " + schemaRef + L")", 1,
+                        L"$schema", L"yaml-missing-required" });
+                }
+            }
+            for (const auto& tk : topKeys) {
+                auto it = spec.properties.find(tk.key);
+                if (it != spec.properties.end() && !it->second.expectedType.empty() && tk.inferredKind != JValKind::Unknown) {
+                    if (!JsonKindMatchesSchemaType(tk.inferredKind, it->second.expectedType)) {
+                        diagnostics.push_back({ tk.line, 0, tk.key.size(),
+                            L"YAML Schema: Key \"" + tk.key + L"\" must be of type \"" + it->second.expectedType + L"\"", 1,
+                            L"$schema", L"yaml-schema-type" });
+                    }
+                }
+            }
+        }
+    }
+
+    std::wstring pathLow = ToLowerSV(filePath);
+    std::replace(pathLow.begin(), pathLow.end(), L'\\', L'/');
+    std::wstring baseNameLow = ToLowerSV(std::filesystem::path(filePath).filename().wstring());
+    std::wstring schemaLow = ToLowerSV(schemaRef);
+
+    bool isGhWorkflow = (pathLow.find(L".github/workflows/") != std::wstring::npos) ||
+                        (schemaLow.find(L"github-workflow") != std::wstring::npos);
+    if (isGhWorkflow) {
+        static const std::unordered_set<std::wstring> kGhTopKeys = {
+            L"name", L"run-name", L"on", L"permissions", L"env", L"defaults", L"concurrency", L"jobs"
+        };
+        for (const auto& tk : topKeys) {
+            if (tk.key == L"true") {
+                diagnostics.push_back({ tk.line, 0, 4,
+                    L"YAML Schema (GitHub Workflow): Key \"true\" looks like unquoted YAML 1.1 boolean for \"on\"; wrap key in quotes or use \"on:\"", 2,
+                    L"schema:github-workflow", L"gh-on-true" });
+            } else if (kGhTopKeys.count(tk.key) == 0) {
+                diagnostics.push_back({ tk.line, 0, tk.key.size(),
+                    L"YAML Schema (GitHub Workflow): Unknown top-level key \"" + tk.key + L"\"", 2,
+                    L"schema:github-workflow", L"gh-unknown-key" });
+            }
+        }
+        if (topByKey.find(L"on") == topByKey.end() && topByKey.find(L"true") == topByKey.end()) {
+            diagnostics.push_back({ 0, 0, 1,
+                L"YAML Schema (GitHub Workflow): Missing required trigger key \"on:\"", 1,
+                L"schema:github-workflow", L"gh-missing-on" });
+        }
+        if (topByKey.find(L"jobs") == topByKey.end()) {
+            diagnostics.push_back({ 0, 0, 1,
+                L"YAML Schema (GitHub Workflow): Missing required key \"jobs:\"", 1,
+                L"schema:github-workflow", L"gh-missing-jobs" });
+        }
+    }
+
+    bool isDockerCompose = (baseNameLow.rfind(L"docker-compose", 0) == 0 ||
+                            baseNameLow == L"compose.yml" || baseNameLow == L"compose.yaml" ||
+                            schemaLow.find(L"compose-spec") != std::wstring::npos);
+    if (isDockerCompose) {
+        if (topByKey.find(L"services") == topByKey.end() && topByKey.find(L"include") == topByKey.end()) {
+            diagnostics.push_back({ 0, 0, 1,
+                L"YAML Schema (Docker Compose): Missing top-level \"services:\" mapping", 1,
+                L"schema:docker-compose", L"compose-missing-services" });
+        }
+        if (auto it = topByKey.find(L"version"); it != topByKey.end()) {
+            diagnostics.push_back({ it->second.line, 0, 7,
+                L"YAML Schema (Docker Compose): Top-level \"version:\" is obsolete in modern Compose v2 specs", 3,
+                L"schema:docker-compose", L"compose-obsolete-version" });
         }
     }
 

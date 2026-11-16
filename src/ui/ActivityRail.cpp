@@ -18,6 +18,8 @@ ActivityRail::ActivityRail() {
 
     // 3. Git icon (directly under Search)
     m_items.push_back({ RailTabId::Git,        L"Source Control (Ctrl+Shift+G)", {} });
+    // 4. Run and Debug icon
+    m_items.push_back({ RailTabId::Debug,      L"Run and Debug (Ctrl+Shift+D)", {} });
 
     // 4. File network icon directly under horizontal separation line (User prompt: tooltip "File network")
     m_items.push_back({ RailTabId::FileNetwork, L"File network",               {} });
@@ -291,6 +293,9 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                                   theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuShortcut.Get(),
                                   rrcBadge.rect, theme.brushTextWhite.Get());
                 }
+                break;
+            case RailTabId::Debug:
+                m_lucide.DrawDebug(pRT, item.bounds, iconBrush, 1.6f);
                 break;
             case RailTabId::Student:
                 m_lucide.DrawGraduationCap(pRT, item.bounds, iconBrush, 1.6f);

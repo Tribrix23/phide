@@ -63,6 +63,12 @@
 #include "phide/git/GitWorkflowEngine.hpp"
 #include "phide/server/LiveServer.hpp"
 #include "phide/db/SqlEngine.hpp"
+#include "phide/editor/EmmetEngine.hpp"
+#include "phide/ui/StructuredViewers.hpp"
+#include "phide/lsp/LspClient.hpp"
+#include "phide/plugin/PluginManager.hpp"
+#include "phide/dev/DapClient.hpp"
+#include "phide/dev/DevWorkflowEngines.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -395,6 +401,33 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 138) {
         goto run_test_138;
+    }
+    if (targetTest == 139) {
+        goto run_test_139;
+    }
+    if (targetTest == 140) {
+        goto run_test_140;
+    }
+    if (targetTest == 141) {
+        goto run_test_141;
+    }
+    if (targetTest == 142) {
+        goto run_test_142;
+    }
+    if (targetTest == 143) {
+        goto run_test_143;
+    }
+    if (targetTest == 144) {
+        goto run_test_144;
+    }
+    if (targetTest == 145) {
+        goto run_test_145;
+    }
+    if (targetTest == 146) {
+        goto run_test_146;
+    }
+    if (targetTest == 147) {
+        goto run_test_147;
     }
 
     if (targetTest == 66) {
@@ -4897,15 +4930,22 @@ run_test_29:
 
         auto* curTab = dbgTerm.GetActiveTab();
         assert(curTab != nullptr);
+        bool foundEvalPrompt = false;
         bool foundEvalResult = false;
+        bool foundFakeMock = false;
         for (const auto& l : curTab->lines) {
-            if (l.rawText.find(L"CleaveDB - Native Desktop") != std::wstring::npos) {
+            if (l.rawText.find(L"document.title") != std::wstring::npos) {
+                foundEvalPrompt = true;
+            }
+            if (l.rawText.find(L"[Debug Console] Start a debug session") != std::wstring::npos) {
                 foundEvalResult = true;
-                break;
+            }
+            if (l.rawText.find(L"CleaveDB - Native Desktop") != std::wstring::npos) {
+                foundFakeMock = true;
             }
         }
-        assert(foundEvalResult);
-        std::cout << "  Verified: Debug Console evaluation executes and returns formatted result in context" << std::endl;
+        assert(foundEvalPrompt && foundEvalResult && !foundFakeMock);
+        std::cout << "  Verified: Debug Console evaluates cleanly with zero hardcoded mock responses" << std::endl;
 
         // 5. Render Snapshots
         const UINT bmpW = 1050;
@@ -22731,6 +22771,758 @@ run_test_138:
         std::cout << "  Passed: All [TEST 138] Commit split-button dropdown menu checks passed!" << std::endl;
         if (targetTest == 138) {
             std::cout << "Target test 138 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_139:
+    // [TEST 139] Batch 1-2 Dev Features: Case Transforms, Emmet Wrap/Balance, Rulers/AutoSave Config, Folding, Regex $1 Replace
+    if (targetTest == 0 || targetTest == 139) {
+        std::cout << "\n[TEST 139] Testing Case Transforms, Emmet Wrap/Balance, Config Rulers, and Regex $1 Replace..." << std::endl;
+
+        // 1. Feature #4: Selection Case Transforms
+        {
+            using CT = phide::editor::CaseTransform;
+            assert(phide::editor::Buffer::TransformTextCase(L"myVarName", CT::Upper) == L"MYVARNAME");
+            assert(phide::editor::Buffer::TransformTextCase(L"MY_CONST", CT::Lower) == L"my_const");
+            assert(phide::editor::Buffer::TransformTextCase(L"hello_world test", CT::Title) == L"Hello_World Test");
+            assert(phide::editor::Buffer::TransformTextCase(L"  hello_world_test  ", CT::Camel) == L"  helloWorldTest  ");
+            assert(phide::editor::Buffer::TransformTextCase(L"userHTTPServer", CT::Snake) == L"user_http_server");
+            assert(phide::editor::Buffer::TransformTextCase(L"myVariableName", CT::Kebab) == L"my-variable-name");
+            assert(phide::editor::Buffer::TransformTextCase(L"first_one\n  secondOne", CT::Snake) == L"first_one\n  second_one");
+        }
+
+        // 2. Feature #6: Emmet Wrap with Abbreviation & Balance Inward/Outward
+        {
+            std::wstring wrappedHtml = phide::editor::EmmetEngine::WrapWithAbbreviation(
+                L"<span>item</span>", L"div.card", L"  ", L"", false);
+            assert(wrappedHtml.find(L"<div class=\"card\">") != std::wstring::npos);
+            assert(wrappedHtml.find(L"<span>item</span>") != std::wstring::npos);
+            assert(wrappedHtml.find(L"</div>") != std::wstring::npos);
+
+            std::wstring wrappedJsx = phide::editor::EmmetEngine::WrapWithAbbreviation(
+                L"<p>hi</p>", L"section.box", L"  ", L"", true);
+            assert(wrappedJsx.find(L"className=\"box\"") != std::wstring::npos);
+
+            const std::wstring htmlDoc = L"<div><p>hello</p></div>";
+            // Cursor inside "hello" (offset 9)
+            auto r1 = phide::editor::EmmetEngine::BalanceTagRange(htmlDoc, 9, 9, true);
+            assert(r1.valid && r1.startOffset < r1.endOffset);
+            std::wstring innerSlice = htmlDoc.substr(r1.startOffset, r1.endOffset - r1.startOffset);
+            assert(innerSlice.find(L"hello") != std::wstring::npos);
+
+            auto r2 = phide::editor::EmmetEngine::BalanceTagRange(htmlDoc, r1.startOffset, r1.endOffset, true);
+            assert(r2.valid && r2.startOffset <= r1.startOffset && r2.endOffset >= r1.endOffset);
+            assert((r2.endOffset - r2.startOffset) > (r1.endOffset - r1.startOffset));
+
+            auto rIn = phide::editor::EmmetEngine::BalanceTagRange(htmlDoc, r2.startOffset, r2.endOffset, false);
+            assert(rIn.valid && (rIn.endOffset - rIn.startOffset) < (r2.endOffset - r2.startOffset));
+        }
+
+        // 3. Features #8, #9, #11: Config Rulers & AutoSave / Save Hooks / FormatOnPaste
+        {
+            phide::app::AppConfig cfg139;
+            cfg139.editorRulers = L"120, 80, 120, 0, -5, 100";
+            auto rulers = cfg139.ParseEditorRulers();
+            assert(rulers.size() == 3);
+            assert(rulers[0] == 80 && rulers[1] == 100 && rulers[2] == 120);
+
+            cfg139.editorRulers = L"off";
+            assert(cfg139.ParseEditorRulers().empty());
+
+            cfg139.autoSave = L"onFocusChange";
+            cfg139.formatOnPaste = true;
+            cfg139.trimTrailingWhitespace = true;
+            cfg139.insertFinalNewline = true;
+            assert(cfg139.autoSave == L"onFocusChange" && cfg139.formatOnPaste);
+        }
+
+        // 4. Feature #12: Code Folding #region & Braces
+        {
+            phide::editor::OpenDocument fdoc;
+            fdoc.buffer.SetText(L"// #region Helpers\nvoid foo() {\n  int x = 1;\n}\n// #endregion\n");
+            size_t endLine = 0;
+            assert(phide::ui::EditorCanvas::GetFoldRangeForDoc(fdoc, 0, endLine));
+            assert(endLine == 4);
+            assert(phide::ui::EditorCanvas::GetFoldRangeForDoc(fdoc, 1, endLine));
+            assert(endLine == 3);
+        }
+
+        // 5. Feature #15: Regex Capture-Group Replace ($1, $2, $&, \$)
+        {
+            std::wstring line = L"item_42_alpha and item_99_beta";
+            bool changed = phide::editor::ReplaceInLine(
+                line, L"item_(\\d+)_(\\w+)", L"$2[$1]:$&", false, false, true, false);
+            assert(changed);
+            assert(line == L"alpha[42]:item_42_alpha and beta[99]:item_99_beta");
+
+            std::wstring price = L"cost=15";
+            assert(phide::editor::ReplaceInLine(price, L"cost=(\\d+)", L"\\$$1", false, false, true, false));
+            assert(price == L"$15");
+        }
+
+        std::cout << "  Passed: All [TEST 139] Batch 1-2 feature checks passed!" << std::endl;
+        if (targetTest == 139) {
+            std::cout << "Target test 139 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_140:
+    // [TEST 140] Batch 3 Dev Features: Tab Pinning, Detach Handoff, Hex/CSV/JSON/Log Structured Viewers
+    if (targetTest == 0 || targetTest == 140) {
+        std::cout << "\n[TEST 140] Testing Tab Pinning, Detach Handoff, and Structured Viewers (Hex/CSV/JSON/Log)..." << std::endl;
+
+        const std::filesystem::path tmpRoot =
+            std::filesystem::temp_directory_path() / L"phide_test_140_tmp";
+        std::error_code ec;
+        std::filesystem::remove_all(tmpRoot, ec);
+        std::filesystem::create_directories(tmpRoot, ec);
+
+        // 1. Feature #20: Tab Pinning, Protected CloseSavedTabs & ApplyDetachHandoffFile
+        {
+            auto pWin = std::make_unique<phide::app::Window>();
+            auto& grp = pWin->GetActiveGroup();
+            auto makeDoc = [](const std::wstring& name, bool dirty) {
+                phide::editor::OpenDocument d;
+                d.fileName = name;
+                d.filePath = L"C:\\fake\\" + name;
+                d.isDirty = dirty;
+                return d;
+            };
+            grp.docs.push_back(makeDoc(L"a.cpp", false));
+            grp.docs.push_back(makeDoc(L"b.cpp", true));
+            grp.docs.push_back(makeDoc(L"c.cpp", false));
+            grp.docs.push_back(makeDoc(L"d.cpp", false));
+            grp.activeDocIdx = 0;
+
+            // Pin c.cpp -> moves to front of strip
+            pWin->ToggleTabPin(0, 2);
+            assert(grp.docs.size() == 4);
+            assert(grp.docs[0].fileName == L"c.cpp" && grp.docs[0].isPinned);
+
+            // CloseSavedTabs protects pinned c.cpp (clean!) and dirty b.cpp, closes a.cpp & d.cpp
+            pWin->CloseSavedTabs(0);
+            assert(grp.docs.size() == 2);
+            assert(grp.docs[0].fileName == L"c.cpp" && grp.docs[0].isPinned);
+            assert(grp.docs[1].fileName == L"b.cpp" && grp.docs[1].isDirty);
+
+            // ApplyDetachHandoffFile restores dirty buffer & deletes handoff file immediately
+            std::filesystem::path handoffFile = tmpRoot / L"detach_handoff.tmp";
+            {
+                std::ofstream out(handoffFile, std::ios::binary);
+                std::string meta = "{\n"
+                    "  \"filePath\": \"\",\n"
+                    "  \"fileName\": \"DetachedNote.txt\",\n"
+                    "  \"viewType\": \"\",\n"
+                    "  \"isPinned\": true,\n"
+                    "  \"isDirty\": true,\n"
+                    "  \"cursorLine\": 1,\n"
+                    "  \"cursorCol\": 3,\n"
+                    "  \"scrollLine\": 0\n"
+                    "}\n";
+                out.write(meta.data(), static_cast<std::streamsize>(meta.size()));
+                char nul = '\0';
+                out.write(&nul, 1);
+                std::string body = "first line\nsecond line";
+                out.write(body.data(), static_cast<std::streamsize>(body.size()));
+            }
+            assert(pWin->ApplyDetachHandoffFile(handoffFile.wstring()));
+            assert(!std::filesystem::exists(handoffFile, ec));
+            auto* active = pWin->GetActiveDoc();
+            assert(active != nullptr);
+            assert(active->fileName == L"DetachedNote.txt");
+            assert(active->isPinned && active->isDirty);
+            auto detachedCur = active->buffer.GetCursor();
+            assert(detachedCur.line == 1 && detachedCur.col == 3);
+        }
+
+        // 2. Feature #21: Structured Viewers (Mode Detection, Bounded Hex, CSV Sort/Filter, JSON Tree, LogTail 256KB)
+        {
+            using Mode = phide::ui::StructuredViewMode;
+            using Renderer = phide::ui::StructuredViewRenderer;
+            assert(Renderer::DetectModeForExtension(L".csv") == Mode::CsvTable);
+            assert(Renderer::DetectModeForExtension(L".tsv") == Mode::CsvTable);
+            assert(Renderer::DetectModeForExtension(L".json") == Mode::JsonTree);
+            assert(Renderer::DetectModeForExtension(L".jsonc") == Mode::JsonTree);
+            assert(Renderer::DetectModeForExtension(L".log") == Mode::LogTail);
+            assert(Renderer::DetectModeForExtension(L".cpp") == Mode::None);
+
+            // Hex 32KB paged window over 40KB binary file
+            std::filesystem::path binPath = tmpRoot / L"sample.bin";
+            {
+                std::ofstream out(binPath, std::ios::binary);
+                std::vector<uint8_t> chunk(40960, 0xAB);
+                chunk[0] = 0x4D;
+                chunk[1] = 0x5A;
+                chunk[35200] = 0xCA;
+                chunk[35201] = 0xFE;
+                out.write(reinterpret_cast<const char*>(chunk.data()), static_cast<std::streamsize>(chunk.size()));
+            }
+            phide::ui::StructuredViewerState hexSt;
+            hexSt.mode = Mode::HexBinary;
+            assert(hexSt.LoadHexPage(binPath.wstring(), 0));
+            assert(hexSt.hexTotalSize == 40960);
+            assert(hexSt.hexWindowBytes.size() == phide::ui::StructuredViewerState::kHexPageBytes);
+            assert(hexSt.hexWindowBytes[0] == 0x4D && hexSt.hexWindowBytes[1] == 0x5A);
+            // Scrolling past 32KB loads shifted window while staying <= 32KB
+            assert(hexSt.EnsureHexRowLoaded(2200));
+            assert(hexSt.hexWindowBytes.size() <= phide::ui::StructuredViewerState::kHexPageBytes);
+            assert(hexSt.hexWindowOffset <= 35200 && (hexSt.hexWindowOffset + hexSt.hexWindowBytes.size()) > 35201);
+            assert(hexSt.hexWindowBytes[35200 - hexSt.hexWindowOffset] == 0xCA);
+            assert(hexSt.SearchHexPattern(L"CA FE"));
+            assert(hexSt.JumpToHexOffsetInput(L"0x8980"));
+
+            // CSV Table parse, sort, and filter
+            phide::ui::StructuredViewerState csvSt;
+            csvSt.mode = Mode::CsvTable;
+            assert(csvSt.ParseCsvText(L"name,score\nAlice,20\nBob,100\nCharlie,3\n"));
+            assert(csvSt.csvHeaders.size() == 2 && csvSt.csvRows.size() == 3);
+            csvSt.SortCsvColumn(1); // numeric ascending: 3, 20, 100
+            assert(csvSt.csvRows[csvSt.csvViewIndices[0]][0] == L"Charlie");
+            assert(csvSt.csvRows[csvSt.csvViewIndices[2]][0] == L"Bob");
+            csvSt.filterText = L"bob";
+            csvSt.RebuildCsvFilter();
+            assert(csvSt.csvViewIndices.size() == 1);
+            assert(csvSt.csvRows[csvSt.csvViewIndices[0]][0] == L"Bob");
+
+            // JSON Tree flat arena expand/collapse
+            phide::ui::StructuredViewerState jsonSt;
+            jsonSt.mode = Mode::JsonTree;
+            assert(jsonSt.ParseJsonText(L"{\"app\":{\"name\":\"phide\",\"mods\":[1,2]}}"));
+            assert(!jsonSt.jsonParseError && !jsonSt.jsonNodes.empty());
+            size_t initialVis = jsonSt.jsonVisibleIndices.size();
+            jsonSt.SetJsonExpandAll(true);
+            assert(jsonSt.jsonVisibleIndices.size() >= initialVis);
+            jsonSt.SetJsonExpandAll(false);
+            assert(jsonSt.jsonVisibleIndices.size() <= initialVis);
+
+            // Log Tail strictly <= 256KB tail window over 300KB log file + regex filter
+            std::filesystem::path logPath = tmpRoot / L"service.log";
+            {
+                std::ofstream out(logPath, std::ios::binary);
+                std::string padLine = "2026-11-15 INFO routine heartbeat message for buffer fill check\n";
+                for (int i = 0; i < 4800; ++i) out.write(padLine.data(), static_cast<std::streamsize>(padLine.size()));
+                std::string tailErr = "2026-11-15 ERROR code=504 upstream timeout\n";
+                out.write(tailErr.data(), static_cast<std::streamsize>(tailErr.size()));
+            }
+            phide::ui::StructuredViewerState logSt;
+            logSt.mode = Mode::LogTail;
+            assert(logSt.ReloadLogTailFromFile(logPath.wstring(), true));
+            assert(logSt.logTailStartOffset > 0);
+            assert(!logSt.logTailLines.empty());
+            logSt.logRegex = true;
+            logSt.filterText = L"ERROR code=\\d+";
+            logSt.RebuildLogFilter();
+            assert(logSt.logFilteredIndices.size() == 1);
+        }
+
+        std::filesystem::remove_all(tmpRoot, ec);
+        std::cout << "  Passed: All [TEST 140] Batch 3 Tab Pinning/Detach & Structured Viewer checks passed!" << std::endl;
+        if (targetTest == 140) {
+            std::cout << "Target test 140 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_141:
+    // [TEST 141] Batch 4a Dev Features: Advanced LSP (SemanticTokens, CodeLens, FoldingRange, TypeHierarchy)
+    if (targetTest == 0 || targetTest == 141) {
+        std::cout << "\n[TEST 141] Testing Advanced LSP parsers (SemanticTokens, CodeLens, Folding, TypeHierarchy)..." << std::endl;
+
+        using Lsp = phide::lsp::LspClient;
+
+        // 1. Semantic Token legend mapping (0=none,1=Type,2=Keyword,3=String,4=Number,5=Comment,6=Function)
+        assert(Lsp::MapSemanticTokenLegendName("class") == 1);
+        assert(Lsp::MapSemanticTokenLegendName("interface") == 1);
+        assert(Lsp::MapSemanticTokenLegendName("keyword") == 2);
+        assert(Lsp::MapSemanticTokenLegendName("string") == 3);
+        assert(Lsp::MapSemanticTokenLegendName("number") == 4);
+        assert(Lsp::MapSemanticTokenLegendName("comment") == 5);
+        assert(Lsp::MapSemanticTokenLegendName("function") == 6);
+        assert(Lsp::MapSemanticTokenLegendName("unmapped_custom") == 0);
+
+        // 2. Semantic Tokens delta decoding + hard token cap
+        {
+            const std::vector<std::string> legend = { "class", "keyword", "function" };
+            const std::string semJson =
+                R"({"jsonrpc":"2.0","id":1,"result":{"data":[0,4,6,0,0, 0,7,2,1,0, 3,2,5,2,1]}})";
+            std::vector<phide::lsp::SemanticToken> toks;
+            assert(Lsp::ParseSemanticTokensResponse(semJson, legend, toks, 4096));
+            assert(toks.size() == 3);
+            assert(toks[0].line == 0 && toks[0].startCol == 4 && toks[0].length == 6 && toks[0].tokenType == 1);
+            assert(toks[1].line == 0 && toks[1].startCol == 11 && toks[1].length == 2 && toks[1].tokenType == 2);
+            assert(toks[2].line == 3 && toks[2].startCol == 2 && toks[2].length == 5 && toks[2].tokenType == 6);
+
+            std::vector<phide::lsp::SemanticToken> capped;
+            assert(Lsp::ParseSemanticTokensResponse(semJson, legend, capped, 2));
+            assert(capped.size() == 2);
+        }
+
+        // 3. CodeLens response
+        {
+            const std::string lensJson =
+                R"({"jsonrpc":"2.0","id":2,"result":[{"range":{"start":{"line":4,"character":2},"end":{"line":4,"character":10}},"command":{"title":"4 references","command":"editor.action.showReferences"}}]})";
+            std::vector<phide::lsp::LspCodeLens> lenses;
+            assert(Lsp::ParseCodeLensResponse(lensJson, lenses, 128));
+            assert(lenses.size() == 1);
+            assert(lenses[0].startLine == 4 && lenses[0].title == L"4 references");
+            assert(lenses[0].command == L"editor.action.showReferences");
+        }
+
+        // 4. FoldingRange response
+        {
+            const std::string foldJson =
+                R"({"jsonrpc":"2.0","id":3,"result":[{"startLine":5,"endLine":18,"kind":"region"},{"startLine":20,"endLine":20}]})";
+            std::vector<phide::lsp::LspFoldRange> folds;
+            assert(Lsp::ParseFoldingRangesResponse(foldJson, folds, 2048));
+            assert(folds.size() == 1);
+            assert(folds[0].startLine == 5 && folds[0].endLine == 18 && folds[0].kind == L"region");
+        }
+
+        // 5. TypeHierarchy response
+        {
+            const std::string thJson =
+                R"({"jsonrpc":"2.0","id":4,"result":[{"name":"BasePanel","detail":"phide::ui","kind":5,"uri":"file:///C:/src/BasePanel.hpp","range":{"start":{"line":10,"character":0},"end":{"line":40,"character":1}},"selectionRange":{"start":{"line":10,"character":6},"end":{"line":10,"character":15}}}]})";
+            std::vector<phide::lsp::TypeHierarchyItem> items;
+            assert(Lsp::ParseTypeHierarchyResponse(thJson, items));
+            assert(items.size() == 1);
+            assert(items[0].name == L"BasePanel" && items[0].kind == 5);
+            assert(items[0].line == 10 && items[0].col == 6);
+            assert(!items[0].rawItemJson.empty());
+        }
+
+        std::cout << "  Passed: All [TEST 141] Advanced LSP protocol parser checks passed!" << std::endl;
+        if (targetTest == 141) {
+            std::cout << "Target test 141 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_142:
+    // [TEST 142] Batch 4b Dev Features: tsc Parser, Problems Grouping, SARIF, JSON/YAML Schemas, Snippets, Plugin Host
+    if (targetTest == 0 || targetTest == 142) {
+        std::cout << "\n[TEST 142] Testing Problems/tsc/Schemas/SARIF, VS Code Snippets, and Plugin Host..." << std::endl;
+
+        const std::filesystem::path tmpRoot =
+            std::filesystem::temp_directory_path() / L"phide_test_142_tmp";
+        std::error_code ec;
+        std::filesystem::remove_all(tmpRoot, ec);
+        std::filesystem::create_directories(tmpRoot, ec);
+
+        // 1. Feature #26: ParseTscOutput, BuildDisplayRows (grouping + collapse), GenerateSarifJson
+        {
+            const std::wstring tscOut =
+                L"src/app.ts(14,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+                L"src/util.ts(3,1): warning TS6133: 'unused' is declared but its value is never read.\n";
+            auto problems = phide::editor::ExternalLinterEngine::ParseTscOutput(tscOut, L"C:\\proj");
+            assert(problems.size() == 2);
+            assert(problems[0].source == L"tsc" && problems[0].code == L"TS2322");
+            assert(problems[0].severity == 1 && problems[0].line == 13 && problems[0].col == 6);
+            assert(problems[1].severity == 2 && problems[1].code == L"TS6133");
+
+            std::vector<std::wstring> collapsed = { problems[1].filePath };
+            auto rows = phide::editor::ExternalLinterEngine::BuildDisplayRows(problems, true, collapsed);
+            // Expected: header(app.ts), child(0), header(util.ts, collapsed -> no child) => 3 rows
+            assert(rows.size() == 3);
+            assert(rows[0].isFileHeader && rows[0].fileErrorCount == 1 && !rows[0].collapsed);
+            assert(!rows[1].isFileHeader && rows[1].problemIndex == 0);
+            assert(rows[2].isFileHeader && rows[2].fileWarningCount == 1 && rows[2].collapsed);
+
+            std::string sarif = phide::editor::ExternalLinterEngine::GenerateSarifJson(problems, L"C:\\proj");
+            assert(sarif.find("\"2.1.0\"") != std::string::npos);
+            assert(sarif.find("TS2322") != std::string::npos);
+            assert(sarif.find("\"results\"") != std::string::npos);
+        }
+
+        // 2. Feature #26: Local JSON & YAML Schema Validation via public Validate() (no network)
+        {
+            // package.json invalid version
+            phide::editor::Buffer pkgBuf;
+            pkgBuf.SetText(L"{\n  \"name\": \"My Invalid Package Name\",\n  \"version\": \"badver\"\n}\n");
+            auto pkgDiags = phide::editor::SyntaxValidator::Validate(
+                (tmpRoot / L"package.json").wstring(), pkgBuf);
+            assert(!pkgDiags.empty());
+
+            // Valid package.json
+            pkgBuf.SetText(L"{\n  \"name\": \"valid-pkg\",\n  \"version\": \"1.2.3\"\n}\n");
+            auto okPkgDiags = phide::editor::SyntaxValidator::Validate(
+                (tmpRoot / L"package.json").wstring(), pkgBuf);
+            assert(okPkgDiags.empty());
+
+            // tsconfig.json invalid compilerOptions bool + unrecognized target + unknown top key
+            phide::editor::Buffer tsBuf;
+            tsBuf.SetText(L"{\n  \"bogusTopKey\": 1,\n  \"compilerOptions\": {\n    \"strict\": \"yes\",\n    \"target\": \"ES1999\"\n  }\n}\n");
+            auto tsDiags = phide::editor::SyntaxValidator::Validate(
+                (tmpRoot / L"tsconfig.json").wstring(), tsBuf);
+            assert(tsDiags.size() >= 3);
+
+            // Local $schema file referenced from JSON document
+            std::filesystem::path schemaPath = tmpRoot / L"local.schema.json";
+            {
+                std::ofstream sOut(schemaPath);
+                sOut << R"({"type":"object","required":["port"]})";
+            }
+            phide::editor::Buffer customBuf;
+            customBuf.SetText(L"{\n  \"$schema\": \"./local.schema.json\",\n  \"host\": \"127.0.0.1\"\n}\n");
+            auto customDiags = phide::editor::SyntaxValidator::Validate(
+                (tmpRoot / L"config.json").wstring(), customBuf);
+            assert(!customDiags.empty());
+
+            // GitHub Actions workflow YAML missing 'on' / 'jobs'
+            std::filesystem::path wfDir = tmpRoot / L".github" / L"workflows";
+            std::filesystem::create_directories(wfDir, ec);
+            phide::editor::Buffer ymlBuf;
+            ymlBuf.SetText(L"name: CI\nrun-name: Test\n");
+            auto ymlDiags = phide::editor::SyntaxValidator::Validate(
+                (wfDir / L"ci.yml").wstring(), ymlBuf);
+            assert(!ymlDiags.empty());
+        }
+
+        // 3. Feature #27: Snippets ($CURRENT_YEAR, $TM_FILENAME, choices ${1|a,b,c|}, $$, .vscode/*.code-snippets)
+        {
+            phide::editor::SnippetManager sm;
+            const std::wstring jsonc = L"{\n"
+                L"  // Line comment\n"
+                L"  \"Banner\": {\n"
+                L"    \"prefix\": [\"hdr\", \"ban\"],\n"
+                L"    \"scope\": \"typescript\",\n"
+                L"    \"body\": [\"// $CURRENT_YEAR $TM_FILENAME ${1|alpha,beta,gamma|} $$var\"]\n"
+                L"  }\n"
+                L"}\n";
+            size_t parsed = sm.ParseSnippetsJsonContent(jsonc, L"");
+            assert(parsed >= 2);
+            const auto* snip = sm.FindSnippetByPrefix(L"ban", L"ts");
+            assert(snip != nullptr);
+            phide::editor::Buffer sbuf;
+            sbuf.SetText(L"ban");
+            sbuf.SetCursor(0, 3);
+            assert(sm.ExpandSnippet(*snip, sbuf, 3, L"C:\\proj\\index.ts"));
+            std::wstring expanded = sbuf.GetLine(0);
+            assert(expanded.find(L"index.ts") != std::wstring::npos);
+            assert(expanded.find(L"alpha") != std::wstring::npos);
+            assert(expanded.find(L"$var") != std::wstring::npos);
+
+            std::filesystem::path vscDir = tmpRoot / L".vscode";
+            std::filesystem::create_directories(vscDir, ec);
+            {
+                std::ofstream cOut(vscDir / L"team.code-snippets");
+                cOut << "/* Team */\n{\"LogMsg\":{\"prefix\":\"tlog\",\"scope\":\"cpp\",\"body\":[\"std::cout << $1;\"]}}";
+            }
+            assert(sm.ImportVscodeWorkspaceSnippets(tmpRoot.wstring()) >= 1);
+            assert(sm.FindSnippetByPrefix(L"tlog", L"cpp") != nullptr);
+        }
+
+        // 4. Feature #27: PluginManager manifest LSP servers, enable toggle & CopyHostCallbacks
+        {
+            auto& pm = phide::plugin::PluginManager::Instance();
+            const std::wstring manifestJson = L"{\n"
+                L"  \"id\": \"test.verify.ext.142\",\n"
+                L"  \"name\": \"VerifyExt\",\n"
+                L"  \"version\": \"1.0.0\",\n"
+                L"  \"commands\": [{\"id\": \"verify.cmd\", \"title\": \"Verify Cmd\"}],\n"
+                L"  \"languageServers\": [{\"languageId\": \"zig\", \"command\": \"zls --stdio\"}]\n"
+                L"}\n";
+            assert(pm.LoadPluginFromJsonString(manifestJson, tmpRoot.wstring()));
+            assert(pm.IsPluginEnabled(L"test.verify.ext.142"));
+
+            auto hasZigSrv = [&]() {
+                for (const auto& s : pm.GetLanguageServers()) {
+                    if (s.sourcePluginId == L"test.verify.ext.142" && s.languageId == L"zig") return true;
+                }
+                return false;
+            };
+            assert(hasZigSrv());
+
+            assert(pm.SetPluginEnabled(L"test.verify.ext.142", false));
+            assert(!pm.IsPluginEnabled(L"test.verify.ext.142"));
+            assert(!hasZigSrv());
+
+            assert(pm.SetPluginEnabled(L"test.verify.ext.142", true));
+            assert(hasZigSrv());
+            pm.SetPluginEnabled(L"test.verify.ext.142", false);
+            (void)pm.CopyHostCallbacks();
+        }
+
+        std::filesystem::remove_all(tmpRoot, ec);
+        std::cout << "  Passed: All [TEST 142] Batch 4b Problems/Schemas/SARIF, Snippets & Plugin checks passed!" << std::endl;
+        if (targetTest == 142) {
+            std::cout << "Target test 142 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_143:
+    // [TEST 143] Section 4 #28-29: Multi-Backend DAP Adapters (GDB/MI, Node CDP, PHP DBGp, External DAP & Breakpoints)
+    if (targetTest == 0 || targetTest == 143) {
+        std::cout << "\n[TEST 143] Testing Multi-Backend DAP adapters, stack/var parsers & breakpoint evaluation..." << std::endl;
+
+        using namespace phide::dev;
+        assert(DapClient::DetectAdapterForFile(L"main.py") == DapAdapterType::Python);
+        assert(DapClient::DetectAdapterForFile(L"server.mjs") == DapAdapterType::NodeInspect);
+        assert(DapClient::DetectAdapterForFile(L"app.cpp") == DapAdapterType::GdbMi);
+        assert(DapClient::DetectAdapterForFile(L"index.php") == DapAdapterType::PhpXdebug);
+        assert(DapClient::AdapterFromTypeString(L"external_dap") == DapAdapterType::ExternalDap);
+
+        // Conditional + hitCount + logpoint evaluation
+        {
+            DapBreakpoint bp;
+            bp.hitCondition = 2;
+            bp.condition = L"x > 5";
+            std::wstring logOut;
+            assert(!DapClient::ShouldPauseAtBreakpoint(bp, [](const std::wstring&) { return L"10"; }, logOut));
+            assert(bp.hitCount == 1);
+            assert(DapClient::ShouldPauseAtBreakpoint(bp, [](const std::wstring&) { return L"10"; }, logOut));
+            assert(bp.hitCount == 2);
+
+            DapBreakpoint lp;
+            lp.logMessage = L"count={x}";
+            assert(!DapClient::ShouldPauseAtBreakpoint(lp, [](const std::wstring&) { return L"42"; }, logOut));
+            assert(logOut == L"count=42");
+        }
+
+        // GDB/MI stack & locals
+        {
+            std::vector<DapStackFrame> frames;
+            DapClient::ParseGdbMiFrames(
+                "stack=[frame={level=\"0\",func=\"compute\",file=\"main.cpp\",fullname=\"C:/src/main.cpp\",line=\"18\"},"
+                "frame={level=\"1\",func=\"main\",file=\"main.cpp\",fullname=\"C:/src/main.cpp\",line=\"42\"}]",
+                frames);
+            assert(frames.size() == 2);
+            assert(frames[0].name == L"compute" && frames[0].line1Based == 18);
+            assert(frames[1].name == L"main" && frames[1].line1Based == 42);
+
+            std::vector<DapVariable> vars;
+            DapClient::ParseGdbMiVariables(
+                "locals=[{name=\"total\",value=\"99\",type=\"int\"},{name=\"items\",value=\"{1, 2}\",type=\"std::vector\"}]",
+                vars);
+            assert(vars.size() == 2);
+            assert(vars[0].name == L"total" && vars[0].value == L"99");
+        }
+
+        // PHP DBGp stack XML, context_get locals & base64 eval result
+        {
+            std::vector<DapStackFrame> frames;
+            DapClient::ParsePhpDbgpStack(
+                "<response command=\"stack_get\"><stack level=\"0\" filename=\"file:///C:/app/index.php\" lineno=\"27\" where=\"handleReq\"/></response>",
+                L"C:/app/index.php", frames);
+            assert(frames.size() == 1 && frames[0].name == L"handleReq" && frames[0].line1Based == 27);
+
+            std::vector<DapVariable> vars;
+            DapClient::ParsePhpDbgpContextVars(
+                "<response command=\"context_get\"><property name=\"$user\" fullname=\"$user\" type=\"string\" encoding=\"base64\"><![CDATA[QWxpY2U=]]></property></response>",
+                vars);
+            assert(vars.size() == 1 && vars[0].name == L"$user" && vars[0].value == L"Alice");
+
+            std::wstring evalVal = DapClient::DecodePhpDbgpEvalResult(
+                "<response command=\"eval\"><property type=\"string\" encoding=\"base64\"><![CDATA[T0s=]]></property></response>");
+            assert(evalVal == L"OK");
+        }
+
+        // Node CDP multi-frame callStack + scope property parsing
+        {
+            std::vector<DapStackFrame> frames;
+            std::vector<std::string> callIds, scopeIds;
+            std::vector<std::pair<std::string, std::wstring>> scripts = { {"1", L"C:/proj/app.js"} };
+            const std::string cdpPaused =
+                "{\"method\":\"Debugger.paused\",\"params\":{\"callFrames\":["
+                "{\"callFrameId\":\"cf0\",\"functionName\":\"innerFn\",\"location\":{\"scriptId\":\"1\",\"lineNumber\":9,\"columnNumber\":4},"
+                "\"scopeChain\":[{\"type\":\"local\",\"object\":{\"objectId\":\"obj0\"}}]},"
+                "{\"callFrameId\":\"cf1\",\"functionName\":\"outerFn\",\"location\":{\"scriptId\":\"1\",\"lineNumber\":20,\"columnNumber\":0},"
+                "\"scopeChain\":[{\"type\":\"local\",\"object\":{\"objectId\":\"obj1\"}}]}]}}";
+            DapClient::ParseNodeCdpFrames(cdpPaused, L"C:/proj/app.js", scripts, frames, callIds, scopeIds);
+            assert(frames.size() == 2 && frames[0].name == L"innerFn" && frames[0].line1Based == 10);
+            assert(frames[1].name == L"outerFn" && frames[1].line1Based == 21);
+            assert(callIds.size() == 2 && scopeIds.size() == 2 && scopeIds[0] == "obj0");
+
+            std::vector<DapVariable> nodeVars;
+            int nextRef = 1;
+            DapClient::ParseNodeCdpProperties(
+                "{\"result\":{\"result\":[{\"name\":\"port\",\"value\":{\"type\":\"number\",\"description\":\"3000\"}}]}}",
+                nodeVars,
+                [&](const std::string&) { return nextRef++; });
+            assert(nodeVars.size() == 1 && nodeVars[0].name == L"port" && nodeVars[0].value == L"3000");
+        }
+
+        std::cout << "  Passed: All [TEST 143] DAP adapter & breakpoint checks passed!" << std::endl;
+        if (targetTest == 143) {
+            std::cout << "Target test 143 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_144:
+    // [TEST 144] Section 4 #30-31: Test Explorer Expected-vs-Actual Diff & LCOV/XML Coverage Parsing
+    if (targetTest == 0 || targetTest == 144) {
+        std::cout << "\n[TEST 144] Testing Test Explorer Expected/Actual diff & LCOV/Cobertura coverage parsers..." << std::endl;
+
+        using namespace phide::dev;
+        std::wstring expVal, actVal;
+        TestExplorerEngine::ExtractExpectedActualDiff(
+            L"AssertionError: Expected: \"hello\"\nReceived: \"world\"", expVal, actVal);
+        assert(expVal == L"\"hello\"" && actVal == L"\"world\"");
+
+        std::vector<TestItem> items;
+        auto summary = TestExplorerEngine::ParseTestOutput(
+            TestFramework::Pytest,
+            L"tests/test_math.py::test_add PASSED [ 50%]\ntests/test_math.py::test_sub FAILED [100%]\n",
+            items, 1);
+        assert(summary.passed == 1 && summary.failed == 1 && items.size() == 2);
+
+        const std::string lcov =
+            "SF:src/core/calc.cpp\n"
+            "DA:10,4\n"
+            "DA:11,0\n"
+            "DA:12,1\n"
+            "LF:3\n"
+            "LH:2\n"
+            "end_of_record\n";
+        auto lcovCov = CoverageReportEngine::ParseLcovContent(lcov, L"C:\\repo");
+        assert(lcovCov.loaded && lcovCov.totalInstrumented == 3 && lcovCov.totalCovered == 2);
+        const auto* fCov = CoverageReportEngine::FindCoverageForFile(lcovCov, L"C:\\repo\\src\\core\\calc.cpp");
+        assert(fCov != nullptr && fCov->lineHits.at(9) == 4 && fCov->lineHits.at(10) == 0);
+
+        const std::string cobXml =
+            "<coverage><packages><package><classes>"
+            "<class filename=\"src/api.py\"><lines>"
+            "<line number=\"4\" hits=\"5\"/><line number=\"5\" hits=\"0\"/>"
+            "</lines></class></classes></package></packages></coverage>";
+        auto xmlCov = CoverageReportEngine::ParseXmlCoverageContent(cobXml, L"C:\\repo");
+        assert(xmlCov.loaded && xmlCov.totalInstrumented == 2 && xmlCov.totalCovered == 1);
+
+        std::cout << "  Passed: All [TEST 144] Test Explorer diff & Coverage checks passed!" << std::endl;
+        if (targetTest == 144) {
+            std::cout << "Target test 144 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_145:
+    // [TEST 145] Section 4 #32-33: Task Runner dependsOn Order / Background Flag & Notebook Base64 PNG Bounds
+    if (targetTest == 0 || targetTest == 145) {
+        std::cout << "\n[TEST 145] Testing Task Runner topological dependsOn, isBackground & Notebook PNG decode bounds..." << std::endl;
+
+        using namespace phide::dev;
+        const std::wstring tasksJson = L"{\n"
+            L"  \"version\": \"2.0.0\",\n"
+            L"  \"tasks\": [\n"
+            L"    { \"label\": \"clean\", \"type\": \"shell\", \"command\": \"echo clean\" },\n"
+            L"    { \"label\": \"build\", \"type\": \"shell\", \"command\": \"echo build\", \"dependsOn\": [\"clean\"], \"isBackground\": true }\n"
+            L"  ]\n"
+            L"}\n";
+        auto tasks = TaskRunnerEngine::ParseVscodeTasksJson(tasksJson, L"C:\\repo");
+        assert(tasks.size() == 2);
+        assert(!tasks[0].isBackground && tasks[1].isBackground);
+        auto order = TaskRunnerEngine::ResolveExecutionOrder(tasks, L"build");
+        assert(order.size() == 2 && order[0].label == L"clean" && order[1].label == L"build");
+
+        // Valid tiny 1x1 PNG base64 + oversize cap check
+        std::vector<BYTE> pngBytes;
+        const std::string valid1x1PngB64 =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        assert(phide::editor::DecodeBase64PngBounded(valid1x1PngB64, pngBytes));
+        assert(pngBytes.size() > 8 && pngBytes[0] == 0x89 && pngBytes[1] == 'P' && pngBytes[2] == 'N' && pngBytes[3] == 'G');
+
+        std::string hugeB64(3 * 1024 * 1024, 'A');
+        assert(!phide::editor::DecodeBase64PngBounded(hugeB64, pngBytes));
+
+        std::cout << "  Passed: All [TEST 145] Task Runner & Notebook PNG checks passed!" << std::endl;
+        if (targetTest == 145) {
+            std::cout << "Target test 145 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_146:
+    // [TEST 146] Section 5 #35-39: Partial Range Staging Patch, Inline Unified Diff Rows & Merge Conflict Parser
+    if (targetTest == 0 || targetTest == 146) {
+        std::cout << "\n[TEST 146] Testing Git range-staging patch, inline unified diff rows & merge conflicts..." << std::endl;
+
+        using namespace phide::git;
+        phide::editor::Buffer origBuf, workBuf;
+        origBuf.SetText(L"line1\nline2\nline3\n");
+        workBuf.SetText(L"line1\naddedA\naddedB\nline2\nline3\n");
+
+        GitWorkflowEngine::DiffHunkPatchSpec spec;
+        spec.leftStart = 1;
+        spec.leftCount = 0;
+        spec.rightStart = 1;
+        spec.rightCount = 2;
+
+        std::string partialPatch = GitWorkflowEngine::BuildUnifiedSelectedRangePatch(
+            L"src\\app.cpp", origBuf, workBuf, { spec }, 1, 1, false);
+        assert(partialPatch.find("diff --git a/src/app.cpp b/src/app.cpp") != std::string::npos);
+        assert(partialPatch.find("+addedA") != std::string::npos);
+        assert(partialPatch.find("+addedB") == std::string::npos);
+
+        auto rows = GitWorkflowEngine::BuildInlineUnifiedDiffRows(origBuf, workBuf, { spec }, 100);
+        assert(rows.size() == 5);
+        assert(rows[0].kind == GitWorkflowEngine::InlineDiffRow::Kind::Context);
+        assert(rows[1].kind == GitWorkflowEngine::InlineDiffRow::Kind::Added && rows[1].text == L"addedA");
+        assert(rows[2].kind == GitWorkflowEngine::InlineDiffRow::Kind::Added && rows[2].text == L"addedB");
+
+        phide::editor::Buffer mergeBuf;
+        mergeBuf.SetText(L"top\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feat\nbottom\n");
+        auto conflicts = GitWorkflowEngine::ParseMergeConflicts(mergeBuf);
+        assert(conflicts.size() == 1 && conflicts[0].startLine == 1 && conflicts[0].endLine == 5);
+
+        std::cout << "  Passed: All [TEST 146] Diff/Stage-Range/Merge checks passed!" << std::endl;
+        if (targetTest == 146) {
+            std::cout << "Target test 146 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_147:
+    // [TEST 147] Section 5 #40: Follow History, Worktrees, Submodules & Interactive Rebase Sequence
+    if (targetTest == 0 || targetTest == 147) {
+        std::cout << "\n[TEST 147] Testing Git --follow history, worktree porcelain, submodule status & rebase -i sequence..." << std::endl;
+
+        using namespace phide::git;
+        const std::wstring logOut =
+            L"a1b2c3d\x1f" L"2 hours ago\x1f" L"Alice\x1f" L"feat: rename file\x1f" L"a1b2c3d4e5f6\n"
+            L"9f8e7d6\x1f" L"1 day ago\x1f" L"Bob\x1f" L"fix: initial logic\x1f" L"9f8e7d6c5b4a\n";
+        auto hist = GitWorkflowEngine::ParseFollowHistoryLog(logOut, 100);
+        assert(hist.size() == 2);
+        assert(hist[0].shortHash == L"a1b2c3d" && hist[0].author == L"Alice" && hist[0].fullHash == L"a1b2c3d4e5f6");
+        assert(hist[1].shortHash == L"9f8e7d6" && hist[1].message == L"fix: initial logic");
+
+        const std::wstring wtPorcelain =
+            L"worktree C:/repo/main\n"
+            L"HEAD 1234567890abcdef\n"
+            L"branch refs/heads/main\n\n"
+            L"worktree C:/repo/hotfix\n"
+            L"HEAD abcdef1234567890\n"
+            L"detached\n"
+            L"locked\n";
+        auto wts = GitWorkflowEngine::ParseWorktreeListPorcelain(wtPorcelain);
+        assert(wts.size() == 2);
+        assert(wts[0].branch == L"main" && !wts[0].isDetached && !wts[0].isLocked);
+        assert(wts[1].path == L"C:/repo/hotfix" && wts[1].isDetached && wts[1].isLocked);
+
+        const std::wstring subOut =
+            L" abc123456789 vendor/fmt (v10.2.1)\n"
+            L"-def987654321 vendor/uninit\n"
+            L"+112233445566 vendor/dirty (heads/dev)\n";
+        auto subs = GitWorkflowEngine::ParseSubmoduleStatus(subOut);
+        assert(subs.size() == 3);
+        assert(subs[0].state == L' ' && subs[0].path == L"vendor/fmt" && subs[0].refDesc == L"v10.2.1");
+        assert(subs[1].state == L'-' && subs[1].path == L"vendor/uninit");
+        assert(subs[2].state == L'+' && subs[2].path == L"vendor/dirty");
+
+        std::vector<GitWorkflowEngine::RebaseTodoItem> todo = {
+            { L"pick", L"a1b2c3d", L"first\nmsg" },
+            { L"squash", L"9f8e7d6", L"second" },
+            { L"bogusAction", L"deadbee", L"fallback" }
+        };
+        std::string seq = GitWorkflowEngine::BuildInteractiveRebaseSequence(todo);
+        assert(seq.find("pick a1b2c3d first msg\n") != std::string::npos);
+        assert(seq.find("squash 9f8e7d6 second\n") != std::string::npos);
+        assert(seq.find("pick deadbee fallback\n") != std::string::npos);
+
+        std::cout << "  Passed: All [TEST 147] Advanced Git (#40) checks passed!" << std::endl;
+        if (targetTest == 147) {
+            std::cout << "Target test 147 finished successfully." << std::endl;
             return 0;
         }
     }

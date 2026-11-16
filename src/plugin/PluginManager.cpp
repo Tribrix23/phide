@@ -511,7 +511,7 @@ void ABI_RegisterEventHook(const wchar_t* eventName, PhideEventCallback callback
 
 bool ABI_GetActiveFilePath(wchar_t* outBuf, size_t maxLen) {
     if (!outBuf || maxLen == 0) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.getActiveFilePath) return false;
     std::wstring path = cb.getActiveFilePath();
     wcsncpy_s(outBuf, maxLen, path.c_str(), _TRUNCATE);
@@ -520,7 +520,7 @@ bool ABI_GetActiveFilePath(wchar_t* outBuf, size_t maxLen) {
 
 bool ABI_GetActiveDocumentText(wchar_t* outBuf, size_t maxLen) {
     if (!outBuf || maxLen == 0) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.getActiveDocumentText) return false;
     std::wstring text = cb.getActiveDocumentText();
     wcsncpy_s(outBuf, maxLen, text.c_str(), _TRUNCATE);
@@ -529,54 +529,54 @@ bool ABI_GetActiveDocumentText(wchar_t* outBuf, size_t maxLen) {
 
 bool ABI_SetActiveDocumentText(const wchar_t* newText) {
     if (!newText) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.setActiveDocumentText) return false;
     return cb.setActiveDocumentText(newText);
 }
 
 bool ABI_InsertTextAtCursor(const wchar_t* text) {
     if (!text) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.insertTextAtCursor) return false;
     return cb.insertTextAtCursor(text);
 }
 
 bool ABI_GetCursorPosition(size_t* outLine, size_t* outCol) {
     if (!outLine || !outCol) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.getCursorPosition) return false;
     return cb.getCursorPosition(*outLine, *outCol);
 }
 
 bool ABI_SetCursorPosition(size_t line, size_t col) {
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.setCursorPosition) return false;
     return cb.setCursorPosition(line, col);
 }
 
 bool ABI_OpenFile(const wchar_t* filePath) {
     if (!filePath) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.openFile) return false;
     return cb.openFile(filePath);
 }
 
 bool ABI_RunTerminalCommand(const wchar_t* command) {
     if (!command) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.runTerminalCommand) return false;
     return cb.runTerminalCommand(command);
 }
 
 void ABI_ShowNotification(const wchar_t* message) {
     if (!message) return;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (cb.showNotification) cb.showNotification(message);
 }
 
 bool ABI_GetWorkspaceRoot(wchar_t* outBuf, size_t maxLen) {
     if (!outBuf || maxLen == 0) return false;
-    const auto& cb = PluginManager::Instance().GetHostCallbacks();
+    auto cb = PluginManager::Instance().CopyHostCallbacks();
     if (!cb.getWorkspaceRoot) return false;
     std::wstring ws = cb.getWorkspaceRoot();
     wcsncpy_s(outBuf, maxLen, ws.c_str(), _TRUNCATE);
@@ -816,6 +816,8 @@ void PluginManager::Shutdown() {
     m_frameworkDetectors.clear();
     m_statusBarItems.clear();
     m_eventHooks.clear();
+    m_languageServers.clear();
+    m_hostCallbacks = HostCallbacks{};
     m_initialized = false;
 }
 
@@ -941,6 +943,7 @@ bool PluginManager::LoadPluginFromJsonString(const std::wstring& jsonContent, co
     meta.author = root.GetString(L"author", root.GetString(L"publisher", L""));
     meta.description = root.GetString(L"description", L"");
     meta.rootDir = baseDir;
+    meta.enabled = root.GetBool(L"enabled", true);
 
     // Support both top-level fields and VS Code-style "contributes" object
     const JsonVal* contrib = root.Get(L"contributes");
@@ -1276,6 +1279,49 @@ bool PluginManager::LoadPluginFromJsonString(const std::wstring& jsonContent, co
         }
     }
 
+    // 13. Language Servers ("languageServers" / "lsp")
+    const JsonVal* lspNode = getSection(L"languageServers");
+    if (!lspNode) lspNode = getSection(L"lsp");
+    if (lspNode) {
+        auto appendArgsStr = [](const JsonVal& obj, std::wstring& cmd) {
+            if (const JsonVal* argsNode = obj.Get(L"args"); argsNode && argsNode->type == JsonVal::Type::Array) {
+                for (const auto& a : argsNode->arrVal) {
+                    if (a.type == JsonVal::Type::String && !a.strVal.empty()) {
+                        cmd += L" " + a.strVal;
+                    }
+                }
+            }
+        };
+        if (lspNode->type == JsonVal::Type::Array) {
+            for (const auto& sObj : lspNode->arrVal) {
+                if (sObj.type != JsonVal::Type::Object) continue;
+                PluginLanguageServer srv;
+                srv.languageId = ToLowerW(TrimW(sObj.GetString(L"languageId", sObj.GetString(L"language"))));
+                srv.command = TrimW(sObj.GetString(L"command"));
+                appendArgsStr(sObj, srv.command);
+                srv.sourcePluginId = meta.id;
+                if (!srv.languageId.empty() && !srv.command.empty()) {
+                    RegisterLanguageServer(srv);
+                }
+            }
+        } else if (lspNode->type == JsonVal::Type::Object) {
+            for (const auto& [langKey, val] : lspNode->objVal) {
+                PluginLanguageServer srv;
+                srv.languageId = ToLowerW(TrimW(langKey));
+                srv.sourcePluginId = meta.id;
+                if (val.type == JsonVal::Type::String) {
+                    srv.command = TrimW(val.strVal);
+                } else if (val.type == JsonVal::Type::Object) {
+                    srv.command = TrimW(val.GetString(L"command"));
+                    appendArgsStr(val, srv.command);
+                }
+                if (!srv.languageId.empty() && !srv.command.empty()) {
+                    RegisterLanguageServer(srv);
+                }
+            }
+        }
+    }
+
     m_plugins.push_back(std::move(meta));
     return true;
 }
@@ -1566,6 +1612,9 @@ std::vector<lsp::Diagnostic> PluginManager::RunDiagnostics(
 
     auto runLinterList = [&](const std::vector<PluginLinter>& list) {
         for (const auto& linter : list) {
+            if (!linter.sourcePluginId.empty() && !IsPluginEnabledUnlocked(linter.sourcePluginId)) {
+                continue;
+            }
             if (linter.cppCallback) {
                 auto sub = linter.cppCallback(filePath, buffer);
                 results.insert(results.end(), sub.begin(), sub.end());
@@ -1583,10 +1632,62 @@ std::vector<lsp::Diagnostic> PluginManager::RunDiagnostics(
                     d.col = entries[i].col;
                     d.length = (std::max)(static_cast<size_t>(1), entries[i].length);
                     d.message = entries[i].message;
+                    d.source = linter.sourcePluginId.empty() ? L"plugin" : linter.sourcePluginId;
                     if (entries[i].severity == 0) d.severity = 1; // Error
                     else if (entries[i].severity == 2) d.severity = 3; // Info
                     else d.severity = 2; // Warning
                     results.push_back(std::move(d));
+                }
+            }
+            if (!linter.cliCommand.empty() && !filePath.empty()) {
+                std::wstring cmd = ExpandVariables(linter.cliCommand);
+                auto substAll = [](std::wstring& target, const std::wstring& tok, const std::wstring& repl) {
+                    size_t p = 0;
+                    while ((p = target.find(tok, p)) != std::wstring::npos) {
+                        target.replace(p, tok.size(), repl);
+                        p += repl.size();
+                    }
+                };
+                substAll(cmd, L"{file}", filePath);
+                substAll(cmd, L"{workspace}", m_workspaceRoot);
+                std::wstring cliOut;
+                if (RunSilentProcessWithPipe(cmd, m_workspaceRoot, L"", cliOut, 1500) && !cliOut.empty()) {
+                    static const std::wregex kLineColRe(LR"((?:.*?:)?(\d+):(\d+):\s*(?:(error|warning|warn|info|note)\s*:\s*)?(.+))", std::regex_constants::icase);
+                    static const std::wregex kLineOnlyRe(LR"(^(\d+):\s*(?:(error|warning|warn|info|note)\s*:\s*)?(.+))", std::regex_constants::icase);
+                    std::wstringstream ss(cliOut);
+                    std::wstring rawLine;
+                    size_t added = 0;
+                    while (std::getline(ss, rawLine) && added < 64) {
+                        if (!rawLine.empty() && rawLine.back() == L'\r') rawLine.pop_back();
+                        if (rawLine.empty()) continue;
+                        std::wsmatch m;
+                        size_t ln1 = 0, col1 = 1;
+                        std::wstring sevWord, msgText;
+                        if (std::regex_search(rawLine, m, kLineColRe)) {
+                            ln1 = static_cast<size_t>(std::wcstoul(m[1].str().c_str(), nullptr, 10));
+                            col1 = static_cast<size_t>(std::wcstoul(m[2].str().c_str(), nullptr, 10));
+                            sevWord = ToLowerW(m[3].str());
+                            msgText = TrimW(m[4].str());
+                        } else if (std::regex_match(rawLine, m, kLineOnlyRe)) {
+                            ln1 = static_cast<size_t>(std::wcstoul(m[1].str().c_str(), nullptr, 10));
+                            sevWord = ToLowerW(m[2].str());
+                            msgText = TrimW(m[3].str());
+                        } else {
+                            continue;
+                        }
+                        if (ln1 == 0 || msgText.empty()) continue;
+                        lsp::Diagnostic d;
+                        d.line = ln1 - 1;
+                        d.col = (col1 > 0) ? (col1 - 1) : 0;
+                        d.length = 1;
+                        d.message = std::move(msgText);
+                        d.source = linter.sourcePluginId.empty() ? L"plugin" : linter.sourcePluginId;
+                        if (sevWord == L"error") d.severity = 1;
+                        else if (sevWord == L"info" || sevWord == L"note") d.severity = 3;
+                        else d.severity = 2;
+                        results.push_back(std::move(d));
+                        ++added;
+                    }
                 }
             }
             for (const auto& rule : linter.regexRules) {
@@ -1602,6 +1703,7 @@ std::vector<lsp::Diagnostic> PluginManager::RunDiagnostics(
                             d.length = (std::max)(static_cast<size_t>(1), static_cast<size_t>(m.length(0)));
                             d.message = rule.message;
                             d.severity = rule.severity;
+                            d.source = linter.sourcePluginId.empty() ? L"plugin" : linter.sourcePluginId;
                             results.push_back(std::move(d));
                         }
                     }
@@ -1673,6 +1775,9 @@ bool PluginManager::ExecuteCommand(const std::wstring& commandId) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     for (const auto& cmd : m_commands) {
         if (cmd.id == commandId) {
+            if (!cmd.sourcePluginId.empty() && !IsPluginEnabledUnlocked(cmd.sourcePluginId)) {
+                return false;
+            }
             if (cmd.cppCallback) {
                 cmd.cppCallback();
             }
@@ -1868,6 +1973,61 @@ void PluginManager::DispatchEvent(const std::wstring& eventName, const std::wstr
 std::vector<PluginMetadata> PluginManager::GetLoadedPlugins() const {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     return m_plugins;
+}
+
+HostCallbacks PluginManager::CopyHostCallbacks() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return m_hostCallbacks;
+}
+
+bool PluginManager::IsPluginEnabledUnlocked(const std::wstring& pluginId) const {
+    if (pluginId.empty()) return true;
+    for (const auto& p : m_plugins) {
+        if (p.id == pluginId) return p.enabled;
+    }
+    return true;
+}
+
+bool PluginManager::IsPluginEnabled(const std::wstring& pluginId) const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return IsPluginEnabledUnlocked(pluginId);
+}
+
+bool PluginManager::SetPluginEnabled(const std::wstring& pluginId, bool enabled) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (auto& p : m_plugins) {
+        if (p.id == pluginId) {
+            p.enabled = enabled;
+            return true;
+        }
+    }
+    return false;
+}
+
+void PluginManager::RegisterLanguageServer(const PluginLanguageServer& server) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::wstring lang = ToLowerW(TrimW(server.languageId));
+    if (lang.empty() || server.command.empty()) return;
+    for (auto& existing : m_languageServers) {
+        if (existing.languageId == lang && existing.sourcePluginId == server.sourcePluginId) {
+            existing.command = server.command;
+            return;
+        }
+    }
+    PluginLanguageServer copy = server;
+    copy.languageId = lang;
+    m_languageServers.push_back(std::move(copy));
+}
+
+std::vector<PluginLanguageServer> PluginManager::GetLanguageServers() const {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::vector<PluginLanguageServer> active;
+    for (const auto& s : m_languageServers) {
+        if (IsPluginEnabledUnlocked(s.sourcePluginId)) {
+            active.push_back(s);
+        }
+    }
+    return active;
 }
 
 } // namespace phide::plugin

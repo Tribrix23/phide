@@ -183,6 +183,7 @@ enum class MenuActionId {
     // Debug & Run Menu Actions
     DebugStart,
     DebugRunWithoutDebug,
+    DebugPause,
     DebugStop,
     DebugRestart,
     DebugStepOver,
@@ -248,6 +249,7 @@ enum class MenuActionId {
     // More Actions Menu Actions (Activity Rail 3-Dot Dropdown)
     ViewMonitor,
     ViewTestExplorer,
+    ViewTaskRunner,
     ViewSqlConsole,
     ViewHeatmap,
     MoreTraceCode,
@@ -301,7 +303,30 @@ enum class MenuActionId {
     PrevBookmark,
     ClearBookmarks,
     WindowNextGroup,
-    WindowPrevGroup
+    WindowPrevGroup,
+    EditEmmetWrap,
+    EditEmmetBalanceOutward,
+    EditEmmetBalanceInward,
+    EditCaseTransform,
+    EditCaseUpper,
+    EditCaseLower,
+    EditCaseTitle,
+    EditCaseCamel,
+    EditCaseSnake,
+    EditCaseKebab,
+    CodeTypeHierarchy,
+    TabClose,
+    TabCloseOthers,
+    TabCloseToRight,
+    TabCloseSaved,
+    TabTogglePin,
+    TabSplitRight,
+    TabMoveNewWindow,
+    TabCopyNewWindow,
+    TabCopyPath,
+    TabRevealInExplorer,
+    ViewHexBinary,
+    ViewToggleStructured
 };
 
 /**
@@ -467,6 +492,11 @@ public:
     void OpenEditorContextMenu(float x, float y, const app::AppConfig& config,
                                bool hasSelection = false, bool canPaste = true,
                                float clientW = 0.0f, float clientH = 0.0f);
+    void OpenTabContextMenu(float x, float y, const app::AppConfig& config,
+                            bool isPinned, bool hasFilePath,
+                            bool canCloseOthers, bool canCloseRight,
+                            bool canCloseSaved, bool canToggleStructured,
+                            float clientW = 0.0f, float clientH = 0.0f);
 
     /**
      * @brief Closes the popup menu and any open submenus.

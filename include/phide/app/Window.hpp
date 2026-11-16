@@ -227,6 +227,16 @@ public:
     void SaveSessionStatePublic() { SaveSessionState(); }
     void LoadSessionStatePublic() { LoadSessionState(); }
 
+    /** @brief Tab context menu, pinning, and detached window helpers. */
+    void ToggleTabPin(int groupIdx, int docIdx);
+    void CloseOtherTabs(int groupIdx, int keepDocIdx);
+    void CloseTabsToRight(int groupIdx, int fromDocIdx);
+    void CloseSavedTabs(int groupIdx);
+    void SplitTabRight(int groupIdx, int docIdx);
+    bool DetachEditorToNewWindow(int groupIdx, int docIdx, bool moveOut);
+    bool ApplyDetachHandoffFile(const std::wstring& handoffPath);
+    void ToggleActiveStructuredViewer(bool openHexIfBinary = false);
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -295,7 +305,7 @@ private:
      * @param groupIdx 0-based editor group index.
      * @param docIdx 0-based document tab index inside that group.
      */
-    void CloseDocument(int groupIdx, int docIdx);
+    void CloseDocument(int groupIdx, int docIdx, bool forceClosePinned = true);
 
     /**
      * @brief Closes the open document at the given tab index within the active group.
@@ -366,6 +376,25 @@ private:
 
     /** @brief Ensures GitLens line-by-line blame metadata is cached for the document. */
     void EnsureGitBlameLoaded(editor::OpenDocument& doc);
+    struct PendingGitBlameResult {
+        std::wstring docPath;
+        std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo> blameMap;
+    };
+    std::mutex m_blameMutex;
+    std::vector<PendingGitBlameResult> m_pendingGitBlames;
+    void DoNavigateDiffHunk(bool backward = false);
+    void StageSelectedGitRange();
+    void OpenDiffPeekAtLine(editor::OpenDocument& doc, size_t bufferLine);
+    void OpenActiveFileHistory();
+    void RefreshActiveFileHistoryAsync(const std::wstring& fullPath);
+    struct PendingFileHistoryResult {
+        std::wstring fullPath;
+        std::wstring relPath;
+        std::vector<phide::git::GitWorkflowEngine::FileHistoryEntry> entries;
+    };
+    std::mutex m_fileHistoryMutex;
+    std::vector<PendingFileHistoryResult> m_pendingFileHistory;
+    void OpenMergeConflictNext(editor::OpenDocument& doc);
 
     /** @brief Exports user IDE profile settings to a JSON file. */
     void DoExportProfile();
@@ -456,6 +485,9 @@ private:
     /** @brief Jumps to type definition of symbol under cursor. */
     void DoTypeDefinition();
 
+    /** @brief Shows LSP Type Hierarchy (supertypes / subtypes) peek for symbol under cursor. */
+    void DoTypeHierarchy();
+
     /** @brief Jumps to implementation of symbol under cursor. */
     void DoImplementation();
 
@@ -530,6 +562,15 @@ private:
 
     /** @brief Expands Emmet abbreviation before cursor (Tab). */
     void DoEmmetExpand();
+
+    /** @brief Wraps current selection/line with a prompted Emmet abbreviation. */
+    void DoEmmetWrapWithAbbreviation();
+
+    /** @brief Balances HTML/JSX/XML tag selection inward or outward. */
+    void DoEmmetBalance(bool outward);
+
+    /** @brief Transforms selection (or word at cursor) case across single or multi-cursors. */
+    void DoTransformCase(editor::CaseTransform mode);
 
     /** @brief Formats active document (Shift+Alt+F). */
     void DoFormatDocument(bool showFeedback = true);
@@ -697,6 +738,25 @@ private:
 
     /** @brief Computes absolute path to %APPDATA%\phide\user_keybindings.json. */
     std::wstring GetKeybindingsConfigPath() const;
+
+    /** @brief Effective header height in physical pixels (0 in Zen Mode). */
+    [[nodiscard]] float EffectiveHeaderHeight() const noexcept {
+        return m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    }
+
+    /** @brief Auto-save mode predicates distinguishing off / afterDelay / onFocusChange / onWindowChange. */
+    [[nodiscard]] bool ShouldAutoSaveAfterDelay() const noexcept {
+        return m_autoSave && m_config.autoSave == L"afterDelay";
+    }
+    [[nodiscard]] bool ShouldAutoSaveOnFocusChange() const noexcept {
+        return m_autoSave && (m_config.autoSave == L"afterDelay" || m_config.autoSave == L"onFocusChange");
+    }
+    [[nodiscard]] bool ShouldAutoSaveOnWindowChange() const noexcept {
+        return m_autoSave && m_config.autoSave != L"off";
+    }
+
+    /** @brief Applies formatOnSave (when allowed), .editorconfig rules, trimTrailingWhitespace, and insertFinalNewline. */
+    void ApplySaveHooks(editor::OpenDocument& doc, const std::wstring& targetPath, bool allowFormatter);
 
     /** @brief Effective indentation size/mode combining global config and per-file .editorconfig. */
     [[nodiscard]] int GetDocTabSize(const editor::OpenDocument* pDoc) const;
@@ -949,8 +1009,15 @@ private:
     struct PendingLangIntelUpdate {
         uint64_t gen = 0;
         std::wstring filePath;
+        uint64_t docVersion = 0;
         std::vector<editor::OpenDocument::InlayHint> inlayHints;
         std::unordered_map<size_t, editor::OpenDocument::CodeLensMeta> codeLensMap;
+        bool hasSemanticTokens = false;
+        std::vector<uint32_t> semanticTokensData;
+        bool hasLspFolds = false;
+        std::vector<lsp::LspFoldRange> lspFoldingRanges;
+        bool hasLspCodeLenses = false;
+        std::vector<lsp::LspCodeLens> lspCodeLenses;
         bool hasLinterResults = false;
         std::vector<editor::ProblemEntry> linterProblems;
     };
@@ -984,6 +1051,8 @@ private:
     editor::ProblemsFilterState m_problemsFilter;
     std::unordered_map<std::wstring, std::vector<editor::ProblemEntry>> m_externalLinterProblems;
     std::vector<editor::ProblemEntry> m_cachedFilteredProblems;
+    std::vector<std::wstring> m_problemsCollapsedFiles;
+    std::vector<editor::ProblemDisplayRow> m_problemsDisplayRows;
     int m_totalProblemErrors = 0;
     int m_totalProblemWarnings = 0;
     int m_totalProblemInfos = 0;
@@ -996,10 +1065,13 @@ private:
     D2D1_RECT_F m_rcProblemsFilterWarn{};
     D2D1_RECT_F m_rcProblemsFilterInfo{};
     D2D1_RECT_F m_rcProblemsCurFileBtn{};
+    D2D1_RECT_F m_rcProblemsGroupBtn{};
+    D2D1_RECT_F m_rcProblemsSarifBtn{};
     D2D1_RECT_F m_rcProblemsRefreshBtn{};
     D2D1_RECT_F m_rcProblemsSearchBox{};
     D2D1_RECT_F m_rcProblemsCloseBtn{};
     std::vector<D2D1_RECT_F> m_problemsRowBounds;
+    std::vector<D2D1_RECT_F> m_problemsFixBtnBounds;
 
     [[nodiscard]] bool IsBottomProblemsVisible() const noexcept {
         return !m_config.zenMode && m_problemsPanelOpen && m_bottomProblemsActive;
@@ -1009,6 +1081,8 @@ private:
     void SwitchBottomDockToTerminal();
     void RebuildProblemsCache();
     void NavigateNextProblem(bool backward = false);
+    void ApplyQuickFixForProblem(const editor::ProblemEntry& prob);
+    void ExportProblemsSarif();
     void RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, float clientH, float statusBarH, float railLeft);
     bool HandleProblemsPanelMouseDown(POINT pt);
     bool HandleProblemsPanelMouseWheel(POINT pt, short delta);
@@ -1016,7 +1090,12 @@ private:
     bool HandleProblemsPanelKeyDown(WPARAM vk);
 
     // --- #26-#30 Dev Workflow Integration (DAP / Tasks DAG / Test Explorer / Conditional BPs) ---
+    enum class InlinePromptMode {
+        Breakpoint = 0,
+        EmmetWrap = 1
+    };
     bool m_bpPromptOpen = false;
+    InlinePromptMode m_bpPromptMode = InlinePromptMode::Breakpoint;
     size_t m_bpPromptLine0 = 0;
     std::wstring m_bpPromptInput;
     D2D1_RECT_F m_rcBpPromptBox{};
@@ -1026,12 +1105,28 @@ private:
     void SubmitBreakpointConditionPrompt();
     void RenderBreakpointConditionPrompt(float clientW, float clientH);
     [[nodiscard]] std::vector<phide::dev::DapBreakpoint> BuildDapBreakpointsForDoc(const editor::OpenDocument& doc) const;
+    [[nodiscard]] std::vector<phide::dev::DapBreakpoint> BuildAllOpenDapBreakpoints() const;
+    void SyncAllBreakpointsToDebugger();
+    void ApplyDebugPausedUiState(const std::wstring& filePath, int lineNum1);
+    void ClearDebugPausedUiState(bool sessionEnded);
+    void JumpToDebugFileLine(const std::wstring& filePath, int line1Based);
+    bool IsLineBreakpointAllowedForDoc(const editor::OpenDocument& doc, size_t line0) const;
+    std::mutex m_debugUiMutex;
+    std::wstring m_pendingDebugPausedFile;
+    int m_pendingDebugPausedLine = 1;
+    bool m_hasPendingDebugPaused = false;
     bool ExecuteWorkspaceTaskByLabel(const std::wstring& taskLabel);
     void LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg);
     void RefreshWorkspaceTestsAsync();
     void RunWorkspaceTestsAsync(const std::wstring& filterName = L"",
                                 phide::dev::TestFramework fw = phide::dev::TestFramework::Unknown,
                                 const std::wstring& filePath = L"");
+    void RunFailedWorkspaceTestsAsync();
+    void RefreshWorkspaceCoverageAsync();
+    void RefreshWorkspaceTasks();
+    void SyncMarkdownCompanionScroll(const editor::OpenDocument& changedDoc, bool fromPreview);
+    std::mutex m_covMutex;
+    phide::dev::WorkspaceCoverageSummary m_workspaceCoverage;
     void SyncTestResultsToOpenDocs(const std::vector<phide::dev::TestItem>& items);
     std::atomic<bool> m_testsRunningAsync{false};
     std::mutex m_testsMutex;
@@ -1122,6 +1217,7 @@ private:
     UINT_PTR m_animTimerId     = 1002;
     UINT_PTR m_throttleTimerId = 1003; ///< 50ms timer for throttled code search queries
     UINT_PTR m_gcTimerId       = 1004; ///< 60s periodic idle garbage collection timer
+    ULONGLONG m_lastGitAutoFetchTick = 0; ///< Last timestamp of background git.autofetch
 
     float m_drawerAnimProgress   = 0.0f;
     float m_targetDrawerProgress = 0.0f;
@@ -1181,6 +1277,8 @@ private:
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;
     int m_dragTabIdx = -1;
+    int m_tabContextGroupIdx = -1;
+    int m_tabContextDocIdx = -1;
     int m_tabDropTargetGroup = -1;
     int m_tabDropTargetIdx = -1;
     editor::TabSnapZone m_tabSnapZone = editor::TabSnapZone::None;
@@ -1220,6 +1318,8 @@ private:
     bool m_isHoveredStatusBarEncoding = false;
     D2D1_RECT_F m_rcStatusBarPrivacyMask{};
     bool m_isHoveredStatusBarPrivacyMask = false;
+    D2D1_RECT_F m_rcStatusBarStructuredView{};
+    bool m_isHoveredStatusBarStructuredView = false;
     D2D1_RECT_F m_rcStatusBarProblems{};
     bool m_isHoveredStatusBarProblems = false;
     bool m_isColumnSelecting = false;

@@ -8,6 +8,7 @@
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
 #include "phide/editor/SemanticCommitEngine.hpp"
+#include "phide/plugin/PluginManager.hpp"
 #include <wincodec.h>
 #include <urlmon.h>
 #include <shlobj.h>
@@ -209,6 +210,7 @@ DrawerPanel::~DrawerPanel() {
     while (m_activeWorkers && m_activeWorkers->load() > 0 && spin++ < 600) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    DiscardDeviceResources();
 }
 
 void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded) {
@@ -1008,6 +1010,8 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             RenderSearchPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else if (config.activeRailTab == 2) {
             RenderSourceControlPane(pRT, theme, config, clientHeight, currentDrawerW);
+        } else if (config.activeRailTab == 3) {
+            RenderDebugPane(pRT, theme, config, clientHeight, currentDrawerW);
         } else if (config.activeRailTab == 11) {
             RenderRemotePane(pRT, theme, config, clientHeight, currentDrawerW);
         } else {
@@ -4370,6 +4374,15 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
         return m_searchScrollIdx != oldScroll;
     }
 
+    if (activeRailTab == 3) {
+        if (m_debugMaxScrollY <= 0.0f) return false;
+        float oldScroll = m_debugScrollY;
+        float step = 36.0f;
+        m_debugScrollY -= (delta > 0 ? step : -step);
+        m_debugScrollY = (std::max)(0.0f, (std::min)(m_debugScrollY, m_debugMaxScrollY));
+        return std::abs(m_debugScrollY - oldScroll) > 0.1f;
+    }
+
     if (activeRailTab == 11) {
         if (m_remoteMaxScrollY <= 0.0f) return false;
         float oldScroll = m_remoteScrollY;
@@ -5332,6 +5345,12 @@ ULONGLONG DrawerPanel::GetLastGitCmdTick() noexcept {
 }
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock) {
+    return RunGitCmdWithEnv(cmd, workDir, {}, retryOnLock);
+}
+
+GitCmdResult RunGitCmdWithEnv(const std::wstring& cmd, const std::wstring& workDir,
+                              const std::vector<std::pair<std::wstring, std::wstring>>& extraEnv,
+                              bool retryOnLock) {
     GitCmdResult res;
     std::wstring cleanWorkDir = StripExtendedPathPrefix(workDir);
     if (cleanWorkDir.empty()) {
@@ -5352,14 +5371,17 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
     if (lowerCmd.find(L"push") != std::wstring::npos ||
         lowerCmd.find(L"pull") != std::wstring::npos ||
         lowerCmd.find(L"fetch") != std::wstring::npos ||
-        lowerCmd.find(L"clone") != std::wstring::npos) {
+        lowerCmd.find(L"clone") != std::wstring::npos ||
+        lowerCmd.find(L"submodule") != std::wstring::npos) {
         timeoutMs = 60000;
     } else if (lowerCmd.find(L"add") != std::wstring::npos ||
                lowerCmd.find(L"commit") != std::wstring::npos ||
                lowerCmd.find(L"status") != std::wstring::npos ||
                lowerCmd.find(L"log") != std::wstring::npos ||
                lowerCmd.find(L"init") != std::wstring::npos ||
-               lowerCmd.find(L"diff") != std::wstring::npos) {
+               lowerCmd.find(L"diff") != std::wstring::npos ||
+               lowerCmd.find(L"rebase") != std::wstring::npos ||
+               lowerCmd.find(L"worktree") != std::wstring::npos) {
         timeoutMs = 20000;
     }
 
@@ -5367,6 +5389,9 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
         {L"GIT_TERMINAL_PROMPT", L"0"},
         {L"GCM_INTERACTIVE", L"never"}
     };
+    for (const auto& kv : extraEnv) {
+        envVars.push_back(kv);
+    }
     bool isReadOnlyQuery =
         lowerCmd.rfind(L"status", 0) == 0 ||
         lowerCmd.rfind(L"diff", 0) == 0 ||
@@ -5377,7 +5402,9 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
         lowerCmd.rfind(L"log", 0) == 0 ||
         lowerCmd.rfind(L"show", 0) == 0 ||
         lowerCmd.rfind(L"blame", 0) == 0 ||
-        lowerCmd.rfind(L"ls-files", 0) == 0;
+        lowerCmd.rfind(L"ls-files", 0) == 0 ||
+        lowerCmd.rfind(L"worktree list", 0) == 0 ||
+        lowerCmd.rfind(L"submodule status", 0) == 0;
     if (isReadOnlyQuery) {
         envVars.push_back({L"GIT_OPTIONAL_LOCKS", L"0"});
     }
@@ -5413,7 +5440,7 @@ GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, boo
         std::filesystem::path lockPath = std::filesystem::path(NormalizeDirForGit(cleanWorkDir)) / ".git" / "index.lock";
         if (std::filesystem::exists(lockPath, ec) && std::filesystem::remove(lockPath, ec)) {
             GitLogManager::Instance().LogCommand(L"[Auto-Recovery] Removed stale .git/index.lock at " + lockPath.wstring(), 0, L"Success", 0);
-            return RunGitCmd(cmd, workDir, false);
+            return RunGitCmdWithEnv(cmd, workDir, extraEnv, false);
         }
     }
 
@@ -5504,6 +5531,7 @@ void DrawerPanel::OpenSourceControl() {
 }
 
 void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
+    m_gitSyncMode = !async;
     if (!m_hasOpenFolder || m_openFolderPath.empty()) {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         m_gitChanges.clear();
@@ -5883,25 +5911,40 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
-        // 4. Query commit history graph with formatted date
-        auto resLog = RunGitCmd(L"log -n 40 --pretty=format:\"%h|%p|%s|%an|%ar|%d|%ad|%ae\" --date=format:\"%B %d, %Y at %I:%M %p\"", dir);
+        // 4. Query commit history graph with ASCII Unit Separator (%x1f) and pagination/branch scope
+        int graphLimit = (std::clamp)(m_gitGraphLimit, 40, 400);
+        bool graphAllBranches = m_gitGraphAllBranches;
+        std::wstring graphFilterLower = TrimWideWhitespace(m_gitGraphFilter);
+        for (auto& ch : graphFilterLower) ch = static_cast<wchar_t>(towlower(ch));
+
+        std::wstring logCmd = L"log -n " + std::to_wstring(graphLimit) +
+            (graphAllBranches ? L" --all" : L"") +
+            L" --pretty=format:\"%h%x1f%p%x1f%s%x1f%an%x1f%ar%x1f%d%x1f%ad%x1f%ae\" --date=format:\"%B %d, %Y at %I:%M %p\"";
+        auto resLog = RunGitCmd(logCmd, dir);
         std::vector<GitCommitItem> commits;
         if (resLog.exitCode == 0) {
+            auto containsCaseInsensitive = [](const std::wstring& haystack, const std::wstring& needleLower) -> bool {
+                if (needleLower.empty()) return true;
+                std::wstring hLower = haystack;
+                for (auto& ch : hLower) ch = static_cast<wchar_t>(towlower(ch));
+                return hLower.find(needleLower) != std::wstring::npos;
+            };
             std::wstringstream ss(resLog.output);
             std::wstring line;
             bool firstCommit = true;
             while (std::getline(ss, line)) {
+                while (!line.empty() && line.back() == L'\r') line.pop_back();
                 if (line.empty()) continue;
                 std::vector<std::wstring> tokens;
                 size_t start = 0;
-                while (start < line.size()) {
-                    size_t pipe = line.find(L'|', start);
-                    if (pipe == std::wstring::npos) {
+                while (start <= line.size()) {
+                    size_t sep = line.find(L'\x1f', start);
+                    if (sep == std::wstring::npos) {
                         tokens.push_back(line.substr(start));
                         break;
                     }
-                    tokens.push_back(line.substr(start, pipe - start));
-                    start = pipe + 1;
+                    tokens.push_back(line.substr(start, sep - start));
+                    start = sep + 1;
                 }
 
                 if (tokens.size() >= 3) {
@@ -5914,8 +5957,16 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                     ci.refNames = tokens.size() > 5 ? tokens[5] : L"";
                     ci.dateFormatted = tokens.size() > 6 ? tokens[6] : L"";
                     ci.authorEmail = tokens.size() > 7 ? tokens[7] : L"";
-                    ci.isHead = firstCommit || (ci.refNames.find(L"HEAD") != std::wstring::npos);
+                    ci.isHead = (ci.refNames.find(L"HEAD") != std::wstring::npos) || (firstCommit && !graphAllBranches);
                     firstCommit = false;
+
+                    if (!graphFilterLower.empty() &&
+                        !containsCaseInsensitive(ci.hash, graphFilterLower) &&
+                        !containsCaseInsensitive(ci.message, graphFilterLower) &&
+                        !containsCaseInsensitive(ci.author, graphFilterLower) &&
+                        !containsCaseInsensitive(ci.refNames, graphFilterLower)) {
+                        continue;
+                    }
 
                     auto it = prevMap.find(ci.hash);
                     if (it != prevMap.end()) {
@@ -5958,6 +6009,53 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
         }
 
+        // 4c. Query Tags sorted by creation date (capped cleanly at 200)
+        std::vector<GitTagUiItem> tags;
+        auto resTags = RunGitCmd(L"tag --sort=-creatordate", dir);
+        if (resTags.exitCode == 0 && !resTags.output.empty()) {
+            std::wstringstream tss(resTags.output);
+            std::wstring tLine;
+            while (std::getline(tss, tLine) && tags.size() < 200) {
+                tLine = TrimWideWhitespace(tLine);
+                if (tLine.empty()) continue;
+                GitTagUiItem tagItem;
+                tagItem.name = std::move(tLine);
+                tags.push_back(std::move(tagItem));
+            }
+        }
+
+        // 4d. Query Worktrees, Submodules & Bisect state (#40, capped at 64)
+        std::vector<GitWorktreeUiItem> worktrees;
+        auto resWt = RunGitCmd(L"worktree list --porcelain", dir);
+        if (resWt.exitCode == 0 && !resWt.output.empty()) {
+            auto parsedWt = phide::git::GitWorkflowEngine::ParseWorktreeListPorcelain(resWt.output);
+            if (parsedWt.size() > 64) parsedWt.resize(64);
+            worktrees.reserve(parsedWt.size());
+            for (auto& w : parsedWt) {
+                GitWorktreeUiItem ui;
+                ui.entry = std::move(w);
+                worktrees.push_back(std::move(ui));
+            }
+        }
+
+        std::vector<GitSubmoduleUiItem> submodules;
+        std::error_code fsEc;
+        if (std::filesystem::exists(std::filesystem::path(dir) / L".gitmodules", fsEc)) {
+            auto resSm = RunGitCmd(L"submodule status", dir);
+            if (resSm.exitCode == 0 && !resSm.output.empty()) {
+                auto parsedSm = phide::git::GitWorkflowEngine::ParseSubmoduleStatus(resSm.output);
+                if (parsedSm.size() > 64) parsedSm.resize(64);
+                submodules.reserve(parsedSm.size());
+                for (auto& s : parsedSm) {
+                    GitSubmoduleUiItem ui;
+                    ui.entry = std::move(s);
+                    submodules.push_back(std::move(ui));
+                }
+            }
+        }
+
+        bool bisectActive = std::filesystem::exists(std::filesystem::path(dir) / L".git" / L"BISECT_START", fsEc);
+
         int unpushedCount = 0;
         if (hasRemote) {
             auto resRevList = RunGitCmd(L"rev-list --count @{u}..HEAD", dir);
@@ -5999,6 +6097,10 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             m_gitCommits = std::move(commits);
             m_gitStashes = std::move(stashes);
+            m_gitTags = std::move(tags);
+            m_gitWorktrees = std::move(worktrees);
+            m_gitSubmodules = std::move(submodules);
+            m_gitBisectActive = bisectActive;
             m_unpushedCommitsCount = unpushedCount;
             m_isGitLoading = false;
         }
@@ -6914,17 +7016,23 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
 
     if (username.empty()) return nullptr;
 
-    // 2. Check in-memory bitmap cache
-    auto it = m_avatarBitmaps.find(username);
-    if (it != m_avatarBitmaps.end() && it->second) {
-        return it->second.Get();
+    // 2. Check bounded LRU in-memory bitmap cache
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        auto it = m_avatarBitmaps.find(username);
+        if (it != m_avatarBitmaps.end() && it->second) {
+            m_avatarLruOrder.remove(username);
+            m_avatarLruOrder.push_front(username);
+            return it->second.Get();
+        }
+        if (m_checkedAvatars.find(username) != m_checkedAvatars.end()) {
+            return nullptr;
+        }
+        if (m_checkedAvatars.size() > 256) {
+            m_checkedAvatars.clear();
+        }
+        m_checkedAvatars.insert(username);
     }
-
-    // Avoid repeated disk I/O on every WM_PAINT frame if already checked and not yet downloaded
-    if (m_checkedAvatars.find(username) != m_checkedAvatars.end()) {
-        return nullptr;
-    }
-    m_checkedAvatars.insert(username);
 
     // 3. Locate disk cache path: %LOCALAPPDATA%\phide\avatars\<username>.png
     wchar_t localApp[MAX_PATH] = {0};
@@ -6938,18 +7046,28 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
 
         std::error_code ec;
         if (std::filesystem::exists(avatarPath, ec) && std::filesystem::file_size(avatarPath, ec) > 0) {
-            Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
-            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
+            if (!m_wicFactory) {
+                CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&m_wicFactory));
+            }
+            if (m_wicFactory) {
                 Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
-                if (SUCCEEDED(pWicFactory->CreateDecoderFromFilename(avatarPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) {
+                if (SUCCEEDED(m_wicFactory->CreateDecoderFromFilename(avatarPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) {
                     Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
                     if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame))) {
                         Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
-                        if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter))) {
+                        if (SUCCEEDED(m_wicFactory->CreateFormatConverter(&pConverter))) {
                             if (SUCCEEDED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, NULL, 0.0f, WICBitmapPaletteTypeCustom))) {
                                 Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
-                                if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), NULL, &pBmp))) {
+                                if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), NULL, &pBmp)) && pBmp) {
+                                    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                                    m_avatarLruOrder.remove(username);
+                                    m_avatarLruOrder.push_front(username);
                                     m_avatarBitmaps[username] = pBmp;
+                                    while (m_avatarLruOrder.size() > kMaxCachedAvatars) {
+                                        std::wstring evictKey = m_avatarLruOrder.back();
+                                        m_avatarLruOrder.pop_back();
+                                        m_avatarBitmaps.erase(evictKey);
+                                    }
                                     return pBmp.Get();
                                 }
                             }
@@ -6957,18 +7075,32 @@ ID2D1Bitmap* DrawerPanel::GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme,
                     }
                 }
             }
-        } else if (m_downloadingAvatars.find(username) == m_downloadingAvatars.end()) {
-            m_downloadingAvatars.insert(username);
-            std::wstring url = L"https://github.com/" + username + L".png";
-            auto alive = m_isAlive;
-            std::thread([this, alive, username, url, avatarPath]() {
-                if (SUCCEEDED(URLDownloadToFileW(NULL, url.c_str(), avatarPath.c_str(), 0, NULL))) {
+        } else {
+            bool shouldDownload = false;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+                if (m_downloadingAvatars.find(username) == m_downloadingAvatars.end() && m_downloadingAvatars.size() < 16) {
+                    m_downloadingAvatars.insert(username);
+                    shouldDownload = true;
+                }
+            }
+            if (shouldDownload) {
+                std::wstring url = L"https://github.com/" + username + L".png";
+                auto alive = m_isAlive;
+                auto workers = m_activeWorkers;
+                if (workers) workers->fetch_add(1);
+                std::thread([this, alive, workers, username, url, avatarPath]() {
+                    HRESULT hr = URLDownloadToFileW(NULL, url.c_str(), avatarPath.c_str(), 0, NULL);
                     if (alive && alive->load()) {
                         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
-                        m_checkedAvatars.erase(username);
+                        m_downloadingAvatars.erase(username);
+                        if (SUCCEEDED(hr)) {
+                            m_checkedAvatars.erase(username);
+                        }
                     }
-                }
-            }).detach();
+                    if (workers) workers->fetch_sub(1);
+                }).detach();
+            }
         }
     }
 
@@ -7568,6 +7700,85 @@ std::wstring DrawerPanel::GetCommitFileContent(const std::wstring& commitHash, c
     return L"";
 }
 
+void DrawerPanel::ConfirmOrRunSyncAction(GitPromptKind kind) {
+    if (m_gitConfirmSync) {
+        std::wstring title = L"Confirm Remote Git Operation";
+        std::wstring initialVal;
+        switch (kind) {
+            case GitPromptKind::ConfirmPush: title = L"Push Local Commits to Remote?"; break;
+            case GitPromptKind::ConfirmPull: title = L"Pull Changes from Remote?"; break;
+            case GitPromptKind::ConfirmSync: title = L"Sync Changes (Pull & Push)?"; break;
+            case GitPromptKind::ConfirmCommitAndPush:
+                title = L"Commit & Push to Remote?";
+                initialVal = m_commitMessage;
+                break;
+            case GitPromptKind::ConfirmCommitAndSync:
+                title = L"Commit & Sync (Pull & Push)?";
+                initialVal = m_commitMessage;
+                break;
+            default: break;
+        }
+        OpenGitPromptModal(kind, title, initialVal);
+        return;
+    }
+    switch (kind) {
+        case GitPromptKind::ConfirmPush: PushCommitsAsync(); break;
+        case GitPromptKind::ConfirmPull: PullCommitsAsync(); break;
+        case GitPromptKind::ConfirmSync: SyncCommitsAsync(); break;
+        case GitPromptKind::ConfirmCommitAndPush: CommitChangesAsync(m_commitMessage, false, 1); break;
+        case GitPromptKind::ConfirmCommitAndSync: CommitChangesAsync(m_commitMessage, false, 2); break;
+        default: break;
+    }
+}
+
+void DrawerPanel::SyncCommitsAsync() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+                m_isSyncing = false;
+                if (m_onGitStateChanged) m_onGitStateChanged();
+            }
+            if (workers) workers->fetch_sub(1);
+        };
+        try {
+            if (alive && alive->load()) {
+                m_isGitLoading = true;
+                m_isSyncing = true;
+                if (m_onGitStateChanged) m_onGitStateChanged();
+                std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+                if (dir.empty() || !IsLocalGitRepoRoot(dir)) {
+                    ShowGitNotification(L"No local Git repository found in project folder.");
+                    finish();
+                    return;
+                }
+                auto resPull = RunGitCmd(L"pull --rebase", dir);
+                if (!alive || !alive->load()) { finish(); return; }
+                if (resPull.exitCode != 0 && m_onGitError) {
+                    m_onGitError(L"git pull --rebase", resPull.output, dir);
+                } else {
+                    auto resPush = RunGitCmd(L"push", dir);
+                    if (resPush.exitCode != 0 &&
+                        (resPush.output.find(L"--set-upstream") != std::wstring::npos ||
+                         resPush.output.find(L"no upstream branch") != std::wstring::npos)) {
+                        resPush = RunGitCmd(L"push -u origin HEAD", dir);
+                    }
+                    if (resPush.exitCode != 0 && m_onGitError) {
+                        m_onGitError(L"git push", resPush.output, dir);
+                    }
+                }
+                if (alive && alive->load()) {
+                    RefreshGitState(false);
+                }
+            }
+        } catch (...) {}
+        finish();
+    }).detach();
+}
+
 bool DrawerPanel::TriggerCommitAction(int postCommitAction) {
     if (m_isCommitting.load() || m_isSyncing.load() || m_isGitLoading.load()) {
         return true; // Ignore repeated clicks while loading (prevent spam click)
@@ -7597,10 +7808,15 @@ bool DrawerPanel::TriggerCommitAction(int postCommitAction) {
             ShowGitNotification(L"Please provide a commit message before committing.");
             return true;
         }
+        if ((postCommitAction == 1 || postCommitAction == 2) && m_gitConfirmSync) {
+            ConfirmOrRunSyncAction(postCommitAction == 2 ? GitPromptKind::ConfirmCommitAndSync
+                                                         : GitPromptKind::ConfirmCommitAndPush);
+            return true;
+        }
         CommitChangesAsync(m_commitMessage, false, postCommitAction);
         return true;
     } else if (m_unpushedCommitsCount > 0) {
-        PushCommitsAsync();
+        ConfirmOrRunSyncAction(GitPromptKind::ConfirmPush);
         return true;
     }
     return true;
@@ -7661,15 +7877,26 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
         // Ensure context-aware .gitignore exists (do not call RefreshTree on worker thread to avoid UI crash)
         EnsureContextAwareGitignore(dir);
 
-        auto resAdd = RunGitCmd(L"add -A", dir);
+        auto resStaged = RunGitCmd(L"diff --cached --name-only", dir);
         if (!alive || !alive->load()) { finish(); return; }
-        if (resAdd.exitCode != 0) {
-            if (m_onGitError) {
-                m_onGitError(L"git add -A", resAdd.output, dir);
+        const bool hasStaged = (resStaged.exitCode == 0 && !TrimWideWhitespace(resStaged.output).empty());
+        if (!hasStaged && !amendCommit) {
+            if (!m_gitSmartCommit) {
+                ShowGitNotification(L"Stage changes before committing (or enable git.enableSmartCommit).");
+                RefreshGitState(false);
+                finish();
+                return;
             }
-            RefreshGitState(false);
-            finish();
-            return;
+            auto resAdd = RunGitCmd(L"add -A", dir);
+            if (!alive || !alive->load()) { finish(); return; }
+            if (resAdd.exitCode != 0) {
+                if (m_onGitError) {
+                    m_onGitError(L"git add -A", resAdd.output, dir);
+                }
+                RefreshGitState(false);
+                finish();
+                return;
+            }
         }
 
         // Write commit message to temporary file in repo to safely support multiline and special characters without cmd escaping issues
@@ -7909,6 +8136,28 @@ void DrawerPanel::FetchAllRemotesAsync() {
             }
         } catch (...) {}
         finish();
+    }).detach();
+}
+
+void DrawerPanel::FetchAllRemotesQuietAsync() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            explicit WorkerGuard(std::shared_ptr<std::atomic<int>> p) : w(std::move(p)) {}
+            ~WorkerGuard() { if (w) w->fetch_sub(1); }
+        } guard(workers);
+        try {
+            if (!alive || !alive->load()) return;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            if (dir.empty() || !IsLocalGitRepoRoot(dir)) return;
+            RunGitCmd(L"fetch --all --quiet", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+            }
+        } catch (...) {}
     }).detach();
 }
 
@@ -8281,6 +8530,31 @@ void DrawerPanel::DeleteTagAsync(const std::wstring& tagName) {
     }).detach();
 }
 
+void DrawerPanel::CheckoutTagAsync(const std::wstring& tagName) {
+    std::wstring safeName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(tagName);
+    if (safeName.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, safeName]() {
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"checkout \"tags/" + safeName + L"\"", dir);
+            if (alive && alive->load()) {
+                m_isGitLoading = false;
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Checked out tag '" + safeName + L"'");
+                } else if (m_onGitError) {
+                    m_onGitError(L"git checkout tag", res.output, dir);
+                }
+            }
+        }
+        if (workers) workers->fetch_sub(1);
+    }).detach();
+}
+
 void DrawerPanel::CherryPickCommitAsync(const std::wstring& commitHash) {
     if (commitHash.empty()) return;
     auto alive = m_isAlive;
@@ -8356,6 +8630,229 @@ void DrawerPanel::RebaseBranchAsync(const std::wstring& targetBranch) {
                     ShowGitNotification(L"\u2713 Rebased onto " + safeBranch);
                 } else if (m_onGitError) {
                     m_onGitError(L"git rebase", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::AddWorktreeAsync(const std::wstring& spec) {
+    std::wstring trimmed = TrimWideWhitespace(spec);
+    if (trimmed.empty()) return;
+    std::wstring wtPath = trimmed;
+    std::wstring branchName;
+    size_t bar = trimmed.find(L'|');
+    if (bar != std::wstring::npos) {
+        wtPath = TrimWideWhitespace(trimmed.substr(0, bar));
+        branchName = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(trimmed.substr(bar + 1));
+    }
+    if (wtPath.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, wtPath, branchName]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            std::wstring cmd = L"worktree add ";
+            if (!branchName.empty()) {
+                cmd += L"-b \"" + branchName + L"\" ";
+            }
+            cmd += L"\"" + wtPath + L"\"";
+            auto res = RunGitCmd(cmd, dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Added worktree " + wtPath);
+                } else if (m_onGitError) {
+                    m_onGitError(L"git worktree add", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::RemoveWorktreeAsync(const std::wstring& worktreePath) {
+    std::wstring wtPath = TrimWideWhitespace(worktreePath);
+    if (wtPath.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, wtPath]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            auto res = RunGitCmd(L"worktree remove --force \"" + wtPath + L"\"", dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Removed worktree " + wtPath);
+                } else if (m_onGitError) {
+                    m_onGitError(L"git worktree remove", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::UpdateSubmodulesAsync(const std::wstring& submodulePath) {
+    std::wstring sub = TrimWideWhitespace(submodulePath);
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, sub]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            std::wstring cmd = L"submodule update --init --recursive";
+            if (!sub.empty()) cmd += L" -- \"" + sub + L"\"";
+            auto res = RunGitCmd(cmd, dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(sub.empty() ? L"\u2713 Submodules updated" : (L"\u2713 Updated submodule " + sub));
+                } else if (m_onGitError) {
+                    m_onGitError(L"git submodule update", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::RunGitBisectActionAsync(const std::wstring& subcmd) {
+    std::wstring cleanSub = TrimWideWhitespace(subcmd);
+    if (cleanSub.empty()) return;
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, cleanSub]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            std::wstring cmd = L"bisect " + cleanSub;
+            if (cleanSub.rfind(L"start ", 0) != 0 &&
+                cleanSub != L"good" && cleanSub != L"bad" && cleanSub != L"skip" && cleanSub != L"reset") {
+                std::wstring safeGood = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(cleanSub);
+                if (safeGood.empty()) safeGood = L"HEAD~5";
+                cmd = L"bisect start HEAD \"" + safeGood + L"\"";
+            }
+            auto res = RunGitCmd(cmd, dir);
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 git " + cmd + (res.output.empty() ? L"" : (L": " + res.output.substr(0, (std::min<size_t>)(80, res.output.size())))));
+                } else if (m_onGitError) {
+                    m_onGitError(L"git bisect", res.output, dir);
+                }
+            }
+        }
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::OpenInteractiveRebaseModal() {
+    std::wstring preset = L"HEAD~3 | ";
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        size_t take = (std::min<size_t>)(4, m_gitCommits.size());
+        if (take >= 2) {
+            preset = L"HEAD~" + std::to_wstring(take) + L" | ";
+            for (size_t i = take; i > 0; --i) {
+                const auto& h = m_gitCommits[i - 1].hash;
+                if (preset.back() != L' ') preset += L" ";
+                preset += L"pick:" + h.substr(0, (std::min<size_t>)(7, h.size()));
+            }
+        }
+    }
+    OpenGitPromptModal(GitPromptKind::InteractiveRebase,
+                       L"Interactive Rebase (<onto> | pick|reword|squash|fixup|drop:<hash>)", preset);
+}
+
+void DrawerPanel::RunInteractiveRebaseAsync(const std::wstring& spec) {
+    std::wstring trimmed = TrimWideWhitespace(spec);
+    if (trimmed.empty()) return;
+    std::wstring ontoRef = L"HEAD~3";
+    std::wstring todoSpec = trimmed;
+    size_t bar = trimmed.find(L'|');
+    if (bar != std::wstring::npos) {
+        ontoRef = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(TrimWideWhitespace(trimmed.substr(0, bar)));
+        todoSpec = TrimWideWhitespace(trimmed.substr(bar + 1));
+    }
+    if (ontoRef.empty()) ontoRef = L"HEAD~3";
+
+    std::vector<phide::git::GitWorkflowEngine::RebaseTodoItem> items;
+    std::wstringstream iss(todoSpec);
+    std::wstring tok;
+    while (iss >> tok && items.size() < 64) {
+        size_t colon = tok.find(L':');
+        phide::git::GitWorkflowEngine::RebaseTodoItem item;
+        if (colon != std::wstring::npos) {
+            item.action = tok.substr(0, colon);
+            item.hash = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(tok.substr(colon + 1));
+        } else {
+            item.action = L"pick";
+            item.hash = phide::git::GitWorkflowEngine::SanitizeBranchOrTagName(tok);
+        }
+        if (!item.hash.empty()) items.push_back(std::move(item));
+    }
+    if (items.empty()) return;
+
+    std::string seqText = phide::git::GitWorkflowEngine::BuildInteractiveRebaseSequence(items);
+    if (seqText.empty()) return;
+
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, ontoRef, seqText]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (alive && alive->load()) {
+            m_isGitLoading = true;
+            std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+            std::error_code tec;
+            std::filesystem::path tmpSeq = std::filesystem::temp_directory_path(tec) /
+                (L"phide_rebase_todo_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64()) + L".txt");
+            struct TempCleanup {
+                std::filesystem::path p;
+                ~TempCleanup() { std::error_code ec; if (!p.empty()) std::filesystem::remove(p, ec); }
+            } cleanup{ tmpSeq };
+            {
+                std::ofstream out(tmpSeq, std::ios::binary | std::ios::trunc);
+                out.write(seqText.data(), static_cast<std::streamsize>(seqText.size()));
+            }
+            std::wstring fwdSeq = tmpSeq.wstring();
+            for (auto& c : fwdSeq) if (c == L'\\') c = L'/';
+            std::wstring seqEditor = L"cp -f \"" + fwdSeq + L"\"";
+            auto res = RunGitCmdWithEnv(L"rebase -i \"" + ontoRef + L"\"", dir,
+                                        { {L"GIT_SEQUENCE_EDITOR", seqEditor} });
+            if (alive && alive->load()) {
+                RefreshGitState(false);
+                if (res.exitCode == 0) {
+                    ShowGitNotification(L"\u2713 Interactive rebase onto " + ontoRef + L" completed");
+                } else if (m_onGitError) {
+                    m_onGitError(L"git rebase -i", res.output, dir);
                 }
             }
         }
@@ -8638,7 +9135,17 @@ void DrawerPanel::GenerateAiCommitMessage() {
 }
 
 void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash) {
-    std::thread([this, cHash, commitIdx]() {
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, cHash, commitIdx]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            explicit WorkerGuard(std::shared_ptr<std::atomic<int>> p) : w(std::move(p)) {}
+            ~WorkerGuard() { if (w) w->fetch_sub(1); }
+        } guard(workers);
+        if (!alive || !alive->load()) return;
+
         GitCommitItem itemCopy;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
@@ -8649,13 +9156,14 @@ void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHa
             }
         }
         LoadCommitFiles(itemCopy);
+        if (!alive || !alive->load()) return;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
             if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash) {
                 m_gitCommits[commitIdx] = std::move(itemCopy);
             }
         }
-        if (m_onGitStateChanged) m_onGitStateChanged();
+        if (alive && alive->load() && m_onGitStateChanged) m_onGitStateChanged();
     }).detach();
 }
 
@@ -8670,7 +9178,8 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             std::wstring* pOutDiscardStatus,
                             size_t* pOutDiscardCount,
                             bool* pOutPromptEmptyCommit) {
-    (void)config;
+    m_gitSmartCommit = config.gitSmartCommit;
+    m_gitConfirmSync = config.gitConfirmSync;
     std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
     outOpenFile.clear();
     outDiscardedFile.clear();
@@ -8771,11 +9280,11 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             if (!m_isGitRepo || !m_hasGitRemote) {
                                 OpenPublishRepoModal();
                             } else {
-                                PushCommitsAsync();
+                                ConfirmOrRunSyncAction(GitPromptKind::ConfirmPush);
                             }
                             break;
                         case 22: // Pull Commits
-                            PullCommitsAsync();
+                            ConfirmOrRunSyncAction(GitPromptKind::ConfirmPull);
                             break;
                         case 23: // Fetch All Remotes
                             FetchAllRemotesAsync();
@@ -8785,6 +9294,16 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             break;
                         case 25: // Open Git & Activity Heatmap view
                             if (m_onOpenActivityHeatmap) m_onOpenActivityHeatmap();
+                            break;
+                        case 26: // Toggle All Branches (--all)
+                            m_gitGraphAllBranches = !m_gitGraphAllBranches;
+                            RefreshGitState(true, true);
+                            break;
+                        case 27: // Filter Graph...
+                            OpenGitPromptModal(GitPromptKind::GraphFilter, L"Filter Git Graph (author, message, branch)", m_gitGraphFilter);
+                            break;
+                        case 28: // Load More Commits
+                            LoadMoreGraphCommits();
                             break;
                         case 30: // Stash Changes with Message...
                             OpenGitPromptModal(GitPromptKind::StashMessage, L"Stash Changes (Optional Message)", L"");
@@ -8803,6 +9322,30 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                             break;
                         case 35: // Rebase Onto Branch...
                             OpenGitPromptModal(GitPromptKind::RebaseOnto, L"Rebase Current Branch Onto...", L"main");
+                            break;
+                        case 36: // Active File History (--follow)
+                            if (m_onOpenActiveFileHistory) m_onOpenActiveFileHistory();
+                            break;
+                        case 37: // Interactive Rebase (rebase -i)...
+                            OpenInteractiveRebaseModal();
+                            break;
+                        case 38: // Bisect Start...
+                            OpenGitPromptModal(GitPromptKind::BisectStart, L"Git Bisect Start (Good Ref, Bad=HEAD)", L"HEAD~5");
+                            break;
+                        case 39: // Bisect Good
+                            RunGitBisectActionAsync(L"good");
+                            break;
+                        case 50: // Bisect Bad
+                            RunGitBisectActionAsync(L"bad");
+                            break;
+                        case 51: // Bisect Reset
+                            RunGitBisectActionAsync(L"reset");
+                            break;
+                        case 52: // Add Worktree...
+                            OpenGitPromptModal(GitPromptKind::AddWorktree, L"Add Git Worktree (<path> | <branch>)", L"../wt-feature | feature/wt");
+                            break;
+                        case 53: // Update Submodules
+                            UpdateSubmodulesAsync();
                             break;
                         case 40: // Commit
                             m_activeGitMenu = GitMenuType::None;
@@ -8920,7 +9463,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 }
                 OpenPublishRepoModal();
             } else {
-                PushCommitsAsync();
+                ConfirmOrRunSyncAction(GitPromptKind::ConfirmSync);
             }
             return true;
         }
@@ -9001,6 +9544,95 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
             pt.y >= m_gitChangesHeaderBounds.top && pt.y <= m_gitChangesHeaderBounds.bottom) {
             m_changesExpanded = !m_changesExpanded;
             return true;
+        }
+
+        // Tags Section Header & Row Actions (Create / Checkout / Delete)
+        if (m_gitTagsHeaderBounds.right > m_gitTagsHeaderBounds.left &&
+            pt.x >= m_gitTagsHeaderBounds.left && pt.x <= m_gitTagsHeaderBounds.right &&
+            pt.y >= m_gitTagsHeaderBounds.top && pt.y <= m_gitTagsHeaderBounds.bottom) {
+            if (m_gitTagCreateBtnBounds.right > m_gitTagCreateBtnBounds.left &&
+                pt.x >= m_gitTagCreateBtnBounds.left && pt.x <= m_gitTagCreateBtnBounds.right &&
+                pt.y >= m_gitTagCreateBtnBounds.top && pt.y <= m_gitTagCreateBtnBounds.bottom) {
+                OpenGitPromptModal(GitPromptKind::CreateTag, L"Create Tag", L"v1.0.0");
+                return true;
+            }
+            m_tagsExpanded = !m_tagsExpanded;
+            return true;
+        }
+        if (m_tagsExpanded) {
+            for (size_t ti = 0; ti < m_gitTags.size(); ++ti) {
+                const auto& tg = m_gitTags[ti];
+                if (tg.deleteBtnBounds.right > tg.deleteBtnBounds.left &&
+                    pt.x >= tg.deleteBtnBounds.left && pt.x <= tg.deleteBtnBounds.right &&
+                    pt.y >= tg.deleteBtnBounds.top && pt.y <= tg.deleteBtnBounds.bottom) {
+                    DeleteTagAsync(tg.name);
+                    return true;
+                }
+                if (tg.bounds.right > tg.bounds.left &&
+                    pt.x >= tg.bounds.left && pt.x <= tg.bounds.right &&
+                    pt.y >= tg.bounds.top && pt.y <= tg.bounds.bottom) {
+                    CheckoutTagAsync(tg.name);
+                    return true;
+                }
+            }
+        }
+
+        // Worktrees Section Header & Row Actions (#40)
+        if (m_gitWorktreesHeaderBounds.right > m_gitWorktreesHeaderBounds.left &&
+            pt.x >= m_gitWorktreesHeaderBounds.left && pt.x <= m_gitWorktreesHeaderBounds.right &&
+            pt.y >= m_gitWorktreesHeaderBounds.top && pt.y <= m_gitWorktreesHeaderBounds.bottom) {
+            if (m_gitWorktreeCreateBtnBounds.right > m_gitWorktreeCreateBtnBounds.left &&
+                pt.x >= m_gitWorktreeCreateBtnBounds.left && pt.x <= m_gitWorktreeCreateBtnBounds.right &&
+                pt.y >= m_gitWorktreeCreateBtnBounds.top && pt.y <= m_gitWorktreeCreateBtnBounds.bottom) {
+                OpenGitPromptModal(GitPromptKind::AddWorktree,
+                                   L"Add Git Worktree (<path> | <branch>)", L"../wt-feature | feature/wt");
+                return true;
+            }
+            m_worktreesExpanded = !m_worktreesExpanded;
+            return true;
+        }
+        if (m_worktreesExpanded) {
+            for (size_t wi = 0; wi < m_gitWorktrees.size(); ++wi) {
+                const auto& wt = m_gitWorktrees[wi];
+                if (wt.removeBtnBounds.right > wt.removeBtnBounds.left &&
+                    pt.x >= wt.removeBtnBounds.left && pt.x <= wt.removeBtnBounds.right &&
+                    pt.y >= wt.removeBtnBounds.top && pt.y <= wt.removeBtnBounds.bottom) {
+                    RemoveWorktreeAsync(wt.entry.path);
+                    return true;
+                }
+                if (wt.bounds.right > wt.bounds.left &&
+                    pt.x >= wt.bounds.left && pt.x <= wt.bounds.right &&
+                    pt.y >= wt.bounds.top && pt.y <= wt.bounds.bottom) {
+                    if (m_onOpenWorktreeFolder && !wt.entry.path.empty()) {
+                        m_onOpenWorktreeFolder(wt.entry.path);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        // Submodules Section Header & Update Actions (#40)
+        if (m_gitSubmodulesHeaderBounds.right > m_gitSubmodulesHeaderBounds.left &&
+            pt.x >= m_gitSubmodulesHeaderBounds.left && pt.x <= m_gitSubmodulesHeaderBounds.right &&
+            pt.y >= m_gitSubmodulesHeaderBounds.top && pt.y <= m_gitSubmodulesHeaderBounds.bottom) {
+            if (m_gitSubmoduleSyncBtnBounds.right > m_gitSubmoduleSyncBtnBounds.left &&
+                pt.x >= m_gitSubmoduleSyncBtnBounds.left && pt.x <= m_gitSubmoduleSyncBtnBounds.right &&
+                pt.y >= m_gitSubmoduleSyncBtnBounds.top && pt.y <= m_gitSubmoduleSyncBtnBounds.bottom) {
+                UpdateSubmodulesAsync();
+                return true;
+            }
+            m_submodulesExpanded = !m_submodulesExpanded;
+            return true;
+        }
+        if (m_submodulesExpanded) {
+            for (const auto& sm : m_gitSubmodules) {
+                if (sm.updateBtnBounds.right > sm.updateBtnBounds.left &&
+                    pt.x >= sm.updateBtnBounds.left && pt.x <= sm.updateBtnBounds.right &&
+                    pt.y >= sm.updateBtnBounds.top && pt.y <= sm.updateBtnBounds.bottom) {
+                    UpdateSubmodulesAsync(sm.entry.path);
+                    return true;
+                }
+            }
         }
 
         // Stashes Section Header & Row Actions (Apply / Pop / Drop)
@@ -9118,6 +9750,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_gitGraphSplitBounds.left && pt.x <= m_gitGraphSplitBounds.right &&
             pt.y >= m_gitGraphSplitBounds.top && pt.y <= m_gitGraphSplitBounds.bottom) {
+            m_gitGraphAllBranches = !m_gitGraphAllBranches;
             RefreshGitState(true, true);
             return true;
         }
@@ -9135,7 +9768,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                 OpenPublishRepoModal();
                 return true;
             }
-            PushCommitsAsync();
+            ConfirmOrRunSyncAction(GitPromptKind::ConfirmPush);
             return true;
         }
         if (pt.x >= m_gitGraphRefreshBounds.left && pt.x <= m_gitGraphRefreshBounds.right &&
@@ -9205,12 +9838,22 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
                     } else {
                         m_expandedCommitHashes.erase(ci.hash);
                     }
-                    if (!ci.filesLoaded && ci.statSummary != L"Loading...") {
-                        ci.statSummary = L"Loading...";
-                        LoadCommitFilesAsync(i, ci.hash);
+                    if (!ci.filesLoaded) {
+                        if (m_gitSyncMode || !m_onGitStateChanged) {
+                            LoadCommitFiles(ci);
+                        } else if (ci.statSummary != L"Loading...") {
+                            ci.statSummary = L"Loading...";
+                            LoadCommitFilesAsync(i, ci.hash);
+                        }
                     }
                     return true;
                 }
+            }
+            if (m_gitGraphLoadMoreBounds.right > m_gitGraphLoadMoreBounds.left &&
+                pt.x >= m_gitGraphLoadMoreBounds.left && pt.x <= m_gitGraphLoadMoreBounds.right &&
+                pt.y >= m_gitGraphLoadMoreBounds.top && pt.y <= m_gitGraphLoadMoreBounds.bottom) {
+                LoadMoreGraphCommits();
+                return true;
             }
         }
     }
@@ -9310,11 +9953,13 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
     }
     else if (checkBtn(m_gitGraphAutoBounds, L"Toggle Auto Fetch / Refresh")) {}
     else if (checkBtn(m_gitGraphBullseyeBounds, L"Scroll to Current HEAD Commit (◎)")) {}
-    else if (checkBtn(m_gitGraphSplitBounds, L"View Branch Divergence (⑂)")) {}
+    else if (checkBtn(m_gitGraphSplitBounds, m_gitGraphAllBranches ? L"All Branches (--all): ON (Click for Current Branch)" : L"All Branches (--all): OFF (Click for All Branches)")) {}
     else if (checkBtn(m_gitGraphMergeBounds, L"View Branch Merges (⑃)")) {}
     else if (checkBtn(m_gitGraphPushBounds, L"Push Commits to Remote (↑)")) {}
     else if (checkBtn(m_gitGraphRefreshBounds, L"Refresh Git History & Status (🔄)")) {}
     else if (checkBtn(m_gitGraphMoreBounds, L"More Graph Actions...")) {}
+    else if (checkBtn(m_gitTagCreateBtnBounds, L"Create New Git Tag (+)")) {}
+    else if (checkBtn(m_gitGraphLoadMoreBounds, L"Load 40 More Commits")) {}
 
     // Check changed file rows (Image 4 & 5)
     for (size_t i = 0; i < m_gitChanges.size(); ++i) {
@@ -10026,9 +10671,19 @@ void DrawerPanel::DrawCenteredIconAndText(
 }
 
 void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
+    m_gitSmartCommit = config.gitSmartCommit;
+    m_gitConfirmSync = config.gitConfirmSync;
     const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
     const float paddingX = config.ScaleF(14.0f);
+
+    m_gitTagsHeaderBounds = {};
+    m_gitTagCreateBtnBounds = {};
+    m_gitWorktreesHeaderBounds = {};
+    m_gitWorktreeCreateBtnBounds = {};
+    m_gitSubmodulesHeaderBounds = {};
+    m_gitSubmoduleSyncBtnBounds = {};
+    m_gitGraphLoadMoreBounds = {};
 
     if (!m_hasOpenFolder || m_openFolderPath.empty()) {
         float curY = headerH + config.ScaleF(10.0f);
@@ -10083,6 +10738,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitStagedHeaderBounds = {};
         m_gitStashesHeaderBounds = {};
         m_gitStashSaveBtnBounds = {};
+        m_gitTagsHeaderBounds = {};
+        m_gitTagCreateBtnBounds = {};
+        m_gitWorktreesHeaderBounds = {};
+        m_gitWorktreeCreateBtnBounds = {};
+        m_gitSubmodulesHeaderBounds = {};
+        m_gitSubmoduleSyncBtnBounds = {};
+        m_gitGraphLoadMoreBounds = {};
         m_gitAmendToggleBounds = {};
         m_gitGraphHeaderBounds = {};
         m_gitMsgBoxBounds = {};
@@ -11267,6 +11929,195 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 }
             }
 
+            // =========================================================
+            // D. TAGS SECTION (Collapsible tag list w/ Create, Checkout, Delete)
+            // =========================================================
+            m_gitTagsHeaderBounds = {};
+            m_gitTagCreateBtnBounds = {};
+            if (m_showTagsSection && m_isGitRepo && (itemY + secH <= fileListBottomY + config.ScaleF(2.0f))) {
+                m_gitTagsHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+                float tcx = railW + config.ScaleF(14.0f);
+                float tcy = itemY + secH / 2.0f;
+                if (m_tagsExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(tcx - 3.5f, tcy - 2.0f), D2D1::Point2F(tcx, tcy + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(tcx, tcy + 2.0f), D2D1::Point2F(tcx + 3.5f, tcy - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(tcx - 2.0f, tcy - 3.5f), D2D1::Point2F(tcx + 2.0f, tcy), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(tcx + 2.0f, tcy), D2D1::Point2F(tcx - 2.0f, tcy + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+                }
+
+                std::wstring tagTitle = L"Tags (" + std::to_wstring(m_gitTags.size()) + L")";
+                D2D1_RECT_F rcTagTitle = D2D1::RectF(tcx + config.ScaleF(12.0f), itemY, railW + currentDrawerW - config.ScaleF(36.0f), itemY + secH);
+                pRT->DrawText(tagTitle.c_str(), static_cast<UINT32>(tagTitle.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcTagTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+                float tbPlusW = config.ScaleF(18.0f);
+                m_gitTagCreateBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - tbPlusW, itemY + 2.0f,
+                                                      railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
+                float tpx = (m_gitTagCreateBtnBounds.left + m_gitTagCreateBtnBounds.right) * 0.5f;
+                float tpy = (m_gitTagCreateBtnBounds.top + m_gitTagCreateBtnBounds.bottom) * 0.5f;
+                float tpr = config.ScaleF(4.0f);
+                pRT->DrawLine(D2D1::Point2F(tpx - tpr, tpy), D2D1::Point2F(tpx + tpr, tpy), theme.brushTextSecondary.Get(), 1.3f);
+                pRT->DrawLine(D2D1::Point2F(tpx, tpy - tpr), D2D1::Point2F(tpx, tpy + tpr), theme.brushTextSecondary.Get(), 1.3f);
+
+                itemY += secH;
+                if (m_tagsExpanded) {
+                    for (auto& tg : m_gitTags) {
+                        if (itemY + rowH > fileListBottomY + config.ScaleF(2.0f)) {
+                            tg.bounds = {};
+                            tg.deleteBtnBounds = {};
+                            continue;
+                        }
+                        tg.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
+                        float rx = railW + currentDrawerW - config.ScaleF(10.0f);
+                        float delW = config.ScaleF(22.0f);
+                        tg.deleteBtnBounds = D2D1::RectF(rx - delW, itemY + 3.0f, rx, itemY + rowH - 3.0f);
+                        D2D1_RECT_F rcTgLbl = D2D1::RectF(railW + config.ScaleF(18.0f), itemY, tg.deleteBtnBounds.left - config.ScaleF(4.0f), itemY + rowH);
+                        if (rcTgLbl.right > rcTgLbl.left) {
+                            pRT->DrawText(tg.name.c_str(), static_cast<UINT32>(tg.name.length()),
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          rcTgLbl, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(tg.deleteBtnBounds, 2.5f, 2.5f), theme.brushItemHover.Get());
+                        pRT->DrawText(L"\u00D7", 1,
+                                      theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                      tg.deleteBtnBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        itemY += rowH;
+                    }
+                }
+            }
+
+            // =========================================================
+            // E. WORKTREES SECTION (#40 Collapsible worktree switcher)
+            // =========================================================
+            m_gitWorktreesHeaderBounds = {};
+            m_gitWorktreeCreateBtnBounds = {};
+            if (m_showWorktreesSection && m_isGitRepo && (itemY + secH <= fileListBottomY + config.ScaleF(2.0f))) {
+                m_gitWorktreesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+                float wcx = railW + config.ScaleF(14.0f);
+                float wcy = itemY + secH * 0.5f;
+                if (m_worktreesExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(wcx - 3.5f, wcy - 2.0f), D2D1::Point2F(wcx, wcy + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(wcx, wcy + 2.0f), D2D1::Point2F(wcx + 3.5f, wcy - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(wcx - 2.0f, wcy - 3.5f), D2D1::Point2F(wcx + 2.0f, wcy), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(wcx + 2.0f, wcy), D2D1::Point2F(wcx - 2.0f, wcy + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+                }
+                std::wstring wtTitle = L"Worktrees (" + std::to_wstring(m_gitWorktrees.size()) + L")";
+                if (m_gitBisectActive) wtTitle += L"  [BISECT]";
+                D2D1_RECT_F rcWtTitle = D2D1::RectF(wcx + config.ScaleF(12.0f), itemY, railW + currentDrawerW - config.ScaleF(36.0f), itemY + secH);
+                pRT->DrawText(wtTitle.c_str(), static_cast<UINT32>(wtTitle.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcWtTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+                float wbPlusW = config.ScaleF(18.0f);
+                m_gitWorktreeCreateBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - wbPlusW, itemY + 2.0f,
+                                                           railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
+                float wpx = (m_gitWorktreeCreateBtnBounds.left + m_gitWorktreeCreateBtnBounds.right) * 0.5f;
+                float wpy = (m_gitWorktreeCreateBtnBounds.top + m_gitWorktreeCreateBtnBounds.bottom) * 0.5f;
+                float wpr = config.ScaleF(4.0f);
+                pRT->DrawLine(D2D1::Point2F(wpx - wpr, wpy), D2D1::Point2F(wpx + wpr, wpy), theme.brushTextSecondary.Get(), 1.3f);
+                pRT->DrawLine(D2D1::Point2F(wpx, wpy - wpr), D2D1::Point2F(wpx, wpy + wpr), theme.brushTextSecondary.Get(), 1.3f);
+
+                itemY += secH;
+                if (m_worktreesExpanded) {
+                    for (size_t wi = 0; wi < m_gitWorktrees.size(); ++wi) {
+                        auto& wt = m_gitWorktrees[wi];
+                        if (itemY + rowH > fileListBottomY + config.ScaleF(2.0f)) {
+                            wt.bounds = {};
+                            wt.removeBtnBounds = {};
+                            continue;
+                        }
+                        wt.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
+                        float rx = railW + currentDrawerW - config.ScaleF(10.0f);
+                        float delW = (wi > 0) ? config.ScaleF(22.0f) : 0.0f;
+                        if (wi > 0) {
+                            wt.removeBtnBounds = D2D1::RectF(rx - delW, itemY + 3.0f, rx, itemY + rowH - 3.0f);
+                            rx = wt.removeBtnBounds.left - config.ScaleF(4.0f);
+                        } else {
+                            wt.removeBtnBounds = {};
+                        }
+                        std::wstring wtName = std::filesystem::path(wt.entry.path).filename().wstring();
+                        if (wtName.empty()) wtName = wt.entry.path;
+                        std::wstring wtLabel = wtName + L" (" + (wt.entry.branch.empty() ? wt.entry.headHash : wt.entry.branch) + L")";
+                        D2D1_RECT_F rcWtLbl = D2D1::RectF(railW + config.ScaleF(18.0f), itemY, rx, itemY + rowH);
+                        if (rcWtLbl.right > rcWtLbl.left) {
+                            pRT->DrawText(wtLabel.c_str(), static_cast<UINT32>(wtLabel.length()),
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          rcWtLbl, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                        if (wi > 0) {
+                            pRT->FillRoundedRectangle(D2D1::RoundedRect(wt.removeBtnBounds, 2.5f, 2.5f), theme.brushItemHover.Get());
+                            pRT->DrawText(L"\u00D7", 1,
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          wt.removeBtnBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                        itemY += rowH;
+                    }
+                }
+            }
+
+            // =========================================================
+            // F. SUBMODULES SECTION (#40 Status & recursive update UI)
+            // =========================================================
+            m_gitSubmodulesHeaderBounds = {};
+            m_gitSubmoduleSyncBtnBounds = {};
+            if (m_showSubmodulesSection && m_isGitRepo && !m_gitSubmodules.empty() &&
+                (itemY + secH <= fileListBottomY + config.ScaleF(2.0f))) {
+                m_gitSubmodulesHeaderBounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + secH);
+                float scx = railW + config.ScaleF(14.0f);
+                float scy = itemY + secH * 0.5f;
+                if (m_submodulesExpanded) {
+                    pRT->DrawLine(D2D1::Point2F(scx - 3.5f, scy - 2.0f), D2D1::Point2F(scx, scy + 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(scx, scy + 2.0f), D2D1::Point2F(scx + 3.5f, scy - 2.0f), theme.brushTextPrimary.Get(), 1.4f);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(scx - 2.0f, scy - 3.5f), D2D1::Point2F(scx + 2.0f, scy), theme.brushTextPrimary.Get(), 1.4f);
+                    pRT->DrawLine(D2D1::Point2F(scx + 2.0f, scy), D2D1::Point2F(scx - 2.0f, scy + 3.5f), theme.brushTextPrimary.Get(), 1.4f);
+                }
+                std::wstring smTitle = L"Submodules (" + std::to_wstring(m_gitSubmodules.size()) + L")";
+                D2D1_RECT_F rcSmTitle = D2D1::RectF(scx + config.ScaleF(12.0f), itemY, railW + currentDrawerW - config.ScaleF(46.0f), itemY + secH);
+                pRT->DrawText(smTitle.c_str(), static_cast<UINT32>(smTitle.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcSmTitle, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+                float smBtnW = config.ScaleF(26.0f);
+                m_gitSubmoduleSyncBtnBounds = D2D1::RectF(railW + currentDrawerW - config.ScaleF(10.0f) - smBtnW, itemY + 2.0f,
+                                                          railW + currentDrawerW - config.ScaleF(10.0f), itemY + secH - 2.0f);
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitSubmoduleSyncBtnBounds, 2.5f, 2.5f), theme.brushItemHover.Get());
+                pRT->DrawText(L"\u21BB", 1,
+                              theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                              m_gitSubmoduleSyncBtnBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+                itemY += secH;
+                if (m_submodulesExpanded) {
+                    for (auto& sm : m_gitSubmodules) {
+                        if (itemY + rowH > fileListBottomY + config.ScaleF(2.0f)) {
+                            sm.bounds = {};
+                            sm.updateBtnBounds = {};
+                            continue;
+                        }
+                        sm.bounds = D2D1::RectF(railW, itemY, railW + currentDrawerW, itemY + rowH);
+                        float rx = railW + currentDrawerW - config.ScaleF(10.0f);
+                        float updW = config.ScaleF(46.0f);
+                        sm.updateBtnBounds = D2D1::RectF(rx - updW, itemY + 3.0f, rx, itemY + rowH - 3.0f);
+                        std::wstring smLbl = std::wstring(1, sm.entry.state == L' ' ? L'=' : sm.entry.state) +
+                                             L" " + sm.entry.path + L" [" + sm.entry.hash + L"]";
+                        D2D1_RECT_F rcSmLbl = D2D1::RectF(railW + config.ScaleF(18.0f), itemY, sm.updateBtnBounds.left - config.ScaleF(4.0f), itemY + rowH);
+                        if (rcSmLbl.right > rcSmLbl.left) {
+                            pRT->DrawText(smLbl.c_str(), static_cast<UINT32>(smLbl.length()),
+                                          theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                          rcSmLbl, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(sm.updateBtnBounds, 2.5f, 2.5f), theme.brushItemHover.Get());
+                        pRT->DrawText(L"Update", 6,
+                                      theme.fontMenuShortcut.Get() ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                                      sm.updateBtnBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        itemY += rowH;
+                    }
+                }
+            }
+
             pRT->PopAxisAlignedClip();
         }
     }
@@ -11392,14 +12243,15 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->DrawLine(D2D1::Point2F(gmgx + 3.0f, gmgy - 4.0f), D2D1::Point2F(gmgx, gmgy), theme.brushTextMuted.Get(), 1.2f);
         pRT->DrawLine(D2D1::Point2F(gmgx, gmgy), D2D1::Point2F(gmgx, gmgy + 4.0f), theme.brushTextMuted.Get(), 1.2f);
 
-        // ⑂ Split
+        // ⑂ All Branches (--all toggle)
         m_gitGraphSplitBounds = D2D1::RectF(rightX - tbW, curY + 2.0f, rightX, curY + secH - 2.0f);
         rightX -= (tbW + tbGap);
         float gsx = (m_gitGraphSplitBounds.left + m_gitGraphSplitBounds.right) / 2.0f;
         float gsy = (m_gitGraphSplitBounds.top + m_gitGraphSplitBounds.bottom) / 2.0f;
-        pRT->DrawLine(D2D1::Point2F(gsx, gsy + 4.0f), D2D1::Point2F(gsx, gsy), theme.brushTextMuted.Get(), 1.2f);
-        pRT->DrawLine(D2D1::Point2F(gsx, gsy), D2D1::Point2F(gsx - 3.0f, gsy - 4.0f), theme.brushTextMuted.Get(), 1.2f);
-        pRT->DrawLine(D2D1::Point2F(gsx, gsy), D2D1::Point2F(gsx + 3.0f, gsy - 4.0f), theme.brushTextMuted.Get(), 1.2f);
+        ID2D1Brush* pSplitBrush = m_gitGraphAllBranches ? theme.brushBrandAccent.Get() : theme.brushTextMuted.Get();
+        pRT->DrawLine(D2D1::Point2F(gsx, gsy + 4.0f), D2D1::Point2F(gsx, gsy), pSplitBrush, 1.25f);
+        pRT->DrawLine(D2D1::Point2F(gsx, gsy), D2D1::Point2F(gsx - 3.0f, gsy - 4.0f), pSplitBrush, 1.25f);
+        pRT->DrawLine(D2D1::Point2F(gsx, gsy), D2D1::Point2F(gsx + 3.0f, gsy - 4.0f), pSplitBrush, 1.25f);
 
         // ◎ Bullseye
         m_gitGraphBullseyeBounds = D2D1::RectF(rightX - tbW, curY + 2.0f, rightX, curY + secH - 2.0f);
@@ -11419,6 +12271,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                       m_gitAutoRefresh ? theme.brushBrandAccent.Get() : theme.brushTextMuted.Get());
 
         curY += secH + config.ScaleF(4.0f);
+        m_gitGraphLoadMoreBounds = {};
 
         if (m_graphExpanded) {
             // Clip to Graph scrollable area (cleanly bounded, never spills over)
@@ -11821,6 +12674,20 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 }
             }
 
+            if (m_gitGraphLimit < 400 && !m_gitCommits.empty() &&
+                (m_gitCommits.size() >= static_cast<size_t>(m_gitGraphLimit) || !m_gitGraphFilter.empty())) {
+                curY += config.ScaleF(4.0f);
+                float btnH = config.ScaleF(24.0f);
+                m_gitGraphLoadMoreBounds = D2D1::RectF(
+                    railW + config.ScaleF(12.0f), curY,
+                    railW + currentDrawerW - config.ScaleF(12.0f), curY + btnH);
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitGraphLoadMoreBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+                const wchar_t* lmLabel = L"Load More Commits (+40)";
+                pRT->DrawText(lmLabel, static_cast<UINT32>(wcslen(lmLabel)),
+                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                              m_gitGraphLoadMoreBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+
             pRT->PopAxisAlignedClip();
         }
     }
@@ -11848,12 +12715,24 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 33, L"🏷  Create Tag..." });
             m_gitMenuItems.push_back({ 34, L"🗑  Delete Tag..." });
             m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
+            m_gitMenuItems.push_back({ 37, L"⚙  Interactive Rebase (-i)..." });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            m_gitMenuItems.push_back({ 36, L"📜 Active File History (--follow)" });
+            m_gitMenuItems.push_back({ 52, L"🌲 Add Worktree..." });
+            if (!m_gitSubmodules.empty()) {
+                m_gitMenuItems.push_back({ 53, L"↻  Update Submodules" });
+            }
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
             m_gitMenuItems.push_back({ 14, L"🔄 Refresh Status" });
         } else if (m_activeGitMenu == GitMenuType::GraphMore) {
             anchor = m_gitGraphMoreBounds;
             m_gitMenuItems.push_back({ 13, L"↩  Undo Last Commit" });
             m_gitMenuItems.push_back({ 20, L"🔄 Refresh Graph" });
+            m_gitMenuItems.push_back({ 26, m_gitGraphAllBranches ? L"✓  All Branches (--all)" : L"    All Branches (--all)", false, false, m_gitGraphAllBranches });
+            m_gitMenuItems.push_back({ 27, !m_gitGraphFilter.empty() ? (L"🔍 Filter: " + m_gitGraphFilter + L"...") : L"🔍 Filter Graph..." });
+            if (m_gitGraphLimit < 400) {
+                m_gitMenuItems.push_back({ 28, L"⊞  Load More Commits (+40)" });
+            }
             m_gitMenuItems.push_back({ 21, L"↑  Push Commits" });
             m_gitMenuItems.push_back({ 22, L"↓  Pull Commits" });
             m_gitMenuItems.push_back({ 23, L"☁  Fetch All Remotes" });
@@ -11861,6 +12740,16 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitMenuItems.push_back({ 31, L"🌿 Create Branch..." });
             m_gitMenuItems.push_back({ 33, L"🏷  Create Tag..." });
             m_gitMenuItems.push_back({ 35, L"↷  Rebase Branch Onto..." });
+            m_gitMenuItems.push_back({ 37, L"⚙  Interactive Rebase (-i)..." });
+            m_gitMenuItems.push_back({ 36, L"📜 Active File History (--follow)" });
+            m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
+            if (!m_gitBisectActive) {
+                m_gitMenuItems.push_back({ 38, L"⌖  Bisect: Start..." });
+            } else {
+                m_gitMenuItems.push_back({ 39, L"✓  Bisect: Mark Good" });
+                m_gitMenuItems.push_back({ 50, L"✕  Bisect: Mark Bad" });
+                m_gitMenuItems.push_back({ 51, L"↩  Bisect: Reset" });
+            }
             m_gitMenuItems.push_back({ 0,  L"", false, true }); // separator
             m_gitMenuItems.push_back({ 25, L"▦  Activity Heatmap..." });
         } else if (m_activeGitMenu == GitMenuType::CommitMenu) {
@@ -12672,6 +13561,15 @@ void DrawerPanel::ConfirmGitPromptModal() {
         case GitPromptKind::DeleteTag: DeleteTagAsync(val); break;
         case GitPromptKind::RebaseOnto: RebaseBranchAsync(val); break;
         case GitPromptKind::StashMessage: StashChangesWithMessageAsync(val); break;
+        case GitPromptKind::GraphFilter: SetGitGraphFilter(TrimWideWhitespace(val)); break;
+        case GitPromptKind::AddWorktree: AddWorktreeAsync(val); break;
+        case GitPromptKind::InteractiveRebase: RunInteractiveRebaseAsync(val); break;
+        case GitPromptKind::BisectStart: RunGitBisectActionAsync(val); break;
+        case GitPromptKind::ConfirmPush: PushCommitsAsync(); break;
+        case GitPromptKind::ConfirmPull: PullCommitsAsync(); break;
+        case GitPromptKind::ConfirmSync: SyncCommitsAsync(); break;
+        case GitPromptKind::ConfirmCommitAndPush: CommitChangesAsync(val.empty() ? m_commitMessage : val, false, 1); break;
+        case GitPromptKind::ConfirmCommitAndSync: CommitChangesAsync(val.empty() ? m_commitMessage : val, false, 2); break;
         default: break;
     }
 }
@@ -12683,8 +13581,14 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f), &backdrop);
     if (backdrop) pRT->FillRectangle(D2D1::RectF(0, 0, clientWidth, clientHeight), backdrop.Get());
 
+    const bool isConfirmOnly = (m_gitPromptKind == GitPromptKind::ConfirmPush ||
+                                m_gitPromptKind == GitPromptKind::ConfirmPull ||
+                                m_gitPromptKind == GitPromptKind::ConfirmSync ||
+                                m_gitPromptKind == GitPromptKind::ConfirmCommitAndPush ||
+                                m_gitPromptKind == GitPromptKind::ConfirmCommitAndSync);
+
     float mw = config.ScaleF(420.0f);
-    float mh = config.ScaleF(132.0f);
+    float mh = config.ScaleF(isConfirmOnly ? 116.0f : 132.0f);
     float left = (clientWidth - mw) * 0.5f;
     float top = config.ScaleF(46.0f);
     m_gitPromptModalBounds = D2D1::RectF(left, top, left + mw, top + mh);
@@ -12697,14 +13601,27 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
                   D2D1::RectF(left + 14.0f, top + 10.0f, left + mw - 14.0f, top + 34.0f),
                   theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
-    m_gitPromptInputBounds = D2D1::RectF(left + 14.0f, top + 40.0f, left + mw - 14.0f, top + 72.0f);
-    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushCanvasBg.Get());
-    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get(), 1.2f);
-    std::wstring dispVal = m_gitPromptValue + L"|";
-    pRT->DrawText(dispVal.c_str(), static_cast<UINT32>(dispVal.size()),
-                  theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                  D2D1::RectF(m_gitPromptInputBounds.left + 8.0f, m_gitPromptInputBounds.top + 6.0f, m_gitPromptInputBounds.right - 8.0f, m_gitPromptInputBounds.bottom - 4.0f),
-                  theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (!isConfirmOnly) {
+        m_gitPromptInputBounds = D2D1::RectF(left + 14.0f, top + 40.0f, left + mw - 14.0f, top + 72.0f);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushCanvasBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_gitPromptInputBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get(), 1.2f);
+        std::wstring dispVal = m_gitPromptValue + L"|";
+        pRT->DrawText(dispVal.c_str(), static_cast<UINT32>(dispVal.size()),
+                      theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                      D2D1::RectF(m_gitPromptInputBounds.left + 8.0f, m_gitPromptInputBounds.top + 6.0f, m_gitPromptInputBounds.right - 8.0f, m_gitPromptInputBounds.bottom - 4.0f),
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+        m_gitPromptInputBounds = {};
+        const wchar_t* subDesc = (m_gitPromptKind == GitPromptKind::ConfirmPull)
+            ? L"This will pull incoming commits from the remote tracking branch."
+            : ((m_gitPromptKind == GitPromptKind::ConfirmPush || m_gitPromptKind == GitPromptKind::ConfirmCommitAndPush)
+                   ? L"This will push local commits to the remote repository."
+                   : L"This will pull and push commits with the remote tracking branch.");
+        pRT->DrawText(subDesc, static_cast<UINT32>(wcslen(subDesc)),
+                      theme.fontBody.Get(),
+                      D2D1::RectF(left + 14.0f, top + 36.0f, left + mw - 14.0f, top + 66.0f),
+                      theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
 
     float bw = config.ScaleF(82.0f);
     float bh = config.ScaleF(26.0f);
@@ -12716,7 +13633,8 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
     pRT->DrawText(L"Cancel", 6, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptCancelBounds, theme.brushTextSecondary.Get());
 
     pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptConfirmBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get());
-    pRT->DrawText(L"Apply", 5, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptConfirmBounds, theme.brushTextWhite.Get());
+    const wchar_t* okText = isConfirmOnly ? L"Confirm" : L"Apply";
+    pRT->DrawText(okText, static_cast<UINT32>(wcslen(okText)), theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptConfirmBounds, theme.brushTextWhite.Get());
 }
 
 bool DrawerPanel::HandleGitPromptMouseDown(POINT pt) {
@@ -13393,101 +14311,47 @@ static Microsoft::WRL::ComPtr<ID2D1Bitmap> LoadPngBitmap(ID2D1RenderTarget* pRT,
 }
 
 void DrawerPanel::InitExtensionEntries() {
-    if (m_extensionsInitialized) return;
+    auto loadedPlugins = phide::plugin::PluginManager::Instance().GetLoadedPlugins();
+    bool matches = m_extensionsInitialized && (loadedPlugins.size() == m_extensionEntries.size());
+    if (matches) {
+        for (size_t i = 0; i < loadedPlugins.size(); ++i) {
+            if (loadedPlugins[i].id != m_extensionEntries[i].id ||
+                loadedPlugins[i].enabled != m_extensionEntries[i].isEnabled) {
+                matches = false;
+                break;
+            }
+        }
+    }
+    if (matches) return;
+
     m_extensionsInitialized = true;
-
     m_extensionEntries.clear();
+    m_extensionEntries.reserve(loadedPlugins.size());
 
-    ExtensionEntry e1;
-    e1.id = L"phide.react-snippets";
-    e1.displayName = L"ES7+ React/Redux/React-Native snippets";
-    e1.publisherDisplayName = L"rodrigovallades";
-    e1.description = L"Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable.";
-    e1.version = L"4.4.3";
-    e1.installsFormatted = L"17.8M";
-    e1.rating = 4.4f;
-    e1.iconPath = L"assets\\extensions\\phide.react-snippets\\icon.png";
-    e1.isInstalled = true;
-    e1.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e1));
-
-    ExtensionEntry e2;
-    e2.id = L"phide.tailwindcss";
-    e2.displayName = L"Tailwind CSS IntelliSense";
-    e2.publisherDisplayName = L"Tailwind Labs";
-    e2.description = L"Intelligent Tailwind CSS tooling for web development";
-    e2.version = L"0.14.3";
-    e2.installsFormatted = L"17.9M";
-    e2.rating = 4.7f;
-    e2.iconPath = L"assets\\extensions\\phide.tailwindcss\\icon.png";
-    e2.isInstalled = true;
-    e2.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e2));
-
-    ExtensionEntry e3;
-    e3.id = L"phide.yaml";
-    e3.displayName = L"YAML";
-    e3.publisherDisplayName = L"Red Hat";
-    e3.description = L"YAML Language Support by Red Hat, with built-in Kubernetes syntax support";
-    e3.version = L"2.1.2";
-    e3.installsFormatted = L"29.8M";
-    e3.rating = 4.3f;
-    e3.iconPath = L"assets\\extensions\\phide.yaml\\icon.png";
-    e3.isInstalled = true;
-    e3.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e3));
-
-    ExtensionEntry e4;
-    e4.id = L"phide.gitlens";
-    e4.displayName = L"GitLens — Git supercharged";
-    e4.publisherDisplayName = L"GitKraken";
-    e4.description = L"Supercharge Git — Visualize code authorship at a glance via Git blame annotations and CodeLens";
-    e4.version = L"2026.10.31";
-    e4.installsFormatted = L"53.6M";
-    e4.rating = 4.5f;
-    e4.iconPath = L"assets\\extensions\\phide.gitlens\\icon.png";
-    e4.isInstalled = true;
-    e4.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e4));
-
-    ExtensionEntry e5;
-    e5.id = L"phide.eslint";
-    e5.displayName = L"ESLint";
-    e5.publisherDisplayName = L"phide";
-    e5.description = L"Integrates ESLint JavaScript, TypeScript, JSX, and TSX linting into phide";
-    e5.version = L"3.0.34";
-    e5.installsFormatted = L"37.2M";
-    e5.rating = 4.6f;
-    e5.iconPath = L"assets\\extensions\\phide.eslint\\icon.png";
-    e5.isInstalled = true;
-    e5.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e5));
-
-    ExtensionEntry e6;
-    e6.id = L"phide.code-runner";
-    e6.displayName = L"Code Runner";
-    e6.publisherDisplayName = L"formulahendry";
-    e6.description = L"Run code snippet or code file for multiple languages";
-    e6.version = L"0.12.2";
-    e6.installsFormatted = L"26.5M";
-    e6.rating = 4.5f;
-    e6.iconPath = L"assets\\extensions\\phide.code-runner\\icon.png";
-    e6.isInstalled = true;
-    e6.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e6));
-
-    ExtensionEntry e7;
-    e7.id = L"phide.prettier";
-    e7.displayName = L"Prettier";
-    e7.publisherDisplayName = L"phide";
-    e7.description = L"Code formatter using Prettier for HTML, CSS, JavaScript, TypeScript, JSX, and JSON";
-    e7.version = L"12.4.0";
-    e7.installsFormatted = L"48.9M";
-    e7.rating = 4.7f;
-    e7.iconPath = L"assets\\extensions\\phide.prettier\\icon.png";
-    e7.isInstalled = true;
-    e7.isEnabled = true;
-    m_extensionEntries.push_back(std::move(e7));
+    for (const auto& p : loadedPlugins) {
+        ExtensionEntry e;
+        e.id = p.id;
+        e.displayName = p.name.empty() ? p.id : p.name;
+        e.publisherDisplayName = p.author.empty()
+            ? (p.isNativeDll ? L"Native C++ Plugin" : L"Local Plugin")
+            : p.author;
+        e.description = p.description.empty()
+            ? (p.manifestPath.empty() ? p.mainDllPath : p.manifestPath)
+            : p.description;
+        e.version = p.version.empty() ? L"1.0.0" : p.version;
+        e.installsFormatted = p.isNativeDll ? L"Native DLL" : L"Manifest";
+        e.rating = 5.0f;
+        if (!p.rootDir.empty()) {
+            std::error_code ec;
+            std::filesystem::path iconCandidate = std::filesystem::path(p.rootDir) / L"icon.png";
+            if (std::filesystem::exists(iconCandidate, ec)) {
+                e.iconPath = iconCandidate.wstring();
+            }
+        }
+        e.isInstalled = true;
+        e.isEnabled = p.enabled;
+        m_extensionEntries.push_back(std::move(e));
+    }
 }
 
 void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW) {
@@ -13524,13 +14388,23 @@ void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, con
                   rcPlaceholder, theme.brushTextMuted.Get());
     curY += searchH + config.ScaleF(16.0f);
 
-    // 3. Section Header: "INSTALLED (4)"
+    // 3. Section Header: "INSTALLED (...)"
     std::wstring installedHeader = L"INSTALLED (" + std::to_wstring(m_extensionEntries.size()) + L")";
     D2D1_RECT_F rcSecHeader = D2D1::RectF(railW + paddingX, curY, railW + currentDrawerW - paddingX, curY + config.ScaleF(18.0f));
     pRT->DrawText(installedHeader.c_str(), static_cast<UINT32>(installedHeader.length()),
                   theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontTitle.Get(),
                   rcSecHeader, theme.brushTextPrimary.Get());
     curY += config.ScaleF(22.0f);
+
+    if (m_extensionEntries.empty()) {
+        D2D1_RECT_F rcEmpty = D2D1::RectF(railW + paddingX, curY + config.ScaleF(6.0f),
+                                          railW + currentDrawerW - paddingX, curY + config.ScaleF(64.0f));
+        std::wstring emptyMsg = L"No plugins loaded. Place manifests in %APPDATA%\\phide\\plugins or .phide\\plugins.";
+        pRT->DrawText(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.length()),
+                      theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
+                      rcEmpty, theme.brushTextMuted.Get());
+        return;
+    }
 
     // 4. Extensions List
     curY -= m_extensionsScrollY;
@@ -13582,13 +14456,13 @@ void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, con
                           theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
                           rcDesc, theme.brushTextMuted.Get());
 
-            // Publisher & stats
-            std::wstring footer = entry.publisherDisplayName + L"  •  " + entry.installsFormatted + L"  •  ★ " +
-                                  std::to_wstring(static_cast<int>(entry.rating)) + L"." + std::to_wstring(static_cast<int>(entry.rating * 10) % 10);
+            // Publisher, version & runtime status
+            std::wstring footer = entry.publisherDisplayName + L"  •  v" + entry.version + L"  •  " +
+                                  (entry.isEnabled ? L"Enabled" : L"Disabled");
             D2D1_RECT_F rcFoot = D2D1::RectF(textX, curY + config.ScaleF(40.0f), textW > 0 ? textX + textW : textX + 100.0f, curY + config.ScaleF(58.0f));
             pRT->DrawText(footer.c_str(), static_cast<UINT32>(footer.length()),
                           theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(),
-                          rcFoot, theme.brushTextMuted.Get());
+                          rcFoot, entry.isEnabled ? theme.brushTextMuted.Get() : theme.brushBrandAccent.Get());
 
             // Gear icon button
             D2D1_RECT_F rcGear = D2D1::RectF(rcItem.right - config.ScaleF(24.0f), curY + (itemH - config.ScaleF(16.0f)) * 0.5f,
@@ -13604,7 +14478,16 @@ void DrawerPanel::RenderExtensionsPane(ID2D1RenderTarget* pRT, Theme& theme, con
 
 bool DrawerPanel::HitTestExtensions(POINT pt, const app::AppConfig& config, std::wstring& outExtId) {
     (void)config;
-    for (const auto& e : m_extensionEntries) {
+    for (auto& e : m_extensionEntries) {
+        if (pt.x >= e.gearBounds.left && pt.x <= e.gearBounds.right &&
+            pt.y >= e.gearBounds.top && pt.y <= e.gearBounds.bottom) {
+            outExtId = e.id;
+            bool nextEnabled = !e.isEnabled;
+            if (phide::plugin::PluginManager::Instance().SetPluginEnabled(e.id, nextEnabled)) {
+                e.isEnabled = nextEnabled;
+            }
+            return true;
+        }
         if (pt.x >= e.bounds.left && pt.x <= e.bounds.right && pt.y >= e.bounds.top && pt.y <= e.bounds.bottom) {
             outExtId = e.id;
             if (m_onOpenExtensionDetail) {
@@ -14879,6 +15762,553 @@ bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*conf
         default:
             return false;
     }
+}
+
+void DrawerPanel::DiscardDeviceResources() {
+    m_pDrawerBgGeometry.Reset();
+    m_pCachedDbgRT = nullptr;
+    m_pDbgCardBrush.Reset();
+    m_pDbgBtnBrush.Reset();
+    m_pDbgBtnHoverBrush.Reset();
+    m_pDbgAccentSubtleBrush.Reset();
+    m_pDbgGreenBrush.Reset();
+    m_pDbgRedBrush.Reset();
+    m_pDbgAmberBrush.Reset();
+    m_pDbgCyanBrush.Reset();
+    m_wicFactory.Reset();
+    m_avatarBitmaps.clear();
+    m_avatarLruOrder.clear();
+    m_checkedAvatars.clear();
+}
+
+void DrawerPanel::EnsureDebugPaneBrushes(ID2D1RenderTarget* pRT, const Theme& theme) {
+    if (!pRT) return;
+    const bool isDark = theme.IsDarkMode();
+    if (m_pCachedDbgRT == pRT && m_cachedDbgDark == isDark && m_pDbgCardBrush) {
+        return;
+    }
+    m_pCachedDbgRT = pRT;
+    m_cachedDbgDark = isDark;
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.135f, 0.145f, 0.165f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &m_pDbgCardBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.87f, 0.89f, 0.93f, 1.0f), &m_pDbgBtnBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.24f, 0.26f, 0.30f, 1.0f) : D2D1::ColorF(0.80f, 0.84f, 0.90f, 1.0f), &m_pDbgBtnHoverBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.20f), &m_pDbgAccentSubtleBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &m_pDbgGreenBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &m_pDbgRedBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &m_pDbgAmberBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &m_pDbgCyanBrush);
+}
+
+void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                  float clientHeight, float currentDrawerW) {
+    if (!pRT || currentDrawerW <= 20.0f) return;
+    EnsureRemoteTextFormats(theme, config);
+    EnsureDebugPaneBrushes(pRT, theme);
+
+    DebugHitKind prevKind = DebugHitKind::None;
+    int prevInt = -1;
+    std::wstring prevStr;
+    if (m_hoveredDebugZoneIdx >= 0 && m_hoveredDebugZoneIdx < static_cast<int>(m_debugHitZones.size())) {
+        prevKind = m_debugHitZones[m_hoveredDebugZoneIdx].kind;
+        prevInt = m_debugHitZones[m_hoveredDebugZoneIdx].intArg;
+        prevStr = m_debugHitZones[m_hoveredDebugZoneIdx].strArg;
+    }
+    m_debugHitZones.clear();
+
+    phide::dev::DapSessionSnapshot snap{};
+    std::vector<phide::dev::DapBreakpoint> bps;
+    std::vector<phide::dev::LaunchConfig> cfgs;
+    bool isDebugActive = false;
+    bool isPaused = false;
+    if (m_debugCallbacks.fetchState) {
+        m_debugCallbacks.fetchState(snap, bps, cfgs, m_selectedLaunchConfigIdx, isDebugActive, isPaused);
+    }
+
+    const float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
+    const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float padX = config.ScaleF(10.0f);
+    const float leftX = railW;
+    const float rightX = railW + currentDrawerW;
+    const float innerW = (std::max)(config.ScaleF(80.0f), currentDrawerW - padX * 2.0f);
+
+    IDWriteTextFormat* fmtHdr = m_fmtRemoteHeader ? m_fmtRemoteHeader.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* fmtBody = m_fmtRemoteBody ? m_fmtRemoteBody.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* fmtSmall = m_fmtRemoteSmall ? m_fmtRemoteSmall.Get() : fmtBody;
+    ID2D1Brush* textPrimary = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* textMuted = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrimary;
+
+    auto isHovered = [&](DebugHitKind k, int i = -1, const std::wstring& s = L"") -> bool {
+        return prevKind == k && prevInt == i && prevStr == s;
+    };
+    auto addZone = [&](DebugHitKind k, int i, bool b, const std::wstring& s, const D2D1_RECT_F& rc) {
+        m_debugHitZones.push_back({ k, i, b, s, rc });
+    };
+
+    float topY = headerH + config.ScaleF(8.0f);
+    float hdrH = config.ScaleF(22.0f);
+    D2D1_RECT_F rcTitle = D2D1::RectF(leftX + padX, topY, rightX - padX - config.ScaleF(64.0f), topY + hdrH);
+    if (fmtHdr && textMuted) {
+        pRT->DrawText(L"RUN AND DEBUG", 13, fmtHdr, rcTitle, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    D2D1_RECT_F rcConsole = D2D1::RectF(rightX - padX - config.ScaleF(58.0f), topY + 1.0f, rightX - padX - config.ScaleF(24.0f), topY + hdrH - 1.0f);
+    D2D1_RECT_F rcLaunchJson = D2D1::RectF(rightX - padX - config.ScaleF(20.0f), topY + 1.0f, rightX - padX, topY + hdrH - 1.0f);
+    if (m_pDbgBtnBrush) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcConsole, 3.0f, 3.0f),
+                                  isHovered(DebugHitKind::OpenConsole) && m_pDbgBtnHoverBrush ? m_pDbgBtnHoverBrush.Get() : m_pDbgBtnBrush.Get());
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcLaunchJson, 3.0f, 3.0f),
+                                  isHovered(DebugHitKind::OpenLaunchJson) && m_pDbgBtnHoverBrush ? m_pDbgBtnHoverBrush.Get() : m_pDbgBtnBrush.Get());
+    }
+    if (fmtSmall && textPrimary) {
+        pRT->DrawText(L"REPL", 4, fmtSmall, D2D1::RectF(rcConsole.left + config.ScaleF(4.0f), rcConsole.top + config.ScaleF(2.0f), rcConsole.right, rcConsole.bottom), textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        pRT->DrawText(L"{}", 2, fmtSmall, D2D1::RectF(rcLaunchJson.left + config.ScaleF(4.0f), rcLaunchJson.top + config.ScaleF(2.0f), rcLaunchJson.right, rcLaunchJson.bottom), textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    addZone(DebugHitKind::OpenConsole, -1, false, L"", rcConsole);
+    addZone(DebugHitKind::OpenLaunchJson, -1, false, L"", rcLaunchJson);
+
+    topY += hdrH + config.ScaleF(6.0f);
+
+    // Run button + Launch config cycle chip
+    float btnH = config.ScaleF(26.0f);
+    float cfgW = cfgs.empty() ? 0.0f : (std::min)(innerW * 0.48f, config.ScaleF(126.0f));
+    D2D1_RECT_F rcStart = D2D1::RectF(leftX + padX, topY, rightX - padX - (cfgW > 0.0f ? cfgW + config.ScaleF(4.0f) : 0.0f), topY + btnH);
+    if (theme.brushBrandAccent) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcStart, 4.0f, 4.0f), theme.brushBrandAccent.Get());
+    }
+    std::wstring startLbl = isDebugActive ? L"Restart Debug" : L"Run and Debug";
+    if (fmtBody && theme.brushTextWhite) {
+        pRT->DrawText(startLbl.c_str(), static_cast<UINT32>(startLbl.size()), fmtBody,
+                      D2D1::RectF(rcStart.left + config.ScaleF(10.0f), rcStart.top + config.ScaleF(4.0f), rcStart.right - config.ScaleF(6.0f), rcStart.bottom),
+                      theme.brushTextWhite.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    addZone(isDebugActive ? DebugHitKind::ActRestart : DebugHitKind::StartDebug,
+            cfgs.empty() ? -1 : static_cast<int>(m_selectedLaunchConfigIdx), false, L"", rcStart);
+
+    if (!cfgs.empty()) {
+        if (m_selectedLaunchConfigIdx >= cfgs.size()) m_selectedLaunchConfigIdx = 0;
+        D2D1_RECT_F rcCfg = D2D1::RectF(rcStart.right + config.ScaleF(4.0f), topY, rightX - padX, topY + btnH);
+        if (m_pDbgBtnBrush) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcCfg, 4.0f, 4.0f),
+                                      isHovered(DebugHitKind::CycleConfig) && m_pDbgBtnHoverBrush ? m_pDbgBtnHoverBrush.Get() : m_pDbgBtnBrush.Get());
+        }
+        std::wstring cName = cfgs[m_selectedLaunchConfigIdx].name;
+        if (cName.empty()) cName = cfgs[m_selectedLaunchConfigIdx].type;
+        if (fmtSmall && textPrimary) {
+            pRT->DrawText(cName.c_str(), static_cast<UINT32>(cName.size()), fmtSmall,
+                          D2D1::RectF(rcCfg.left + config.ScaleF(6.0f), rcCfg.top + config.ScaleF(5.0f), rcCfg.right - config.ScaleF(4.0f), rcCfg.bottom),
+                          textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        addZone(DebugHitKind::CycleConfig, static_cast<int>(cfgs.size()), false, L"", rcCfg);
+    }
+
+    topY += btnH + config.ScaleF(6.0f);
+
+    // Compact stepping bar when active
+    if (isDebugActive) {
+        float actH = config.ScaleF(24.0f);
+        struct ActDef { DebugHitKind k; const wchar_t* txt; bool enabled; };
+        ActDef acts[6] = {
+            { DebugHitKind::ActContinue, L"▶", isPaused },
+            { DebugHitKind::ActPause, L"⏸", !isPaused },
+            { DebugHitKind::ActStepOver, L"⤵", isPaused },
+            { DebugHitKind::ActStepInto, L"↓", isPaused },
+            { DebugHitKind::ActStepOut, L"↑", isPaused },
+            { DebugHitKind::ActStop, L"■", true }
+        };
+        float gap = config.ScaleF(4.0f);
+        float bw = (innerW - gap * 5.0f) / 6.0f;
+        float bx = leftX + padX;
+        for (const auto& a : acts) {
+            D2D1_RECT_F rcA = D2D1::RectF(bx, topY, bx + bw, topY + actH);
+            if (m_pDbgBtnBrush) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcA, 3.0f, 3.0f),
+                                          (a.enabled && isHovered(a.k) && m_pDbgBtnHoverBrush) ? m_pDbgBtnHoverBrush.Get() : m_pDbgBtnBrush.Get());
+            }
+            ID2D1Brush* txtB = (a.k == DebugHitKind::ActStop && m_pDbgRedBrush) ? m_pDbgRedBrush.Get()
+                             : (a.k == DebugHitKind::ActContinue && a.enabled && m_pDbgGreenBrush) ? m_pDbgGreenBrush.Get()
+                             : (a.enabled ? textPrimary : textMuted);
+            if (fmtBody && txtB) {
+                pRT->DrawText(a.txt, static_cast<UINT32>(wcslen(a.txt)), fmtBody,
+                              D2D1::RectF(rcA.left + (bw - config.ScaleF(12.0f)) * 0.5f, rcA.top + config.ScaleF(2.0f), rcA.right, rcA.bottom),
+                              txtB, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            if (a.enabled) addZone(a.k, -1, false, L"", rcA);
+            bx += bw + gap;
+        }
+        topY += actH + config.ScaleF(6.0f);
+    }
+
+    // Scrollable Inspector Sections
+    D2D1_RECT_F rcBodyClip = D2D1::RectF(leftX, topY, rightX, clientHeight);
+    pRT->PushAxisAlignedClip(rcBodyClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    float curY = topY - m_debugScrollY;
+    float secH = config.ScaleF(22.0f);
+    float rowH = config.ScaleF(19.0f);
+    float totalStartY = curY;
+
+    auto drawSec = [&](const wchar_t* title, bool& isOpen, DebugHitKind kind) -> bool {
+        D2D1_RECT_F rcSec = D2D1::RectF(leftX + 1.0f, curY, rightX - 1.0f, curY + secH);
+        if (rcSec.bottom >= topY && rcSec.top <= clientHeight && m_pDbgCardBrush) {
+            pRT->FillRectangle(rcSec, m_pDbgCardBrush.Get());
+            std::wstring lbl = std::wstring(isOpen ? L"▾ " : L"▸ ") + title;
+            if (fmtSmall && textPrimary) {
+                pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), fmtSmall,
+                              D2D1::RectF(rcSec.left + padX, rcSec.top + config.ScaleF(3.0f), rcSec.right - padX, rcSec.bottom),
+                              textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            addZone(kind, -1, false, L"", rcSec);
+        }
+        curY += secH + config.ScaleF(2.0f);
+        return isOpen;
+    };
+
+    // 1. VARIABLES
+    if (drawSec(L"VARIABLES", m_dbgSecVarsOpen, DebugHitKind::SecVars)) {
+        if (snap.scopes.empty()) {
+            D2D1_RECT_F rcEmpty = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + rowH);
+            if (rcEmpty.bottom >= topY && rcEmpty.top <= clientHeight && fmtSmall && textMuted) {
+                pRT->DrawText(L"Not paused in debugger", 22, fmtSmall, rcEmpty, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            curY += rowH;
+        } else {
+            auto renderVarNode = [&](auto& self, const phide::dev::DapVariable& v, int depth) -> void {
+                float indent = config.ScaleF(static_cast<float>(depth) * 10.0f);
+                D2D1_RECT_F rcRow = D2D1::RectF(leftX + padX + indent, curY, rightX - padX, curY + rowH);
+                if (rcRow.bottom >= topY && rcRow.top <= clientHeight) {
+                    if (isHovered(DebugHitKind::VarExpand, v.variablesReference, v.name) && m_pDbgAccentSubtleBrush) {
+                        pRT->FillRectangle(rcRow, m_pDbgAccentSubtleBrush.Get());
+                    }
+                    std::wstring prefix = (v.variablesReference > 0) ? (v.expanded ? L"▾ " : L"▸ ") : L"  ";
+                    std::wstring line = prefix + v.name + L": " + v.value;
+                    if (fmtSmall && textPrimary) {
+                        pRT->DrawText(line.c_str(), static_cast<UINT32>(line.size()), fmtSmall, rcRow,
+                                      v.variablesReference > 0 && m_pDbgCyanBrush ? m_pDbgCyanBrush.Get() : textPrimary,
+                                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                    if (v.variablesReference > 0) {
+                        addZone(DebugHitKind::VarExpand, v.variablesReference, false, v.name, rcRow);
+                    }
+                }
+                curY += rowH;
+                if (v.expanded) {
+                    for (const auto& ch : v.children) {
+                        self(self, ch, depth + 1);
+                    }
+                }
+            };
+            for (const auto& sc : snap.scopes) {
+                D2D1_RECT_F rcSc = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + rowH);
+                if (rcSc.bottom >= topY && rcSc.top <= clientHeight && fmtSmall && m_pDbgCyanBrush) {
+                    pRT->DrawText(sc.name.c_str(), static_cast<UINT32>(sc.name.size()), fmtSmall, rcSc, m_pDbgCyanBrush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                curY += rowH;
+                for (const auto& v : sc.variables) {
+                    renderVarNode(renderVarNode, v, 1);
+                }
+            }
+        }
+        curY += config.ScaleF(4.0f);
+    }
+
+    // 2. WATCH
+    if (drawSec(L"WATCH", m_dbgSecWatchOpen, DebugHitKind::SecWatch)) {
+        float addBtnW = config.ScaleF(24.0f);
+        D2D1_RECT_F rcIn = D2D1::RectF(leftX + padX, curY, rightX - padX - addBtnW - config.ScaleF(4.0f), curY + rowH + config.ScaleF(2.0f));
+        D2D1_RECT_F rcAdd = D2D1::RectF(rcIn.right + config.ScaleF(4.0f), curY, rightX - padX, curY + rowH + config.ScaleF(2.0f));
+        if (rcIn.bottom >= topY && rcIn.top <= clientHeight) {
+            if (m_pDbgCardBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcIn, 3.0f, 3.0f), m_pDbgCardBrush.Get());
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcIn, 3.0f, 3.0f),
+                                      m_debugSideWatchFocused && theme.brushBrandAccent ? theme.brushBrandAccent.Get()
+                                                                                        : (theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : textMuted),
+                                      1.0f);
+            std::wstring txt = m_debugSideWatchInput.empty() ? L"Add watch..." : m_debugSideWatchInput;
+            if (fmtSmall) {
+                pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), fmtSmall,
+                              D2D1::RectF(rcIn.left + config.ScaleF(5.0f), rcIn.top + config.ScaleF(2.0f), rcIn.right - config.ScaleF(4.0f), rcIn.bottom),
+                              m_debugSideWatchInput.empty() ? textMuted : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            if (m_pDbgBtnBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcAdd, 3.0f, 3.0f), m_pDbgBtnBrush.Get());
+            if (fmtSmall && textPrimary) {
+                pRT->DrawText(L"+", 1, fmtSmall, D2D1::RectF(rcAdd.left + config.ScaleF(8.0f), rcAdd.top + config.ScaleF(2.0f), rcAdd.right, rcAdd.bottom), textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            addZone(DebugHitKind::WatchInput, -1, false, L"", rcIn);
+            addZone(DebugHitKind::WatchAdd, -1, false, L"", rcAdd);
+        }
+        curY += rowH + config.ScaleF(6.0f);
+
+        for (size_t wi = 0; wi < snap.watches.size(); ++wi) {
+            const auto& w = snap.watches[wi];
+            float delW = config.ScaleF(16.0f);
+            D2D1_RECT_F rcW = D2D1::RectF(leftX + padX, curY, rightX - padX - delW, curY + rowH);
+            D2D1_RECT_F rcDel = D2D1::RectF(rcW.right + config.ScaleF(2.0f), curY, rightX - padX, curY + rowH);
+            if (rcW.bottom >= topY && rcW.top <= clientHeight) {
+                std::wstring line = w.expression + L" = " + (w.value.empty() ? L"<pending>" : w.value);
+                if (fmtSmall) {
+                    pRT->DrawText(line.c_str(), static_cast<UINT32>(line.size()), fmtSmall, rcW,
+                                  w.hasError && m_pDbgRedBrush ? m_pDbgRedBrush.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    pRT->DrawText(L"x", 1, fmtSmall, rcDel, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                addZone(DebugHitKind::WatchDel, static_cast<int>(wi), false, L"", rcDel);
+            }
+            curY += rowH;
+        }
+        curY += config.ScaleF(4.0f);
+    }
+
+    // 3. CALL STACK
+    if (drawSec(L"CALL STACK", m_dbgSecStackOpen, DebugHitKind::SecStack)) {
+        if (snap.callStack.empty()) {
+            D2D1_RECT_F rcEmpty = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + rowH);
+            if (rcEmpty.bottom >= topY && rcEmpty.top <= clientHeight && fmtSmall && textMuted) {
+                pRT->DrawText(L"No active stack frames", 22, fmtSmall, rcEmpty, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            curY += rowH;
+        } else {
+            for (const auto& fr : snap.callStack) {
+                D2D1_RECT_F rcF = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + rowH);
+                if (rcF.bottom >= topY && rcF.top <= clientHeight) {
+                    if (fr.id == snap.selectedFrameId && theme.brushTreeSelected) {
+                        pRT->FillRectangle(rcF, theme.brushTreeSelected.Get());
+                    }
+                    std::wstring fnName = std::filesystem::path(fr.sourcePath).filename().wstring();
+                    std::wstring fTxt = fr.name + L"  " + fnName + L":" + std::to_wstring(fr.line1Based);
+                    if (fmtSmall && textPrimary) {
+                        pRT->DrawText(fTxt.c_str(), static_cast<UINT32>(fTxt.size()), fmtSmall, rcF, textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                    addZone(DebugHitKind::StackFrame, fr.id, false, fr.sourcePath, rcF);
+                }
+                curY += rowH;
+            }
+        }
+        curY += config.ScaleF(4.0f);
+    }
+
+    // 4. BREAKPOINTS
+    if (drawSec(L"BREAKPOINTS", m_dbgSecBpsOpen, DebugHitKind::SecBreakpoints)) {
+        float halfW = innerW * 0.5f;
+        D2D1_RECT_F rcRaised = D2D1::RectF(leftX + padX, curY, leftX + padX + halfW - config.ScaleF(2.0f), curY + rowH);
+        D2D1_RECT_F rcUncaught = D2D1::RectF(leftX + padX + halfW, curY, rightX - padX, curY + rowH);
+        if (rcRaised.bottom >= topY && rcRaised.top <= clientHeight && fmtSmall && textPrimary) {
+            std::wstring lblR = std::wstring(snap.exceptions.breakOnRaised ? L"[x] " : L"[ ] ") + L"Raised";
+            std::wstring lblU = std::wstring(snap.exceptions.breakOnUncaught ? L"[x] " : L"[ ] ") + L"Uncaught";
+            pRT->DrawText(lblR.c_str(), static_cast<UINT32>(lblR.size()), fmtSmall, rcRaised,
+                          snap.exceptions.breakOnRaised && m_pDbgAmberBrush ? m_pDbgAmberBrush.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->DrawText(lblU.c_str(), static_cast<UINT32>(lblU.size()), fmtSmall, rcUncaught,
+                          snap.exceptions.breakOnUncaught && m_pDbgAmberBrush ? m_pDbgAmberBrush.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            addZone(DebugHitKind::ExcRaised, snap.exceptions.breakOnRaised ? 1 : 0, snap.exceptions.breakOnUncaught, L"", rcRaised);
+            addZone(DebugHitKind::ExcUncaught, snap.exceptions.breakOnUncaught ? 1 : 0, snap.exceptions.breakOnRaised, L"", rcUncaught);
+        }
+        curY += rowH + config.ScaleF(2.0f);
+
+        for (const auto& bp : bps) {
+            D2D1_RECT_F rcRow = D2D1::RectF(leftX + padX, curY, rightX - padX, curY + rowH);
+            if (rcRow.bottom >= topY && rcRow.top <= clientHeight) {
+                float chkW = config.ScaleF(22.0f);
+                float delW = config.ScaleF(16.0f);
+                D2D1_RECT_F rcChk = D2D1::RectF(rcRow.left, rcRow.top, rcRow.left + chkW, rcRow.bottom);
+                D2D1_RECT_F rcDel = D2D1::RectF(rcRow.right - delW, rcRow.top, rcRow.right, rcRow.bottom);
+                D2D1_RECT_F rcLbl = D2D1::RectF(rcChk.right + config.ScaleF(2.0f), rcRow.top, rcDel.left - config.ScaleF(2.0f), rcRow.bottom);
+                if (fmtSmall) {
+                    pRT->DrawText(bp.enabled ? L"[x]" : L"[ ]", 3, fmtSmall, rcChk, bp.enabled && m_pDbgRedBrush ? m_pDbgRedBrush.Get() : textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    std::wstring bpTxt = std::filesystem::path(bp.filePath).filename().wstring() + L":" + std::to_wstring(bp.line1Based);
+                    if (!bp.logMessage.empty()) bpTxt += L" [log]";
+                    else if (!bp.condition.empty()) bpTxt += L" [" + bp.condition + L"]";
+                    else if (bp.hitCondition > 0) bpTxt += L" [>=" + std::to_wstring(bp.hitCondition) + L"]";
+                    pRT->DrawText(bpTxt.c_str(), static_cast<UINT32>(bpTxt.size()), fmtSmall, rcLbl, bp.enabled ? textPrimary : textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    pRT->DrawText(L"x", 1, fmtSmall, rcDel, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                addZone(DebugHitKind::BpToggle, static_cast<int>(bp.line1Based), !bp.enabled, bp.filePath, rcChk);
+                addZone(DebugHitKind::BpDel, static_cast<int>(bp.line1Based), false, bp.filePath, rcDel);
+                addZone(DebugHitKind::BpJump, static_cast<int>(bp.line1Based), false, bp.filePath, rcLbl);
+            }
+            curY += rowH;
+        }
+    }
+
+    float contentH = (curY - totalStartY);
+    float viewH = (std::max)(20.0f, clientHeight - topY);
+    m_debugMaxScrollY = (std::max)(0.0f, contentH - viewH + config.ScaleF(12.0f));
+    if (m_debugScrollY > m_debugMaxScrollY) m_debugScrollY = m_debugMaxScrollY;
+    if (m_debugScrollY < 0.0f) m_debugScrollY = 0.0f;
+
+    pRT->PopAxisAlignedClip();
+}
+
+bool DrawerPanel::HandleDebugMouseMove(POINT pt) {
+    int newHovered = -1;
+    for (int i = 0; i < static_cast<int>(m_debugHitZones.size()); ++i) {
+        const auto& rc = m_debugHitZones[i].bounds;
+        if (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom) {
+            newHovered = i;
+            break;
+        }
+    }
+    if (newHovered >= 0) {
+        SetCursor(LoadCursor(NULL, (m_debugHitZones[newHovered].kind == DebugHitKind::WatchInput) ? IDC_IBEAM : IDC_HAND));
+    }
+    if (newHovered != m_hoveredDebugZoneIdx) {
+        m_hoveredDebugZoneIdx = newHovered;
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HandleDebugLButtonDown(POINT pt, const app::AppConfig& /*config*/) {
+    int hitIdx = -1;
+    for (int i = 0; i < static_cast<int>(m_debugHitZones.size()); ++i) {
+        const auto& rc = m_debugHitZones[i].bounds;
+        if (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom) {
+            hitIdx = i;
+            break;
+        }
+    }
+    m_debugSideWatchFocused = false;
+    if (hitIdx < 0) return false;
+
+    const auto hit = m_debugHitZones[hitIdx];
+    switch (hit.kind) {
+        case DebugHitKind::StartDebug:
+            if (m_debugCallbacks.onStartDebug) m_debugCallbacks.onStartDebug(hit.intArg);
+            return true;
+        case DebugHitKind::CycleConfig:
+            if (hit.intArg > 0) {
+                m_selectedLaunchConfigIdx = (m_selectedLaunchConfigIdx + 1) % static_cast<size_t>(hit.intArg);
+            }
+            return true;
+        case DebugHitKind::OpenLaunchJson:
+            if (m_debugCallbacks.onOpenLaunchJson) m_debugCallbacks.onOpenLaunchJson();
+            return true;
+        case DebugHitKind::OpenConsole:
+            if (m_debugCallbacks.onOpenDebugConsole) m_debugCallbacks.onOpenDebugConsole();
+            return true;
+        case DebugHitKind::ActContinue:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(1);
+            return true;
+        case DebugHitKind::ActPause:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(2);
+            return true;
+        case DebugHitKind::ActStepOver:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(3);
+            return true;
+        case DebugHitKind::ActStepInto:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(4);
+            return true;
+        case DebugHitKind::ActStepOut:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(5);
+            return true;
+        case DebugHitKind::ActRestart:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(6);
+            return true;
+        case DebugHitKind::ActStop:
+            if (m_debugCallbacks.onDebugAction) m_debugCallbacks.onDebugAction(7);
+            return true;
+        case DebugHitKind::SecVars:
+            m_dbgSecVarsOpen = !m_dbgSecVarsOpen;
+            return true;
+        case DebugHitKind::SecWatch:
+            m_dbgSecWatchOpen = !m_dbgSecWatchOpen;
+            return true;
+        case DebugHitKind::SecStack:
+            m_dbgSecStackOpen = !m_dbgSecStackOpen;
+            return true;
+        case DebugHitKind::SecBreakpoints:
+            m_dbgSecBpsOpen = !m_dbgSecBpsOpen;
+            return true;
+        case DebugHitKind::WatchInput:
+            m_debugSideWatchFocused = true;
+            return true;
+        case DebugHitKind::WatchAdd:
+            if (!m_debugSideWatchInput.empty() && m_debugCallbacks.onAddWatch) {
+                m_debugCallbacks.onAddWatch(m_debugSideWatchInput);
+                m_debugSideWatchInput.clear();
+            }
+            return true;
+        case DebugHitKind::WatchDel:
+            if (m_debugCallbacks.onRemoveWatch && hit.intArg >= 0) {
+                m_debugCallbacks.onRemoveWatch(static_cast<size_t>(hit.intArg));
+            }
+            return true;
+        case DebugHitKind::StackFrame:
+            if (m_debugCallbacks.onSelectStackFrame) m_debugCallbacks.onSelectStackFrame(hit.intArg);
+            return true;
+        case DebugHitKind::VarExpand:
+            if (m_debugCallbacks.onExpandVariable && hit.intArg > 0) m_debugCallbacks.onExpandVariable(hit.intArg);
+            return true;
+        case DebugHitKind::ExcRaised:
+            if (m_debugCallbacks.onSetExceptions) m_debugCallbacks.onSetExceptions(hit.intArg == 0, hit.boolArg);
+            return true;
+        case DebugHitKind::ExcUncaught:
+            if (m_debugCallbacks.onSetExceptions) m_debugCallbacks.onSetExceptions(hit.boolArg, hit.intArg == 0);
+            return true;
+        case DebugHitKind::BpToggle:
+            if (m_debugCallbacks.onToggleBreakpoint) m_debugCallbacks.onToggleBreakpoint(hit.strArg, hit.intArg, hit.boolArg);
+            return true;
+        case DebugHitKind::BpDel:
+            if (m_debugCallbacks.onRemoveBreakpoint) m_debugCallbacks.onRemoveBreakpoint(hit.strArg, hit.intArg);
+            return true;
+        case DebugHitKind::BpJump:
+            if (m_debugCallbacks.onJumpToLocation) m_debugCallbacks.onJumpToLocation(hit.strArg, hit.intArg);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool DrawerPanel::HandleDebugChar(wchar_t ch) {
+    if (!m_debugSideWatchFocused) return false;
+    if (ch == L'\r' || ch == L'\n') {
+        if (!m_debugSideWatchInput.empty() && m_debugCallbacks.onAddWatch) {
+            m_debugCallbacks.onAddWatch(m_debugSideWatchInput);
+            m_debugSideWatchInput.clear();
+        }
+        m_debugSideWatchFocused = false;
+        return true;
+    }
+    if (ch == L'\b') {
+        if (!m_debugSideWatchInput.empty()) m_debugSideWatchInput.pop_back();
+        return true;
+    }
+    if (ch == 27) {
+        m_debugSideWatchFocused = false;
+        return true;
+    }
+    if (ch >= 32) {
+        m_debugSideWatchInput.push_back(ch);
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HandleDebugKeyDown(WPARAM wParam) {
+    if (!m_debugSideWatchFocused) return false;
+    if (wParam == VK_ESCAPE) {
+        m_debugSideWatchFocused = false;
+        return true;
+    }
+    if (wParam == VK_RETURN) {
+        if (!m_debugSideWatchInput.empty() && m_debugCallbacks.onAddWatch) {
+            std::wstring expr = m_debugSideWatchInput;
+            m_debugSideWatchInput.clear();
+            m_debugCallbacks.onAddWatch(expr);
+        }
+        m_debugSideWatchFocused = false;
+        return true;
+    }
+    return false;
+}
+
+bool DrawerPanel::HitTestDebugInteractive(POINT pt, bool* outIsInput) const noexcept {
+    if (outIsInput) *outIsInput = false;
+    for (const auto& z : m_debugHitZones) {
+        if (pt.x >= z.bounds.left && pt.x <= z.bounds.right &&
+            pt.y >= z.bounds.top && pt.y <= z.bounds.bottom) {
+            if (outIsInput && z.kind == DebugHitKind::WatchInput) {
+                *outIsInput = true;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace phide::ui

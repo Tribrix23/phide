@@ -8,8 +8,90 @@
 #include <chrono>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 
 namespace {
+std::wstring NbUtf8ToWide(const std::string& utf8) {
+    if (utf8.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), out.data(), n);
+    return out;
+}
+
+std::string UnescapeJsonField(const std::string& s, size_t& pos) {
+    if (pos >= s.size() || s[pos] != '"') return "";
+    ++pos;
+    std::string out;
+    while (pos < s.size()) {
+        char c = s[pos++];
+        if (c == '"') break;
+        if (c == '\\' && pos < s.size()) {
+            char esc = s[pos++];
+            switch (esc) {
+                case '"': out.push_back('"'); break;
+                case '\\': out.push_back('\\'); break;
+                case 'n': out.push_back(' '); break;
+                case 'r': break;
+                case 't': out.push_back(' '); break;
+                default: out.push_back(esc); break;
+            }
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+std::vector<phide::editor::NotebookVariableInfo> ParseNotebookVarsJson(const std::string& jsonStr) {
+    std::vector<phide::editor::NotebookVariableInfo> vars;
+    size_t i = 0;
+    while (i < jsonStr.size() && vars.size() < 64u) {
+        size_t objStart = jsonStr.find('{', i);
+        if (objStart == std::string::npos) break;
+        size_t objEnd = jsonStr.find('}', objStart);
+        if (objEnd == std::string::npos) break;
+        phide::editor::NotebookVariableInfo info;
+        size_t p = objStart;
+        while (p < objEnd) {
+            size_t q = jsonStr.find('"', p);
+            if (q == std::string::npos || q >= objEnd) break;
+            std::string key = UnescapeJsonField(jsonStr, q);
+            size_t colon = jsonStr.find(':', q);
+            if (colon == std::string::npos || colon >= objEnd) break;
+            size_t vq = jsonStr.find('"', colon + 1);
+            if (vq == std::string::npos || vq >= objEnd) {
+                p = colon + 1;
+                continue;
+            }
+            std::string val = UnescapeJsonField(jsonStr, vq);
+            if (key == "name") info.name = NbUtf8ToWide(val);
+            else if (key == "type") info.typeName = NbUtf8ToWide(val);
+            else if (key == "value") info.valuePreview = NbUtf8ToWide(val);
+            p = vq;
+        }
+        if (!info.name.empty()) {
+            vars.push_back(std::move(info));
+        }
+        i = objEnd + 1;
+    }
+    return vars;
+}
+
+std::wstring FormatKernelShortLabel(const std::wstring& exePath) {
+    if (exePath.empty()) return L"Python";
+    std::filesystem::path p(exePath);
+    std::wstring parent = p.parent_path().filename().wstring();
+    std::wstring grand = p.parent_path().parent_path().filename().wstring();
+    if (_wcsicmp(parent.c_str(), L"Scripts") == 0 && !grand.empty()) {
+        return grand;
+    }
+    if (!parent.empty() && _wcsicmp(parent.c_str(), L"bin") != 0) {
+        return parent;
+    }
+    return p.filename().wstring();
+}
 void SetClipboardText(const std::wstring& text, HWND hwnd) {
     if (text.empty()) return;
     if (OpenClipboard(hwnd)) {
@@ -338,43 +420,149 @@ NotebookView::NotebookView() {
 }
 
 NotebookView::~NotebookView() {
+    m_isDestroying.store(true);
     StopExecution_Internal();
     if (m_execThread.joinable()) {
-        m_execThread.detach();
+        m_execThread.join();
     }
+    for (int waitMs = 0; m_activeWorkers.load() > 0 && waitMs < 1000; waitMs += 10) {
+        Sleep(10);
+    }
+    DiscardDeviceResources();
+    m_pWicFactory.Reset();
+}
+
+void NotebookView::DiscardDeviceResources() {
+    m_cachedNbRT = nullptr;
+    m_bitmapLru.clear();
+    m_bitmapIndex.clear();
+    m_brushNbInner.Reset();
+    m_brushNbStop.Reset();
+    m_brushNbSpin.Reset();
+    m_brushNbIdleBg.Reset();
+    m_brushNbIdleHover.Reset();
+    m_brushNbErrRed.Reset();
+    m_brushNbOkGreen.Reset();
+    m_brushNbTrack.Reset();
+    m_brushNbThumb.Reset();
+    m_brushNbThumbDrag.Reset();
+    m_brushNbBlueText.Reset();
+    m_brushNbPillBgDark.Reset();
+    m_brushNbPillBgLight.Reset();
+    m_brushNbPopupBg.Reset();
+    m_brushNbRowHover.Reset();
+}
+
+void NotebookView::EnsureNbBrushes(ID2D1RenderTarget* pRT) {
+    if (!pRT) return;
+    if (m_cachedNbRT != pRT) {
+        DiscardDeviceResources();
+        m_cachedNbRT = pRT;
+    }
+    if (!m_brushNbInner) pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.22f, 1.0f), &m_brushNbInner);
+    if (!m_brushNbStop) pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 1.0f), &m_brushNbStop);
+    if (!m_brushNbSpin) pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.65f, 0.98f, 1.0f), &m_brushNbSpin);
+    if (!m_brushNbIdleBg) pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 0.9f), &m_brushNbIdleBg);
+    if (!m_brushNbIdleHover) pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.28f, 1.0f), &m_brushNbIdleHover);
+    if (!m_brushNbErrRed) pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.32f, 0.32f, 1.0f), &m_brushNbErrRed);
+    if (!m_brushNbOkGreen) pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.48f, 1.0f), &m_brushNbOkGreen);
+    if (!m_brushNbTrack) pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f), &m_brushNbTrack);
+    if (!m_brushNbThumb) pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.35f), &m_brushNbThumb);
+    if (!m_brushNbThumbDrag) pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f), &m_brushNbThumbDrag);
+    if (!m_brushNbBlueText) pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.60f, 0.95f, 1.0f), &m_brushNbBlueText);
+    if (!m_brushNbPillBgDark) pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.22f, 1.0f), &m_brushNbPillBgDark);
+    if (!m_brushNbPillBgLight) pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &m_brushNbPillBgLight);
+    if (!m_brushNbPopupBg) pRT->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.14f, 0.17f, 0.98f), &m_brushNbPopupBg);
+    if (!m_brushNbRowHover) pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.28f, 0.38f, 0.65f), &m_brushNbRowHover);
+}
+
+ID2D1Bitmap* NotebookView::GetOrCreateOutputBitmap(ID2D1RenderTarget* pRT, uint64_t imageId,
+                                                   const std::vector<BYTE>& pngBytes, float& outW, float& outH) {
+    outW = 0.0f;
+    outH = 0.0f;
+    if (!pRT || imageId == 0 || pngBytes.empty()) return nullptr;
+    if (m_cachedNbRT != pRT) {
+        DiscardDeviceResources();
+        m_cachedNbRT = pRT;
+    }
+
+    auto it = m_bitmapIndex.find(imageId);
+    if (it != m_bitmapIndex.end()) {
+        m_bitmapLru.splice(m_bitmapLru.begin(), m_bitmapLru, it->second);
+        outW = it->second->pxW;
+        outH = it->second->pxH;
+        return it->second->bitmap.Get();
+    }
+
+    if (!m_pWicFactory) {
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&m_pWicFactory));
+    }
+    if (!m_pWicFactory) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICStream> pStream;
+    if (FAILED(m_pWicFactory->CreateStream(&pStream)) || !pStream) return nullptr;
+    if (FAILED(pStream->InitializeFromMemory(const_cast<BYTE*>(pngBytes.data()), static_cast<DWORD>(pngBytes.size())))) {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+    if (FAILED(m_pWicFactory->CreateDecoderFromStream(pStream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &pDecoder)) || !pDecoder) {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+    if (FAILED(pDecoder->GetFrame(0, &pFrame)) || !pFrame) return nullptr;
+
+    UINT w = 0, h = 0;
+    if (FAILED(pFrame->GetSize(&w, &h)) || w == 0 || h == 0) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> pConv;
+    if (FAILED(m_pWicFactory->CreateFormatConverter(&pConv)) || !pConv) return nullptr;
+    if (FAILED(pConv->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom))) {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
+    if (FAILED(pRT->CreateBitmapFromWicBitmap(pConv.Get(), nullptr, &pBmp)) || !pBmp) return nullptr;
+
+    CachedNbBitmap entry;
+    entry.imageId = imageId;
+    entry.pxW = static_cast<float>(w);
+    entry.pxH = static_cast<float>(h);
+    entry.bitmap = pBmp;
+    m_bitmapLru.push_front(std::move(entry));
+    m_bitmapIndex[imageId] = m_bitmapLru.begin();
+    while (m_bitmapLru.size() > kMaxCachedNbBitmaps) {
+        uint64_t evictId = m_bitmapLru.back().imageId;
+        m_bitmapIndex.erase(evictId);
+        m_bitmapLru.pop_back();
+    }
+    outW = static_cast<float>(w);
+    outH = static_cast<float>(h);
+    return m_bitmapLru.front().bitmap.Get();
 }
 
 void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                      const D2D1_RECT_F& bounds, bool isExecuting, bool isQueued, bool hasError, bool isHovered) {
     if (!pRT) return;
+    EnsureNbBrushes(pRT);
     const float cx = (bounds.left + bounds.right) / 2.0f;
     const float cy = (bounds.top + bounds.bottom) / 2.0f;
     const float r = (std::min)(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2.0f;
 
     if (isExecuting || isQueued) {
-        // Inner circle background
         const float innerR = r * 0.72f;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushInner;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.22f, 1.0f), &brushInner);
-        if (brushInner) {
-            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), innerR, innerR), brushInner.Get());
+        if (m_brushNbInner) {
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), innerR, innerR), m_brushNbInner.Get());
         }
-
-        // Center Stop Square ⏹
         const float sqSize = r * 0.58f;
         D2D1_RECT_F sqRc = D2D1::RectF(cx - sqSize / 2.0f, cy - sqSize / 2.0f, cx + sqSize / 2.0f, cy + sqSize / 2.0f);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushStop;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.98f, 1.0f), &brushStop);
-        if (brushStop) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(sqRc, 1.5f, 1.5f), brushStop.Get());
+        if (m_brushNbStop) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(sqRc, 1.5f, 1.5f), m_brushNbStop.Get());
         }
-
         const float ringR = r * 0.90f;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushSpin;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.65f, 0.98f, 1.0f), &brushSpin); // Electric cyan/blue spinner
-        if (brushSpin) {
+        if (m_brushNbSpin) {
             if (isQueued) {
-                // Dashed line spinner for queued state (Image 3)
                 const int dashCount = 10;
                 const float arcSweep = 360.0f / static_cast<float>(dashCount);
                 const float dashSweep = arcSweep * 0.50f;
@@ -385,10 +573,9 @@ void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, cons
                     float rad2 = deg2 * 3.14159265f / 180.0f;
                     D2D1_POINT_2F p1 = D2D1::Point2F(cx + ringR * cosf(rad1), cy + ringR * sinf(rad1));
                     D2D1_POINT_2F p2 = D2D1::Point2F(cx + ringR * cosf(rad2), cy + ringR * sinf(rad2));
-                    pRT->DrawLine(p1, p2, brushSpin.Get(), config.ScaleF(1.8f));
+                    pRT->DrawLine(p1, p2, m_brushNbSpin.Get(), config.ScaleF(1.8f));
                 }
             } else {
-                // Connected continuous solid line rotating arc for active execution (Image 1)
                 const int segments = 32;
                 const float sweepAngle = 270.0f;
                 float baseRad = m_spinAngle * 3.14159265f / 180.0f;
@@ -398,49 +585,31 @@ void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, cons
                     float a2 = baseRad + sweepRad * (static_cast<float>(s + 1) / segments);
                     D2D1_POINT_2F p1 = D2D1::Point2F(cx + ringR * cosf(a1), cy + ringR * sinf(a1));
                     D2D1_POINT_2F p2 = D2D1::Point2F(cx + ringR * cosf(a2), cy + ringR * sinf(a2));
-                    pRT->DrawLine(p1, p2, brushSpin.Get(), config.ScaleF(2.0f));
+                    pRT->DrawLine(p1, p2, m_brushNbSpin.Get(), config.ScaleF(2.0f));
                 }
             }
         }
     } else {
-        // Idle state: Circle with ▶
         const float circleR = r * 0.82f;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg;
-        if (isHovered) {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.28f, 1.0f), &brushBg);
-        } else {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 0.9f), &brushBg);
-        }
-        if (brushBg) {
-            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), circleR, circleR), brushBg.Get());
+        ID2D1SolidColorBrush* bgBrush = isHovered ? m_brushNbIdleHover.Get() : m_brushNbIdleBg.Get();
+        if (bgBrush) {
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), circleR, circleR), bgBrush);
         }
 
-        // Circle outline
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushOutline;
-        if (hasError) {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.32f, 0.32f, 1.0f), &brushOutline); // Red ring (Image 5)
-        } else if (isHovered) {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.45f, 1.0f), &brushOutline);
-        } else {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.26f, 0.26f, 0.30f, 1.0f), &brushOutline);
-        }
-        if (brushOutline) {
-            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), circleR, circleR), brushOutline.Get(), hasError ? 1.8f : 1.0f);
+        ID2D1Brush* outlineBrush = hasError
+            ? static_cast<ID2D1Brush*>(m_brushNbErrRed.Get())
+            : (isHovered ? theme.brushBorderHover.Get() : theme.brushBorderSubtle.Get());
+        if (outlineBrush) {
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), circleR, circleR), outlineBrush, hasError ? 1.8f : 1.0f);
         }
 
-        // Triangle Play Glyph ▶
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushGlyph;
-        if (hasError) {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.32f, 0.32f, 1.0f), &brushGlyph); // Red play icon (Image 5)
-        } else {
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.48f, 1.0f), &brushGlyph); // Green play icon
-        }
-
-        if (brushGlyph) {
+        ID2D1Brush* glyphBrush = hasError
+            ? static_cast<ID2D1Brush*>(m_brushNbErrRed.Get())
+            : static_cast<ID2D1Brush*>(m_brushNbOkGreen.Get());
+        if (glyphBrush) {
             float triW = circleR * 0.65f;
             float triH = circleR * 0.75f;
             float triLeft = cx - triW * 0.38f;
-
             Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
             pRT->GetFactory(&pFactory);
             Microsoft::WRL::ComPtr<ID2D1PathGeometry> pTri;
@@ -452,7 +621,7 @@ void NotebookView::DrawRunMorphButton(ID2D1RenderTarget* pRT, Theme& theme, cons
                     sink->AddLine(D2D1::Point2F(triLeft, cy + triH / 2.0f));
                     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                     sink->Close();
-                    pRT->FillGeometry(pTri.Get(), brushGlyph.Get());
+                    pRT->FillGeometry(pTri.Get(), glyphBrush);
                 }
             }
         }
@@ -669,6 +838,87 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                       rcTextLabel, textIconBrush);
     }
 
+    // Initialize discovered Python kernels once per notebook without blocking UI
+    if (nb && nb->discoveredPythonExes.empty()) {
+        RefreshPythonKernels(doc);
+    }
+
+    curBtnX += btnTextW + config.ScaleF(8.0f);
+    pRT->DrawLine(
+        D2D1::Point2F(curBtnX, btnY + config.ScaleF(4.0f)),
+        D2D1::Point2F(curBtnX, btnY + btnSize - config.ScaleF(4.0f)),
+        theme.brushBorderSubtle.Get(), 1.0f
+    );
+    curBtnX += config.ScaleF(8.0f);
+
+    // [Kernel Picker ▾]
+    const float btnKernelW = config.ScaleF(142.0f);
+    m_btnKernelPicker = D2D1::RectF(curBtnX, btnY, curBtnX + btnKernelW, btnY + btnSize);
+    if (curBtnX + btnKernelW <= left + width - config.ScaleF(8.0f)) {
+        D2D1_ROUNDED_RECT rrcK = D2D1::RoundedRect(m_btnKernelPicker, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (m_hoveredToolbarBtn == 5 || m_kernelDropdownOpen) {
+            pRT->FillRoundedRectangle(rrcK, theme.brushItemHover.Get());
+        }
+        pRT->DrawRoundedRectangle(rrcK, theme.brushBorderSubtle.Get(), 1.0f);
+        std::wstring kShort = FormatKernelShortLabel(nb ? nb->selectedPythonExe : L"");
+        if (kShort.size() > 14) kShort = kShort.substr(0, 12) + L"..";
+        std::wstring kLbl = kShort + L" \x25BE";
+        ID2D1Brush* kBrush = (m_hoveredToolbarBtn == 5 || m_kernelDropdownOpen)
+            ? theme.brushTextPrimary.Get()
+            : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+        D2D1_RECT_F rcKLbl = D2D1::RectF(m_btnKernelPicker.left + config.ScaleF(8.0f), btnY, m_btnKernelPicker.right - config.ScaleF(4.0f), btnY + btnSize);
+        pRT->DrawText(kLbl.c_str(), static_cast<UINT32>(kLbl.length()),
+                      theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuItem.Get(),
+                      rcKLbl, kBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+        m_btnKernelPicker = {};
+    }
+
+    curBtnX += btnKernelW + config.ScaleF(6.0f);
+
+    // [↻ Restart Kernel]
+    const float btnRestartW = config.ScaleF(28.0f);
+    if (curBtnX + btnRestartW <= left + width - config.ScaleF(8.0f)) {
+        m_btnRestartKernel = D2D1::RectF(curBtnX, btnY, curBtnX + btnRestartW, btnY + btnSize);
+        D2D1_ROUNDED_RECT rrcR = D2D1::RoundedRect(m_btnRestartKernel, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (m_hoveredToolbarBtn == 6) {
+            pRT->FillRoundedRectangle(rrcR, theme.brushItemHover.Get());
+        }
+        pRT->DrawRoundedRectangle(rrcR, theme.brushBorderSubtle.Get(), 1.0f);
+        ID2D1Brush* rBrush = (m_hoveredToolbarBtn == 6)
+            ? theme.brushTextPrimary.Get()
+            : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+        D2D1_RECT_F rcRLbl = D2D1::RectF(m_btnRestartKernel.left + config.ScaleF(7.0f), btnY + config.ScaleF(1.0f), m_btnRestartKernel.right - config.ScaleF(3.0f), btnY + btnSize);
+        pRT->DrawText(L"\x21BB", 1, theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontBadge.Get(),
+                      rcRLbl, rBrush);
+    } else {
+        m_btnRestartKernel = {};
+    }
+
+    curBtnX += btnRestartW + config.ScaleF(6.0f);
+
+    // [{x} Vars]
+    const float btnVarsW = config.ScaleF(74.0f);
+    if (curBtnX + btnVarsW <= left + width - config.ScaleF(8.0f)) {
+        m_btnVariables = D2D1::RectF(curBtnX, btnY, curBtnX + btnVarsW, btnY + btnSize);
+        D2D1_ROUNDED_RECT rrcV = D2D1::RoundedRect(m_btnVariables, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (nb && nb->showVariableInspector) {
+            if (m_brushNbRowHover) pRT->FillRoundedRectangle(rrcV, m_brushNbRowHover.Get());
+        } else if (m_hoveredToolbarBtn == 7) {
+            pRT->FillRoundedRectangle(rrcV, theme.brushItemHover.Get());
+        }
+        pRT->DrawRoundedRectangle(rrcV, theme.brushBorderSubtle.Get(), 1.0f);
+        ID2D1Brush* vBrush = (nb && nb->showVariableInspector)
+            ? (m_brushNbBlueText ? static_cast<ID2D1Brush*>(m_brushNbBlueText.Get()) : theme.brushTextPrimary.Get())
+            : (m_hoveredToolbarBtn == 7 ? theme.brushTextPrimary.Get()
+                : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get()));
+        D2D1_RECT_F rcVLbl = D2D1::RectF(m_btnVariables.left + config.ScaleF(8.0f), btnY, m_btnVariables.right - config.ScaleF(4.0f), btnY + btnSize);
+        pRT->DrawText(L"{x} Vars", 8, theme.fontBadge.Get() ? theme.fontBadge.Get() : theme.fontMenuItem.Get(),
+                      rcVLbl, vBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+        m_btnVariables = {};
+    }
+
     // 3. Render Notebook Cells Area with Scrolling
     const float contentTop = top + toolbarH;
     const float contentH = height - toolbarH;
@@ -705,16 +955,25 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
         // Calculate dynamic output height (snug fit for small outputs, capped at 260px with scrolling for large outputs)
         float outputH = 0.0f;
+        bool hasImages = false;
         if (!cell.outputs.empty() || cell.isWaitingForInput) {
             size_t outLines = 0;
+            float extraImgH = 0.0f;
             for (const auto& out : cell.outputs) {
-                outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
+                if (!out.imagePngBytes.empty()) {
+                    hasImages = true;
+                    extraImgH += config.ScaleF(210.0f);
+                }
+                if (!out.text.empty()) {
+                    outLines += std::count(out.text.begin(), out.text.end(), L'\n') + 1;
+                }
             }
             if (cell.isWaitingForInput) {
                 outLines += 2;
             }
-            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + config.ScaleF(14.0f);
-            outputH = (std::min)(config.ScaleF(260.0f), (std::max)(config.ScaleF(36.0f), rawOutH));
+            float rawOutH = static_cast<float>(outLines) * config.ScaleF(18.0f) + extraImgH + config.ScaleF(14.0f);
+            float maxOutCap = hasImages ? config.ScaleF(420.0f) : config.ScaleF(260.0f);
+            outputH = (std::min)(maxOutCap, (std::max)(config.ScaleF(36.0f), rawOutH));
         }
 
         float cardHeaderH = config.ScaleF(28.0f);
@@ -1149,13 +1408,19 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 size_t estLines = 0;
                 float estMaxW = 0.0f;
                 for (const auto& out : cell.outputs) {
-                    std::wstringstream wssPre(out.text);
-                    std::wstring lPre;
-                    while (std::getline(wssPre, lPre)) {
-                        estLines++;
-                        size_t vLen = editor::NotebookDocument::StripAnsi(lPre).length();
-                        float lw = static_cast<float>(vLen) * charW;
-                        if (lw > estMaxW) estMaxW = lw;
+                    if (!out.imagePngBytes.empty()) {
+                        estLines += 13;
+                        estMaxW = (std::max)(estMaxW, config.ScaleF(360.0f));
+                    }
+                    if (!out.text.empty()) {
+                        std::wstringstream wssPre(out.text);
+                        std::wstring lPre;
+                        while (std::getline(wssPre, lPre)) {
+                            estLines++;
+                            size_t vLen = editor::NotebookDocument::StripAnsi(lPre).length();
+                            float lw = static_cast<float>(vLen) * charW;
+                            if (lw > estMaxW) estMaxW = lw;
+                        }
                     }
                 }
                 if (cell.isWaitingForInput) estLines += 2;
@@ -1193,6 +1458,31 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
                 }
 
                 for (const auto& out : cell.outputs) {
+                    if (!out.imagePngBytes.empty() && out.imageId != 0) {
+                        float bmpW = 0.0f, bmpH = 0.0f;
+                        ID2D1Bitmap* pBmp = GetOrCreateOutputBitmap(pRT, out.imageId, out.imagePngBytes, bmpW, bmpH);
+                        if (pBmp && bmpW > 0.0f && bmpH > 0.0f) {
+                            float maxDrawW = (std::max)(config.ScaleF(120.0f), availW - config.ScaleF(8.0f));
+                            float maxDrawH = config.ScaleF(240.0f);
+                            float scale = (std::min)(maxDrawW / bmpW, maxDrawH / bmpH);
+                            if (scale > 1.0f) scale = 1.0f;
+                            float drawW = (std::max)(config.ScaleF(48.0f), bmpW * scale);
+                            float drawH = (std::max)(config.ScaleF(48.0f), bmpH * scale);
+                            if (drawW > maxLineWidth) maxLineWidth = drawW;
+                            if (curLineY + drawH >= outTop && curLineY <= outTop + outputH) {
+                                float imgX = cell.outputAreaBounds.left + textPadX - cell.outputScrollX;
+                                D2D1_RECT_F rcImg = D2D1::RectF(imgX, curLineY, imgX + drawW, curLineY + drawH);
+                                if (m_brushNbPillBgLight) {
+                                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcImg, 4.0f, 4.0f), m_brushNbPillBgLight.Get());
+                                }
+                                pRT->DrawBitmap(pBmp, rcImg, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                            }
+                            float advanceH = drawH + config.ScaleF(6.0f);
+                            curLineY += advanceH;
+                            totalLines += static_cast<size_t>((std::ceil)(advanceH / (std::max)(1.0f, outLineH)));
+                        }
+                    }
+
                     D2D1_COLOR_F defColor = out.isError ? D2D1::ColorF(0.95f, 0.38f, 0.38f, 1.0f)
                                                         : (theme.brushTextPrimary ? theme.brushTextPrimary->GetColor() : D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f));
 
@@ -1535,6 +1825,94 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         RenderTooltip(pRT, theme, config, m_btnAddCode, L"Add Code Cell (+ Code)");
     } else if (m_hoveredToolbarBtn == 4) {
         RenderTooltip(pRT, theme, config, m_btnAddText, L"Add Text / Markdown Cell (+ Text)");
+    } else if (m_hoveredToolbarBtn == 5) {
+        RenderTooltip(pRT, theme, config, m_btnKernelPicker, L"Select Python Kernel / Virtual Environment");
+    } else if (m_hoveredToolbarBtn == 6) {
+        RenderTooltip(pRT, theme, config, m_btnRestartKernel, L"Restart Kernel Namespace");
+    } else if (m_hoveredToolbarBtn == 7) {
+        RenderTooltip(pRT, theme, config, m_btnVariables, L"Toggle Variable Inspector");
+    }
+
+    // 6. Floating Kernel Dropdown Menu (if open)
+    m_kernelDropdownItemBounds.clear();
+    m_kernelDropdownBounds = {};
+    if (m_kernelDropdownOpen && nb && !nb->discoveredPythonExes.empty()) {
+        const float dropW = config.ScaleF(360.0f);
+        const float itemH = config.ScaleF(26.0f);
+        const size_t maxVis = (std::min)(nb->discoveredPythonExes.size(), static_cast<size_t>(10));
+        const float dropH = static_cast<float>(maxVis) * itemH + config.ScaleF(8.0f);
+        float dropX = m_btnKernelPicker.left;
+        if (dropX + dropW > left + width - config.ScaleF(8.0f)) {
+            dropX = (std::max)(left + config.ScaleF(8.0f), left + width - dropW - config.ScaleF(8.0f));
+        }
+        float dropY = m_btnKernelPicker.bottom + config.ScaleF(4.0f);
+        m_kernelDropdownBounds = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
+        D2D1_ROUNDED_RECT rrcDrop = D2D1::RoundedRect(m_kernelDropdownBounds, 6.0f, 6.0f);
+        if (m_brushNbPopupBg) pRT->FillRoundedRectangle(rrcDrop, m_brushNbPopupBg.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle.Get(), 1.0f);
+
+        for (size_t ki = 0; ki < maxVis; ++ki) {
+            const auto& pyPath = nb->discoveredPythonExes[ki];
+            D2D1_RECT_F rcItem = D2D1::RectF(dropX + config.ScaleF(4.0f),
+                                              dropY + config.ScaleF(4.0f) + static_cast<float>(ki) * itemH,
+                                              dropX + dropW - config.ScaleF(4.0f),
+                                              dropY + config.ScaleF(4.0f) + static_cast<float>(ki + 1) * itemH);
+            m_kernelDropdownItemBounds.push_back(rcItem);
+            bool isSel = (!nb->selectedPythonExe.empty() && _wcsicmp(nb->selectedPythonExe.c_str(), pyPath.c_str()) == 0);
+            if (isSel || m_hoveredKernelDropdownIdx == static_cast<int>(ki)) {
+                ID2D1Brush* bgB = isSel && theme.brushBrandAccent ? theme.brushBrandAccent.Get() : m_brushNbRowHover.Get();
+                if (bgB) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, 4.0f, 4.0f), bgB);
+            }
+            std::wstring prefix = isSel ? L"\x2713 " : L"   ";
+            std::wstring disp = prefix + pyPath;
+            if (disp.size() > 48) {
+                disp = prefix + L"..." + pyPath.substr(pyPath.size() - 42);
+            }
+            D2D1_RECT_F rcTxt = D2D1::RectF(rcItem.left + config.ScaleF(8.0f), rcItem.top + config.ScaleF(3.0f),
+                                             rcItem.right - config.ScaleF(6.0f), rcItem.bottom);
+            pRT->DrawText(disp.c_str(), static_cast<UINT32>(disp.length()),
+                          theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                          rcTxt, theme.brushTextPrimary.Get());
+        }
+    }
+
+    // 7. Variable Inspector Panel (when toggled on)
+    if (nb && nb->showVariableInspector) {
+        const float panW = (std::min)(config.ScaleF(300.0f), width * 0.34f);
+        const float panLeft = left + width - panW - config.ScaleF(14.0f);
+        const float panTop = contentTop + config.ScaleF(10.0f);
+        const size_t rows = (std::min)(nb->inspectorVariables.size(), static_cast<size_t>(12));
+        const float rowH = config.ScaleF(20.0f);
+        const float hdrH = config.ScaleF(26.0f);
+        const float panH = hdrH + static_cast<float>(rows > 0 ? rows : 1) * rowH + config.ScaleF(10.0f);
+        D2D1_RECT_F rcVarPanel = D2D1::RectF(panLeft, panTop, panLeft + panW, panTop + panH);
+        D2D1_ROUNDED_RECT rrcVar = D2D1::RoundedRect(rcVarPanel, 6.0f, 6.0f);
+        if (m_brushNbPopupBg) pRT->FillRoundedRectangle(rrcVar, m_brushNbPopupBg.Get());
+        if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcVar, theme.brushBorderSubtle.Get(), 1.0f);
+        D2D1_RECT_F rcVarHdr = D2D1::RectF(panLeft + config.ScaleF(10.0f), panTop + config.ScaleF(4.0f),
+                                            panLeft + panW - config.ScaleF(8.0f), panTop + hdrH);
+        std::wstring hdrTxt = L"{x} Variable Inspector (" + std::to_wstring(nb->inspectorVariables.size()) + L")";
+        pRT->DrawText(hdrTxt.c_str(), static_cast<UINT32>(hdrTxt.length()),
+                      theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                      rcVarHdr, m_brushNbBlueText ? static_cast<ID2D1Brush*>(m_brushNbBlueText.Get()) : theme.brushTextPrimary.Get());
+        if (nb->inspectorVariables.empty()) {
+            D2D1_RECT_F rcEmpty = D2D1::RectF(panLeft + config.ScaleF(10.0f), panTop + hdrH, panLeft + panW - config.ScaleF(8.0f), panTop + hdrH + rowH);
+            const wchar_t* emptyMsg = L"No user variables in namespace";
+            pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)),
+                          theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                          rcEmpty, theme.brushTextSecondary.Get());
+        } else {
+            for (size_t vi = 0; vi < rows; ++vi) {
+                const auto& v = nb->inspectorVariables[vi];
+                float ry = panTop + hdrH + static_cast<float>(vi) * rowH;
+                std::wstring rowTxt = v.name + L" (" + v.typeName + L") = " + v.valuePreview;
+                if (rowTxt.size() > 42) rowTxt = rowTxt.substr(0, 39) + L"...";
+                D2D1_RECT_F rcR = D2D1::RectF(panLeft + config.ScaleF(10.0f), ry, panLeft + panW - config.ScaleF(8.0f), ry + rowH);
+                pRT->DrawText(rowTxt.c_str(), static_cast<UINT32>(rowTxt.length()),
+                              theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                              rcR, theme.brushTextPrimary.Get());
+            }
+        }
     }
 }
 
@@ -1616,7 +1994,26 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
         }
     }
 
-    // Check Top Toolbar buttons
+    // Check Top Toolbar buttons & floating Kernel dropdown
+    if (m_kernelDropdownOpen) {
+        for (size_t ki = 0; ki < m_kernelDropdownItemBounds.size() && ki < nb->discoveredPythonExes.size(); ++ki) {
+            if (PointInRect(clientPt, m_kernelDropdownItemBounds[ki])) {
+                nb->selectedPythonExe = nb->discoveredPythonExes[ki];
+                m_kernelDropdownOpen = false;
+                RestartKernel(doc, hwnd);
+                if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                return true;
+            }
+        }
+        if (!PointInRect(clientPt, m_btnKernelPicker)) {
+            m_kernelDropdownOpen = false;
+            if (PointInRect(clientPt, m_kernelDropdownBounds)) {
+                if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+                return true;
+            }
+            if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
 
     if (PointInRect(clientPt, m_btnRunAll)) {
         if (m_isExecuting.load()) {
@@ -1641,6 +2038,28 @@ bool NotebookView::HandleLButtonDown(POINT clientPt, editor::OpenDocument& doc, 
     if (PointInRect(clientPt, m_btnAddText)) {
         int targetIdx = nb->activeCellIdx >= 0 ? nb->activeCellIdx : static_cast<int>(nb->cells.size()) - 1;
         nb->AddCell(editor::NotebookCellType::Markdown, targetIdx);
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (PointInRect(clientPt, m_btnKernelPicker)) {
+        m_kernelDropdownOpen = !m_kernelDropdownOpen;
+        if (m_kernelDropdownOpen) {
+            RefreshPythonKernels(doc);
+        }
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (PointInRect(clientPt, m_btnRestartKernel)) {
+        m_kernelDropdownOpen = false;
+        RestartKernel(doc, hwnd);
+        return true;
+    }
+    if (PointInRect(clientPt, m_btnVariables)) {
+        m_kernelDropdownOpen = false;
+        nb->showVariableInspector = !nb->showVariableInspector;
+        if (nb->showVariableInspector) {
+            QueryVariablesAsync(nb, hwnd);
+        }
         if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
@@ -1963,7 +2382,20 @@ bool NotebookView::HandleMouseMove(POINT clientPt, editor::OpenDocument& doc, co
     else if (PointInRect(clientPt, m_btnClearAll)) m_hoveredToolbarBtn = 2;
     else if (PointInRect(clientPt, m_btnAddCode)) m_hoveredToolbarBtn = 3;
     else if (PointInRect(clientPt, m_btnAddText)) m_hoveredToolbarBtn = 4;
+    else if (PointInRect(clientPt, m_btnKernelPicker)) m_hoveredToolbarBtn = 5;
+    else if (PointInRect(clientPt, m_btnRestartKernel)) m_hoveredToolbarBtn = 6;
+    else if (PointInRect(clientPt, m_btnVariables)) m_hoveredToolbarBtn = 7;
     else m_hoveredToolbarBtn = 0;
+
+    m_hoveredKernelDropdownIdx = -1;
+    if (m_kernelDropdownOpen) {
+        for (size_t ki = 0; ki < m_kernelDropdownItemBounds.size(); ++ki) {
+            if (PointInRect(clientPt, m_kernelDropdownItemBounds[ki])) {
+                m_hoveredKernelDropdownIdx = static_cast<int>(ki);
+                break;
+            }
+        }
+    }
 
     int oldCellIdx = m_hoveredCellIdx;
     int oldBtn = m_hoveredBtn;
@@ -2541,7 +2973,12 @@ LPCWSTR NotebookView::GetCursorForPoint(POINT pt, const editor::OpenDocument& do
     }
 
     if (PointInRect(pt, m_btnRunAll) || PointInRect(pt, m_btnClearAll) ||
-        PointInRect(pt, m_btnAddCode) || PointInRect(pt, m_btnAddText)) {
+        PointInRect(pt, m_btnAddCode) || PointInRect(pt, m_btnAddText) ||
+        PointInRect(pt, m_btnKernelPicker) || PointInRect(pt, m_btnRestartKernel) ||
+        PointInRect(pt, m_btnVariables)) {
+        return IDC_HAND;
+    }
+    if (m_kernelDropdownOpen && PointInRect(pt, m_kernelDropdownBounds)) {
         return IDC_HAND;
     }
 
@@ -2598,10 +3035,18 @@ static bool IsValidPythonExe(const std::wstring& path) {
     return true;
 }
 
-std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePath) const {
+std::vector<std::wstring> NotebookView::DiscoverPythonExecutables(const std::wstring& targetFilePath) const {
+    std::vector<std::wstring> results;
+    auto AddCandidate = [&results](const std::wstring& cand) {
+        if (!IsValidPythonExe(cand)) return;
+        for (const auto& existing : results) {
+            if (_wcsicmp(existing.c_str(), cand.c_str()) == 0) return;
+        }
+        results.push_back(cand);
+    };
+
     // 1. Check local virtual environments in the notebook's directory or parent directories
     std::vector<std::wstring> candidateDirs;
-
     if (!targetFilePath.empty()) {
         try {
             std::filesystem::path p(targetFilePath);
@@ -2614,19 +3059,14 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
             }
         } catch (...) {}
     }
-
     if (!m_workspacePath.empty()) {
         candidateDirs.push_back(m_workspacePath);
     }
 
-    // Check candidate directories for common virtual environments (.venv, venv, env, .env)
     const wchar_t* venvNames[] = { L".venv", L"venv", L"env", L".env" };
     for (const auto& dir : candidateDirs) {
         for (const auto* vname : venvNames) {
-            std::wstring vpy = dir + L"\\" + vname + L"\\Scripts\\python.exe";
-            if (IsValidPythonExe(vpy)) {
-                return vpy;
-            }
+            AddCandidate(dir + L"\\" + vname + L"\\Scripts\\python.exe");
         }
     }
 
@@ -2640,30 +3080,25 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
         L"C:\\Program Files\\phide\\runtimes\\python\\python.exe"
     };
     for (const auto& rc : runtimeCandidates) {
-        if (IsValidPythonExe(rc.wstring())) {
-            return rc.wstring();
-        }
+        AddCandidate(rc.wstring());
     }
 
-    // 3. Check User Local AppData Python installations (e.g. %LOCALAPPDATA%\Programs\Python\Python313\python.exe, Python315, etc.)
+    // 3. Check User Local AppData Python installations sorted newest first
     wchar_t localApp[MAX_PATH]{};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0) {
         std::filesystem::path pyBase = std::filesystem::path(localApp) / L"Programs" / L"Python";
         std::error_code ec;
         if (std::filesystem::exists(pyBase, ec)) {
             try {
-                std::wstring highestPy;
+                std::vector<std::wstring> appCands;
                 for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
                     if (entry.is_directory()) {
                         std::wstring cand = (entry.path() / L"python.exe").wstring();
-                        if (IsValidPythonExe(cand)) {
-                            if (highestPy.empty() || cand > highestPy) {
-                                highestPy = cand;
-                            }
-                        }
+                        if (IsValidPythonExe(cand)) appCands.push_back(cand);
                     }
                 }
-                if (!highestPy.empty()) return highestPy;
+                std::sort(appCands.begin(), appCands.end(), std::greater<std::wstring>());
+                for (const auto& c : appCands) AddCandidate(c);
             } catch (...) {}
         }
     }
@@ -2672,10 +3107,8 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
     wchar_t buf[MAX_PATH]{};
     if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
         std::wstring pathPy = buf;
-        if (pathPy.find(L"WindowsApps") == std::wstring::npos &&
-            pathPy.find(L"emsdk") == std::wstring::npos &&
-            IsValidPythonExe(pathPy)) {
-            return pathPy;
+        if (pathPy.find(L"emsdk") == std::wstring::npos) {
+            AddCandidate(pathPy);
         }
     }
 
@@ -2693,10 +3126,22 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
         L"C:\\Python311\\python.exe"
     };
     for (const auto* rc : rootCandidates) {
-        if (IsValidPythonExe(rc)) return rc;
+        AddCandidate(rc);
     }
 
-    // 6. Check py.exe on PATH by querying py.exe -0p for a valid python.exe
+    // 6. Fallback: dedicated EMSDK Python if present
+    AddCandidate(L"C:\\Users\\Administrator\\Downloads\\emsdk\\python\\3.13.3_64bit\\python.exe");
+    return results;
+}
+
+std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePath) const {
+    auto found = DiscoverPythonExecutables(targetFilePath);
+    if (!found.empty()) {
+        return found.front();
+    }
+
+    // Fallback: query py.exe -0p on PATH if no standard install was discovered
+    wchar_t buf[MAX_PATH]{};
     if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, buf, nullptr) > 0) {
         HANDLE hRead = nullptr, hWrite = nullptr;
         SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
@@ -2726,23 +3171,19 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
                 CloseHandle(pi.hThread);
 
                 if (!raw.empty()) {
-                    int len = MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, nullptr, 0);
-                    if (len > 0) {
-                        std::wstring outStr(len - 1, 0);
-                        MultiByteToWideChar(CP_UTF8, 0, raw.c_str(), -1, &outStr[0], len);
-                        std::wstringstream ss(outStr);
-                        std::wstring line;
-                        while (std::getline(ss, line)) {
-                            auto colIdx = line.find(L":\\");
-                            if (colIdx != std::wstring::npos && colIdx > 0) {
-                                std::wstring candExe = line.substr(colIdx - 1);
-                                while (!candExe.empty() && (candExe.back() == L' ' || candExe.back() == L'\t' || candExe.back() == L'\r' || candExe.back() == L'\n')) {
-                                    candExe.pop_back();
-                                }
-                                if (IsValidPythonExe(candExe)) {
-                                    CloseHandle(hRead);
-                                    return candExe;
-                                }
+                    std::wstring outStr = NbUtf8ToWide(raw);
+                    std::wstringstream ss(outStr);
+                    std::wstring line;
+                    while (std::getline(ss, line)) {
+                        auto colIdx = line.find(L":\\");
+                        if (colIdx != std::wstring::npos && colIdx > 0) {
+                            std::wstring candExe = line.substr(colIdx - 1);
+                            while (!candExe.empty() && (candExe.back() == L' ' || candExe.back() == L'\t' || candExe.back() == L'\r' || candExe.back() == L'\n')) {
+                                candExe.pop_back();
+                            }
+                            if (IsValidPythonExe(candExe)) {
+                                CloseHandle(hRead);
+                                return candExe;
                             }
                         }
                     }
@@ -2752,10 +3193,6 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
             if (hRead) CloseHandle(hRead);
         }
     }
-
-    // 7. Fallback: dedicated EMSDK Python if present
-    std::wstring emsdkPy = L"C:\\Users\\Administrator\\Downloads\\emsdk\\python\\3.13.3_64bit\\python.exe";
-    if (IsValidPythonExe(emsdkPy)) return emsdkPy;
 
     return L"python";
 }
@@ -2867,12 +3304,19 @@ void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
     }
 
     if (m_execThread.joinable()) {
-        m_execThread.detach(); // Detach old thread so UI thread NEVER blocks!
+        m_execThread.join();
     }
 
-    m_execThread = std::thread([this, cellIdx, code, lang, nbDocPtr, hwnd]() {
-        ExecuteScriptAsync(cellIdx, code, lang, nbDocPtr, hwnd);
-    });
+    if (!m_isDestroying.load()) {
+        m_activeWorkers.fetch_add(1);
+        m_execThread = std::thread([this, cellIdx, code, lang, nbDocPtr, hwnd]() {
+            struct WorkerGuard {
+                std::atomic<int>& counter;
+                ~WorkerGuard() { counter.fetch_sub(1); }
+            } guard{ m_activeWorkers };
+            ExecuteScriptAsync(cellIdx, code, lang, nbDocPtr, hwnd);
+        });
+    }
 }
 
 void NotebookView::RunAllCells(editor::OpenDocument& doc, HWND hwnd) {
@@ -2906,12 +3350,63 @@ void NotebookView::StopExecution(editor::OpenDocument& doc) {
     }
 }
 
-void NotebookView::RestartKernel(editor::OpenDocument& doc) {
+void NotebookView::RefreshPythonKernels(editor::OpenDocument& doc) {
+    if (!doc.notebookDoc) return;
+    auto nb = doc.notebookDoc;
+    std::vector<std::wstring> found = DiscoverPythonExecutables(nb->filePath);
+    if (!nb->selectedPythonExe.empty() && IsValidPythonExe(nb->selectedPythonExe)) {
+        bool already = false;
+        for (const auto& f : found) {
+            if (_wcsicmp(f.c_str(), nb->selectedPythonExe.c_str()) == 0) {
+                already = true;
+                break;
+            }
+        }
+        if (!already) {
+            found.insert(found.begin(), nb->selectedPythonExe);
+        }
+    } else if (!found.empty()) {
+        nb->selectedPythonExe = found.front();
+    }
+    nb->discoveredPythonExes = std::move(found);
+}
+
+void NotebookView::RestartKernel(editor::OpenDocument& doc, HWND hwnd) {
     StopExecution(doc);
     m_kernel.Restart();
     if (doc.notebookDoc) {
+        std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+        std::unique_lock<std::recursive_mutex> docLock(doc.notebookDoc->outputsMutex ? *doc.notebookDoc->outputsMutex : m_outputsMutex);
         doc.notebookDoc->ClearAllOutputs();
+        doc.notebookDoc->inspectorVariables.clear();
     }
+    if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
+void NotebookView::QueryVariablesAsync(const std::shared_ptr<editor::NotebookDocument>& nbDoc, HWND hwnd) {
+    if (!nbDoc || m_isDestroying.load()) return;
+    m_activeWorkers.fetch_add(1);
+    std::thread([this, nbDoc, hwnd]() {
+        struct WorkerGuard {
+            std::atomic<int>& counter;
+            ~WorkerGuard() { counter.fetch_sub(1); }
+        } guard{ m_activeWorkers };
+        if (m_isDestroying.load()) return;
+        std::string varsJson;
+        if (m_kernel.QueryVariablesJson(varsJson) && !m_isDestroying.load()) {
+            auto parsed = ParseNotebookVarsJson(varsJson);
+            {
+                std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+                std::unique_lock<std::recursive_mutex> docLock(nbDoc->outputsMutex ? *nbDoc->outputsMutex : m_outputsMutex);
+                nbDoc->inspectorVariables = std::move(parsed);
+            }
+            if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+    }).detach();
 }
 
 void NotebookView::StopExecution_Internal() {
@@ -2935,8 +3430,11 @@ void NotebookView::StopExecution_Internal() {
 
 void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, const std::wstring& lang,
                                       std::shared_ptr<editor::NotebookDocument> nbDoc, HWND hwnd) {
+    if (m_isDestroying.load()) return;
     std::wstring docPath = nbDoc ? nbDoc->filePath : L"";
-    std::wstring pyExe = FindPythonExecutable(docPath);
+    std::wstring pyExe = (nbDoc && !nbDoc->selectedPythonExe.empty() && IsValidPythonExe(nbDoc->selectedPythonExe))
+        ? nbDoc->selectedPythonExe
+        : FindPythonExecutable(docPath);
     std::wstring workingDir;
     if (!docPath.empty()) {
         try {
@@ -2948,7 +3446,7 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
     }
 
     auto onChunk = [this, nbDoc, cellIdx, hwnd](const std::wstring& chunk, bool isPrompt, const std::wstring& promptText) {
-        if (!nbDoc || cellIdx < 0 || cellIdx >= static_cast<int>(nbDoc->cells.size())) return;
+        if (m_isDestroying.load() || !nbDoc || cellIdx < 0 || cellIdx >= static_cast<int>(nbDoc->cells.size())) return;
         std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
         std::unique_lock<std::recursive_mutex> docLock((nbDoc && nbDoc->outputsMutex) ? *nbDoc->outputsMutex : m_outputsMutex);
         auto& cell = nbDoc->cells[cellIdx];
@@ -2969,7 +3467,7 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
             cell.inputFieldValue = L"";
             cell.isInputFieldFocused = true;
         }
-        if (hwnd) {
+        if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
     };
@@ -3026,8 +3524,7 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         }
         cell.errorLine = errLine;
 
-        // Only add output if there is actual stdout/stderr produced (Jupyter / Colab standard)
-        // Assignment cells like s = "hello" produce no output, so the output box is suppressed
+        // Only add output if there is actual stdout/stderr or image PNG produced
         if (!capturedOutput.empty()) {
             editor::CellOutput out;
             out.streamName = hasErr ? L"stderr" : L"stdout";
@@ -3035,6 +3532,19 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
             out.isError = hasErr;
             out.elapsedMs = elapsedMs;
             cell.outputs.push_back(std::move(out));
+        }
+
+        size_t addedImgs = 0;
+        for (const auto& b64 : kernelResult.base64Pngs) {
+            if (addedImgs >= editor::kMaxNotebookCellImages) break;
+            editor::CellOutput imgOut;
+            if (editor::DecodeBase64PngBounded(b64, imgOut.imagePngBytes) && !imgOut.imagePngBytes.empty()) {
+                imgOut.streamName = L"display_data";
+                imgOut.imageId = editor::NextCellImageId();
+                imgOut.elapsedMs = elapsedMs;
+                cell.outputs.push_back(std::move(imgOut));
+                addedImgs++;
+            }
         }
 
         // Execution count increment: Each cell increments its own run count by 1 independently
@@ -3046,10 +3556,20 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         nbDoc->isDirty = true;
     }
 
+    if (nbDoc && !hasErr && !m_isDestroying.load() && nbDoc->showVariableInspector) {
+        std::string varsJson;
+        if (m_kernel.QueryVariablesJson(varsJson) && !m_isDestroying.load()) {
+            auto parsed = ParseNotebookVarsJson(varsJson);
+            std::lock_guard<std::recursive_mutex> viewLock(m_outputsMutex);
+            std::unique_lock<std::recursive_mutex> docLock(nbDoc->outputsMutex ? *nbDoc->outputsMutex : m_outputsMutex);
+            nbDoc->inspectorVariables = std::move(parsed);
+        }
+    }
+
     m_isExecuting.store(false);
     m_executingCellIdx.store(-1);
 
-    if (hwnd) {
+    if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
@@ -3067,7 +3587,7 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         }
     }
 
-    if (queuedCellIdx >= 0 && !m_shouldStop.load() && nbDoc) {
+    if (queuedCellIdx >= 0 && !m_shouldStop.load() && !m_isDestroying.load() && nbDoc) {
         std::wstring nextCode;
         std::wstring nextLang;
         {
@@ -3085,10 +3605,15 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         m_isExecuting.store(true);
         m_executingCellIdx.store(queuedCellIdx);
 
+        m_activeWorkers.fetch_add(1);
         std::thread([this, queuedCellIdx, nextCode, nextLang, nbDoc, hwnd]() {
+            struct WorkerGuard {
+                std::atomic<int>& counter;
+                ~WorkerGuard() { counter.fetch_sub(1); }
+            } guard{ m_activeWorkers };
             ExecuteScriptAsync(queuedCellIdx, nextCode, nextLang, nbDoc, hwnd);
         }).detach();
-        if (hwnd) {
+        if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return;
@@ -3096,7 +3621,7 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
 
     // 5. Sequential execution for RunAll: run 1-by-1 in order from top to bottom
     // If execution fails, halt sequential queue immediately (Colab/Jupyter standard)
-    if (m_isQueueRunning.load() && !m_shouldStop.load() && !hasErr && nbDoc) {
+    if (m_isQueueRunning.load() && !m_shouldStop.load() && !m_isDestroying.load() && !hasErr && nbDoc) {
         int nextIdx = cellIdx + 1;
         while (nextIdx < static_cast<int>(nbDoc->cells.size()) &&
                nbDoc->cells[nextIdx].type != editor::NotebookCellType::Code) {
@@ -3118,7 +3643,12 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
             m_isExecuting.store(true);
             m_executingCellIdx.store(nextIdx);
 
+            m_activeWorkers.fetch_add(1);
             std::thread([this, nextIdx, nextCode, nextLang, nbDoc, hwnd]() {
+                struct WorkerGuard {
+                    std::atomic<int>& counter;
+                    ~WorkerGuard() { counter.fetch_sub(1); }
+                } guard{ m_activeWorkers };
                 ExecuteScriptAsync(nextIdx, nextCode, nextLang, nbDoc, hwnd);
             }).detach();
             return;

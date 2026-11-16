@@ -1256,8 +1256,8 @@ void TerminalTab::RunGarbageCollection() {
         conPtyAltSavedLines.clear();
     }
     conPtyAltSavedLines.shrink_to_fit();
-    if (commandHistory.size() > 500) {
-        commandHistory.erase(commandHistory.begin(), commandHistory.begin() + (commandHistory.size() - 500));
+    if (commandHistory.size() > 200) {
+        commandHistory.erase(commandHistory.begin(), commandHistory.begin() + (commandHistory.size() - 200));
     }
     commandHistory.shrink_to_fit();
     conPtyPendingUtf8.shrink_to_fit();
@@ -1278,7 +1278,67 @@ void TerminalTab::RunGarbageCollection() {
 TerminalPanel::TerminalPanel() = default;
 
 TerminalPanel::~TerminalPanel() {
+    m_isDestroying.store(true);
+    m_dap.onOutput = nullptr;
+    m_dap.onPaused = nullptr;
+    m_dap.onContinued = nullptr;
+    m_dap.onStateChanged = nullptr;
+    m_dap.onTerminated = nullptr;
+    m_dap.StopSession();
+    DiscardDeviceResources();
     CloseAllTabs();
+}
+
+void TerminalPanel::DiscardDeviceResources() {
+    m_pCachedDebugRT = nullptr;
+    m_pDbgToolbarBgBrush.Reset();
+    m_pDbgStopBrush.Reset();
+    m_pDbgRestartBrush.Reset();
+    m_pDbgStepBrush.Reset();
+    m_pDbgContinueBrush.Reset();
+    m_pDbgPauseBrush.Reset();
+    m_pDbgDimBrush.Reset();
+    m_pDbgBgBrush.Reset();
+    m_pDbgSecBgBrush.Reset();
+    m_pDbgAccentBrush.Reset();
+    m_pDbgGreenBrush.Reset();
+    m_pDbgRedBrush.Reset();
+    m_pDbgAmberBrush.Reset();
+    m_pDbgCyanBrush.Reset();
+    m_pDbgBtnBrush.Reset();
+}
+
+void TerminalPanel::EnsureDebugBrushes(ID2D1RenderTarget* pRT, const Theme& theme) {
+    if (!pRT) return;
+    const bool isDark = theme.IsDarkMode();
+    if (m_pCachedDebugRT == pRT && m_cachedDebugDark == isDark && m_pDbgToolbarBgBrush) {
+        return;
+    }
+    DiscardDeviceResources();
+    m_pCachedDebugRT = pRT;
+    m_cachedDebugDark = isDark;
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.90f) : D2D1::ColorF(0.88f, 0.88f, 0.92f, 0.90f), &m_pDbgToolbarBgBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f), &m_pDbgStopBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.82f, 0.25f), &m_pDbgRestartBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.75f, 0.98f), &m_pDbgStepBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.85f, 0.45f), &m_pDbgContinueBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.72f, 0.22f), &m_pDbgPauseBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.45f, 0.47f, 0.52f, 0.55f) : D2D1::ColorF(0.55f, 0.57f, 0.62f, 0.55f), &m_pDbgDimBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.085f, 0.095f, 0.120f, 1.0f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), &m_pDbgBgBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.125f, 0.140f, 0.175f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f), &m_pDbgSecBgBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 0.98f, 1.0f), &m_pDbgAccentBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &m_pDbgGreenBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &m_pDbgRedBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &m_pDbgAmberBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &m_pDbgCyanBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.20f, 0.25f, 1.0f) : D2D1::ColorF(0.84f, 0.87f, 0.92f, 1.0f), &m_pDbgBtnBrush);
+}
+
+void TerminalPanel::SetBreakpointsSnapshot(const std::vector<phide::dev::DapBreakpoint>& bps) {
+    m_activeDapBreakpoints = bps;
+    if (m_useDapBackend && m_dap.IsRunning()) {
+        m_dap.UpdateBreakpoints(bps);
+    }
 }
 
 void TerminalPanel::Open(const std::wstring& workingDir) {
@@ -1512,6 +1572,7 @@ void TerminalPanel::RunGarbageCollection() {
     m_debugStackHits.shrink_to_fit();
     m_debugVarHits.shrink_to_fit();
     m_debugWatchDelHits.shrink_to_fit();
+    m_debugBpHits.shrink_to_fit();
     m_optionsItemBounds.shrink_to_fit();
     m_engineSubmenuItemBounds.shrink_to_fit();
     m_viewModeSubmenuItemBounds.shrink_to_fit();
@@ -2470,6 +2531,7 @@ void TerminalPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         D2D1_RECT_F tipTarget{};
         switch (m_hoveredDebugAction) {
             case DebugAction::Continue: tipText = L"Continue (F5)"; tipTarget = m_debugContinueBounds; break;
+            case DebugAction::Pause:    tipText = L"Pause (F6)"; tipTarget = m_debugPauseBounds; break;
             case DebugAction::StepOver: tipText = L"Step Over (F10)"; tipTarget = m_debugStepOverBounds; break;
             case DebugAction::StepInto: tipText = L"Step Into (F11)"; tipTarget = m_debugStepIntoBounds; break;
             case DebugAction::StepOut:  tipText = L"Step Out (Shift+F11)"; tipTarget = m_debugStepOutBounds; break;
@@ -2733,9 +2795,11 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
     // Rendered when Debug session is active (Reinforced toolbar pill with tooltips)
     // =========================================================================
     if (m_isDebugActive) {
+        EnsureDebugBrushes(pRT, theme);
+        const bool isPaused = IsDebugPaused();
         float dbgBtnW = config.ScaleF(24.0f);
         float dbgSpacing = config.ScaleF(3.0f);
-        float numBtns = 6.0f;
+        float numBtns = 7.0f;
         float totalToolbarW = numBtns * dbgBtnW + (numBtns - 1.0f) * dbgSpacing + config.ScaleF(8.0f);
 
         rightX -= config.ScaleF(8.0f);
@@ -2747,14 +2811,10 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         // Reinforced toolbar container backdrop
         D2D1_ROUNDED_RECT rrcToolbar = D2D1::RoundedRect(
             D2D1::RectF(toolbarLeft, toolbarTop, toolbarRight, toolbarBottom), 4.0f, 4.0f);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> toolbarBg;
-        pRT->CreateSolidColorBrush(
-            theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.90f) : D2D1::ColorF(0.88f, 0.88f, 0.92f, 0.90f),
-            &toolbarBg);
-        if (toolbarBg) pRT->FillRoundedRectangle(rrcToolbar, toolbarBg.Get());
+        if (m_pDbgToolbarBgBrush) pRT->FillRoundedRectangle(rrcToolbar, m_pDbgToolbarBgBrush.Get());
         pRT->DrawRoundedRectangle(rrcToolbar, theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushItemHover.Get(), 0.8f);
 
-        // 6. Stop Debugging (Shift+F5)
+        // 7. Stop Debugging (Shift+F5)
         float curBtnX = toolbarRight - config.ScaleF(4.0f) - dbgBtnW;
         m_debugStopBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::Stop) {
@@ -2763,75 +2823,84 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         float stcx = curBtnX + dbgBtnW / 2.0f;
         float stcy = btnY + btnSize / 2.0f;
         float stSize = config.ScaleF(4.0f);
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stopBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.35f, 0.35f), &stopBrush);
-        if (stopBrush) {
+        if (m_pDbgStopBrush) {
             D2D1_ROUNDED_RECT rrcSt = D2D1::RoundedRect(
                 D2D1::RectF(stcx - stSize, stcy - stSize, stcx + stSize, stcy + stSize), 2.0f, 2.0f);
-            pRT->FillRoundedRectangle(rrcSt, stopBrush.Get());
+            pRT->FillRoundedRectangle(rrcSt, m_pDbgStopBrush.Get());
         }
 
-        // 5. Restart Session (Ctrl+Shift+F5)
+        // 6. Restart Session (Ctrl+Shift+F5)
         curBtnX -= (dbgBtnW + dbgSpacing);
         m_debugRestartBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::Restart) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugRestartBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> restartBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.82f, 0.25f), &restartBrush);
-        if (restartBrush) {
+        if (m_pDbgRestartBrush) {
             float rcx = curBtnX + dbgBtnW / 2.0f;
             float rcy = btnY + btnSize / 2.0f;
             float rcr = config.ScaleF(4.0f);
-            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), rcr, rcr), restartBrush.Get(), 1.4f);
-            pRT->DrawLine(D2D1::Point2F(rcx + rcr - 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), restartBrush.Get(), 1.4f);
-            pRT->DrawLine(D2D1::Point2F(rcx + rcr + 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), restartBrush.Get(), 1.4f);
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), rcr, rcr), m_pDbgRestartBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(rcx + rcr - 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), m_pDbgRestartBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(rcx + rcr + 2.0f, rcy - 2.0f), D2D1::Point2F(rcx + rcr, rcy), m_pDbgRestartBrush.Get(), 1.4f);
         }
 
-        // 4. Step Out (Shift+F11)
+        // 5. Step Out (Shift+F11)
         curBtnX -= (dbgBtnW + dbgSpacing);
         m_debugStepOutBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepOut) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepOutBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> stepBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.75f, 0.98f), &stepBrush);
-        if (stepBrush) {
+        ID2D1Brush* stepB = isPaused ? static_cast<ID2D1Brush*>(m_pDbgStepBrush.Get()) : static_cast<ID2D1Brush*>(m_pDbgDimBrush.Get());
+        if (stepB) {
             float sox = curBtnX + dbgBtnW / 2.0f;
             float soy = btnY + btnSize / 2.0f;
-            pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy + 3.0f), D2D1::Point2F(sox - 3.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy - 2.0f), D2D1::Point2F(sox + 3.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(sox + 1.0f, soy - 5.0f), D2D1::Point2F(sox + 4.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(sox + 1.0f, soy + 1.0f), D2D1::Point2F(sox + 4.0f, soy - 2.0f), stepBrush.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy + 3.0f), D2D1::Point2F(sox - 3.0f, soy - 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox - 3.0f, soy - 2.0f), D2D1::Point2F(sox + 3.0f, soy - 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox + 1.0f, soy - 5.0f), D2D1::Point2F(sox + 4.0f, soy - 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox + 1.0f, soy + 1.0f), D2D1::Point2F(sox + 4.0f, soy - 2.0f), stepB, 1.3f);
         }
 
-        // 3. Step Into (F11)
+        // 4. Step Into (F11)
         curBtnX -= (dbgBtnW + dbgSpacing);
         m_debugStepIntoBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepInto) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepIntoBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        if (stepBrush) {
+        if (stepB) {
             float six = curBtnX + dbgBtnW / 2.0f;
             float siy = btnY + btnSize / 2.0f;
-            pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy - 3.0f), D2D1::Point2F(six - 3.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy + 2.0f), D2D1::Point2F(six + 3.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(six + 1.0f, siy - 1.0f), D2D1::Point2F(six + 4.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(six + 1.0f, siy + 5.0f), D2D1::Point2F(six + 4.0f, siy + 2.0f), stepBrush.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy - 3.0f), D2D1::Point2F(six - 3.0f, siy + 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(six - 3.0f, siy + 2.0f), D2D1::Point2F(six + 3.0f, siy + 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(six + 1.0f, siy - 1.0f), D2D1::Point2F(six + 4.0f, siy + 2.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(six + 1.0f, siy + 5.0f), D2D1::Point2F(six + 4.0f, siy + 2.0f), stepB, 1.3f);
         }
 
-        // 2. Step Over (F10)
+        // 3. Step Over (F10)
         curBtnX -= (dbgBtnW + dbgSpacing);
         m_debugStepOverBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
         if (m_hoveredDebugAction == DebugAction::StepOver) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugStepOverBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        if (stepBrush) {
+        if (stepB) {
             float sox = curBtnX + dbgBtnW / 2.0f;
             float soy = btnY + btnSize / 2.0f;
-            pRT->DrawLine(D2D1::Point2F(sox - 4.0f, soy + 2.0f), D2D1::Point2F(sox - 2.0f, soy - 3.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(sox - 2.0f, soy - 3.0f), D2D1::Point2F(sox + 2.0f, soy - 3.0f), stepBrush.Get(), 1.3f);
-            pRT->DrawLine(D2D1::Point2F(sox + 2.0f, soy - 3.0f), D2D1::Point2F(sox + 4.0f, soy + 2.0f), stepBrush.Get(), 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox - 4.0f, soy + 2.0f), D2D1::Point2F(sox - 2.0f, soy - 3.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox - 2.0f, soy - 3.0f), D2D1::Point2F(sox + 2.0f, soy - 3.0f), stepB, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(sox + 2.0f, soy - 3.0f), D2D1::Point2F(sox + 4.0f, soy + 2.0f), stepB, 1.3f);
+        }
+
+        // 2. Pause (F6)
+        curBtnX -= (dbgBtnW + dbgSpacing);
+        m_debugPauseBounds = D2D1::RectF(curBtnX, btnY, curBtnX + dbgBtnW, btnY + btnSize);
+        if (m_hoveredDebugAction == DebugAction::Pause) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugPauseBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+        }
+        ID2D1Brush* pauseB = (!isPaused || !m_useDapBackend) ? static_cast<ID2D1Brush*>(m_pDbgPauseBrush.Get()) : static_cast<ID2D1Brush*>(m_pDbgDimBrush.Get());
+        if (pauseB) {
+            float px = curBtnX + dbgBtnW / 2.0f;
+            float py = btnY + btnSize / 2.0f;
+            pRT->DrawLine(D2D1::Point2F(px - 2.5f, py - 4.0f), D2D1::Point2F(px - 2.5f, py + 4.0f), pauseB, 1.8f);
+            pRT->DrawLine(D2D1::Point2F(px + 2.5f, py - 4.0f), D2D1::Point2F(px + 2.5f, py + 4.0f), pauseB, 1.8f);
         }
 
         // 1. Continue (F5)
@@ -2840,19 +2909,19 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         if (m_hoveredDebugAction == DebugAction::Continue) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(m_debugContinueBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
         }
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> contBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.85f, 0.45f), &contBrush);
-        if (contBrush) {
+        ID2D1Brush* contB = isPaused ? static_cast<ID2D1Brush*>(m_pDbgContinueBrush.Get()) : static_cast<ID2D1Brush*>(m_pDbgDimBrush.Get());
+        if (contB) {
             float cx = curBtnX + dbgBtnW / 2.0f;
             float cy = btnY + btnSize / 2.0f;
-            pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 4.0f), D2D1::Point2F(cx + 4.0f, cy), contBrush.Get(), 1.5f);
-            pRT->DrawLine(D2D1::Point2F(cx + 4.0f, cy), D2D1::Point2F(cx - 3.0f, cy + 4.0f), contBrush.Get(), 1.5f);
-            pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy + 4.0f), D2D1::Point2F(cx - 3.0f, cy - 4.0f), contBrush.Get(), 1.5f);
+            pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 4.0f), D2D1::Point2F(cx + 4.0f, cy), contB, 1.5f);
+            pRT->DrawLine(D2D1::Point2F(cx + 4.0f, cy), D2D1::Point2F(cx - 3.0f, cy + 4.0f), contB, 1.5f);
+            pRT->DrawLine(D2D1::Point2F(cx - 3.0f, cy + 4.0f), D2D1::Point2F(cx - 3.0f, cy - 4.0f), contB, 1.5f);
         }
 
         rightX = toolbarLeft - config.ScaleF(6.0f);
     } else {
         m_debugContinueBounds = {};
+        m_debugPauseBounds = {};
         m_debugStepOverBounds = {};
         m_debugStepIntoBounds = {};
         m_debugStepOutBounds = {};
@@ -3718,6 +3787,7 @@ void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, c
     m_debugStackHits.clear();
     m_debugVarHits.clear();
     m_debugWatchDelHits.clear();
+    m_debugBpHits.clear();
     m_debugWatchInputBounds = {};
     m_debugWatchAddBtnBounds = {};
     m_debugExcRaisedBounds = {};
@@ -3727,16 +3797,15 @@ void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, c
 
     pRT->PushAxisAlignedClip(inspectorBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    const bool isDark = theme.IsDarkMode();
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brBg, brSecBg, brAccent, brGreen, brRed, brAmber, brCyan, brBtn;
-    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.085f, 0.095f, 0.120f, 1.0f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), &brBg);
-    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.125f, 0.140f, 0.175f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f), &brSecBg);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 0.98f, 1.0f), &brAccent);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &brGreen);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &brRed);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &brAmber);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &brCyan);
-    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.20f, 0.25f, 1.0f) : D2D1::ColorF(0.84f, 0.87f, 0.92f, 1.0f), &brBtn);
+    EnsureDebugBrushes(pRT, theme);
+    const auto& brBg = m_pDbgBgBrush;
+    const auto& brSecBg = m_pDbgSecBgBrush;
+    const auto& brAccent = m_pDbgAccentBrush;
+    const auto& brGreen = m_pDbgGreenBrush;
+    const auto& brRed = m_pDbgRedBrush;
+    const auto& brAmber = m_pDbgAmberBrush;
+    const auto& brCyan = m_pDbgCyanBrush;
+    const auto& brBtn = m_pDbgBtnBrush;
 
     ID2D1Brush* textPrimary = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
     ID2D1Brush* textMuted = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrimary;
@@ -3908,7 +3977,7 @@ void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, c
 
     curY += config.ScaleF(4.0f);
 
-    // 4. EXCEPTION BREAKPOINTS & LOADED SCRIPTS
+    // 4. EXCEPTION BREAKPOINTS, LINE BREAKPOINTS & LOADED SCRIPTS
     drawSectionHdr(L"BREAKPOINTS & SCRIPTS");
     {
         float halfW = innerW * 0.5f;
@@ -3923,6 +3992,25 @@ void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, c
             pRT->DrawText(lblU.c_str(), static_cast<UINT32>(lblU.size()), fSmall, rcUncaught, snap.exceptions.breakOnUncaught && brAmber ? brAmber.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
         curY += rowH + config.ScaleF(2.0f);
+    }
+    for (const auto& bp : m_activeDapBreakpoints) {
+        D2D1_RECT_F rcRow = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
+        if (rcRow.bottom > inspectorBounds.top && rcRow.top < inspectorBounds.bottom && fSmall) {
+            float chkW = config.ScaleF(22.0f);
+            float delW = config.ScaleF(16.0f);
+            D2D1_RECT_F rcChk = D2D1::RectF(rcRow.left, rcRow.top, rcRow.left + chkW, rcRow.bottom);
+            D2D1_RECT_F rcDel = D2D1::RectF(rcRow.right - delW, rcRow.top, rcRow.right, rcRow.bottom);
+            D2D1_RECT_F rcLbl = D2D1::RectF(rcChk.right + config.ScaleF(2.0f), rcRow.top, rcDel.left - config.ScaleF(2.0f), rcRow.bottom);
+            pRT->DrawText(bp.enabled ? L"[x]" : L"[ ]", 3, fSmall, rcChk, bp.enabled && brRed ? brRed.Get() : textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            std::wstring bpTxt = std::filesystem::path(bp.filePath).filename().wstring() + L":" + std::to_wstring(bp.line1Based);
+            if (!bp.logMessage.empty()) bpTxt += L"  [log]";
+            else if (!bp.condition.empty()) bpTxt += L"  [" + bp.condition + L"]";
+            else if (bp.hitCondition > 0) bpTxt += L"  [>=" + std::to_wstring(bp.hitCondition) + L"]";
+            pRT->DrawText(bpTxt.c_str(), static_cast<UINT32>(bpTxt.size()), fSmall, rcLbl, bp.enabled ? textPrimary : textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->DrawText(L"x", 1, fSmall, rcDel, textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            m_debugBpHits.push_back({ bp.filePath, static_cast<int>(bp.line1Based), bp.enabled, rcChk, rcRow, rcDel });
+        }
+        curY += rowH;
     }
     for (const auto& scPath : snap.loadedScripts) {
         D2D1_RECT_F rcSc = D2D1::RectF(inspectorBounds.left + padX, curY, inspectorBounds.right - padX, curY + rowH);
@@ -3948,6 +4036,7 @@ DebugAction TerminalPanel::HitTestDebugButtons(POINT pt) const noexcept {
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
     if (inRect(pt, m_debugContinueBounds)) return DebugAction::Continue;
+    if (inRect(pt, m_debugPauseBounds)) return DebugAction::Pause;
     if (inRect(pt, m_debugStepOverBounds)) return DebugAction::StepOver;
     if (inRect(pt, m_debugStepIntoBounds)) return DebugAction::StepInto;
     if (inRect(pt, m_debugStepOutBounds)) return DebugAction::StepOut;
@@ -4709,6 +4798,104 @@ void TerminalPanel::TerminateServerSession(const std::wstring& projectRoot) {
     }
 }
 
+void TerminalPanel::RunWorkspaceTaskTab(const std::wstring& taskLabel, const std::wstring& command, const std::wstring& workingDir, bool focusTab) {
+    if (taskLabel.empty() || command.empty()) return;
+    const std::wstring key = L"task:" + taskLabel;
+    int existingIdx = -1;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+        for (size_t i = 0; i < m_tabs.size(); ++i) {
+            if (m_tabs[i] && m_tabs[i]->shellType == TerminalShellType::Custom &&
+                m_tabs[i]->associatedFilePath == key) {
+                existingIdx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (existingIdx >= 0) {
+        CloseTab(static_cast<size_t>(existingIdx));
+    }
+
+    auto tab = std::make_unique<TerminalTab>();
+    tab->title = L"Task: " + taskLabel;
+    tab->shellType = TerminalShellType::Custom;
+    tab->customCommand = command;
+    tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+    tab->associatedFilePath = key;
+    tab->canClose = true;
+    tab->onOutput = m_outputCallback;
+    tab->onExecutionError = m_onExecutionError;
+    tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    tab->onProblemMatched = m_onProblemMatched;
+    {
+        std::lock_guard<std::mutex> lock(tab->bufferMutex);
+        TerminalLine hdr;
+        hdr.rawText = L"[task] > " + command;
+        hdr.spans.push_back({ hdr.rawText, D2D1::ColorF(0.45f, 0.78f, 0.98f), true });
+        tab->lines.push_back(std::move(hdr));
+    }
+    StartShellProcess(*tab);
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+        m_tabs.push_back(std::move(tab));
+        int newIdx = static_cast<int>(m_tabs.size()) - 1;
+        if (focusTab || m_activeTabIdx < 0) {
+            m_activeTabIdx = newIdx;
+        }
+    }
+    if (focusTab) {
+        m_isOpen = true;
+    }
+    if (m_outputCallback) m_outputCallback();
+}
+
+bool TerminalPanel::StopWorkspaceTaskTab(const std::wstring& taskLabel) {
+    if (taskLabel.empty()) return false;
+    const std::wstring key = L"task:" + taskLabel;
+    bool wasAlive = false;
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    for (const auto& t : m_tabs) {
+        if (t && t->shellType == TerminalShellType::Custom && t->associatedFilePath == key) {
+            wasAlive = t->isAlive.load();
+            t->Terminate();
+            {
+                std::lock_guard<std::mutex> bufLock(t->bufferMutex);
+                TerminalLine msg;
+                msg.rawText = L"[task stopped]";
+                msg.spans.push_back({ msg.rawText, D2D1::ColorF(0.95f, 0.75f, 0.30f), false });
+                t->lines.push_back(std::move(msg));
+            }
+            if (t->onOutput) t->onOutput();
+            break;
+        }
+    }
+    return wasAlive;
+}
+
+bool TerminalPanel::IsWorkspaceTaskRunning(const std::wstring& taskLabel) const {
+    if (taskLabel.empty()) return false;
+    const std::wstring key = L"task:" + taskLabel;
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    for (const auto& t : m_tabs) {
+        if (t && t->shellType == TerminalShellType::Custom && t->associatedFilePath == key) {
+            return t->isAlive.load();
+        }
+    }
+    return false;
+}
+
+DWORD TerminalPanel::GetWorkspaceTaskExitCode(const std::wstring& taskLabel) const {
+    if (taskLabel.empty()) return 0;
+    const std::wstring key = L"task:" + taskLabel;
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    for (const auto& t : m_tabs) {
+        if (t && t->shellType == TerminalShellType::Custom && t->associatedFilePath == key) {
+            return t->processExitCode.load();
+        }
+    }
+    return 0;
+}
+
 bool TerminalPanel::HasActiveServerSession(const std::wstring& projectRoot) const {
     for (const auto& tab : m_tabs) {
         if (tab && tab->isServerTab) {
@@ -4776,6 +4963,8 @@ std::string TerminalPanel::GetDebugActionCommand(DebugBackend backend, DebugActi
     switch (action) {
     case DebugAction::Continue:
         return "c\r\n";
+    case DebugAction::Pause:
+        return (backend == DebugBackend::Node) ? "pause\r\n" : "";
     case DebugAction::StepOver:
         return "n\r\n";
     case DebugAction::StepInto:
@@ -5179,44 +5368,52 @@ void TerminalPanel::StartDapDebugSession(const phide::dev::LaunchConfig& cfg,
 
     TerminalTab* rawTab = m_tabs.back().get();
     m_dap.onOutput = [this, rawTab](const std::wstring& txt) {
-        // Split multiline text cleanly into active debug tab if still present
-        for (const auto& t : m_tabs) {
-            if (t.get() == rawTab) {
-                std::lock_guard<std::mutex> lock(rawTab->bufferMutex);
-                std::wstringstream ss(txt);
-                std::wstring ln;
-                while (std::getline(ss, ln)) {
-                    if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
-                    if (ln.empty()) continue;
-                    TerminalLine tl;
-                    tl.rawText = ln;
-                    D2D1_COLOR_F col = (ln.find(L"Exception") != std::wstring::npos || ln.find(L"error") != std::wstring::npos)
-                        ? D2D1::ColorF(0.95f, 0.42f, 0.42f)
-                        : D2D1::ColorF(0.88f, 0.90f, 0.94f);
-                    tl.spans.push_back({ ln, col, false });
-                    rawTab->lines.push_back(std::move(tl));
+        if (m_isDestroying.load()) return;
+        {
+            std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+            // Split multiline text cleanly into active debug tab if still present
+            for (const auto& t : m_tabs) {
+                if (t.get() == rawTab) {
+                    std::lock_guard<std::mutex> lock(rawTab->bufferMutex);
+                    std::wstringstream ss(txt);
+                    std::wstring ln;
+                    while (std::getline(ss, ln)) {
+                        if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+                        if (ln.empty()) continue;
+                        TerminalLine tl;
+                        tl.rawText = ln;
+                        D2D1_COLOR_F col = (ln.find(L"Exception") != std::wstring::npos || ln.find(L"error") != std::wstring::npos)
+                            ? D2D1::ColorF(0.95f, 0.42f, 0.42f)
+                            : D2D1::ColorF(0.88f, 0.90f, 0.94f);
+                        tl.spans.push_back({ ln, col, false });
+                        rawTab->lines.push_back(std::move(tl));
+                    }
+                    if (rawTab->lines.size() > 2000) {
+                        rawTab->lines.erase(rawTab->lines.begin(), rawTab->lines.begin() + 500);
+                    }
+                    break;
                 }
-                if (rawTab->lines.size() > 2000) {
-                    rawTab->lines.erase(rawTab->lines.begin(), rawTab->lines.begin() + 500);
-                }
-                break;
             }
         }
-        if (m_outputCallback) m_outputCallback();
+        if (!m_isDestroying.load() && m_outputCallback) m_outputCallback();
     };
     m_dap.onPaused = [this](const std::wstring& filePath, int line1) {
+        if (m_isDestroying.load()) return;
         if (m_onDebugPaused) m_onDebugPaused(filePath, line1);
         if (m_outputCallback) m_outputCallback();
     };
     m_dap.onContinued = [this]() {
+        if (m_isDestroying.load()) return;
         if (m_onDebugResumed) m_onDebugResumed();
         if (m_outputCallback) m_outputCallback();
     };
     m_dap.onStateChanged = [this]() {
+        if (m_isDestroying.load()) return;
         if (m_outputCallback) m_outputCallback();
     };
     m_dap.onTerminated = [this](int exitCode) {
         (void)exitCode;
+        if (m_isDestroying.load()) return;
         m_debugProcessEnded.store(true);
         m_isDebugActive = false;
         m_useDapBackend = false;
@@ -5258,6 +5455,10 @@ void TerminalPanel::TriggerDebugAction(DebugAction action) {
         if (action == DebugAction::Restart) {
             if (m_onDebugResumed) m_onDebugResumed();
             StartDapDebugSession(m_activeLaunchConfig, m_activeDapBreakpoints, m_debugPythonExe);
+            return;
+        }
+        if (action == DebugAction::Pause) {
+            m_dap.Pause();
             return;
         }
         if (m_onDebugResumed) m_onDebugResumed();
@@ -5414,6 +5615,15 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         for (const auto& st : m_debugStackHits) {
             if (inRect(pt, st.bounds)) {
                 m_dap.SelectStackFrame(st.frameId);
+                if (m_onJumpToDebugLocation) {
+                    auto snap = m_dap.GetSnapshot();
+                    for (const auto& fr : snap.callStack) {
+                        if (fr.id == st.frameId && !fr.sourcePath.empty()) {
+                            m_onJumpToDebugLocation(fr.sourcePath, fr.line1Based);
+                            break;
+                        }
+                    }
+                }
                 if (m_outputCallback) m_outputCallback();
                 return true;
             }
@@ -5421,6 +5631,23 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         for (const auto& vh : m_debugVarHits) {
             if (inRect(pt, vh.bounds)) {
                 m_dap.ExpandVariableChildren(vh.varRef);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+        }
+        for (const auto& bp : m_debugBpHits) {
+            if (inRect(pt, bp.checkBounds)) {
+                if (m_onToggleBreakpoint) m_onToggleBreakpoint(bp.filePath, bp.line1Based, !bp.currentlyEnabled);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+            if (inRect(pt, bp.delBounds)) {
+                if (m_onRemoveBreakpoint) m_onRemoveBreakpoint(bp.filePath, bp.line1Based);
+                if (m_outputCallback) m_outputCallback();
+                return true;
+            }
+            if (inRect(pt, bp.rowBounds)) {
+                if (m_onJumpToDebugLocation) m_onJumpToDebugLocation(bp.filePath, bp.line1Based);
                 if (m_outputCallback) m_outputCallback();
                 return true;
             }
@@ -6091,10 +6318,14 @@ bool TerminalPanel::OnChar(wchar_t ch) {
             tab->scrollOffsetLines = 0;
         }
 
-        // Add to history
+        // Add to history (capped <= 200 entries)
         if (!trimmed.empty()) {
             if (tab->commandHistory.empty() || tab->commandHistory.back() != tab->currentInputLine) {
                 tab->commandHistory.push_back(tab->currentInputLine);
+                if (tab->commandHistory.size() > 200) {
+                    tab->commandHistory.erase(tab->commandHistory.begin(),
+                                              tab->commandHistory.begin() + (tab->commandHistory.size() - 200));
+                }
             }
         }
         tab->historyIndex = -1;
@@ -6108,42 +6339,35 @@ bool TerminalPanel::OnChar(wchar_t ch) {
                 tab->lines.push_back({});
             }
         } else if (tab->shellType == TerminalShellType::DebugConsole) {
-            std::lock_guard<std::mutex> lock(tab->bufferMutex);
-            TerminalLine lInput;
-            lInput.rawText = L"❯ " + tab->currentInputLine;
-            lInput.spans.push_back({ L"❯ ", D2D1::ColorF(0.35f, 0.82f, 0.98f), true });
-            lInput.spans.push_back({ tab->currentInputLine, D2D1::ColorF(0.95f, 0.78f, 0.35f), false });
-            tab->lines.push_back(std::move(lInput));
-
             std::wstring expr = trimmed;
+            {
+                std::lock_guard<std::mutex> lock(tab->bufferMutex);
+                TerminalLine lInput;
+                lInput.rawText = L"❯ " + tab->currentInputLine;
+                lInput.spans.push_back({ L"❯ ", D2D1::ColorF(0.35f, 0.82f, 0.98f), true });
+                lInput.spans.push_back({ tab->currentInputLine, D2D1::ColorF(0.95f, 0.78f, 0.35f), false });
+                tab->lines.push_back(std::move(lInput));
+            }
+
             std::wstring evalResult;
-            if (m_useDapBackend && m_dap.IsRunning() && !expr.empty()) {
+            bool hasDap = (m_useDapBackend && m_dap.IsRunning());
+            if (hasDap && !expr.empty()) {
+                // Release tab->bufferMutex during blocking DAP evaluation so render/output never deadlock
                 evalResult = m_dap.EvaluateBlocking(expr);
                 if (evalResult.empty()) evalResult = L"<no response>";
-            } else if (expr == L"document.title") {
-                evalResult = L"\"CleaveDB - Native Desktop\"";
-            } else if (expr == L"location.href" || expr == L"window.location.href") {
-                evalResult = L"\"http://localhost:5500/index.html\"";
-            } else if (expr == L"window.innerWidth") {
-                evalResult = L"1280";
-            } else if (expr == L"window.innerHeight") {
-                evalResult = L"800";
-            } else if (expr == L"typeof app" || expr == L"typeof window") {
-                evalResult = L"\"object\"";
-            } else if (expr == L"1 + 1" || expr == L"1+1") {
-                evalResult = L"2";
-            } else if (expr == L"navigator.userAgent") {
-                evalResult = L"\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Phide/2.0 CleaveDB/1.0\"";
+            } else if (!hasDap && !expr.empty() && (tab->isIdleDebugConsole || !tab->isAlive.load())) {
+                evalResult = L"[Debug Console] Start a debug session (F5) to evaluate expressions in the active frame.";
             }
 
             if (!evalResult.empty()) {
+                std::lock_guard<std::mutex> lock(tab->bufferMutex);
                 TerminalLine lRes;
                 lRes.rawText = L"◀ " + evalResult;
-                lRes.spans.push_back({ L"◀ ", D2D1::ColorF(0.20f, 0.85f, 0.55f), true });
-                lRes.spans.push_back({ evalResult, D2D1::ColorF(0.40f, 0.85f, 0.95f), false });
+                lRes.spans.push_back({ L"◀ ", hasDap ? D2D1::ColorF(0.20f, 0.85f, 0.55f) : D2D1::ColorF(0.65f, 0.68f, 0.74f), true });
+                lRes.spans.push_back({ evalResult, hasDap ? D2D1::ColorF(0.40f, 0.85f, 0.95f) : D2D1::ColorF(0.75f, 0.78f, 0.84f), false });
                 tab->lines.push_back(std::move(lRes));
             }
-            if (m_useDapBackend && m_dap.IsRunning()) {
+            if (hasDap || tab->isIdleDebugConsole || !tab->isAlive.load()) {
                 tab->currentInputLine.clear();
                 tab->inputCursorCol = 0;
                 if (m_outputCallback) m_outputCallback();

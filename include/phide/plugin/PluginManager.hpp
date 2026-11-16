@@ -132,6 +132,12 @@ struct PluginEventHook {
     std::wstring shellCommand;           ///< Optional background CLI/script hook
 };
 
+struct PluginLanguageServer {
+    std::wstring languageId;             ///< e.g. "python", "typescript", "rust", "go"
+    std::wstring command;                ///< Command line e.g. "rust-analyzer" or "pyright-langserver --stdio"
+    std::wstring sourcePluginId;
+};
+
 struct HostCallbacks {
     std::function<std::wstring()> getActiveFilePath;
     std::function<std::wstring()> getActiveDocumentText;
@@ -254,10 +260,17 @@ public:
     void RegisterEventHook(const PluginEventHook& hook);
     void DispatchEvent(const std::wstring& eventName, const std::wstring& payloadJson = L"{}");
 
-    // --- Metadata Inspection ---
+    // --- 11. Custom Language Servers ---
+    void RegisterLanguageServer(const PluginLanguageServer& server);
+    [[nodiscard]] std::vector<PluginLanguageServer> GetLanguageServers() const;
+
+    // --- Metadata Inspection & Enable State ---
     std::vector<PluginMetadata> GetLoadedPlugins() const;
+    bool SetPluginEnabled(const std::wstring& pluginId, bool enabled);
+    [[nodiscard]] bool IsPluginEnabled(const std::wstring& pluginId) const;
     const PhideHostApi* GetHostApiTable() const { return &m_hostApi; }
     const HostCallbacks& GetHostCallbacks() const { return m_hostCallbacks; }
+    HostCallbacks CopyHostCallbacks() const;
 
 private:
     PluginManager();
@@ -315,6 +328,11 @@ private:
 
     // Event hooks: eventName -> vector<PluginEventHook>
     std::unordered_map<std::wstring, std::vector<PluginEventHook>> m_eventHooks;
+
+    // Plugin-registered Language Servers
+    std::vector<PluginLanguageServer> m_languageServers;
+
+    [[nodiscard]] bool IsPluginEnabledUnlocked(const std::wstring& pluginId) const;
 };
 
 } // namespace phide::plugin

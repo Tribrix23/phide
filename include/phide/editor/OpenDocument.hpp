@@ -5,17 +5,23 @@
 
 #pragma once
 
-#include <string>
+#include <algorithm>
+#include <filesystem>
+#include <memory>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <filesystem>
-#include <algorithm>
 #include <d2d1.h>
 #include <wrl/client.h>
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/EmmetEngine.hpp"
 #include "phide/lsp/LspClient.hpp"
 #include "phide/editor/NotebookModel.hpp"
+
+namespace phide::ui {
+struct StructuredViewerState;
+}
 
 namespace phide::editor {
 
@@ -30,6 +36,7 @@ struct OpenDocument {
     std::wstring originalDiskText; ///< Pristine file text on disk / HEAD for accurate clean/dirty tracking
     bool isDirty = false;        ///< True if document has unsaved edits
     bool isPreview = false;      ///< True if single-clicked and not yet edited/pinned (VS Code preview tab)
+    bool isPinned = false;       ///< True if tab is pinned to the left strip and protected from bulk close
     bool isSpecialView = false;  ///< True for Keyboard Shortcuts, settings, etc.
     bool isRemoteFile = false;   ///< True if opened via Remote Explorer (SSH/SCP/Container) and synced on save
     bool isRemoteContainerFile = false; ///< True if opened inside a Docker Dev Container
@@ -98,6 +105,24 @@ struct OpenDocument {
             std::remove_if(breakpointConditions.begin(), breakpointConditions.end(),
                            [line0](const BreakpointConditionInfo& bc) { return bc.line0 == line0; }),
             breakpointConditions.end());
+    }
+
+    void SetBreakpointEnabled(size_t line0, bool enabled) {
+        if (std::find(breakpoints.begin(), breakpoints.end(), line0) == breakpoints.end()) {
+            breakpoints.push_back(line0);
+        }
+        for (auto& bc : breakpointConditions) {
+            if (bc.line0 == line0) {
+                bc.enabled = enabled;
+                return;
+            }
+        }
+        if (!enabled) {
+            BreakpointConditionInfo info;
+            info.line0 = line0;
+            info.enabled = false;
+            breakpointConditions.push_back(std::move(info));
+        }
     }
 
     // GitLens Inline Blame and Authorship State
@@ -943,34 +968,159 @@ struct OpenDocument {
         return 1;
     }
 
-    void SelectWordAt(size_t lineIdx, size_t colIdx) {
-        const auto& line = buffer.GetLine(lineIdx);
-        if (line.empty()) return;
-        if (colIdx >= line.length()) colIdx = line.length() > 0 ? line.length() - 1 : 0;
+    [[nodiscard]] static bool IsWordChar(wchar_t ch) noexcept {
+        return ::iswalnum(ch) || ch == L'_' || ch == L'$';
+    }
 
-        auto isWordChar = [](wchar_t ch) {
-            return iswalnum(ch) || ch == L'_' || ch == L'$';
+    [[nodiscard]] std::wstring GetWordAt(size_t lineIdx, size_t colIdx, size_t* outStartCol = nullptr, size_t* outEndCol = nullptr) const {
+        if (outStartCol) *outStartCol = colIdx;
+        if (outEndCol) *outEndCol = colIdx;
+        if (lineIdx >= buffer.GetLineCount()) return L"";
+        const auto& line = buffer.GetLine(lineIdx);
+        if (line.empty()) return L"";
+        size_t probe = colIdx;
+        if (probe >= line.length() || !IsWordChar(line[probe])) {
+            if (colIdx > 0 && IsWordChar(line[colIdx - 1])) {
+                probe = colIdx - 1;
+            } else {
+                return L"";
+            }
+        }
+        size_t s = probe;
+        while (s > 0 && IsWordChar(line[s - 1])) --s;
+        size_t e = probe + 1;
+        while (e < line.length() && IsWordChar(line[e])) ++e;
+        if (outStartCol) *outStartCol = s;
+        if (outEndCol) *outEndCol = e;
+        return line.substr(s, e - s);
+    }
+
+    bool TransformSelectionCase(CaseTransform mode) {
+        if (buffer.IsMemoryMappedReadOnly() || buffer.GetLineCount() == 0) return false;
+        auto cursors = CollectNormalizedCursors();
+        if (cursors.empty()) return false;
+
+        std::vector<CursorEditOp> ops;
+        ops.reserve(cursors.size());
+        bool anyChange = false;
+
+        for (const auto& c : cursors) {
+            size_t sLine = c.sLine, sCol = c.sCol, eLine = c.eLine, eCol = c.eCol;
+            if (sLine == eLine && sCol == eCol) {
+                size_t ws = sCol, we = sCol;
+                std::wstring w = GetWordAt(sLine, sCol, &ws, &we);
+                if (w.empty() || we <= ws) continue;
+                sCol = ws;
+                eCol = we;
+            }
+            std::wstring orig = GetTextInRange(sLine, sCol, eLine, eCol);
+            if (orig.empty()) continue;
+            std::wstring transformed = Buffer::TransformTextCase(orig, mode);
+            if (transformed != orig) anyChange = true;
+            ops.push_back({ sLine, sCol, eLine, eCol, c.isPrimary, c.isReversed, false, 0,
+                            transformed, 0, transformed.length() });
+        }
+
+        if (ops.empty() || !anyChange) return false;
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    bool WrapSelectionWithEmmet(const std::wstring& abbr, const std::wstring& indentUnit = L"    ", bool isJsx = false) {
+        if (buffer.IsMemoryMappedReadOnly() || buffer.GetLineCount() == 0 || abbr.empty()) return false;
+        size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
+        if (HasSelection()) {
+            GetSelectionRange(sLine, sCol, eLine, eCol);
+        } else {
+            auto cur = buffer.GetCursor();
+            sLine = eLine = (std::min)(cur.line, buffer.GetLineCount() - 1);
+            const auto& ln = buffer.GetLine(sLine);
+            size_t lead = 0;
+            while (lead < ln.length() && (ln[lead] == L' ' || ln[lead] == L'\t')) ++lead;
+            sCol = lead;
+            eCol = ln.length();
+        }
+        std::wstring sel = GetTextInRange(sLine, sCol, eLine, eCol);
+        const auto& firstLn = buffer.GetLine(sLine);
+        size_t ws = 0;
+        while (ws < firstLn.length() && ws < sCol && (firstLn[ws] == L' ' || firstLn[ws] == L'\t')) ++ws;
+        std::wstring baseIndent = (sCol <= ws) ? firstLn.substr(0, sCol) : firstLn.substr(0, ws);
+        std::wstring wrapped = EmmetEngine::WrapWithAbbreviation(
+            sel, abbr, indentUnit, (sLine == eLine && sel.find(L'\n') == std::wstring::npos) ? L"" : baseIndent, isJsx);
+        if (wrapped.empty()) return false;
+
+        // If multiline wrap started mid-line at leading indent `ws == sCol`, strip duplicate leading baseIndent on line 0
+        if (sCol > 0 && baseIndent.size() == sCol && wrapped.rfind(baseIndent, 0) == 0) {
+            wrapped.erase(0, baseIndent.size());
+        }
+
+        std::vector<CursorEditOp> ops;
+        ops.push_back({ sLine, sCol, eLine, eCol, true, false, false, 0, wrapped, 0, wrapped.length() });
+        return ApplyMultiCursorEdits(ops);
+    }
+
+    bool BalanceEmmetTag(bool outward) {
+        size_t lineCount = buffer.GetLineCount();
+        if (lineCount == 0 || buffer.IsMemoryMappedReadOnly()) return false;
+        std::wstring docText = buffer.GetText();
+        if (docText.empty()) return false;
+
+        auto posToOffset = [&](size_t targetLine, size_t targetCol) -> size_t {
+            size_t off = 0;
+            size_t limit = (std::min)(targetLine, lineCount - 1);
+            for (size_t l = 0; l < limit; ++l) {
+                off += buffer.GetLine(l).length() + 1;
+            }
+            off += (std::min)(targetCol, buffer.GetLine(limit).length());
+            return (std::min)(off, docText.size());
+        };
+        auto offsetToPos = [&](size_t off) -> CursorPosition {
+            size_t cur = 0;
+            for (size_t l = 0; l < lineCount; ++l) {
+                size_t len = buffer.GetLine(l).length();
+                if (off <= cur + len) return { l, off - cur };
+                cur += len + 1;
+            }
+            size_t lastL = lineCount - 1;
+            return { lastL, buffer.GetLine(lastL).length() };
         };
 
-        if (!isWordChar(line[colIdx])) {
-            return;
+        size_t sOff = 0, eOff = 0;
+        if (HasSelection()) {
+            size_t sl = 0, sc = 0, el = 0, ec = 0;
+            GetSelectionRange(sl, sc, el, ec);
+            sOff = posToOffset(sl, sc);
+            eOff = posToOffset(el, ec);
+        } else {
+            auto cur = buffer.GetCursor();
+            sOff = eOff = posToOffset(cur.line, cur.col);
         }
 
-        size_t startCol = colIdx;
-        while (startCol > 0 && isWordChar(line[startCol - 1])) {
-            startCol--;
-        }
-        size_t endCol = colIdx;
-        while (endCol < line.length() && isWordChar(line[endCol])) {
-            endCol++;
-        }
+        auto range = EmmetEngine::BalanceTagRange(docText, sOff, eOff, outward);
+        if (!range.valid) return false;
+
+        CursorPosition anc = offsetToPos(range.startOffset);
+        CursorPosition cur = offsetToPos(range.endOffset);
+        selAnchor = anc;
+        selEnd = cur;
+        hasSelection = (anc.line != cur.line || anc.col != cur.col);
+        isColumnSelection = false;
+        secondarySelections.clear();
+        buffer.SetCursor(cur.line, cur.col);
+        selectedWord = (anc.line == cur.line) ? GetSelectedText() : L"";
+        return true;
+    }
+
+    void SelectWordAt(size_t lineIdx, size_t colIdx) {
+        size_t startCol = 0, endCol = 0;
+        std::wstring word = GetWordAt(lineIdx, colIdx, &startCol, &endCol);
+        if (word.empty() || endCol <= startCol) return;
 
         selAnchor = { lineIdx, startCol };
         selEnd = { lineIdx, endCol };
         hasSelection = true;
         isColumnSelection = false;
         buffer.SetCursor(lineIdx, endCol);
-        selectedWord = line.substr(startCol, endCol - startCol);
+        selectedWord = std::move(word);
     }
 
     bool AddNextOccurrence() {
@@ -1073,6 +1223,9 @@ struct OpenDocument {
     float maxContentWidth = 0.0f;       ///< Maximum content width in pixels across lines
     float markdownScrollY = 0.0f;       ///< Vertical scroll offset in pixels for Markdown Preview
     float markdownMaxScrollY = 0.0f;    ///< Max vertical scroll range in pixels for Markdown Preview
+    float markdownLastSyncedEditorRatio = -1.0f;  ///< Feature #33: Last synced editor scroll ratio
+    float markdownLastSyncedPreviewRatio = -1.0f; ///< Feature #33: Last synced preview scroll ratio
+    std::unordered_map<size_t, bool> gutterCoverage; ///< Feature #31: Line 0-based -> covered(true)/uncovered(false)
     std::wstring extensionId;           ///< Identifier for extension details view (e.g. L"dsznajder.es7-react-js-snippets")
     int extensionSubTab = 0;            ///< 0 = DETAILS, 1 = FEATURES, 2 = CHANGELOG
     float extensionScrollY = 0.0f;      ///< Vertical scroll offset for Extension Detail view
@@ -1158,6 +1311,7 @@ struct OpenDocument {
         size_t col = 0;               ///< Column index where hint badge appears
         std::wstring label;           ///< Badge text e.g. L": {shape, __add__}" or L"Tab to complete"
         bool isGhostText = false;      ///< True for inline completion ghost text
+        bool isDebugValue = false;     ///< True for debug inline variable value overlays
     };
     std::vector<InlayHint> inlayHints;
 
@@ -1186,6 +1340,7 @@ struct OpenDocument {
     uint64_t binaryFileSize = 0;         ///< File size on disk in bytes
     std::wstring binaryFileType;         ///< Human-readable binary type descriptor
     D2D1_RECT_F unsupportedActionBtn{};  ///< Bounding box of "Reveal in File Explorer" button
+    D2D1_RECT_F unsupportedOpenHexBtn{}; ///< Bounding box of "Open in Hex Viewer" button
 
     // Folder Explorer View State (when a folder is dragged/opened in an editor tab)
     struct FolderEntryItem {
@@ -1383,6 +1538,25 @@ struct OpenDocument {
     bool isDiffStagedMode = false;       ///< True if diff compares HEAD vs Index (staged) for hunk unstaging
     std::wstring diffRepoRelPath;        ///< Repo-relative path for partial hunk git apply operations
 
+    // Gutter Peek Diff Hunk Popover & Gutter/Hover Blame State (#36, #39)
+    bool diffPeekActive = false;
+    size_t diffPeekHunkIdx = 0;
+    size_t diffPeekLine = 0;
+    mutable D2D1_RECT_F diffPeekCardBounds{};
+    mutable D2D1_RECT_F diffPeekStageBtnBounds{};
+    mutable D2D1_RECT_F diffPeekRevertBtnBounds{};
+    mutable D2D1_RECT_F diffPeekNextBtnBounds{};
+    mutable D2D1_RECT_F diffPeekCloseBtnBounds{};
+    struct GutterDiffBarHit {
+        size_t line = 0;
+        D2D1_RECT_F bounds{};
+    };
+    mutable std::vector<GutterDiffBarHit> gutterDiffBarHits;
+    mutable D2D1_RECT_F mergeStickyOpen3WayBounds{};
+    mutable D2D1_RECT_F mergeStickyNextBounds{};
+    mutable size_t hoveredBlameLine = static_cast<size_t>(-1);
+    mutable D2D1_RECT_F hoveredBlameAnchor{};
+
     // Inline Merge Conflict & 3-Way Merge Editor state (#35)
     struct MergeConflictRange {
         size_t startLine = 0;
@@ -1447,6 +1621,39 @@ struct OpenDocument {
     // Import Cost annotations cache (line index -> annotation text e.g. "   71.7 KB (gzipped: 25.9 KB)")
     std::unordered_map<size_t, std::wstring> importCostMap;
     bool importCostCalculated = false;
+
+    // Cached Word Occurrence Match Count (#13)
+    mutable std::wstring activeOccurrenceWord;
+    mutable bool occurrenceWholeWord = true;
+    mutable size_t occurrenceMatchCount = 0;
+    mutable uint64_t occurrenceCacheVersion = UINT64_MAX;
+    mutable std::wstring occurrenceCacheKey;
+
+    // Advanced LSP Metadata (#22) - bounded vectors cleared on close/GC
+    std::vector<uint32_t> semanticTokensData;
+    uint64_t semanticTokensVersion = UINT64_MAX;
+    std::vector<lsp::LspFoldRange> lspFoldingRanges;
+    std::vector<lsp::LspCodeLens> lspCodeLenses;
+
+    // Structured File Viewer (#21) - zero memory overhead when null
+    std::shared_ptr<phide::ui::StructuredViewerState> structuredView;
+
+    void ClearDocumentCaches() noexcept {
+        std::vector<InlayHint>().swap(inlayHints);
+        codeLensMap.clear();
+        importCostMap.clear();
+        std::vector<uint32_t>().swap(semanticTokensData);
+        semanticTokensVersion = UINT64_MAX;
+        std::vector<lsp::LspFoldRange>().swap(lspFoldingRanges);
+        std::vector<lsp::LspCodeLens>().swap(lspCodeLenses);
+        occurrenceCacheVersion = UINT64_MAX;
+        occurrenceCacheKey.clear();
+        activeOccurrenceWord.clear();
+        occurrenceMatchCount = 0;
+        structuredView.reset();
+        pImageBitmap.Reset();
+        buffer.RunGarbageCollection();
+    }
 
     // External Disk-Change Detector state
     std::filesystem::file_time_type lastDiskWriteTime{};

@@ -247,6 +247,119 @@ std::wstring ApplyPreserveCase(const std::wstring& matchedText, const std::wstri
     return out;
 }
 
+struct CachedRegexSlot {
+    std::wstring pattern;
+    bool matchCase = false;
+    bool valid = false;
+    std::wregex regex;
+};
+
+const CachedRegexSlot& GetCachedRegex(const std::wstring& query, bool matchCase) {
+    thread_local std::vector<CachedRegexSlot> s_cache;
+    for (size_t i = 0; i < s_cache.size(); ++i) {
+        if (s_cache[i].matchCase == matchCase && s_cache[i].pattern == query) {
+            if (i != 0) {
+                std::swap(s_cache[0], s_cache[i]);
+            }
+            return s_cache[0];
+        }
+    }
+
+    CachedRegexSlot entry;
+    entry.pattern = query;
+    entry.matchCase = matchCase;
+    try {
+        auto flags = std::regex_constants::ECMAScript;
+        if (!matchCase) flags |= std::regex_constants::icase;
+        entry.regex = std::wregex(query, flags);
+        entry.valid = true;
+    } catch (...) {
+        entry.valid = false;
+    }
+
+    if (s_cache.size() >= 8) {
+        s_cache.pop_back();
+    }
+    s_cache.insert(s_cache.begin(), std::move(entry));
+    return s_cache[0];
+}
+
+std::wstring ExpandRegexReplacement(const std::wsmatch& match, const std::wstring& replacement) {
+    std::wstring out;
+    out.reserve(replacement.size() + 16);
+    const size_t n = replacement.size();
+    for (size_t i = 0; i < n; ++i) {
+        wchar_t ch = replacement[i];
+        if (ch == L'\\' && i + 1 < n) {
+            wchar_t next = replacement[i + 1];
+            if (next == L'n') { out.push_back(L'\n'); ++i; continue; }
+            if (next == L't') { out.push_back(L'\t'); ++i; continue; }
+            if (next == L'r') { out.push_back(L'\r'); ++i; continue; }
+            if (next == L'\\') { out.push_back(L'\\'); ++i; continue; }
+            if (next == L'$') { out.push_back(L'$'); ++i; continue; }
+        }
+        if (ch == L'$' && i + 1 < n) {
+            wchar_t next = replacement[i + 1];
+            if (next == L'$') {
+                out.push_back(L'$');
+                ++i;
+                continue;
+            }
+            if (next == L'&' || next == L'0') {
+                out += match[0].str();
+                ++i;
+                continue;
+            }
+            if (next == L'`') {
+                out += match.prefix().str();
+                ++i;
+                continue;
+            }
+            if (next == L'\'') {
+                out += match.suffix().str();
+                ++i;
+                continue;
+            }
+            if (next == L'{') {
+                size_t closeB = replacement.find(L'}', i + 2);
+                if (closeB != std::wstring::npos && closeB > i + 2) {
+                    bool allDig = true;
+                    for (size_t k = i + 2; k < closeB; ++k) {
+                        if (!std::iswdigit(replacement[k])) { allDig = false; break; }
+                    }
+                    if (allDig) {
+                        size_t idx = static_cast<size_t>(std::wcstoul(replacement.substr(i + 2, closeB - (i + 2)).c_str(), nullptr, 10));
+                        if (idx < match.size() && match[idx].matched) {
+                            out += match[idx].str();
+                        }
+                        i = closeB;
+                        continue;
+                    }
+                }
+            }
+            if (std::iswdigit(next)) {
+                size_t d1 = static_cast<size_t>(next - L'0');
+                size_t idx = d1;
+                size_t advance = 1;
+                if (i + 2 < n && std::iswdigit(replacement[i + 2])) {
+                    size_t d2 = d1 * 10 + static_cast<size_t>(replacement[i + 2] - L'0');
+                    if (d2 < match.size()) {
+                        idx = d2;
+                        advance = 2;
+                    }
+                }
+                if (idx < match.size() && match[idx].matched) {
+                    out += match[idx].str();
+                }
+                i += advance;
+                continue;
+            }
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
 std::vector<SearchLineMatch> FindMatchesInLine(
     const std::wstring& lineText,
     const std::wstring& query,
@@ -258,11 +371,10 @@ std::vector<SearchLineMatch> FindMatchesInLine(
     if (query.empty() || lineText.empty()) return results;
 
     if (useRegex) {
+        const auto& slot = GetCachedRegex(query, matchCase);
+        if (!slot.valid) return results;
         try {
-            auto flags = std::regex_constants::ECMAScript;
-            if (!matchCase) flags |= std::regex_constants::icase;
-            std::wregex re(query, flags);
-            auto begin = std::wsregex_iterator(lineText.begin(), lineText.end(), re);
+            auto begin = std::wsregex_iterator(lineText.begin(), lineText.end(), slot.regex);
             auto end = std::wsregex_iterator();
             for (auto it = begin; it != end && results.size() < 256; ++it) {
                 size_t pos = static_cast<size_t>(it->position());
@@ -328,6 +440,46 @@ std::vector<SearchLineMatch> FindMatchesInLines(
     return all;
 }
 
+std::wstring ExpandSpecificMatchReplacement(
+    const std::wstring& lineText,
+    size_t matchCol,
+    size_t matchLength,
+    const std::wstring& query,
+    const std::wstring& replacement,
+    bool matchCase,
+    bool matchWord,
+    bool useRegex,
+    bool preserveCase)
+{
+    if (matchCol + matchLength > lineText.size()) return replacement;
+    std::wstring matchedSub = lineText.substr(matchCol, matchLength);
+    if (useRegex && !query.empty()) {
+        const auto& slot = GetCachedRegex(query, matchCase);
+        if (slot.valid) {
+            try {
+                auto begin = std::wsregex_iterator(lineText.begin(), lineText.end(), slot.regex);
+                auto end = std::wsregex_iterator();
+                for (auto it = begin; it != end; ++it) {
+                    size_t pos = static_cast<size_t>(it->position());
+                    size_t len = static_cast<size_t>(it->length());
+                    if (len == 0) continue;
+                    if (matchWord) {
+                        bool leftOk = (pos == 0) || !IsWordChar(lineText[pos - 1]);
+                        bool rightOk = (pos + len >= lineText.size()) || !IsWordChar(lineText[pos + len]);
+                        if (!leftOk || !rightOk) continue;
+                    }
+                    if (pos == matchCol && len == matchLength) {
+                        std::wstring exp = ExpandRegexReplacement(*it, replacement);
+                        return preserveCase ? ApplyPreserveCase(matchedSub, exp) : exp;
+                    }
+                    if (pos > matchCol) break;
+                }
+            } catch (...) {}
+        }
+    }
+    return preserveCase ? ApplyPreserveCase(matchedSub, replacement) : replacement;
+}
+
 bool ReplaceInLine(
     std::wstring& lineText,
     const std::wstring& query,
@@ -338,7 +490,47 @@ bool ReplaceInLine(
     bool preserveCase)
 {
     if (query.empty() || lineText.empty()) return false;
-    auto matches = FindMatchesInLine(lineText, query, matchCase, matchWord, useRegex);
+
+    if (useRegex) {
+        const auto& slot = GetCachedRegex(query, matchCase);
+        if (!slot.valid) return false;
+        std::wstring out;
+        out.reserve(lineText.size());
+        size_t cursor = 0;
+        size_t matchCount = 0;
+        bool anyMatched = false;
+        try {
+            auto begin = std::wsregex_iterator(lineText.begin(), lineText.end(), slot.regex);
+            auto end = std::wsregex_iterator();
+            for (auto it = begin; it != end && matchCount < 256; ++it) {
+                size_t pos = static_cast<size_t>(it->position());
+                size_t len = static_cast<size_t>(it->length());
+                if (len == 0) continue;
+                if (matchWord) {
+                    bool leftOk = (pos == 0) || !IsWordChar(lineText[pos - 1]);
+                    bool rightOk = (pos + len >= lineText.size()) || !IsWordChar(lineText[pos + len]);
+                    if (!leftOk || !rightOk) continue;
+                }
+                anyMatched = true;
+                ++matchCount;
+                out.append(lineText, cursor, pos - cursor);
+                std::wstring matchedSub = it->str();
+                std::wstring expanded = ExpandRegexReplacement(*it, replacement);
+                std::wstring rep = preserveCase ? ApplyPreserveCase(matchedSub, expanded) : std::move(expanded);
+                out.append(rep);
+                cursor = pos + len;
+            }
+        } catch (...) {
+            return false;
+        }
+        if (!anyMatched) return false;
+        out.append(lineText, cursor, lineText.size() - cursor);
+        if (out == lineText) return false;
+        lineText = std::move(out);
+        return true;
+    }
+
+    auto matches = FindMatchesInLine(lineText, query, matchCase, matchWord, false);
     if (matches.empty()) return false;
 
     std::wstring out;

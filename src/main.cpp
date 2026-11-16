@@ -31,8 +31,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return 1;
     }
 
-    // 3. Show Splash Screen on startup (bypassed if launched as secondary new window via --new-window)
-    bool isNewWindow = (lpCmdLine && wcsstr(lpCmdLine, L"--new-window") != nullptr);
+    // 3. Show Splash Screen on startup (bypassed if launched as secondary window via --new-window or --detach)
+    bool isNewWindow = (lpCmdLine && (wcsstr(lpCmdLine, L"--new-window") != nullptr || wcsstr(lpCmdLine, L"--detach") != nullptr));
     if (!isNewWindow) {
         phide::ui::SplashScreen::Show(hInstance, 1200);
     }

@@ -7,6 +7,7 @@
 #include "phide/editor/EmmetEngine.hpp"
 #include "phide/plugin/PluginManager.hpp"
 #include <windows.h>
+#include <cstring>
 #include <cwctype>
 #include <algorithm>
 #include <fstream>
@@ -748,6 +749,16 @@ std::wstring Buffer::GetText() const {
     return res;
 }
 
+namespace {
+struct UndoCoalesceState {
+    int lastOp = 0; // 0 = none, 1 = insert, 2 = backspace, 3 = deleteForward
+    size_t line = 0;
+    size_t col = 0;
+    ULONGLONG tick = 0;
+};
+static std::unordered_map<const Buffer*, UndoCoalesceState> s_undoCoalesceMap;
+} // namespace
+
 Buffer::Buffer() {
     m_lines = { L"" };
     m_cursor = { 0, 0 };
@@ -764,15 +775,91 @@ Buffer::Buffer(const std::wstring& initialContent) {
     }
 }
 
-namespace {
-struct UndoCoalesceState {
-    int lastOp = 0; // 0 = none, 1 = insert, 2 = backspace, 3 = deleteForward
-    size_t line = 0;
-    size_t col = 0;
-    ULONGLONG tick = 0;
-};
-static std::unordered_map<const Buffer*, UndoCoalesceState> s_undoCoalesceMap;
-} // namespace
+Buffer::~Buffer() {
+    s_undoCoalesceMap.erase(this);
+    CloseFileMapping();
+}
+
+Buffer::Buffer(Buffer&& other) noexcept
+    : m_lines(std::move(other.m_lines)),
+      m_mappedState(std::move(other.m_mappedState)),
+      m_mappedLineCount(other.m_mappedLineCount),
+      m_mappedByteSize(other.m_mappedByteSize),
+      m_cursor(other.m_cursor),
+      m_lexer(std::move(other.m_lexer)),
+      m_filePath(std::move(other.m_filePath)),
+      m_fileName(std::move(other.m_fileName)),
+      m_isModified(other.m_isModified),
+      m_version(other.m_version),
+      m_hasTrailingNewline(other.m_hasTrailingNewline),
+      m_lineEnding(std::move(other.m_lineEnding)),
+      m_encoding(other.m_encoding),
+      m_cachedTokenVersion(other.m_cachedTokenVersion),
+      m_cachedTokenExt(std::move(other.m_cachedTokenExt)),
+      m_lineEntryStates(std::move(other.m_lineEntryStates)),
+      m_undoStack(std::move(other.m_undoStack)),
+      m_redoStack(std::move(other.m_redoStack)),
+      m_undoMemoryBytes(other.m_undoMemoryBytes),
+      m_redoMemoryBytes(other.m_redoMemoryBytes),
+      m_hasPendingUndo(other.m_hasPendingUndo),
+      m_pendingUndoVersion(other.m_pendingUndoVersion),
+      m_pendingUndoLines(std::move(other.m_pendingUndoLines)),
+      m_pendingUndoCursor(other.m_pendingUndoCursor),
+      m_pendingUndoLineEnding(std::move(other.m_pendingUndoLineEnding)) {
+    std::swap(m_mmapLineCache, other.m_mmapLineCache);
+    std::swap(m_mmapLruOrder, other.m_mmapLruOrder);
+    std::swap(m_tokenCache, other.m_tokenCache);
+    s_undoCoalesceMap.erase(&other);
+    s_undoCoalesceMap.erase(this);
+    other.m_mappedLineCount = 0;
+    other.m_mappedByteSize = 0;
+    other.m_undoMemoryBytes = 0;
+    other.m_redoMemoryBytes = 0;
+    other.m_hasPendingUndo = false;
+    other.m_cachedTokenVersion = UINT64_MAX;
+}
+
+Buffer& Buffer::operator=(Buffer&& other) noexcept {
+    if (this == &other) return *this;
+    s_undoCoalesceMap.erase(&other);
+    s_undoCoalesceMap.erase(this);
+    CloseFileMapping();
+    m_lines = std::move(other.m_lines);
+    m_mappedState = std::move(other.m_mappedState);
+    m_mappedLineCount = other.m_mappedLineCount;
+    m_mappedByteSize = other.m_mappedByteSize;
+    std::swap(m_mmapLineCache, other.m_mmapLineCache);
+    std::swap(m_mmapLruOrder, other.m_mmapLruOrder);
+    m_cursor = other.m_cursor;
+    m_lexer = std::move(other.m_lexer);
+    m_filePath = std::move(other.m_filePath);
+    m_fileName = std::move(other.m_fileName);
+    m_isModified = other.m_isModified;
+    m_version = other.m_version;
+    m_hasTrailingNewline = other.m_hasTrailingNewline;
+    m_lineEnding = std::move(other.m_lineEnding);
+    m_encoding = other.m_encoding;
+    m_cachedTokenVersion = other.m_cachedTokenVersion;
+    m_cachedTokenExt = std::move(other.m_cachedTokenExt);
+    m_lineEntryStates = std::move(other.m_lineEntryStates);
+    std::swap(m_tokenCache, other.m_tokenCache);
+    m_undoStack = std::move(other.m_undoStack);
+    m_redoStack = std::move(other.m_redoStack);
+    m_undoMemoryBytes = other.m_undoMemoryBytes;
+    m_redoMemoryBytes = other.m_redoMemoryBytes;
+    m_hasPendingUndo = other.m_hasPendingUndo;
+    m_pendingUndoVersion = other.m_pendingUndoVersion;
+    m_pendingUndoLines = std::move(other.m_pendingUndoLines);
+    m_pendingUndoCursor = other.m_pendingUndoCursor;
+    m_pendingUndoLineEnding = std::move(other.m_pendingUndoLineEnding);
+    other.m_mappedLineCount = 0;
+    other.m_mappedByteSize = 0;
+    other.m_undoMemoryBytes = 0;
+    other.m_redoMemoryBytes = 0;
+    other.m_hasPendingUndo = false;
+    other.m_cachedTokenVersion = UINT64_MAX;
+    return *this;
+}
 
 size_t Buffer::UndoHunk::EstimateBytes() const noexcept {
     size_t total = sizeof(UndoHunk) + beforeLineEnding.capacity() * sizeof(wchar_t) + afterLineEnding.capacity() * sizeof(wchar_t);
@@ -973,28 +1060,48 @@ bool Buffer::Redo() {
 void Buffer::InsertText(const std::wstring& text) {
     if (m_mappedState || text.empty()) return;
     PushUndo();
-    for (wchar_t ch : text) {
-        if (ch == L'\r') continue;
-        if (m_lines.empty()) m_lines.push_back(L"");
-        if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    if (m_lines.empty()) m_lines.push_back(L"");
+    if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
+    if (m_cursor.col > m_lines[m_cursor.line].length()) m_cursor.col = m_lines[m_cursor.line].length();
 
-        auto& line = m_lines[m_cursor.line];
-        if (m_cursor.col > line.length()) m_cursor.col = line.length();
-
-        if (ch == L'\n') {
-            std::wstring remainder = line.substr(m_cursor.col);
-            line = line.substr(0, m_cursor.col);
-            m_lines.insert(m_lines.begin() + m_cursor.line + 1, remainder);
-            m_cursor.line++;
-            m_cursor.col = 0;
-        } else {
-            line.insert(line.begin() + m_cursor.col, ch);
-            m_cursor.col++;
+    std::vector<std::wstring> insertLines;
+    {
+        std::wstring clean;
+        clean.reserve(text.size());
+        for (wchar_t ch : text) {
+            if (ch != L'\r') clean.push_back(ch);
+        }
+        size_t pos = 0;
+        while (true) {
+            size_t nl = clean.find(L'\n', pos);
+            if (nl == std::wstring::npos) {
+                insertLines.push_back(clean.substr(pos));
+                break;
+            }
+            insertLines.push_back(clean.substr(pos, nl - pos));
+            pos = nl + 1;
         }
     }
-    m_tokenCache.clear();
-    m_isModified = true;
-    ++m_version;
+    if (insertLines.empty()) return;
+
+    const std::wstring line = m_lines[m_cursor.line];
+    const std::wstring prefix = line.substr(0, m_cursor.col);
+    const std::wstring suffix = line.substr(m_cursor.col);
+    if (insertLines.size() == 1) {
+        m_lines[m_cursor.line] = prefix + insertLines[0] + suffix;
+        m_cursor.col += insertLines[0].length();
+        m_tokenCache.erase(m_cursor.line);
+        m_isModified = true;
+        ++m_version;
+    } else {
+        const size_t startLine = m_cursor.line;
+        const size_t lastSegLen = insertLines.back().length();
+        insertLines.front() = prefix + insertLines.front();
+        insertLines.back() += suffix;
+        ReplaceLineSlice(startLine, 1, insertLines);
+        m_cursor.line = startLine + insertLines.size() - 1;
+        m_cursor.col = lastSegLen;
+    }
 }
 
 void Buffer::LoadDefaultSample() {
@@ -1032,6 +1139,13 @@ const std::wstring& Buffer::GetLine(size_t lineIdx) const {
         }
         auto it = m_mmapLineCache.find(lineIdx);
         if (it != m_mmapLineCache.end()) {
+            if (m_mmapLruOrder.empty() || m_mmapLruOrder.back() != lineIdx) {
+                auto orderIt = std::find(m_mmapLruOrder.begin(), m_mmapLruOrder.end(), lineIdx);
+                if (orderIt != m_mmapLruOrder.end()) {
+                    m_mmapLruOrder.erase(orderIt);
+                }
+                m_mmapLruOrder.push_back(lineIdx);
+            }
             return it->second;
         }
         uint64_t startOff = m_mappedState->lineStarts[lineIdx];
@@ -2223,6 +2337,7 @@ bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
     }
 
     bool isCss = (ext == L"css" || ext == L"scss" || ext == L"less");
+    bool isJsx = (ext == L"jsx" || ext == L"tsx");
 
     size_t startCol = 0;
     std::wstring abbr = EmmetEngine::ExtractAbbreviation(line, m_cursor.col, isCss, &startCol);
@@ -2239,7 +2354,7 @@ bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
     std::wstring indentUnit = L"    "; // 4 spaces default
 
     size_t cursorOffset = std::wstring::npos;
-    std::wstring expansion = EmmetEngine::Expand(abbr, indentUnit, lineIndent, isCss, &cursorOffset);
+    std::wstring expansion = EmmetEngine::Expand(abbr, indentUnit, lineIndent, isCss, &cursorOffset, isJsx);
     if (expansion.empty()) {
         return false;
     }
@@ -2382,6 +2497,116 @@ bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::w
     m_isModified = true;
     ++m_version;
     return true;
+}
+
+bool Buffer::ReadMappedBytes(uint64_t offset, size_t maxBytes, std::vector<uint8_t>& outBytes) const {
+    outBytes.clear();
+    if (!m_mappedState || !m_mappedState->view || offset >= m_mappedState->fileSize || maxBytes == 0) {
+        return false;
+    }
+    const uint64_t avail = m_mappedState->fileSize - offset;
+    const size_t count = static_cast<size_t>((std::min)(avail, static_cast<uint64_t>(maxBytes)));
+    outBytes.resize(count);
+    std::memcpy(outBytes.data(), m_mappedState->view + offset, count);
+    return true;
+}
+
+std::wstring Buffer::TransformTextCase(const std::wstring& text, CaseTransform mode) {
+    if (text.empty()) return text;
+
+    if (mode == CaseTransform::Upper) {
+        std::wstring out = text;
+        for (wchar_t& ch : out) ch = static_cast<wchar_t>(::towupper(ch));
+        return out;
+    }
+    if (mode == CaseTransform::Lower) {
+        std::wstring out = text;
+        for (wchar_t& ch : out) ch = static_cast<wchar_t>(::towlower(ch));
+        return out;
+    }
+    if (mode == CaseTransform::Title) {
+        std::wstring out = text;
+        bool newWord = true;
+        for (wchar_t& ch : out) {
+            if (::iswalnum(ch)) {
+                ch = newWord ? static_cast<wchar_t>(::towupper(ch)) : static_cast<wchar_t>(::towlower(ch));
+                newWord = false;
+            } else {
+                newWord = true;
+            }
+        }
+        return out;
+    }
+
+    auto transformSegment = [&](const std::wstring& seg) -> std::wstring {
+        if (seg.empty()) return seg;
+        std::vector<std::wstring> words;
+        std::wstring cur;
+        for (size_t i = 0; i < seg.size(); ++i) {
+            wchar_t ch = seg[i];
+            if (!::iswalnum(ch)) {
+                if (!cur.empty()) {
+                    words.push_back(std::move(cur));
+                    cur.clear();
+                }
+                continue;
+            }
+            if (!cur.empty() && ::iswupper(ch)) {
+                wchar_t prev = cur.back();
+                bool nextLower = (i + 1 < seg.size() && ::iswlower(seg[i + 1]));
+                if (::iswlower(prev) || ::iswdigit(prev) || (::iswupper(prev) && nextLower)) {
+                    words.push_back(std::move(cur));
+                    cur.clear();
+                }
+            }
+            cur.push_back(ch);
+        }
+        if (!cur.empty()) words.push_back(std::move(cur));
+        if (words.empty()) return seg;
+
+        std::wstring res;
+        res.reserve(seg.size() + words.size());
+        const wchar_t sep = (mode == CaseTransform::Snake) ? L'_' : L'-';
+        for (size_t wi = 0; wi < words.size(); ++wi) {
+            std::wstring w = std::move(words[wi]);
+            for (wchar_t& ch : w) ch = static_cast<wchar_t>(::towlower(ch));
+            if (mode == CaseTransform::Camel) {
+                if (wi > 0 && !w.empty()) {
+                    w[0] = static_cast<wchar_t>(::towupper(w[0]));
+                }
+            } else if (wi > 0) {
+                res.push_back(sep);
+            }
+            res += w;
+        }
+        return res;
+    };
+
+    // Transform line-by-line preserving leading/trailing whitespace on each line
+    std::wstring out;
+    out.reserve(text.size() + 8);
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t nl = text.find(L'\n', pos);
+        size_t end = (nl == std::wstring::npos) ? text.size() : nl;
+        std::wstring lineSeg = text.substr(pos, end - pos);
+        size_t lead = 0;
+        while (lead < lineSeg.size() && (lineSeg[lead] == L' ' || lineSeg[lead] == L'\t' || lineSeg[lead] == L'\r')) {
+            ++lead;
+        }
+        size_t trail = lineSeg.size();
+        while (trail > lead && (lineSeg[trail - 1] == L' ' || lineSeg[trail - 1] == L'\t' || lineSeg[trail - 1] == L'\r')) {
+            --trail;
+        }
+        if (lead > 0) out.append(lineSeg, 0, lead);
+        if (trail > lead) out += transformSegment(lineSeg.substr(lead, trail - lead));
+        if (trail < lineSeg.size()) out.append(lineSeg, trail, lineSeg.size() - trail);
+
+        if (nl == std::wstring::npos) break;
+        out.push_back(L'\n');
+        pos = nl + 1;
+    }
+    return out;
 }
 
 } // namespace phide::editor

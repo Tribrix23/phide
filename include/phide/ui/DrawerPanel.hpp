@@ -11,7 +11,9 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include <wincodec.h>
 #include <vector>
+#include <list>
 #include <string>
 #include <set>
 #include <map>
@@ -31,6 +33,7 @@
 #include "phide/workspace/WorkspaceConfigEngine.hpp"
 #include "phide/ui/RemoteWindowModal.hpp"
 #include "phide/git/GitWorkflowEngine.hpp"
+#include "phide/dev/DapClient.hpp"
 
 namespace phide::ui {
 
@@ -178,12 +181,33 @@ struct GitStashUiItem {
     D2D1_RECT_F dropBtnBounds{};
 };
 
+struct GitTagUiItem {
+    std::wstring name;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F deleteBtnBounds{};
+};
+
+struct GitWorktreeUiItem {
+    phide::git::GitWorkflowEngine::WorktreeEntry entry;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F removeBtnBounds{};
+};
+
+struct GitSubmoduleUiItem {
+    phide::git::GitWorkflowEngine::SubmoduleEntry entry;
+    D2D1_RECT_F bounds{};
+    D2D1_RECT_F updateBtnBounds{};
+};
+
 struct GitCmdResult {
     int exitCode = -1;
     std::wstring output;
 };
 
 GitCmdResult RunGitCmd(const std::wstring& cmd, const std::wstring& workDir, bool retryOnLock = true);
+GitCmdResult RunGitCmdWithEnv(const std::wstring& cmd, const std::wstring& workDir,
+                              const std::vector<std::pair<std::wstring, std::wstring>>& extraEnv,
+                              bool retryOnLock = true);
 GitCmdResult RunGitCmdWithInput(const std::wstring& cmd, const std::wstring& workDir, const std::string& stdinUtf8, bool retryOnLock = true);
 
 /**
@@ -271,6 +295,7 @@ public:
     void ApplyStashAsync(size_t stashIdx);
     void PopStashAsync(size_t stashIdx);
     void DropStashAsync(size_t stashIdx);
+    void SyncCommitsAsync();
     void StageHunkPatchAsync(const std::string& patchUtf8, bool reverse = false);
     bool StageHunkPatch(const std::string& patchUtf8, bool reverse = false);
     bool CreateBranch(const std::wstring& branchName);
@@ -281,9 +306,54 @@ public:
     void CreateTagAsync(const std::wstring& tagName, const std::wstring& target = L"");
     bool DeleteTag(const std::wstring& tagName);
     void DeleteTagAsync(const std::wstring& tagName);
+    void CheckoutTagAsync(const std::wstring& tagName);
+    void FetchAllRemotesQuietAsync();
+    void SetGitSettings(bool smartCommit, bool confirmSync) noexcept {
+        m_gitSmartCommit = smartCommit;
+        m_gitConfirmSync = confirmSync;
+    }
+    [[nodiscard]] std::vector<GitTagUiItem> GetGitTags() const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        return m_gitTags;
+    }
+    void LoadMoreGraphCommits() {
+        if (m_gitGraphLimit < 400) {
+            m_gitGraphLimit = (std::min)(400, m_gitGraphLimit + 40);
+            RefreshGitState(true, true);
+        }
+    }
+    void SetGitGraphFilter(const std::wstring& f) {
+        m_gitGraphFilter = f;
+        m_gitGraphScrollIdx = 0;
+        RefreshGitState(true, true);
+    }
+    [[nodiscard]] const std::wstring& GetGitGraphFilter() const noexcept { return m_gitGraphFilter; }
     void CherryPickCommitAsync(const std::wstring& commitHash);
     void CheckoutCommitAsync(const std::wstring& commitHash);
     void RebaseBranchAsync(const std::wstring& targetBranch);
+    void AddWorktreeAsync(const std::wstring& spec);
+    void RemoveWorktreeAsync(const std::wstring& worktreePath);
+    void UpdateSubmodulesAsync(const std::wstring& submodulePath = L"");
+    void RunGitBisectActionAsync(const std::wstring& subcmd);
+    void OpenInteractiveRebaseModal();
+    void OpenBisectStartModal() {
+        OpenGitPromptModal(GitPromptKind::BisectStart, L"Git Bisect Start (Good Ref, Bad=HEAD)", L"HEAD~5");
+    }
+    void OpenAddWorktreeModal() {
+        OpenGitPromptModal(GitPromptKind::AddWorktree, L"Add Git Worktree (<path> | <branch>)", L"../wt-feature | feature/wt");
+    }
+    void RunInteractiveRebaseAsync(const std::wstring& spec);
+    [[nodiscard]] bool IsGitBisectActive() const noexcept { return m_gitBisectActive; }
+    [[nodiscard]] std::vector<GitWorktreeUiItem> GetGitWorktrees() const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        return m_gitWorktrees;
+    }
+    [[nodiscard]] std::vector<GitSubmoduleUiItem> GetGitSubmodules() const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        return m_gitSubmodules;
+    }
+    void SetOnOpenWorktreeFolder(std::function<void(const std::wstring& path)> cb) { m_onOpenWorktreeFolder = std::move(cb); }
+    void SetOnOpenActiveFileHistory(std::function<void()> cb) { m_onOpenActiveFileHistory = std::move(cb); }
     void SetCommitAmend(bool amend) noexcept { m_commitAmend = amend; }
     [[nodiscard]] bool IsCommitAmend() const noexcept { return m_commitAmend; }
     [[nodiscard]] std::vector<GitStashUiItem> GetGitStashes() const {
@@ -821,6 +891,37 @@ public:
     void SetRemoteCallbacks(RemoteCallbacks cb) { m_remoteCallbacks = std::move(cb); }
     bool HandleRemoteMouseMove(POINT pt);
     bool HandleRemoteLButtonDown(POINT pt, const app::AppConfig& config);
+
+    // --- Run and Debug Left Sidebar (#28) ---
+    struct DebugPaneCallbacks {
+        std::function<void(phide::dev::DapSessionSnapshot& outSnap,
+                           std::vector<phide::dev::DapBreakpoint>& outBps,
+                           std::vector<phide::dev::LaunchConfig>& outConfigs,
+                           size_t& outSelectedCfg,
+                           bool& outIsActive,
+                           bool& outIsPaused)> fetchState;
+        std::function<void(int cfgIdx)> onStartDebug;           ///< -1 = active document/default
+        std::function<void(int dbgActionId)> onDebugAction;     ///< Maps cleanly to ui::DebugAction
+        std::function<void()> onOpenLaunchJson;
+        std::function<void()> onOpenDebugConsole;
+        std::function<void(int frameId)> onSelectStackFrame;
+        std::function<void(int varRef)> onExpandVariable;
+        std::function<void(const std::wstring& expr)> onAddWatch;
+        std::function<void(size_t idx)> onRemoveWatch;
+        std::function<void(bool breakOnRaised, bool breakOnUncaught)> onSetExceptions;
+        std::function<void(const std::wstring& filePath, int line1Based, bool enabled)> onToggleBreakpoint;
+        std::function<void(const std::wstring& filePath, int line1Based)> onRemoveBreakpoint;
+        std::function<void(const std::wstring& filePath, int line1Based)> onJumpToLocation;
+    };
+    void SetDebugPaneCallbacks(DebugPaneCallbacks cb) { m_debugCallbacks = std::move(cb); }
+    bool HandleDebugMouseMove(POINT pt);
+    bool HandleDebugLButtonDown(POINT pt, const app::AppConfig& config);
+    bool HandleDebugChar(wchar_t ch);
+    bool HandleDebugKeyDown(WPARAM wParam);
+    [[nodiscard]] bool HitTestDebugInteractive(POINT pt, bool* outIsInput = nullptr) const noexcept;
+    void ClearDebugFocus() noexcept { m_debugSideWatchFocused = false; }
+    [[nodiscard]] bool IsDebugSideWatchFocused() const noexcept { return m_debugSideWatchFocused; }
+    void DiscardDeviceResources();
     [[nodiscard]] bool HitTestRemoteInteractive(POINT pt) const noexcept;
     [[nodiscard]] const D2D1_RECT_F& GetRemoteOpenPopupBtnBounds() const noexcept { return m_rcRemoteOpenPopupBtn; }
     [[nodiscard]] const D2D1_RECT_F& GetRemoteFilterBtnBounds() const noexcept { return m_rcRemoteFilterBtn; }
@@ -1030,6 +1131,21 @@ public:
                 if (inRect(pt, st.applyBtnBounds) || inRect(pt, st.popBtnBounds) || inRect(pt, st.dropBtnBounds)) return true;
             }
         }
+        if (m_tagsExpanded) {
+            for (const auto& tg : m_gitTags) {
+                if (inRect(pt, tg.bounds) || inRect(pt, tg.deleteBtnBounds)) return true;
+            }
+        }
+        if (m_worktreesExpanded) {
+            for (const auto& wt : m_gitWorktrees) {
+                if (inRect(pt, wt.bounds) || inRect(pt, wt.removeBtnBounds)) return true;
+            }
+        }
+        if (m_submodulesExpanded) {
+            for (const auto& sm : m_gitSubmodules) {
+                if (inRect(pt, sm.bounds) || inRect(pt, sm.updateBtnBounds)) return true;
+            }
+        }
         for (const auto& ci : m_gitCommits) {
             if (inRect(pt, ci.bounds) || inRect(pt, ci.openChangesBtnBounds)) return true;
             if (ci.isExpanded) {
@@ -1048,11 +1164,15 @@ public:
                inRect(pt, m_gitChangesMoreBounds) || inRect(pt, m_gitHeaderMoreBounds) ||
                inRect(pt, m_gitStagedChevronBounds) ||
                inRect(pt, m_gitUnstageAllBounds) || inRect(pt, m_gitStagedMoreBounds) ||
-               inRect(pt, m_gitStashSaveBtnBounds) ||
+               inRect(pt, m_gitStashesHeaderBounds) || inRect(pt, m_gitStashSaveBtnBounds) ||
+               inRect(pt, m_gitTagsHeaderBounds) || inRect(pt, m_gitTagCreateBtnBounds) ||
+               inRect(pt, m_gitWorktreesHeaderBounds) || inRect(pt, m_gitWorktreeCreateBtnBounds) ||
+               inRect(pt, m_gitSubmodulesHeaderBounds) || inRect(pt, m_gitSubmoduleSyncBtnBounds) ||
                inRect(pt, m_gitGraphChevronBounds) ||
                inRect(pt, m_gitGraphAutoBounds) || inRect(pt, m_gitGraphBullseyeBounds) ||
                inRect(pt, m_gitGraphSplitBounds) || inRect(pt, m_gitGraphMergeBounds) ||
-               inRect(pt, m_gitGraphRefreshBounds) || inRect(pt, m_gitGraphMoreBounds);
+               inRect(pt, m_gitGraphRefreshBounds) || inRect(pt, m_gitGraphMoreBounds) ||
+               inRect(pt, m_gitGraphLoadMoreBounds);
     }
     [[nodiscard]] bool IsCommitting() const noexcept { return m_isCommitting.load(); }
     [[nodiscard]] bool IsSyncing() const noexcept { return m_isSyncing.load(); }
@@ -1223,11 +1343,14 @@ private:
     std::function<void(const std::wstring& extId)> m_onOpenExtensionDetail;
     std::function<void()> m_onOpenActivityHeatmap;
     std::function<void()> m_onGitCommitSucceeded;
+    std::function<void(const std::wstring& path)> m_onOpenWorktreeFolder;
+    std::function<void()> m_onOpenActiveFileHistory;
 
     // --- Git / Source Control State (Images 2, 3, 4, 5) ---
     workspace::IgnoreEngine m_ignoreEngine;
     bool m_isGitRepo = false;
     bool m_hasGitRemote = false;
+    bool m_gitSyncMode = false;
     std::wstring m_gitBranch;
     std::vector<GitChangeItem> m_gitChanges;
     std::unordered_set<std::wstring> m_gitIgnoredSet;
@@ -1286,8 +1409,10 @@ private:
     D2D1_RECT_F m_gitSyncBtnBounds{};
     D2D1_RECT_F m_gitCommitDropdownBounds{};
 
-    // Stashes & Amend Commit State (#33)
+    // Stashes & Tags Section State (#33, #34)
     bool m_commitAmend = false;
+    bool m_gitSmartCommit = true;
+    bool m_gitConfirmSync = true;
     bool m_showStashesSection = true;
     bool m_stashesExpanded = false;
     std::vector<GitStashUiItem> m_gitStashes;
@@ -1295,8 +1420,47 @@ private:
     D2D1_RECT_F m_gitStashSaveBtnBounds{};
     int m_hoveredGitStashIdx = -1;
 
-    // Inline Git Ref/Stash Prompt Modal (Create/Delete Branch/Tag, Rebase, Stash w/ message)
-    enum class GitPromptKind { None, CreateBranch, DeleteBranch, CreateTag, DeleteTag, RebaseOnto, StashMessage };
+    bool m_showTagsSection = true;
+    bool m_tagsExpanded = false;
+    std::vector<GitTagUiItem> m_gitTags;
+    D2D1_RECT_F m_gitTagsHeaderBounds{};
+    D2D1_RECT_F m_gitTagCreateBtnBounds{};
+    int m_hoveredGitTagIdx = -1;
+
+    // #40 Worktrees, Submodules & Bisect State (capped cleanly at 64 each)
+    bool m_showWorktreesSection = true;
+    bool m_worktreesExpanded = false;
+    std::vector<GitWorktreeUiItem> m_gitWorktrees;
+    D2D1_RECT_F m_gitWorktreesHeaderBounds{};
+    D2D1_RECT_F m_gitWorktreeCreateBtnBounds{};
+
+    bool m_showSubmodulesSection = true;
+    bool m_submodulesExpanded = false;
+    std::vector<GitSubmoduleUiItem> m_gitSubmodules;
+    D2D1_RECT_F m_gitSubmodulesHeaderBounds{};
+    D2D1_RECT_F m_gitSubmoduleSyncBtnBounds{};
+
+    bool m_gitBisectActive = false;
+
+    // Inline Git Ref/Stash/Confirm Prompt Modal (Create/Delete Branch/Tag, Rebase, Stash w/ message, Filter, Confirm Sync)
+    enum class GitPromptKind {
+        None,
+        CreateBranch,
+        DeleteBranch,
+        CreateTag,
+        DeleteTag,
+        RebaseOnto,
+        StashMessage,
+        GraphFilter,
+        AddWorktree,
+        InteractiveRebase,
+        BisectStart,
+        ConfirmPush,
+        ConfirmPull,
+        ConfirmSync,
+        ConfirmCommitAndPush,
+        ConfirmCommitAndSync
+    };
     bool m_isGitPromptModalOpen = false;
     GitPromptKind m_gitPromptKind = GitPromptKind::None;
     std::wstring m_gitPromptTitle;
@@ -1307,6 +1471,7 @@ private:
     D2D1_RECT_F m_gitPromptCancelBounds{};
     void OpenGitPromptModal(GitPromptKind kind, const std::wstring& title, const std::wstring& initial = L"");
     void ConfirmGitPromptModal();
+    void ConfirmOrRunSyncAction(GitPromptKind kind);
 
     D2D1_RECT_F m_gitGraphHeaderBounds{};
     D2D1_RECT_F m_gitGraphChevronBounds{};
@@ -1317,6 +1482,10 @@ private:
     D2D1_RECT_F m_gitGraphPushBounds{};
     D2D1_RECT_F m_gitGraphRefreshBounds{};
     D2D1_RECT_F m_gitGraphMoreBounds{};
+    int m_gitGraphLimit = 40;
+    bool m_gitGraphAllBranches = true;
+    std::wstring m_gitGraphFilter;
+    D2D1_RECT_F m_gitGraphLoadMoreBounds{};
 
     // Outgoing Changes root node state in Git Graph (media_1793189109205_99e33179.png)
     bool m_gitGraphOutgoingExpanded = true;
@@ -1337,7 +1506,10 @@ private:
     std::wstring m_commitCardHash;
     mutable std::wstring m_cachedGitHubRepoUrl;
     mutable bool m_gitHubRepoUrlCached = false;
+    static constexpr size_t kMaxCachedAvatars = 48;
     std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_avatarBitmaps;
+    std::list<std::wstring> m_avatarLruOrder;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> m_wicFactory;
     std::set<std::wstring> m_downloadingAvatars;
     std::set<std::wstring> m_checkedAvatars;
     ID2D1Bitmap* GetOrFetchAvatar(ID2D1RenderTarget* pRT, Theme& theme, const GitCommitItem& ci);
@@ -1663,6 +1835,48 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteSection;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteBody;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtRemoteSmall;
+
+    // --- Left Sidebar Run and Debug Pane State (#28) ---
+    void RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
+    void EnsureDebugPaneBrushes(ID2D1RenderTarget* pRT, const Theme& theme);
+    enum class DebugHitKind {
+        None, StartDebug, CycleConfig, OpenLaunchJson, OpenConsole,
+        ActContinue, ActPause, ActStepOver, ActStepInto, ActStepOut, ActRestart, ActStop,
+        SecVars, SecWatch, SecStack, SecBreakpoints,
+        WatchInput, WatchAdd, WatchDel,
+        StackFrame, VarExpand,
+        ExcRaised, ExcUncaught, BpToggle, BpJump, BpDel
+    };
+    struct DebugHitZone {
+        DebugHitKind kind = DebugHitKind::None;
+        int intArg = -1;
+        bool boolArg = false;
+        std::wstring strArg;
+        D2D1_RECT_F bounds{};
+    };
+    DebugPaneCallbacks m_debugCallbacks;
+    std::vector<DebugHitZone> m_debugHitZones;
+    int m_hoveredDebugZoneIdx = -1;
+    size_t m_selectedLaunchConfigIdx = 0;
+    bool m_dbgSecVarsOpen = true;
+    bool m_dbgSecWatchOpen = true;
+    bool m_dbgSecStackOpen = true;
+    bool m_dbgSecBpsOpen = true;
+    bool m_debugSideWatchFocused = false;
+    std::wstring m_debugSideWatchInput;
+    float m_debugScrollY = 0.0f;
+    float m_debugMaxScrollY = 0.0f;
+
+    ID2D1RenderTarget* m_pCachedDbgRT = nullptr;
+    bool m_cachedDbgDark = true;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgCardBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgBtnBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgBtnHoverBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgAccentSubtleBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgGreenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgRedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgAmberBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgCyanBrush;
 };
 
 } // namespace phide::ui

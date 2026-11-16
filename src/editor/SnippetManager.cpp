@@ -1,5 +1,7 @@
+#include <windows.h>
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/plugin/PluginManager.hpp"
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -2085,25 +2087,81 @@ void SnippetManager::EnsureDefaultSnippetsFile() {
     }
 }
 
-void SnippetManager::LoadSnippets() {
-    if (m_snippetsFilePath.empty() || !std::filesystem::exists(m_snippetsFilePath)) return;
+namespace {
 
-    std::wifstream in(m_snippetsFilePath);
-    if (!in.is_open()) return;
+[[nodiscard]] std::wstring FormatTwoDigits(WORD v) {
+    wchar_t buf[4]{};
+    swprintf_s(buf, L"%02u", static_cast<unsigned>(v % 100));
+    return buf;
+}
 
-    std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
-    in.close();
+[[nodiscard]] std::wstring FormatFourDigits(WORD v) {
+    wchar_t buf[8]{};
+    swprintf_s(buf, L"%04u", static_cast<unsigned>(v));
+    return buf;
+}
 
-    // Custom lightweight JSON parser for user snippets
+[[nodiscard]] std::wstring ReadBoundedClipboardText(size_t maxChars = 65536) {
+    if (!OpenClipboard(nullptr)) return L"";
+    std::wstring result;
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (hData) {
+        const wchar_t* psz = static_cast<const wchar_t*>(GlobalLock(hData));
+        if (psz) {
+            size_t len = wcsnlen_s(psz, maxChars);
+            result.assign(psz, len);
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    return result;
+}
+
+[[nodiscard]] std::wstring InferScopeFromSnippetFile(const std::wstring& filePath) {
+    std::wstring stem = std::filesystem::path(filePath).stem().wstring();
+    for (auto& ch : stem) ch = static_cast<wchar_t>(towlower(ch));
+    if (stem == L"typescriptreact") return L"tsx";
+    if (stem == L"javascriptreact") return L"jsx";
+    if (stem == L"typescript") return L"ts,tsx";
+    if (stem == L"javascript") return L"js,jsx";
+    if (stem == L"python") return L"py";
+    if (stem == L"cpp" || stem == L"c++") return L"cpp,hpp,c,h";
+    if (stem == L"rust") return L"rs";
+    if (stem == L"markdown") return L"md";
+    if (stem == L"php" || stem == L"html" || stem == L"css" || stem == L"go" || stem == L"json") return stem;
+    return L"";
+}
+
+[[nodiscard]] bool ScopeItemMatchesExt(const std::wstring& item, const std::wstring& lowerExt) {
+    if (item == L"*" || item == L"all" || item == lowerExt) return true;
+    if (item == L"typescript") return lowerExt == L"ts" || lowerExt == L"mts" || lowerExt == L"cts";
+    if (item == L"typescriptreact") return lowerExt == L"tsx";
+    if (item == L"javascript") return lowerExt == L"js" || lowerExt == L"mjs" || lowerExt == L"cjs";
+    if (item == L"javascriptreact") return lowerExt == L"jsx";
+    if (item == L"python") return lowerExt == L"py" || lowerExt == L"pyw";
+    if (item == L"rust") return lowerExt == L"rs";
+    if (item == L"markdown") return lowerExt == L"md";
+    if (item == L"shellscript") return lowerExt == L"sh" || lowerExt == L"bash" || lowerExt == L"zsh";
+    return false;
+}
+
+} // namespace
+
+size_t SnippetManager::ParseSnippetsJsonContent(const std::wstring& content, const std::wstring& defaultScope) {
+    size_t importedCount = 0;
     size_t i = 0;
-    size_t len = content.length();
+    const size_t len = content.length();
 
     auto skipWs = [&]() {
         while (i < len) {
             if (content[i] == L' ' || content[i] == L'\t' || content[i] == L'\r' || content[i] == L'\n') {
-                i++;
+                ++i;
             } else if (i + 1 < len && content[i] == L'/' && content[i + 1] == L'/') {
-                while (i < len && content[i] != L'\n') i++;
+                while (i < len && content[i] != L'\n') ++i;
+            } else if (i + 1 < len && content[i] == L'/' && content[i + 1] == L'*') {
+                i += 2;
+                while (i + 1 < len && !(content[i] == L'*' && content[i + 1] == L'/')) ++i;
+                i = (i + 2 <= len) ? (i + 2) : len;
             } else {
                 break;
             }
@@ -2112,114 +2170,214 @@ void SnippetManager::LoadSnippets() {
 
     auto readString = [&]() -> std::wstring {
         if (i >= len || content[i] != L'"') return L"";
-        i++; // skip open quote
+        ++i;
         std::wstring str;
         while (i < len && content[i] != L'"') {
             if (content[i] == L'\\' && i + 1 < len) {
-                i++;
+                ++i;
                 if (content[i] == L'n') str += L'\n';
                 else if (content[i] == L't') str += L'\t';
+                else if (content[i] == L'r') str += L'\r';
                 else if (content[i] == L'"') str += L'"';
                 else if (content[i] == L'\\') str += L'\\';
                 else str += content[i];
             } else {
                 str += content[i];
             }
-            i++;
+            ++i;
         }
-        if (i < len && content[i] == L'"') i++; // skip close quote
+        if (i < len && content[i] == L'"') ++i;
         return str;
     };
 
     skipWs();
-    if (i >= len || content[i] != L'{') return;
-    i++; // skip root {
+    if (i >= len || content[i] != L'{') return 0;
+    ++i;
 
-    while (i < len) {
+    while (i < len && m_snippets.size() < 2000) {
         skipWs();
         if (i >= len || content[i] == L'}') break;
+        if (content[i] == L',') { ++i; continue; }
 
         std::wstring snippetName = readString();
         skipWs();
         if (i >= len || content[i] != L':') break;
-        i++; // skip :
+        ++i;
         skipWs();
         if (i >= len || content[i] != L'{') break;
-        i++; // skip {
+        ++i;
 
         Snippet sn;
         sn.name = snippetName;
+        std::vector<std::wstring> prefixes;
 
         while (i < len) {
             skipWs();
             if (i >= len || content[i] == L'}') {
-                i++;
+                ++i;
                 break;
             }
+            if (content[i] == L',') { ++i; continue; }
 
             std::wstring key = readString();
             skipWs();
-            if (i < len && content[i] == L':') i++;
+            if (i < len && content[i] == L':') ++i;
             skipWs();
 
             if (key == L"prefix") {
-                sn.prefix = readString();
+                if (i < len && content[i] == L'[') {
+                    ++i;
+                    while (i < len) {
+                        skipWs();
+                        if (i >= len || content[i] == L']') { ++i; break; }
+                        if (content[i] == L'"') {
+                            std::wstring p = readString();
+                            if (!p.empty() && prefixes.size() < 4) prefixes.push_back(std::move(p));
+                        } else {
+                            ++i;
+                        }
+                        skipWs();
+                        if (i < len && content[i] == L',') ++i;
+                    }
+                } else {
+                    sn.prefix = readString();
+                }
             } else if (key == L"description") {
                 sn.description = readString();
             } else if (key == L"scope") {
                 sn.scope = readString();
             } else if (key == L"body") {
                 if (i < len && content[i] == L'[') {
-                    i++; // skip [
+                    ++i;
                     while (i < len) {
                         skipWs();
                         if (i >= len || content[i] == L']') {
-                            i++;
+                            ++i;
                             break;
                         }
                         sn.body.push_back(readString());
                         skipWs();
-                        if (i < len && content[i] == L',') i++;
+                        if (i < len && content[i] == L',') ++i;
                     }
                 } else if (i < len && content[i] == L'"') {
-                    sn.body.push_back(readString());
+                    std::wstring rawBody = readString();
+                    size_t p = 0;
+                    while (p <= rawBody.size()) {
+                        size_t nl = rawBody.find(L'\n', p);
+                        if (nl == std::wstring::npos) {
+                            sn.body.push_back(rawBody.substr(p));
+                            break;
+                        }
+                        std::wstring ln = rawBody.substr(p, nl - p);
+                        if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+                        sn.body.push_back(std::move(ln));
+                        p = nl + 1;
+                    }
                 }
             } else {
-                // Unknown field - skip string or array
                 if (i < len && content[i] == L'"') readString();
                 else if (i < len && content[i] == L'[') {
-                    while (i < len && content[i] != L']') i++;
-                    if (i < len) i++;
+                    while (i < len && content[i] != L']') ++i;
+                    if (i < len) ++i;
                 }
             }
 
             skipWs();
-            if (i < len && content[i] == L',') i++;
+            if (i < len && content[i] == L',') ++i;
         }
 
-        if (!sn.prefix.empty() && !sn.body.empty()) {
-            // Replace existing or add
-            auto it = std::find_if(m_snippets.begin(), m_snippets.end(), [&](const Snippet& s) {
-                return (s.name == sn.name && s.prefix == sn.prefix) || (s.prefix == sn.prefix && s.scope == sn.scope);
-            });
-            if (it != m_snippets.end()) {
-                *it = sn;
-            } else {
-                m_snippets.push_back(sn);
+        if (sn.scope.empty()) {
+            sn.scope = defaultScope.empty() ? L"*" : defaultScope;
+        }
+        if (prefixes.empty() && !sn.prefix.empty()) {
+            prefixes.push_back(sn.prefix);
+        }
+
+        if (!prefixes.empty() && !sn.body.empty()) {
+            for (const auto& pfx : prefixes) {
+                Snippet aliasSn = sn;
+                aliasSn.prefix = pfx;
+                auto it = std::find_if(m_snippets.begin(), m_snippets.end(), [&](const Snippet& s) {
+                    return (s.name == aliasSn.name && s.prefix == aliasSn.prefix) ||
+                           (s.prefix == aliasSn.prefix && s.scope == aliasSn.scope);
+                });
+                if (it != m_snippets.end()) {
+                    *it = std::move(aliasSn);
+                } else if (m_snippets.size() < 2000) {
+                    m_snippets.push_back(std::move(aliasSn));
+                }
+                ++importedCount;
             }
         }
 
         skipWs();
-        if (i < len && content[i] == L',') i++;
+        if (i < len && content[i] == L',') ++i;
     }
+
+    return importedCount;
+}
+
+void SnippetManager::LoadSnippets() {
+    if (m_snippetsFilePath.empty() || !std::filesystem::exists(m_snippetsFilePath)) return;
+
+    std::wifstream in(m_snippetsFilePath);
+    if (!in.is_open()) return;
+
+    std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
+    in.close();
+    ParseSnippetsJsonContent(content, L"*");
+}
+
+bool SnippetManager::ImportVscodeSnippetsFromFile(const std::wstring& filePath, const std::wstring& defaultScope) {
+    if (filePath.empty()) return false;
+    std::error_code ec;
+    std::filesystem::path p(filePath);
+    if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec)) return false;
+    auto fsz = std::filesystem::file_size(p, ec);
+    if (ec || fsz > 1024 * 1024) return false;
+
+    std::ifstream in(p, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::string utf8((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (utf8.empty()) return false;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (wlen <= 0) return false;
+    std::wstring wcontent(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wcontent.data(), wlen);
+
+    std::wstring effectiveScope = defaultScope.empty() ? InferScopeFromSnippetFile(filePath) : defaultScope;
+    return ParseSnippetsJsonContent(wcontent, effectiveScope) > 0;
+}
+
+size_t SnippetManager::ImportVscodeWorkspaceSnippets(const std::wstring& workspaceRoot) {
+    if (workspaceRoot.empty()) return 0;
+    std::error_code ec;
+    std::filesystem::path vsDir = std::filesystem::path(workspaceRoot) / L".vscode";
+    if (!std::filesystem::exists(vsDir, ec) || !std::filesystem::is_directory(vsDir, ec)) return 0;
+
+    size_t filesImported = 0;
+    size_t filesScanned = 0;
+    for (const auto& ent : std::filesystem::directory_iterator(vsDir, ec)) {
+        if (ec || filesScanned >= 32) break;
+        if (!ent.is_regular_file(ec)) continue;
+        std::wstring ext = ent.path().extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        if (ext == L".code-snippets") {
+            ++filesScanned;
+            if (ImportVscodeSnippetsFromFile(ent.path().wstring(), L"")) {
+                ++filesImported;
+            }
+        }
+    }
+    return filesImported;
 }
 
 bool SnippetManager::MatchesScope(const std::wstring& scope, const std::wstring& fileExt) {
-    if (scope.empty()) return true;
+    if (scope.empty() || scope == L"*") return true;
     if (fileExt.empty()) return true;
 
     std::wstring lowerExt = fileExt;
-    for (auto& c : lowerExt) c = towlower(c);
+    for (auto& c : lowerExt) c = static_cast<wchar_t>(towlower(c));
     if (!lowerExt.empty() && lowerExt[0] == L'.') {
         lowerExt = lowerExt.substr(1);
     }
@@ -2230,11 +2388,11 @@ bool SnippetManager::MatchesScope(const std::wstring& scope, const std::wstring&
         size_t f = item.find_first_not_of(L" ");
         size_t l = item.find_last_not_of(L" ");
         if (f != std::wstring::npos) item = item.substr(f, l - f + 1);
-        for (auto& c : item) c = towlower(c);
+        for (auto& c : item) c = static_cast<wchar_t>(towlower(c));
         if (!item.empty() && item[0] == L'.') {
             item = item.substr(1);
         }
-        if (item == lowerExt) return true;
+        if (ScopeItemMatchesExt(item, lowerExt)) return true;
     }
     return false;
 }
@@ -2299,45 +2457,100 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
     bool foundPlaceholder1 = false;
     bool foundPlaceholder0 = false;
     std::wstring compName = DeriveComponentName(filename);
+    std::wstring tmFileName = filename.empty() ? L"" : std::filesystem::path(filename).filename().wstring();
+    std::wstring tmDir = filename.empty() ? L"" : std::filesystem::path(filename).parent_path().wstring();
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    bool clipLoaded = false;
+    std::wstring clipText;
+
+    auto resolveVariable = [&](const std::wstring& name, std::wstring& outVal) -> bool {
+        if (name == L"TM_FILENAME_BASE") { outVal = compName; return true; }
+        if (name == L"TM_FILENAME") { outVal = tmFileName; return true; }
+        if (name == L"TM_DIRECTORY") { outVal = tmDir; return true; }
+        if (name == L"CURRENT_YEAR") { outVal = FormatFourDigits(st.wYear); return true; }
+        if (name == L"CURRENT_YEAR_SHORT") { outVal = FormatTwoDigits(st.wYear); return true; }
+        if (name == L"CURRENT_MONTH") { outVal = FormatTwoDigits(st.wMonth); return true; }
+        if (name == L"CURRENT_DATE") { outVal = FormatTwoDigits(st.wDay); return true; }
+        if (name == L"CURRENT_HOUR") { outVal = FormatTwoDigits(st.wHour); return true; }
+        if (name == L"CURRENT_MINUTE") { outVal = FormatTwoDigits(st.wMinute); return true; }
+        if (name == L"CURRENT_SECOND") { outVal = FormatTwoDigits(st.wSecond); return true; }
+        if (name == L"CLIPBOARD") {
+            if (!clipLoaded) {
+                clipText = ReadBoundedClipboardText();
+                clipLoaded = true;
+            }
+            outVal = clipText;
+            return true;
+        }
+        return false;
+    };
 
     for (size_t lIdx = 0; lIdx < snippet.body.size(); ++lIdx) {
-        std::wstring raw = snippet.body[lIdx];
+        const std::wstring& raw = snippet.body[lIdx];
         std::wstring clean;
 
         for (size_t c = 0; c < raw.length(); ++c) {
             if (raw[c] == L'$') {
+                if (c + 1 < raw.length() && raw[c + 1] == L'$') {
+                    clean.push_back(L'$');
+                    ++c;
+                    continue;
+                }
                 if (c + 1 < raw.length() && raw[c + 1] == L'{') {
-                    // Check for ${TM_FILENAME_BASE} or ${TM_FILENAME}
-                    if (raw.substr(c, 19) == L"${TM_FILENAME_BASE}") {
-                        clean += compName;
-                        c += 18;
-                        continue;
-                    }
-                    // ${1:name}
-                    size_t colon = raw.find(L':', c + 2);
                     size_t close = raw.find(L'}', c + 2);
-                    if (colon != std::wstring::npos && close != std::wstring::npos && colon < close) {
-                        std::wstring defVal = raw.substr(colon + 1, close - colon - 1);
-                        if ((defVal == L"ComponentName" || defVal.find(L"ComponentName") != std::wstring::npos) &&
-                            !compName.empty() && compName != L"ComponentName") {
-                            defVal = compName;
+                    if (close != std::wstring::npos) {
+                        std::wstring inner = raw.substr(c + 2, close - (c + 2));
+                        std::wstring varVal;
+                        if (resolveVariable(inner, varVal)) {
+                            clean += varVal;
+                            c = close;
+                            continue;
                         }
-                        if (!foundPlaceholder1 && !foundPlaceholder0) {
+                        // Choice placeholder: ${1|a,b,c|}
+                        size_t pipe1 = inner.find(L'|');
+                        if (pipe1 != std::wstring::npos && pipe1 > 0 && iswdigit(inner[0])) {
+                            std::wstring numStr = inner.substr(0, pipe1);
+                            size_t pipe2 = inner.find(L'|', pipe1 + 1);
+                            std::wstring choices = (pipe2 != std::wstring::npos)
+                                ? inner.substr(pipe1 + 1, pipe2 - pipe1 - 1)
+                                : inner.substr(pipe1 + 1);
+                            size_t comma = choices.find(L',');
+                            std::wstring firstChoice = (comma == std::wstring::npos) ? choices : choices.substr(0, comma);
+                            if (numStr == L"1" && !foundPlaceholder1 && !foundPlaceholder0) {
+                                targetCursorLineOffset = static_cast<int>(lIdx);
+                                targetCursorCol = static_cast<int>(clean.length());
+                                foundPlaceholder1 = true;
+                            }
+                            clean += firstChoice;
+                            c = close;
+                            continue;
+                        }
+                        // ${1:default}
+                        size_t colon = inner.find(L':');
+                        if (colon != std::wstring::npos) {
+                            std::wstring numStr = inner.substr(0, colon);
+                            std::wstring defVal = inner.substr(colon + 1);
+                            if ((defVal == L"ComponentName" || defVal.find(L"ComponentName") != std::wstring::npos) &&
+                                !compName.empty() && compName != L"ComponentName") {
+                                defVal = compName;
+                            }
+                            if ((numStr == L"1" || !foundPlaceholder1) && !foundPlaceholder1 && !foundPlaceholder0) {
+                                targetCursorLineOffset = static_cast<int>(lIdx);
+                                targetCursorCol = static_cast<int>(clean.length());
+                                foundPlaceholder1 = true;
+                            }
+                            clean += defVal;
+                            c = close;
+                            continue;
+                        }
+                        // ${1}, ${0}
+                        if (inner == L"1" && !foundPlaceholder1 && !foundPlaceholder0) {
                             targetCursorLineOffset = static_cast<int>(lIdx);
                             targetCursorCol = static_cast<int>(clean.length());
                             foundPlaceholder1 = true;
-                        }
-                        clean += defVal;
-                        c = close;
-                        continue;
-                    } else if (close != std::wstring::npos) {
-                        // ${1}, ${2}, etc. without default value
-                        std::wstring innerNum = raw.substr(c + 2, close - (c + 2));
-                        if (innerNum == L"1" && !foundPlaceholder1 && !foundPlaceholder0) {
-                            targetCursorLineOffset = static_cast<int>(lIdx);
-                            targetCursorCol = static_cast<int>(clean.length());
-                            foundPlaceholder1 = true;
-                        } else if (innerNum == L"0") {
+                        } else if (inner == L"0") {
                             targetCursorLineOffset = static_cast<int>(lIdx);
                             targetCursorCol = static_cast<int>(clean.length());
                             foundPlaceholder0 = true;
@@ -2345,33 +2558,40 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                         c = close;
                         continue;
                     }
-                } else if (raw.substr(c, 17) == L"$TM_FILENAME_BASE") {
-                    clean += compName;
-                    c += 16;
-                    continue;
+                } else if (c + 1 < raw.length() && iswalpha(raw[c + 1])) {
+                    size_t endIdent = c + 1;
+                    while (endIdent < raw.length() && (iswalnum(raw[endIdent]) || raw[endIdent] == L'_')) {
+                        ++endIdent;
+                    }
+                    std::wstring varName = raw.substr(c + 1, endIdent - (c + 1));
+                    std::wstring varVal;
+                    if (resolveVariable(varName, varVal)) {
+                        clean += varVal;
+                        c = endIdent - 1;
+                        continue;
+                    }
                 } else if (c + 1 < raw.length() && raw[c + 1] == L'1') {
                     if (!foundPlaceholder1 && !foundPlaceholder0) {
                         targetCursorLineOffset = static_cast<int>(lIdx);
                         targetCursorCol = static_cast<int>(clean.length());
                         foundPlaceholder1 = true;
                     }
-                    c++; // skip 1
+                    ++c;
                     continue;
                 } else if (c + 1 < raw.length() && raw[c + 1] == L'0') {
-                    // $0 is the final exit position; always preferred if present
                     targetCursorLineOffset = static_cast<int>(lIdx);
                     targetCursorCol = static_cast<int>(clean.length());
                     foundPlaceholder0 = true;
-                    c++; // skip 0
+                    ++c;
                     continue;
                 } else if (c + 1 < raw.length() && iswdigit(raw[c + 1])) {
-                    c++; // skip other digits $2, $3...
+                    ++c;
                     continue;
                 }
             }
             clean += raw[c];
         }
-        processedLines.push_back(clean);
+        processedLines.push_back(std::move(clean));
     }
 
     return buffer.ReplacePrefixWithSnippet(prefixLen, processedLines, targetCursorLineOffset, targetCursorCol);

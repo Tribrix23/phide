@@ -187,6 +187,21 @@ bool ReplaceInLine(
     bool preserveCase);
 
 /**
+ * @brief Computes expanded replacement text for a specific match occurrence on a full line,
+ *        supporting regex capture groups ($1..$99, $&, $$, \n, \t) and lookarounds.
+ */
+[[nodiscard]] std::wstring ExpandSpecificMatchReplacement(
+    const std::wstring& lineText,
+    size_t matchCol,
+    size_t matchLength,
+    const std::wstring& query,
+    const std::wstring& replacement,
+    bool matchCase,
+    bool matchWord,
+    bool useRegex,
+    bool preserveCase);
+
+/**
  * @brief Scores a fuzzy match (returns < 0 if query does not match candidate).
  */
 [[nodiscard]] int ScoreFuzzyMatch(

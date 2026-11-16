@@ -29,9 +29,10 @@ struct EmmetAstNode {
     std::vector<EmmetAttr> attributes;
     std::wstring textContent;
     int count = 1;
+    bool wrapEachLine = false;
     bool isLorem = false;
     size_t loremWords = 30;
-    std::vector<EmmetAstNode> children;
+    std::vector<size_t> childIds;
 };
 
 // Check if a character is a delimiter for Emmet abbreviations
@@ -388,15 +389,21 @@ EmmetAstNode ParseSingleToken(const std::wstring& s) {
         }
     }
 
-    if (starPos != std::wstring::npos && starPos + 1 < str.length()) {
-        std::wstring countStr = str.substr(starPos + 1);
-        bool allDig = true;
-        for (wchar_t c : countStr) {
-            if (!iswdigit(c)) { allDig = false; break; }
-        }
-        if (allDig && !countStr.empty()) {
-            node.count = (std::max)(1, _wtoi(countStr.c_str()));
+    if (starPos != std::wstring::npos) {
+        std::wstring countStr = Trim(str.substr(starPos + 1));
+        if (countStr.empty()) {
+            node.wrapEachLine = true;
+            node.count = 1;
             str = str.substr(0, starPos);
+        } else {
+            bool allDig = true;
+            for (wchar_t c : countStr) {
+                if (!iswdigit(c)) { allDig = false; break; }
+            }
+            if (allDig) {
+                node.count = (std::max)(1, _wtoi(countStr.c_str()));
+                str = str.substr(0, starPos);
+            }
         }
     }
 
@@ -558,17 +565,25 @@ std::wstring ApplyNumbering(const std::wstring& text, int index, int count) {
     return out;
 }
 
-// Render an AST node to HTML string
+// Render an AST node to HTML/JSX string using index-based arena
 void RenderNode(
-    const EmmetAstNode& node,
+    const std::vector<EmmetAstNode>& arena,
+    size_t nodeIdx,
     const std::wstring& parentTag,
     int index,
     int depth,
     const std::wstring& indentUnit,
     const std::wstring& lineIndent,
+    bool isJsx,
+    const std::vector<std::wstring>* pWrapLines,
+    bool hasWrapLines,
     std::wstring& out,
     size_t* pFirstCursorPos
 ) {
+    const EmmetAstNode& node = arena[nodeIdx];
+    if (node.wrapEachLine && hasWrapLines && pWrapLines && !pWrapLines->empty() && pWrapLines->size() > 1) {
+        // Handled per-item below when caller didn't split, or iterate here:
+    }
     if (node.isLorem) {
         std::wstring lorem = EmmetEngine::GenerateLorem(node.loremWords);
         std::wstring curIndent = lineIndent;
@@ -582,7 +597,6 @@ void RenderNode(
         tag = EmmetEngine::ResolveDefaultTag(parentTag);
     }
 
-    // Apply official standard tag expansions (e.g. "a" -> "a[href=""]", "img" -> "img[src="" alt=""]")
     std::vector<EmmetAttr> attrs = node.attributes;
     if (tag == L"a" && std::none_of(attrs.begin(), attrs.end(), [](const auto& a) { return a.name == L"href"; })) {
         attrs.insert(attrs.begin(), { L"href", L"", true });
@@ -608,7 +622,7 @@ void RenderNode(
     }
 
     if (!node.classes.empty()) {
-        out += L" class=\"";
+        out += (isJsx ? L" className=\"" : L" class=\"");
         for (size_t c = 0; c < node.classes.size(); ++c) {
             if (c > 0) out += L" ";
             out += ApplyNumbering(node.classes[c], index, node.count);
@@ -632,12 +646,25 @@ void RenderNode(
     out += L">";
 
     std::wstring text = ApplyNumbering(node.textContent, index, node.count);
+    if (node.childIds.empty() && node.wrapEachLine && pWrapLines && index >= 1 && static_cast<size_t>(index) <= pWrapLines->size()) {
+        const std::wstring& wrapLine = (*pWrapLines)[static_cast<size_t>(index - 1)];
+        if (text.empty()) {
+            text = wrapLine;
+        } else {
+            // Substitute $* or $0 or $# or append
+            size_t ph = text.find(L"$#");
+            if (ph != std::wstring::npos) {
+                text.replace(ph, 2, wrapLine);
+            } else {
+                text += wrapLine;
+            }
+        }
+    }
 
-    if (node.children.empty()) {
+    if (node.childIds.empty()) {
         if (!text.empty()) {
             out += text;
         } else {
-            // First empty tag without children is where cursor belongs
             if (pFirstCursorPos && *pFirstCursorPos == std::wstring::npos) {
                 *pFirstCursorPos = out.length();
             }
@@ -646,66 +673,132 @@ void RenderNode(
         return;
     }
 
-    // Children present
     if (!text.empty()) {
         out += text;
     }
     out += L"\n";
 
-    for (const auto& child : node.children) {
-        for (int k = 1; k <= child.count; ++k) {
-            RenderNode(child, tag, k, depth + 1, indentUnit, lineIndent, out, pFirstCursorPos);
+    for (size_t childIdx : node.childIds) {
+        const auto& child = arena[childIdx];
+        int repeatCount = (child.wrapEachLine && pWrapLines && !pWrapLines->empty())
+            ? static_cast<int>(pWrapLines->size())
+            : child.count;
+        for (int k = 1; k <= repeatCount; ++k) {
+            RenderNode(arena, childIdx, tag, k, depth + 1, indentUnit, lineIndent, isJsx,
+                       child.wrapEachLine ? pWrapLines : nullptr, hasWrapLines, out, pFirstCursorPos);
         }
     }
 
     out += curIndent + L"</" + tag + L">\n";
 }
 
-} // anonymous namespace
-
-std::wstring EmmetEngine::Expand(
-    const std::wstring& abbr,
-    const std::wstring& indentUnit,
-    const std::wstring& lineIndent,
-    bool isCss,
-    size_t* pCursorOffset
+bool BuildEmmetArena(
+    const std::wstring& exprInput,
+    const std::unordered_map<std::wstring, std::wstring>& aliases,
+    std::vector<EmmetAstNode>& arena,
+    std::vector<size_t>& rootIds
 ) {
-    if (abbr.empty()) return L"";
-
-    if (pCursorOffset) *pCursorOffset = std::wstring::npos;
-
-    if (isCss) {
-        std::wstring css = ExpandCss(abbr);
-        if (!css.empty() && pCursorOffset) {
-            *pCursorOffset = css.length();
-        }
-        return css;
+    std::wstring expr = exprInput;
+    auto aIt = aliases.find(expr);
+    if (aIt != aliases.end()) {
+        expr = aIt->second;
     }
 
-    // HTML5 Boilerplate: ! or html:5 or doc
-    if (abbr == L"!" || abbr == L"html:5" || abbr == L"doc") {
-        std::wstring ind1 = lineIndent + indentUnit;
-        std::wstring ind2 = ind1 + indentUnit;
-        std::wstring doc = lineIndent + L"<!DOCTYPE html>\n" +
-                           lineIndent + L"<html lang=\"en\">\n" +
-                           lineIndent + L"<head>\n" +
-                           ind1 + L"<meta charset=\"UTF-8\">\n" +
-                           ind1 + L"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" +
-                           ind1 + L"<title>Document</title>\n" +
-                           lineIndent + L"</head>\n" +
-                           lineIndent + L"<body>\n" +
-                           ind1;
+    std::vector<std::wstring> tokens;
+    std::vector<wchar_t> ops;
+    size_t prev = 0;
+    int bDepth = 0, braceDepth = 0, parenDepth = 0;
 
-        if (pCursorOffset) {
-            *pCursorOffset = doc.length();
+    for (size_t i = 0; i < expr.length(); ++i) {
+        wchar_t c = expr[i];
+        if (c == L'[') bDepth++;
+        else if (c == L']') bDepth = (std::max)(0, bDepth - 1);
+        else if (c == L'{') braceDepth++;
+        else if (c == L'}') braceDepth = (std::max)(0, braceDepth - 1);
+        else if (c == L'(') parenDepth++;
+        else if (c == L')') parenDepth = (std::max)(0, parenDepth - 1);
+        else if (bDepth == 0 && braceDepth == 0 && parenDepth == 0) {
+            if (c == L'>' || c == L'+' || c == L'^') {
+                tokens.push_back(expr.substr(prev, i - prev));
+                ops.push_back(c);
+                prev = i + 1;
+            }
+        }
+    }
+    tokens.push_back(expr.substr(prev));
+    if (tokens.empty() || tokens[0].empty()) return false;
+
+    // Integer index stack: -1 = rootIds, >= 0 = arena[idx].childIds
+    std::vector<int> containerStack;
+    containerStack.push_back(-1);
+
+    auto appendToContainer = [&](int containerIdx, size_t nodeIdx) {
+        if (containerIdx < 0) rootIds.push_back(nodeIdx);
+        else arena[static_cast<size_t>(containerIdx)].childIds.push_back(nodeIdx);
+    };
+    auto getLastInContainer = [&](int containerIdx) -> int {
+        const auto& vec = (containerIdx < 0) ? rootIds : arena[static_cast<size_t>(containerIdx)].childIds;
+        return vec.empty() ? -1 : static_cast<int>(vec.back());
+    };
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i > 0) {
+            wchar_t op = ops[i - 1];
+            if (op == L'>') {
+                int lastIdx = getLastInContainer(containerStack.back());
+                if (lastIdx >= 0) containerStack.push_back(lastIdx);
+            } else if (op == L'^') {
+                if (containerStack.size() > 1) containerStack.pop_back();
+            }
         }
 
-        doc += L"\n" + lineIndent + L"</body>\n" +
-               lineIndent + L"</html>\n";
-        return doc;
+        std::wstring rawTok = Trim(tokens[i]);
+        if (rawTok.empty()) continue;
+
+        // Check grouped expression: (...) or (...)*N
+        if (rawTok.front() == L'(') {
+            size_t closeP = std::wstring::npos;
+            int pD = 0;
+            for (size_t j = 0; j < rawTok.size(); ++j) {
+                if (rawTok[j] == L'(') pD++;
+                else if (rawTok[j] == L')') {
+                    pD--;
+                    if (pD == 0) { closeP = j; break; }
+                }
+            }
+            if (closeP != std::wstring::npos) {
+                std::wstring subExpr = rawTok.substr(1, closeP - 1);
+                int groupRepeat = 1;
+                if (closeP + 1 < rawTok.size() && rawTok[closeP + 1] == L'*') {
+                    std::wstring repStr = Trim(rawTok.substr(closeP + 2));
+                    if (!repStr.empty()) groupRepeat = (std::max)(1, _wtoi(repStr.c_str()));
+                }
+                for (int rep = 0; rep < groupRepeat; ++rep) {
+                    std::vector<size_t> subRoots;
+                    if (BuildEmmetArena(subExpr, aliases, arena, subRoots)) {
+                        for (size_t sr : subRoots) {
+                            appendToContainer(containerStack.back(), sr);
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        auto subIt = aliases.find(rawTok);
+        if (subIt != aliases.end()) {
+            rawTok = subIt->second;
+        }
+
+        size_t newIdx = arena.size();
+        arena.push_back(ParseSingleToken(rawTok));
+        appendToContainer(containerStack.back(), newIdx);
     }
 
-    // Standard specific tags with aliases
+    return !rootIds.empty();
+}
+
+const std::unordered_map<std::wstring, std::wstring>& GetEmmetAliases() {
     static const std::unordered_map<std::wstring, std::wstring> s_aliases = {
         { L"input", L"input[type=\"text\"]" },
         { L"inp", L"input[type=\"text\"]" },
@@ -737,100 +830,70 @@ std::wstring EmmetEngine::Expand(
         { L"a:tel", L"a[href=\"tel:\"]" },
         { L"a:blank", L"a[href=\"http://\" target=\"_blank\" rel=\"noopener noreferrer\"]" }
     };
+    return s_aliases;
+}
 
-    std::wstring expr = abbr;
-    auto aIt = s_aliases.find(expr);
-    if (aIt != s_aliases.end()) {
-        expr = aIt->second;
+} // anonymous namespace
+
+std::wstring EmmetEngine::Expand(
+    const std::wstring& abbr,
+    const std::wstring& indentUnit,
+    const std::wstring& lineIndent,
+    bool isCss,
+    size_t* pCursorOffset,
+    bool isJsx
+) {
+    if (abbr.empty()) return L"";
+
+    if (pCursorOffset) *pCursorOffset = std::wstring::npos;
+
+    if (isCss) {
+        std::wstring css = ExpandCss(abbr);
+        if (!css.empty() && pCursorOffset) {
+            *pCursorOffset = css.length();
+        }
+        return css;
     }
 
-    // Tokenize into elements and operators (>, +, ^)
-    // Respect brackets [...] and braces {...}
-    std::vector<std::wstring> tokens;
-    std::vector<wchar_t> ops; // op before token[i] for i > 0
+    if (abbr == L"!" || abbr == L"html:5" || abbr == L"doc") {
+        std::wstring ind1 = lineIndent + indentUnit;
+        std::wstring doc = lineIndent + L"<!DOCTYPE html>\n" +
+                           lineIndent + L"<html lang=\"en\">\n" +
+                           lineIndent + L"<head>\n" +
+                           ind1 + L"<meta charset=\"UTF-8\">\n" +
+                           ind1 + L"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" +
+                           ind1 + L"<title>Document</title>\n" +
+                           lineIndent + L"</head>\n" +
+                           lineIndent + L"<body>\n" +
+                           ind1;
 
-    size_t prev = 0;
-    int bDepth = 0;
-    int braceDepth = 0;
-    int parenDepth = 0;
-
-    for (size_t i = 0; i < expr.length(); ++i) {
-        wchar_t c = expr[i];
-        if (c == L'[') bDepth++;
-        else if (c == L']') bDepth = (std::max)(0, bDepth - 1);
-        else if (c == L'{') braceDepth++;
-        else if (c == L'}') braceDepth = (std::max)(0, braceDepth - 1);
-        else if (c == L'(') parenDepth++;
-        else if (c == L')') parenDepth = (std::max)(0, parenDepth - 1);
-        else if (bDepth == 0 && braceDepth == 0 && parenDepth == 0) {
-            if (c == L'>' || c == L'+' || c == L'^') {
-                tokens.push_back(expr.substr(prev, i - prev));
-                ops.push_back(c);
-                prev = i + 1;
-            }
-        }
-    }
-    tokens.push_back(expr.substr(prev));
-
-    if (tokens.empty() || tokens[0].empty()) return L"";
-
-    // Build AST tree
-    std::vector<EmmetAstNode> rootForest;
-    // Stack of pointers to children vectors
-    std::vector<std::vector<EmmetAstNode>*> containerStack;
-    containerStack.push_back(&rootForest);
-
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        if (i > 0) {
-            wchar_t op = ops[i - 1];
-            if (op == L'>') {
-                // Descend into the last inserted node's children
-                if (!containerStack.empty() && !containerStack.back()->empty()) {
-                    containerStack.push_back(&containerStack.back()->back().children);
-                }
-            } else if (op == L'+') {
-                // Sibling: remain in the same container
-            } else if (op == L'^') {
-                // Climb up parent
-                if (containerStack.size() > 1) {
-                    containerStack.pop_back();
-                }
-            }
+        if (pCursorOffset) {
+            *pCursorOffset = doc.length();
         }
 
-        std::wstring rawTok = Trim(tokens[i]);
-        if (rawTok.empty()) continue;
-
-        // Strip grouping parens if wrapped
-        if (rawTok.front() == L'(' && rawTok.back() == L')') {
-            rawTok = rawTok.substr(1, rawTok.length() - 2);
-        }
-
-        auto subIt = s_aliases.find(rawTok);
-        if (subIt != s_aliases.end()) {
-            rawTok = subIt->second;
-        }
-
-        EmmetAstNode node = ParseSingleToken(rawTok);
-        if (containerStack.empty()) containerStack.push_back(&rootForest);
-        containerStack.back()->push_back(std::move(node));
+        doc += L"\n" + lineIndent + L"</body>\n" +
+               lineIndent + L"</html>\n";
+        return doc;
     }
 
-    if (rootForest.empty()) return L"";
+    std::vector<EmmetAstNode> arena;
+    std::vector<size_t> rootIds;
+    if (!BuildEmmetArena(abbr, GetEmmetAliases(), arena, rootIds)) {
+        return L"";
+    }
 
-    // Render tree to string
     std::wstring result;
     size_t firstCursorPos = std::wstring::npos;
 
-    for (const auto& rootNode : rootForest) {
+    for (size_t rIdx : rootIds) {
+        const auto& rootNode = arena[rIdx];
         for (int k = 1; k <= rootNode.count; ++k) {
-            RenderNode(rootNode, L"", k, 0, indentUnit, lineIndent, result, &firstCursorPos);
+            RenderNode(arena, rIdx, L"", k, 0, indentUnit, lineIndent, isJsx, nullptr, false, result, &firstCursorPos);
         }
     }
 
-    // Strip trailing newline if single line expansion
-    if (rootForest.size() == 1 && rootForest[0].children.empty() && rootForest[0].count == 1 &&
-        result.find(L'\n') == result.length() - 1) {
+    if (rootIds.size() == 1 && arena[rootIds[0]].childIds.empty() && arena[rootIds[0]].count == 1 &&
+        !result.empty() && result.back() == L'\n') {
         result.pop_back();
     }
 
@@ -839,6 +902,315 @@ std::wstring EmmetEngine::Expand(
     }
 
     return result;
+}
+
+std::wstring EmmetEngine::WrapWithAbbreviation(
+    const std::wstring& selectedText,
+    const std::wstring& abbr,
+    const std::wstring& indentUnit,
+    const std::wstring& lineIndent,
+    bool isJsx
+) {
+    std::wstring trimmedAbbr = Trim(abbr);
+    if (trimmedAbbr.empty()) return L"";
+
+    // Build AST first so we can check if any node uses per-line `*` wrapping (e.g. `ul>li*`)
+    std::vector<EmmetAstNode> arena;
+    std::vector<size_t> rootIds;
+    if (!BuildEmmetArena(trimmedAbbr, GetEmmetAliases(), arena, rootIds)) {
+        return L"";
+    }
+
+    bool usesPerLineWrap = false;
+    for (const auto& n : arena) {
+        if (n.wrapEachLine) { usesPerLineWrap = true; break; }
+    }
+
+    if (usesPerLineWrap) {
+        std::vector<std::wstring> wrapLines;
+        size_t pos = 0;
+        while (pos <= selectedText.size()) {
+            size_t nl = selectedText.find(L'\n', pos);
+            size_t end = (nl == std::wstring::npos) ? selectedText.size() : nl;
+            std::wstring seg = selectedText.substr(pos, end - pos);
+            if (!seg.empty() && seg.back() == L'\r') seg.pop_back();
+            std::wstring t = Trim(seg);
+            if (!t.empty()) wrapLines.push_back(std::move(t));
+            if (nl == std::wstring::npos) break;
+            pos = nl + 1;
+        }
+        if (wrapLines.empty()) wrapLines.push_back(L"");
+
+        std::wstring result;
+        size_t firstCursorPos = std::wstring::npos;
+        for (size_t rIdx : rootIds) {
+            const auto& rootNode = arena[rIdx];
+            int repCount = rootNode.wrapEachLine ? static_cast<int>(wrapLines.size()) : rootNode.count;
+            for (int k = 1; k <= repCount; ++k) {
+                RenderNode(arena, rIdx, L"", k, 0, indentUnit, lineIndent, isJsx,
+                           &wrapLines, true, result, &firstCursorPos);
+            }
+        }
+        if (!result.empty() && result.back() == L'\n' && selectedText.find(L'\n') == std::wstring::npos &&
+            rootIds.size() == 1 && arena[rootIds[0]].childIds.empty() && wrapLines.size() == 1) {
+            result.pop_back();
+        }
+        return result;
+    }
+
+    size_t cursorOffset = std::wstring::npos;
+    std::wstring expanded = Expand(trimmedAbbr, indentUnit, lineIndent, false, &cursorOffset, isJsx);
+    if (expanded.empty()) return L"";
+    if (!expanded.empty() && expanded.back() == L'\n') expanded.pop_back();
+
+    if (cursorOffset == std::wstring::npos || cursorOffset > expanded.length()) {
+        size_t lastClose = expanded.rfind(L"</");
+        cursorOffset = (lastClose != std::wstring::npos) ? lastClose : expanded.length();
+    }
+
+    if (selectedText.find(L'\n') == std::wstring::npos) {
+        std::wstring inner = selectedText;
+        if (!inner.empty() && inner.back() == L'\r') inner.pop_back();
+        return expanded.substr(0, cursorOffset) + inner + expanded.substr(cursorOffset);
+    }
+
+    // Multi-line wrapped content: re-indent smoothly inside deepest container tag
+    size_t lineStart = expanded.rfind(L'\n', cursorOffset);
+    size_t indentStart = (lineStart == std::wstring::npos) ? 0 : (lineStart + 1);
+    size_t indentEnd = indentStart;
+    while (indentEnd < cursorOffset && (expanded[indentEnd] == L' ' || expanded[indentEnd] == L'\t')) {
+        ++indentEnd;
+    }
+    const std::wstring containerIndent = expanded.substr(indentStart, indentEnd - indentStart);
+    const std::wstring innerIndent = containerIndent + indentUnit;
+
+    std::vector<std::wstring> rawLines;
+    size_t pos = 0;
+    size_t minCommonIndent = SIZE_MAX;
+    while (pos <= selectedText.size()) {
+        size_t nl = selectedText.find(L'\n', pos);
+        size_t end = (nl == std::wstring::npos) ? selectedText.size() : nl;
+        std::wstring seg = selectedText.substr(pos, end - pos);
+        if (!seg.empty() && seg.back() == L'\r') seg.pop_back();
+        bool hasNonSpace = false;
+        size_t ws = 0;
+        while (ws < seg.size() && (seg[ws] == L' ' || seg[ws] == L'\t')) ++ws;
+        hasNonSpace = (ws < seg.size());
+        if (hasNonSpace) minCommonIndent = (std::min)(minCommonIndent, ws);
+        rawLines.push_back(std::move(seg));
+        if (nl == std::wstring::npos) break;
+        pos = nl + 1;
+    }
+    if (minCommonIndent == SIZE_MAX) minCommonIndent = 0;
+
+    std::wstring block = L"\n";
+    for (const auto& rl : rawLines) {
+        if (rl.empty()) {
+            block += L"\n";
+        } else {
+            size_t cut = (std::min)(minCommonIndent, rl.size());
+            block += innerIndent + rl.substr(cut) + L"\n";
+        }
+    }
+    block += containerIndent;
+
+    return expanded.substr(0, cursorOffset) + block + expanded.substr(cursorOffset);
+}
+
+EmmetEngine::TextRange EmmetEngine::BalanceTagRange(
+    const std::wstring& docText,
+    size_t selStartOffset,
+    size_t selEndOffset,
+    bool outward
+) {
+    TextRange empty{};
+    if (docText.empty() || docText.size() > (2ULL * 1024ULL * 1024ULL)) {
+        return empty;
+    }
+    if (selStartOffset > selEndOffset) std::swap(selStartOffset, selEndOffset);
+    selStartOffset = (std::min)(selStartOffset, docText.size());
+    selEndOffset = (std::min)(selEndOffset, docText.size());
+
+    struct OpenTagItem {
+        size_t openStart = 0;
+        size_t openEnd = 0;
+        std::wstring lowerName;
+    };
+    struct PairedTag {
+        size_t openStart = 0;
+        size_t openEnd = 0;
+        size_t closeStart = 0;
+        size_t closeEnd = 0;
+    };
+
+    std::vector<OpenTagItem> stack;
+    std::vector<PairedTag> pairs;
+    const size_t n = docText.size();
+
+    for (size_t i = 0; i < n; ) {
+        if (docText[i] != L'<') {
+            ++i;
+            continue;
+        }
+        // HTML comment <!-- ... -->
+        if (i + 3 < n && docText[i + 1] == L'!' && docText[i + 2] == L'-' && docText[i + 3] == L'-') {
+            size_t endC = docText.find(L"-->", i + 4);
+            i = (endC == std::wstring::npos) ? n : (endC + 3);
+            continue;
+        }
+        if (i + 1 >= n) break;
+
+        wchar_t nextC = docText[i + 1];
+        if (nextC == L'!' || nextC == L'?') {
+            ++i;
+            continue;
+        }
+
+        bool isClose = (nextC == L'/');
+        size_t nameStart = isClose ? (i + 2) : (i + 1);
+        bool isFragment = (nameStart < n && docText[nameStart] == L'>');
+        if (!isFragment && (nameStart >= n || !iswalpha(docText[nameStart]))) {
+            ++i;
+            continue;
+        }
+
+        size_t nameEnd = nameStart;
+        while (nameEnd < n) {
+            wchar_t tc = docText[nameEnd];
+            if (iswalnum(tc) || tc == L'-' || tc == L'_' || tc == L':' || tc == L'.') {
+                ++nameEnd;
+            } else {
+                break;
+            }
+        }
+        if (!isFragment && nameEnd < n) {
+            wchar_t afterName = docText[nameEnd];
+            if (afterName != L'>' && afterName != L'/' && !iswspace(afterName)) {
+                ++i;
+                continue;
+            }
+        }
+
+        // Scan to closing '>' outside quotes and JSX attribute braces
+        size_t gtPos = std::wstring::npos;
+        int braceDepth = 0;
+        wchar_t quoteChar = 0;
+        for (size_t j = nameEnd; j < n; ++j) {
+            wchar_t c = docText[j];
+            if (quoteChar != 0) {
+                if (c == L'\\' && j + 1 < n) ++j;
+                else if (c == quoteChar) quoteChar = 0;
+                continue;
+            }
+            if (c == L'"' || c == L'\'') {
+                quoteChar = c;
+            } else if (c == L'{') {
+                ++braceDepth;
+            } else if (c == L'}') {
+                if (braceDepth > 0) --braceDepth;
+            } else if (c == L'>' && braceDepth == 0) {
+                gtPos = j;
+                break;
+            }
+        }
+        if (gtPos == std::wstring::npos) {
+            ++i;
+            continue;
+        }
+
+        std::wstring lowerName = docText.substr(nameStart, nameEnd - nameStart);
+        for (wchar_t& ch : lowerName) ch = static_cast<wchar_t>(::towlower(ch));
+
+        size_t openEndPos = gtPos + 1;
+        if (isClose) {
+            for (int k = static_cast<int>(stack.size()) - 1; k >= 0; --k) {
+                if (stack[static_cast<size_t>(k)].lowerName == lowerName) {
+                    auto matched = stack[static_cast<size_t>(k)];
+                    stack.resize(static_cast<size_t>(k));
+                    pairs.push_back({ matched.openStart, matched.openEnd, i, openEndPos });
+                    break;
+                }
+            }
+        } else {
+            size_t prevNonWs = gtPos;
+            while (prevNonWs > nameEnd && iswspace(docText[prevNonWs - 1])) --prevNonWs;
+            bool selfClosing = (prevNonWs > nameEnd && docText[prevNonWs - 1] == L'/');
+            if (selfClosing || (!lowerName.empty() && IsVoidTag(lowerName))) {
+                pairs.push_back({ i, openEndPos, openEndPos, openEndPos });
+            } else {
+                stack.push_back({ i, openEndPos, std::move(lowerName) });
+            }
+        }
+
+        i = openEndPos;
+    }
+
+    if (pairs.empty()) return empty;
+
+    auto spanLen = [](const PairedTag& p) noexcept -> size_t {
+        return p.closeEnd - p.openStart;
+    };
+
+    if (outward) {
+        std::vector<const PairedTag*> enclosing;
+        for (const auto& p : pairs) {
+            if (p.openStart <= selStartOffset && selEndOffset <= p.closeEnd) {
+                enclosing.push_back(&p);
+            }
+        }
+        if (enclosing.empty()) return empty;
+        std::sort(enclosing.begin(), enclosing.end(), [&](const PairedTag* a, const PairedTag* b) {
+            size_t la = spanLen(*a), lb = spanLen(*b);
+            if (la != lb) return la < lb;
+            return a->openStart > b->openStart;
+        });
+
+        for (const PairedTag* p : enclosing) {
+            const bool hasInner = (p->openEnd < p->closeStart);
+            if (hasInner &&
+                selStartOffset >= p->openEnd && selEndOffset <= p->closeStart &&
+                (selStartOffset > p->openEnd || selEndOffset < p->closeStart)) {
+                return { p->openEnd, p->closeStart, true };
+            }
+            if (selStartOffset > p->openStart || selEndOffset < p->closeEnd) {
+                return { p->openStart, p->closeEnd, true };
+            }
+        }
+        return empty;
+    }
+
+    // Inward balance
+    std::vector<const PairedTag*> enclosing;
+    for (const auto& p : pairs) {
+        if (p.openStart <= selStartOffset && selEndOffset <= p.closeEnd) {
+            enclosing.push_back(&p);
+        }
+    }
+    if (enclosing.empty()) return empty;
+    std::sort(enclosing.begin(), enclosing.end(), [&](const PairedTag* a, const PairedTag* b) {
+        return spanLen(*a) < spanLen(*b);
+    });
+    const PairedTag* cur = enclosing.front();
+    if (selStartOffset == cur->openStart && selEndOffset == cur->closeEnd && cur->openEnd < cur->closeStart) {
+        return { cur->openEnd, cur->closeStart, true };
+    }
+
+    // Otherwise step into the first direct child tag inside [selStartOffset, selEndOffset]
+    const PairedTag* bestChild = nullptr;
+    for (const auto& p : pairs) {
+        if (&p == cur) continue;
+        if (p.openStart >= selStartOffset && p.closeEnd <= selEndOffset &&
+            (p.openStart > selStartOffset || p.closeEnd < selEndOffset)) {
+            if (!bestChild || p.openStart < bestChild->openStart ||
+                (p.openStart == bestChild->openStart && spanLen(p) > spanLen(*bestChild))) {
+                bestChild = &p;
+            }
+        }
+    }
+    if (bestChild) {
+        return { bestChild->openStart, bestChild->closeEnd, true };
+    }
+    return empty;
 }
 
 } // namespace phide::editor

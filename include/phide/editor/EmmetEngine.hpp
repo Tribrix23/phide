@@ -16,6 +16,12 @@ namespace phide::editor {
 
 class EmmetEngine {
 public:
+    struct TextRange {
+        size_t startOffset = 0;
+        size_t endOffset = 0;
+        bool valid = false;
+    };
+
     /**
      * @brief Checks if a character string looks like an Emmet abbreviation.
      */
@@ -37,12 +43,13 @@ public:
     );
 
     /**
-     * @brief Expands an Emmet abbreviation into fully structured multi-line HTML or CSS code.
+     * @brief Expands an Emmet abbreviation into fully structured multi-line HTML/JSX or CSS code.
      * @param abbr Raw abbreviation (e.g. "div.container>ul>li*4>a" or "div.hello" or "m10").
      * @param indentUnit Indentation unit for nested levels (e.g. "    " or "\t").
      * @param lineIndent Existing leading whitespace of the current line to preserve alignment.
      * @param isCss True if in CSS context.
      * @param pCursorOffset Output for relative offset in result where caret should be positioned.
+     * @param isJsx True for JSX/TSX files (emits className= instead of class=).
      * @return Expanded code string, or empty string if invalid.
      */
     static std::wstring Expand(
@@ -50,7 +57,29 @@ public:
         const std::wstring& indentUnit = L"    ",
         const std::wstring& lineIndent = L"",
         bool isCss = false,
-        size_t* pCursorOffset = nullptr
+        size_t* pCursorOffset = nullptr,
+        bool isJsx = false
+    );
+
+    /**
+     * @brief Wraps selected text with an Emmet abbreviation (supports per-line `*` wrapping).
+     */
+    static std::wstring WrapWithAbbreviation(
+        const std::wstring& selectedText,
+        const std::wstring& abbr,
+        const std::wstring& indentUnit = L"    ",
+        const std::wstring& lineIndent = L"",
+        bool isJsx = false
+    );
+
+    /**
+     * @brief Balances HTML/JSX/XML tag selection inward or outward around [selStartOffset, selEndOffset].
+     */
+    [[nodiscard]] static TextRange BalanceTagRange(
+        const std::wstring& docText,
+        size_t selStartOffset,
+        size_t selEndOffset,
+        bool outward
     );
 
     /**

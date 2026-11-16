@@ -9,7 +9,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <string>
+#include <vector>
 #include <cstdint>
 
 namespace phide::app {
@@ -193,10 +195,49 @@ struct AppConfig {
 
     bool debugBreakpointsEverywhere = false;
     bool debugFloatingToolbar = true;
+    bool coverageShowGutter = true;
+    bool markdownSyncScroll = true;
     bool dbAutoDiscoverServers = true;
     int dbQueryTimeoutSec = 15;
     bool liveServerAutoOpenBrowser = true;
     std::wstring liveServerRoot = L"/";
+    std::wstring editorRulers = L"off";                  ///< Comma-separated column rulers (e.g., "80", "80, 120") or "off".
+
+    /**
+     * @brief Parses `editorRulers` into sorted unique positive column numbers (capped at 8 guides).
+     */
+    [[nodiscard]] std::vector<int> ParseEditorRulers() const {
+        std::vector<int> cols;
+        if (editorRulers.empty() || editorRulers == L"off" || editorRulers == L"none") {
+            return cols;
+        }
+        int current = -1;
+        bool isNegative = false;
+        auto flushToken = [&]() {
+            if (!isNegative && current > 0 && current <= 500) {
+                if (std::find(cols.begin(), cols.end(), current) == cols.end() && cols.size() < 8) {
+                    cols.push_back(current);
+                }
+            }
+            current = -1;
+            isNegative = false;
+        };
+        for (wchar_t ch : editorRulers) {
+            if (ch >= L'0' && ch <= L'9') {
+                if (current < 0) current = 0;
+                if (current <= 500) {
+                    current = current * 10 + (ch - L'0');
+                }
+            } else if (ch == L'-' && current < 0) {
+                isNegative = true;
+            } else {
+                flushToken();
+            }
+        }
+        flushToken();
+        std::sort(cols.begin(), cols.end());
+        return cols;
+    }
 
     // --- Floating Prompt Bar Metrics ---
     int promptBarWidth  = 540;  ///< Width of the bottom floating AI prompt pill.

@@ -40,6 +40,7 @@ enum class TerminalShellType {
 enum class DebugAction {
     None,
     Continue,  ///< Continue execution (F5)
+    Pause,     ///< Pause running target (F6)
     StepOver,  ///< Step over next instruction (F10)
     StepInto,  ///< Step into function call (F11)
     StepOut,   ///< Step out of current function (Shift+F11)
@@ -376,6 +377,10 @@ public:
     void StartLiveServerSession(const std::wstring& localUrl, const std::wstring& networkUrl, const std::wstring& filePath = L"", const std::wstring& fileName = L"");
     void StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot);
     void TerminateServerSession(const std::wstring& projectRoot);
+    void RunWorkspaceTaskTab(const std::wstring& taskLabel, const std::wstring& command, const std::wstring& workingDir, bool focusTab = true);
+    bool StopWorkspaceTaskTab(const std::wstring& taskLabel);
+    bool IsWorkspaceTaskRunning(const std::wstring& taskLabel) const;
+    DWORD GetWorkspaceTaskExitCode(const std::wstring& taskLabel) const;
     [[nodiscard]] bool HasServerError(const std::wstring& projectRoot = L"") const;
     [[nodiscard]] std::wstring GetServerErrorText(const std::wstring& projectRoot = L"") const;
     [[nodiscard]] TerminalTab* FindServerTab(const std::wstring& projectRoot);
@@ -452,6 +457,13 @@ public:
     void UpdateDapBreakpoints(const std::vector<phide::dev::DapBreakpoint>& bps);
     [[nodiscard]] phide::dev::DapClient& GetDapClient() noexcept { return m_dap; }
     [[nodiscard]] const phide::dev::DapClient& GetDapClient() const noexcept { return m_dap; }
+    [[nodiscard]] bool IsDebugPaused() const noexcept { return !m_useDapBackend || m_dap.IsPaused(); }
+    void DiscardDeviceResources();
+    void SetBreakpointsSnapshot(const std::vector<phide::dev::DapBreakpoint>& bps);
+    [[nodiscard]] const std::vector<phide::dev::DapBreakpoint>& GetBreakpointsSnapshot() const noexcept { return m_activeDapBreakpoints; }
+    void SetOnToggleBreakpoint(std::function<void(const std::wstring& filePath, int line1Based, bool enabled)> cb) { m_onToggleBreakpoint = std::move(cb); }
+    void SetOnRemoveBreakpoint(std::function<void(const std::wstring& filePath, int line1Based)> cb) { m_onRemoveBreakpoint = std::move(cb); }
+    void SetOnJumpToDebugLocation(std::function<void(const std::wstring& filePath, int line1Based)> cb) { m_onJumpToDebugLocation = std::move(cb); }
 
     // Direct2D Rendering
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -650,12 +662,44 @@ private:
     std::function<void(const std::wstring&, int)> m_onDebugPaused;
     std::function<void()> m_onDebugResumed;
     std::function<void()> m_onDebugEnded;
+    std::function<void(const std::wstring&, int, bool)> m_onToggleBreakpoint;
+    std::function<void(const std::wstring&, int)> m_onRemoveBreakpoint;
+    std::function<void(const std::wstring&, int)> m_onJumpToDebugLocation;
     D2D1_RECT_F m_debugContinueBounds{};
     D2D1_RECT_F m_debugStepOverBounds{};
     D2D1_RECT_F m_debugStepIntoBounds{};
     D2D1_RECT_F m_debugStepOutBounds{};
     D2D1_RECT_F m_debugRestartBounds{};
     D2D1_RECT_F m_debugStopBounds{};
+    D2D1_RECT_F m_debugPauseBounds{};
+    struct DebugBpHit {
+        std::wstring filePath;
+        int line1Based = 1;
+        bool currentlyEnabled = true;
+        D2D1_RECT_F checkBounds{};
+        D2D1_RECT_F rowBounds{};
+        D2D1_RECT_F delBounds{};
+    };
+    std::vector<DebugBpHit> m_debugBpHits;
+    std::atomic<bool> m_isDestroying{ false };
+    ID2D1RenderTarget* m_pCachedDebugRT = nullptr;
+    bool m_cachedDebugDark = true;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgToolbarBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgStopBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgRestartBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgStepBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgContinueBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgPauseBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgDimBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgSecBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgAccentBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgGreenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgRedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgAmberBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgCyanBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgBtnBrush;
+    void EnsureDebugBrushes(ID2D1RenderTarget* pRT, const Theme& theme);
     DebugAction m_hoveredDebugAction = DebugAction::None;
     D2D1_RECT_F m_clearConsoleBtnBounds{};
     bool m_hoverClearConsole = false;

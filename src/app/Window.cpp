@@ -738,6 +738,8 @@ constexpr BoolSettingBinding kBoolSettingBindings[] = {
     { L"git.showInlineBlame",                   L"gitShowInlineBlame",             &app::AppConfig::gitShowInlineBlame,             true  },
     { L"git.decorations.enabled",               L"gitExplorerDecorations",         &app::AppConfig::gitExplorerDecorations,         true  },
     { L"debug.allowBreakpointsEverywhere",      L"debugBreakpointsEverywhere",     &app::AppConfig::debugBreakpointsEverywhere,     true  },
+    { L"coverage.showGutter",                   L"coverageShowGutter",             &app::AppConfig::coverageShowGutter,             true  },
+    { L"markdown.syncScroll",                   L"markdownSyncScroll",             &app::AppConfig::markdownSyncScroll,             true  },
     { L"debug.showSubSessionsInToolBar",        L"debugFloatingToolbar",           &app::AppConfig::debugFloatingToolbar,           true  },
     { L"database.autoDiscoverServers",          L"dbAutoDiscoverServers",          &app::AppConfig::dbAutoDiscoverServers,          true  },
     { L"liveServer.autoOpenBrowser",            L"liveServerAutoOpenBrowser",      &app::AppConfig::liveServerAutoOpenBrowser,      true  },
@@ -764,6 +766,7 @@ constexpr StringSettingBinding kStringSettingBindings[] = {
     { L"terminal.integrated.shell.windows", L"terminalDefaultShell",  &app::AppConfig::terminalDefaultShell,     true,  false },
     { L"terminal.integrated.cursorStyle",L"terminalCursorStyle",      &app::AppConfig::terminalCursorStyle,      true,  false },
     { L"liveServer.root",                L"liveServerRoot",           &app::AppConfig::liveServerRoot,           true,  false },
+    { L"editor.rulers",                  L"editorRulers",             &app::AppConfig::editorRulers,             true,  false },
 };
 
 constexpr IntSettingBinding kIntSettingBindings[] = {
@@ -1328,6 +1331,23 @@ void Window::SaveSessionState() {
     for (size_t fi = 0; fi < foldedEntries.size(); ++fi) {
         out << L"    \"" << EscapeJson(foldedEntries[fi]) << L"\"" << (fi + 1 < foldedEntries.size() ? L"," : L"") << L"\n";
     }
+    out << L"  ],\n";
+    out << L"  \"pinnedDocs\": [\n";
+    std::vector<std::wstring> pinnedEntries;
+    for (const auto& grp : m_editorGroups) {
+        for (const auto& doc : grp.docs) {
+            if (!doc.isPinned) continue;
+            if (doc.isSpecialView && !doc.viewType.empty()) {
+                if (doc.viewType == L"markdown_preview") continue;
+                pinnedEntries.push_back(L"special:" + doc.viewType);
+            } else if (!doc.filePath.empty()) {
+                pinnedEntries.push_back(doc.filePath);
+            }
+        }
+    }
+    for (size_t pi = 0; pi < pinnedEntries.size(); ++pi) {
+        out << L"    \"" << EscapeJson(pinnedEntries[pi]) << L"\"" << (pi + 1 < pinnedEntries.size() ? L"," : L"") << L"\n";
+    }
     out << L"  ]\n";
     out << L"}\n";
     out.flush();
@@ -1590,6 +1610,7 @@ void Window::LoadSessionState() {
     std::vector<std::wstring> recentPaths;
     std::vector<std::wstring> openDocPaths;
     std::unordered_map<std::wstring, std::set<size_t>> savedFoldedDocs;
+    std::vector<std::wstring> savedPinnedDocs;
 
     struct SavedGroup {
         int activeDocIdx = 0;
@@ -1853,6 +1874,8 @@ void Window::LoadSessionState() {
             currentArray = L"recentPaths";
         } else if (line.find(L"\"foldedDocs\"") != std::wstring::npos) {
             currentArray = L"foldedDocs";
+        } else if (line.find(L"\"pinnedDocs\"") != std::wstring::npos) {
+            currentArray = L"pinnedDocs";
         } else if (line.find(L"]") != std::wstring::npos) {
             currentArray.clear();
         } else if (!currentArray.empty()) {
@@ -1866,6 +1889,8 @@ void Window::LoadSessionState() {
                     expandedDirs.insert(val);
                 } else if (currentArray == L"recentPaths") {
                     recentPaths.push_back(val);
+                } else if (currentArray == L"pinnedDocs") {
+                    savedPinnedDocs.push_back(val);
                 } else if (currentArray == L"foldedDocs") {
                     size_t pipe = val.rfind(L'|');
                     if (pipe != std::wstring::npos && pipe > 0) {
@@ -1929,10 +1954,26 @@ void Window::LoadSessionState() {
     m_editor.ResetCharWidth();
     PushCustomLspServerPaths();
 
-    // Check if launched as a freshly clean new window (Ctrl+Shift+N / File > New Window)
+    // Check if launched as a freshly clean new window (--new-window) or detached editor window (--detach <path>)
     LPCWSTR cmdLine = GetCommandLineW();
     bool isNewWindowClean = (cmdLine && wcsstr(cmdLine, L"--new-window") != nullptr);
-    if (isNewWindowClean) {
+    std::wstring detachHandoffPath;
+    if (cmdLine) {
+        if (const wchar_t* dp = wcsstr(cmdLine, L"--detach")) {
+            dp += 8;
+            while (*dp == L' ' || *dp == L'\t') ++dp;
+            if (*dp == L'"') {
+                ++dp;
+                const wchar_t* endQ = wcschr(dp, L'"');
+                if (endQ && endQ > dp) detachHandoffPath.assign(dp, endQ);
+            } else if (*dp) {
+                const wchar_t* endSp = dp;
+                while (*endSp && *endSp != L' ' && *endSp != L'\t') ++endSp;
+                if (endSp > dp) detachHandoffPath.assign(dp, endSp);
+            }
+        }
+    }
+    if (isNewWindowClean || !detachHandoffPath.empty()) {
         m_isCleanNewWindow = true;
     }
 
@@ -1989,6 +2030,9 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"heatmap", L"Activity Heatmap");
                 } else if (vType == L"test_explorer") {
                     OpenSpecialView(L"test_explorer", L"Test Explorer");
+                } else if (vType == L"task_runner") {
+                    RefreshWorkspaceTasks();
+                    OpenSpecialView(L"task_runner", L"Task Runner");
                 } else if (vType == L"sql_console") {
                     OpenSpecialView(L"sql_console", L"SQL Query Console");
                 } else if (vType == L"snippet_editor") {
@@ -2057,6 +2101,49 @@ void Window::LoadSessionState() {
                 GetActiveGroup().activeDocIdx = savedActiveDocIdx;
             }
         }
+
+        // Apply restored tab pin flags and cluster pinned tabs at the front of each group
+        if (!savedPinnedDocs.empty()) {
+            auto isKeyPinned = [&](const editor::OpenDocument& d) {
+                std::wstring key = (d.isSpecialView && !d.viewType.empty()) ? (L"special:" + d.viewType) : d.filePath;
+                if (key.empty()) return false;
+                for (const auto& pk : savedPinnedDocs) {
+                    if (_wcsicmp(pk.c_str(), key.c_str()) == 0) return true;
+                }
+                return false;
+            };
+            for (auto& grp : m_editorGroups) {
+                std::wstring activeKey;
+                if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                    const auto& ad = grp.docs[grp.activeDocIdx];
+                    activeKey = (ad.isSpecialView && !ad.viewType.empty()) ? (L"special:" + ad.viewType) : ad.filePath;
+                }
+                for (auto& d : grp.docs) {
+                    if (isKeyPinned(d)) d.isPinned = true;
+                }
+                std::stable_partition(grp.docs.begin(), grp.docs.end(), [](const editor::OpenDocument& d) {
+                    return d.isPinned;
+                });
+                if (!activeKey.empty()) {
+                    for (size_t di = 0; di < grp.docs.size(); ++di) {
+                        std::wstring k = (grp.docs[di].isSpecialView && !grp.docs[di].viewType.empty())
+                                       ? (L"special:" + grp.docs[di].viewType) : grp.docs[di].filePath;
+                        if (_wcsicmp(k.c_str(), activeKey.c_str()) == 0) {
+                            grp.activeDocIdx = static_cast<int>(di);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    } else if (!detachHandoffPath.empty()) {
+        // Detached editor window: keep workspace drawer minimal and open the handed-off editor immediately
+        m_drawer.CloseFolder();
+        m_editorGroups.resize(1);
+        m_editorGroups[0].docs.clear();
+        m_editorGroups[0].activeDocIdx = -1;
+        m_focusedGroupIdx = 0;
+        ApplyDetachHandoffFile(detachHandoffPath);
     } else {
         // Clean new window: no open folder, no open document tabs, freshly clean with preserved theme & recents
         m_drawer.CloseFolder();
@@ -2835,7 +2922,7 @@ void Window::DoOpenFile() {
 
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
-    if (m_autoSave) {
+    if (ShouldAutoSaveOnFocusChange()) {
         FlushPendingAutoSaves();
     }
 
@@ -3110,7 +3197,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 newDoc.diffOriginalBuffer.SetLines(newDoc.buffer.GetLines());
             }
             ComputeDiffHunks(newDoc);
-            if (m_config.enableGitLens) {
+            if (m_config.enableGitLens || m_config.gitShowInlineBlame) {
                 newDoc.gitBlameLoaded = false;
             }
         } else {
@@ -3124,6 +3211,36 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
             CalculateImportCosts(newDoc);
             RefreshMergeConflicts(newDoc);
+
+            // Attach modular structured viewer state cleanly with bounded memory limits
+            std::wstring docExtLower = std::filesystem::path(resolvedPath).extension().wstring();
+            for (auto& ch : docExtLower) ch = static_cast<wchar_t>(towlower(ch));
+            auto prefMode = ui::StructuredViewRenderer::DetectModeForExtension(docExtLower);
+            if (prefMode == ui::StructuredViewMode::CsvTable) {
+                auto sv = std::make_shared<ui::StructuredViewerState>();
+                sv->mode = ui::StructuredViewMode::CsvTable;
+                sv->filePath = resolvedPath;
+                if (!newDoc.buffer.IsMemoryMappedReadOnly() &&
+                    sv->ParseCsvText(newDoc.buffer.GetText(), docExtLower == L".tsv" ? L'\t' : L'\0')) {
+                    sv->isActive = true;
+                }
+                newDoc.structuredView = std::move(sv);
+            } else if (prefMode == ui::StructuredViewMode::LogTail) {
+                auto sv = std::make_shared<ui::StructuredViewerState>();
+                sv->mode = ui::StructuredViewMode::LogTail;
+                sv->filePath = resolvedPath;
+                sv->logFollow = true;
+                sv->ReloadLogTailFromFile(resolvedPath, true);
+                sv->isActive = true;
+                newDoc.structuredView = std::move(sv);
+            } else if (prefMode == ui::StructuredViewMode::JsonTree) {
+                // Lazy parse on toggle so editing JSON text stays zero-overhead until requested
+                auto sv = std::make_shared<ui::StructuredViewerState>();
+                sv->mode = ui::StructuredViewMode::JsonTree;
+                sv->filePath = resolvedPath;
+                sv->isActive = false;
+                newDoc.structuredView = std::move(sv);
+            }
         }
     }
 
@@ -3161,6 +3278,21 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary && !openedDoc.buffer.IsMemoryMappedReadOnly()) {
             StartLspForDocumentAsync(resolvedPath, openedDoc.buffer.GetText());
             ScheduleLangIntelAndLintersAsync(&openedDoc, m_config.enableExternalLinters);
+        }
+        if (!openedDoc.isSpecialView && !openedDoc.filePath.empty()) {
+            phide::dev::WorkspaceCoverageSummary covCopy;
+            {
+                std::lock_guard<std::mutex> lk(m_covMutex);
+                covCopy = m_workspaceCoverage;
+            }
+            if (covCopy.loaded) {
+                if (const auto* fc = phide::dev::CoverageReportEngine::FindCoverageForFile(covCopy, openedDoc.filePath)) {
+                    openedDoc.gutterCoverage.clear();
+                    for (const auto& lh : fc->lineHits) {
+                        openedDoc.gutterCoverage[lh.first] = (lh.second > 0);
+                    }
+                }
+            }
         }
     }
 
@@ -3937,6 +4069,9 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                 if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
             } else if (viewType == L"test_explorer") {
                 RefreshWorkspaceTestsAsync();
+                RefreshWorkspaceCoverageAsync();
+            } else if (viewType == L"task_runner") {
+                RefreshWorkspaceTasks();
             } else if (viewType == L"sql_console") {
                 std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
                 int mysqlPort = m_mysqlPort;
@@ -3994,6 +4129,9 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     } else if (viewType == L"test_explorer") {
         RefreshWorkspaceTestsAsync();
+        RefreshWorkspaceCoverageAsync();
+    } else if (viewType == L"task_runner") {
+        RefreshWorkspaceTasks();
     } else if (viewType == L"sql_console") {
         std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
         int mysqlPort = m_mysqlPort;
@@ -4359,16 +4497,20 @@ void Window::CloseTerminalEditorTab() {
     }
 }
 
-void Window::CloseDocument(int groupIdx, int docIdx) {
+void Window::CloseDocument(int groupIdx, int docIdx, bool forceClosePinned) {
     if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
     auto& group = m_editorGroups[groupIdx];
     if (docIdx < 0 || docIdx >= static_cast<int>(group.docs.size())) return;
-    if (m_autoSave) {
+    if (!forceClosePinned && group.docs[docIdx].isPinned) {
+        return;
+    }
+    if (ShouldAutoSaveOnFocusChange()) {
         FlushPendingAutoSaves();
     }
 
     auto& closingDoc = group.docs[docIdx];
-    if (m_autoSave && !closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty && !closingDoc.hasExternalDiskConflict) {
+    if (ShouldAutoSaveOnFocusChange() && !closingDoc.isSpecialView && !closingDoc.filePath.empty() && closingDoc.isDirty && !closingDoc.hasExternalDiskConflict) {
+        ApplySaveHooks(closingDoc, closingDoc.filePath, false);
         s_lastInternalAutoSaveTick = GetTickCount64();
         if (closingDoc.buffer.SaveToFile(closingDoc.filePath)) {
             s_lastInternalAutoSaveTick = GetTickCount64();
@@ -4442,6 +4584,10 @@ void Window::CloseDocument(int groupIdx, int docIdx) {
     }
 
     bool wasTerminalTab = (group.docs[docIdx].isSpecialView && group.docs[docIdx].viewType == L"terminal");
+    if (group.docs[docIdx].structuredView) {
+        group.docs[docIdx].structuredView->ClearCachedBuffers();
+    }
+    group.docs[docIdx].ClearDocumentCaches();
     group.docs.erase(group.docs.begin() + docIdx);
     if (wasTerminalTab && !HasAnyTerminalEditorTab()) {
         if (m_terminal.GetDockPosition() == 1) {
@@ -4504,6 +4650,453 @@ void Window::CloseDocument(int index) {
     CloseDocument(m_focusedGroupIdx, index);
 }
 
+void Window::ToggleTabPin(int groupIdx, int docIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& grp = m_editorGroups[groupIdx];
+    if (docIdx < 0 || docIdx >= static_cast<int>(grp.docs.size())) return;
+
+    auto movedDoc = std::move(grp.docs[docIdx]);
+    bool nowPinned = !movedDoc.isPinned;
+    movedDoc.isPinned = nowPinned;
+    bool wasActive = (grp.activeDocIdx == docIdx);
+    std::wstring activeId;
+    if (!wasActive && grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+        activeId = (grp.docs[grp.activeDocIdx].isSpecialView && !grp.docs[grp.activeDocIdx].viewType.empty())
+                 ? (L"special:" + grp.docs[grp.activeDocIdx].viewType) : grp.docs[grp.activeDocIdx].filePath;
+    }
+    grp.docs.erase(grp.docs.begin() + docIdx);
+
+    size_t insertPos = 0;
+    while (insertPos < grp.docs.size() && grp.docs[insertPos].isPinned) {
+        ++insertPos;
+    }
+    grp.docs.insert(grp.docs.begin() + insertPos, std::move(movedDoc));
+
+    if (wasActive) {
+        grp.activeDocIdx = static_cast<int>(insertPos);
+    } else if (!activeId.empty()) {
+        for (size_t i = 0; i < grp.docs.size(); ++i) {
+            std::wstring id = (grp.docs[i].isSpecialView && !grp.docs[i].viewType.empty())
+                            ? (L"special:" + grp.docs[i].viewType) : grp.docs[i].filePath;
+            if (_wcsicmp(id.c_str(), activeId.c_str()) == 0) {
+                grp.activeDocIdx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    SaveSessionState();
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseOtherTabs(int groupIdx, int keepDocIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& grp = m_editorGroups[groupIdx];
+    if (keepDocIdx < 0 || keepDocIdx >= static_cast<int>(grp.docs.size())) return;
+
+    std::wstring keepKey = (grp.docs[keepDocIdx].isSpecialView && !grp.docs[keepDocIdx].viewType.empty())
+                         ? (L"special:" + grp.docs[keepDocIdx].viewType) : grp.docs[keepDocIdx].filePath;
+    for (int i = static_cast<int>(grp.docs.size()) - 1; i >= 0; --i) {
+        if (i == keepDocIdx) continue;
+        if (grp.docs[i].isPinned) continue;
+        std::wstring k = (grp.docs[i].isSpecialView && !grp.docs[i].viewType.empty())
+                       ? (L"special:" + grp.docs[i].viewType) : grp.docs[i].filePath;
+        if (k == keepKey && i == keepDocIdx) continue;
+        CloseDocument(groupIdx, i, false);
+    }
+}
+
+void Window::CloseTabsToRight(int groupIdx, int fromDocIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& grp = m_editorGroups[groupIdx];
+    if (fromDocIdx < 0 || fromDocIdx >= static_cast<int>(grp.docs.size())) return;
+    for (int i = static_cast<int>(grp.docs.size()) - 1; i > fromDocIdx; --i) {
+        if (!grp.docs[i].isPinned) {
+            CloseDocument(groupIdx, i, false);
+        }
+    }
+}
+
+void Window::CloseSavedTabs(int groupIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& grp = m_editorGroups[groupIdx];
+    for (int i = static_cast<int>(grp.docs.size()) - 1; i >= 0; --i) {
+        if (!grp.docs[i].isPinned && !grp.docs[i].isDirty) {
+            CloseDocument(groupIdx, i, false);
+        }
+    }
+}
+
+void Window::SplitTabRight(int groupIdx, int docIdx) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return;
+    auto& grp = m_editorGroups[groupIdx];
+    if (docIdx < 0 || docIdx >= static_cast<int>(grp.docs.size())) return;
+    m_focusedGroupIdx = groupIdx;
+    grp.activeDocIdx = docIdx;
+    SplitEditor();
+}
+
+bool Window::DetachEditorToNewWindow(int groupIdx, int docIdx, bool moveOut) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return false;
+    auto& grp = m_editorGroups[groupIdx];
+    if (docIdx < 0 || docIdx >= static_cast<int>(grp.docs.size())) return false;
+
+    const auto& doc = grp.docs[docIdx];
+    std::wstring sessionPath = GetSessionFilePath();
+    std::filesystem::path handoffDir = sessionPath.empty()
+        ? std::filesystem::temp_directory_path()
+        : std::filesystem::path(sessionPath).parent_path();
+    std::error_code ec;
+    std::filesystem::create_directories(handoffDir, ec);
+
+    // Opportunistically clean orphaned handoff files (>1 hour old)
+    auto nowClock = std::filesystem::file_time_type::clock::now();
+    for (const auto& entry : std::filesystem::directory_iterator(handoffDir, ec)) {
+        std::wstring fn = entry.path().filename().wstring();
+        if (fn.rfind(L"phide_detach_", 0) == 0 && entry.is_regular_file(ec)) {
+            auto age = nowClock - entry.last_write_time(ec);
+            if (age > std::chrono::hours(1)) {
+                std::filesystem::remove(entry.path(), ec);
+            }
+        }
+    }
+
+    std::wstring handoffName = L"phide_detach_" + std::to_wstring(GetCurrentProcessId()) +
+                               L"_" + std::to_wstring(GetTickCount64()) + L".json";
+    std::filesystem::path handoffFile = handoffDir / handoffName;
+
+    auto cur = doc.buffer.GetCursor();
+    bool includeContent = (doc.isDirty || doc.filePath.empty()) &&
+                          !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary &&
+                          !doc.buffer.IsMemoryMappedReadOnly();
+
+    std::wstring json;
+    json.reserve(includeContent ? 4096u : 512u);
+    json += L"{\n";
+    json += L"  \"filePath\": \"" + EscapeJson(doc.filePath) + L"\",\n";
+    json += L"  \"fileName\": \"" + EscapeJson(doc.fileName) + L"\",\n";
+    json += L"  \"viewType\": \"" + EscapeJson(doc.isSpecialView ? doc.viewType : L"") + L"\",\n";
+    json += L"  \"isPinned\": " + std::wstring(doc.isPinned ? L"true" : L"false") + L",\n";
+    json += L"  \"isDirty\": " + std::wstring(doc.isDirty ? L"true" : L"false") + L",\n";
+    json += L"  \"cursorLine\": " + std::to_wstring(cur.line) + L",\n";
+    json += L"  \"cursorCol\": " + std::to_wstring(cur.col) + L",\n";
+    json += L"  \"scrollLine\": " + std::to_wstring(doc.scrollLine) + L"\n";
+    json += L"}\n";
+
+    std::ofstream out(handoffFile, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    std::string utf8Header = WideToUtf8Str(json);
+    out.write(utf8Header.data(), static_cast<std::streamsize>(utf8Header.size()));
+    if (includeContent) {
+        // Append clean length-delimited payload after NUL marker to keep JSON header O(1) line parseable without massive escape expansion
+        std::string utf8Body = WideToUtf8Str(doc.buffer.GetText());
+        out.put('\0');
+        out.write(utf8Body.data(), static_cast<std::streamsize>(utf8Body.size()));
+    }
+    out.flush();
+    out.close();
+
+    wchar_t szExe[MAX_PATH] = { 0 };
+    GetModuleFileNameW(nullptr, szExe, MAX_PATH);
+    std::wstring args = L"--windowed --detach \"" + handoffFile.wstring() + L"\"";
+    ShellExecuteW(nullptr, L"open", szExe, args.c_str(), nullptr, SW_SHOWNORMAL);
+
+    if (moveOut) {
+        CloseDocument(groupIdx, docIdx, true);
+    }
+    return true;
+}
+
+bool Window::ApplyDetachHandoffFile(const std::wstring& handoffPath) {
+    if (handoffPath.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(handoffPath, ec)) return false;
+
+    std::string raw;
+    {
+        std::ifstream in(handoffPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        raw.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    }
+    std::filesystem::remove(handoffPath, ec);
+    if (raw.empty()) return false;
+
+    size_t nulPos = raw.find('\0');
+    std::wstring headerW = Utf8ToWideStr(nulPos == std::string::npos ? raw : raw.substr(0, nulPos));
+    bool hasBodyPayload = (nulPos != std::string::npos);
+    std::wstring bodyW = hasBodyPayload ? Utf8ToWideStr(raw.substr(nulPos + 1)) : L"";
+
+    std::wstring filePath, fileName, viewType;
+    bool isPinned = false, isDirty = false;
+    size_t cursorLine = 0, cursorCol = 0, scrollLine = 0;
+
+    std::wstringstream ss(headerW);
+    std::wstring line;
+    while (std::getline(ss, line)) {
+        auto extractStr = [&](const wchar_t* key, std::wstring& dst) {
+            if (line.find(key) != std::wstring::npos) {
+                auto colon = line.find(L':');
+                if (colon != std::wstring::npos) {
+                    auto q1 = line.find(L'"', colon);
+                    auto q2 = line.rfind(L'"');
+                    if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1) {
+                        dst = UnescapeJson(line.substr(q1 + 1, q2 - q1 - 1));
+                    }
+                }
+            }
+        };
+        extractStr(L"\"filePath\"", filePath);
+        extractStr(L"\"fileName\"", fileName);
+        extractStr(L"\"viewType\"", viewType);
+        if (line.find(L"\"isPinned\"") != std::wstring::npos) isPinned = (line.find(L"true") != std::wstring::npos);
+        else if (line.find(L"\"isDirty\"") != std::wstring::npos) isDirty = (line.find(L"true") != std::wstring::npos);
+        else if (line.find(L"\"cursorLine\"") != std::wstring::npos) {
+            auto c = line.find(L':');
+            if (c != std::wstring::npos) cursorLine = static_cast<size_t>(_wcstoui64(line.substr(c + 1).c_str(), nullptr, 10));
+        } else if (line.find(L"\"cursorCol\"") != std::wstring::npos) {
+            auto c = line.find(L':');
+            if (c != std::wstring::npos) cursorCol = static_cast<size_t>(_wcstoui64(line.substr(c + 1).c_str(), nullptr, 10));
+        } else if (line.find(L"\"scrollLine\"") != std::wstring::npos) {
+            auto c = line.find(L':');
+            if (c != std::wstring::npos) scrollLine = static_cast<size_t>(_wcstoui64(line.substr(c + 1).c_str(), nullptr, 10));
+        }
+    }
+
+    if (!viewType.empty()) {
+        OpenSpecialView(viewType, fileName.empty() ? viewType : fileName);
+    } else if (!filePath.empty() && std::filesystem::exists(filePath, ec)) {
+        OpenFileDocument(filePath, false);
+    } else {
+        editor::OpenDocument untitledDoc;
+        untitledDoc.fileName = fileName.empty() ? L"Untitled-1" : fileName;
+        untitledDoc.isPreview = false;
+        if (m_editorGroups.empty()) m_editorGroups.push_back(editor::EditorGroup{});
+        m_editorGroups[0].docs.push_back(std::move(untitledDoc));
+        m_editorGroups[0].activeDocIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+        m_focusedGroupIdx = 0;
+    }
+
+    if (auto* pDoc = GetActiveDoc()) {
+        if (hasBodyPayload) {
+            pDoc->buffer.SetText(bodyW);
+            pDoc->isDirty = isDirty;
+            pDoc->diagnostics = editor::SyntaxValidator::Validate(
+                pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+        }
+        pDoc->isPinned = isPinned;
+        pDoc->buffer.SetCursor(cursorLine, cursorCol);
+        pDoc->scrollLine = scrollLine;
+    }
+    return true;
+}
+
+void Window::ToggleActiveStructuredViewer(bool openHexIfBinary) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isFolderView) return;
+
+    if (pDoc->isUnsupportedBinary) {
+        if (!pDoc->structuredView) {
+            if (!openHexIfBinary || pDoc->filePath.empty()) return;
+            pDoc->structuredView = std::make_shared<ui::StructuredViewerState>();
+            pDoc->structuredView->mode = ui::StructuredViewMode::HexBinary;
+            pDoc->structuredView->LoadHexPage(pDoc->filePath, 0);
+            pDoc->structuredView->isActive = true;
+        } else {
+            pDoc->structuredView->isActive = !pDoc->structuredView->isActive;
+            if (pDoc->structuredView->isActive && pDoc->structuredView->hexWindowBytes.empty()) {
+                pDoc->structuredView->LoadHexPage(pDoc->filePath, pDoc->structuredView->hexWindowOffset);
+            }
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (!pDoc->structuredView) {
+        std::wstring ext = std::filesystem::path(pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath).extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        auto prefMode = ui::StructuredViewRenderer::DetectModeForExtension(ext);
+        if (prefMode == ui::StructuredViewMode::None) {
+            if (pDoc->filePath.empty() || !openHexIfBinary) return;
+            prefMode = ui::StructuredViewMode::HexBinary;
+        }
+        pDoc->structuredView = std::make_shared<ui::StructuredViewerState>();
+        pDoc->structuredView->mode = prefMode;
+        pDoc->structuredView->filePath = pDoc->filePath;
+    }
+
+    bool nextActive = !pDoc->structuredView->isActive;
+    if (nextActive) {
+        if (pDoc->structuredView->mode == ui::StructuredViewMode::CsvTable && pDoc->structuredView->csvHeaders.empty()) {
+            if (!pDoc->buffer.IsMemoryMappedReadOnly()) {
+                pDoc->structuredView->ParseCsvText(pDoc->buffer.GetText());
+            } else {
+                pDoc->structuredView->csvTooLarge = true;
+            }
+        } else if (pDoc->structuredView->mode == ui::StructuredViewMode::JsonTree && pDoc->structuredView->jsonNodes.empty()) {
+            if (!pDoc->buffer.IsMemoryMappedReadOnly()) {
+                pDoc->structuredView->ParseJsonText(pDoc->buffer.GetText());
+            } else {
+                pDoc->structuredView->jsonTooLarge = true;
+            }
+        } else if (pDoc->structuredView->mode == ui::StructuredViewMode::LogTail && pDoc->structuredView->logTailLines.empty()) {
+            if (!pDoc->filePath.empty()) {
+                pDoc->structuredView->ReloadLogTailFromFile(pDoc->filePath, true);
+            }
+        } else if (pDoc->structuredView->mode == ui::StructuredViewMode::HexBinary && pDoc->structuredView->hexWindowBytes.empty()) {
+            if (!pDoc->filePath.empty()) {
+                pDoc->structuredView->LoadHexPage(pDoc->filePath, 0);
+            }
+        }
+    }
+    pDoc->structuredView->isActive = nextActive;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+static std::wstring ExtractWordUnderCursor(const editor::OpenDocument& doc);
+static std::vector<editor::OpenDocContentSnapshot> CollectOpenDocSnapshots(const std::vector<editor::EditorGroup>& groups);
+
+void Window::DoTypeHierarchy() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+    std::wstring sym = ExtractWordUnderCursor(*pDoc);
+    if (sym.empty()) return;
+    auto pos = pDoc->buffer.GetCursor();
+
+    std::vector<ui::EditorCanvas::PeekItemEntry> items;
+    if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
+        std::vector<lsp::TypeHierarchyItem> roots;
+        if (m_lsp.PrepareTypeHierarchy(pDoc->filePath, pos.line, pos.col, roots) && !roots.empty()) {
+            std::vector<lsp::TypeHierarchyItem> supers, subs;
+            m_lsp.RequestTypeHierarchySupertypes(pDoc->filePath, roots[0], supers);
+            m_lsp.RequestTypeHierarchySubtypes(pDoc->filePath, roots[0], subs);
+            for (const auto& s : supers) {
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = s.filePath;
+                e.line = s.line;
+                e.col = s.col;
+                e.label = L"[Super] " + s.name;
+                e.detail = s.detail.empty()
+                    ? (std::filesystem::path(s.filePath).filename().wstring() + L":" + std::to_wstring(s.line + 1))
+                    : s.detail;
+                items.push_back(std::move(e));
+                if (items.size() >= 64) break;
+            }
+            for (const auto& s : subs) {
+                if (items.size() >= 128) break;
+                ui::EditorCanvas::PeekItemEntry e;
+                e.filePath = s.filePath;
+                e.line = s.line;
+                e.col = s.col;
+                e.label = L"[Sub] " + s.name;
+                e.detail = s.detail.empty()
+                    ? (std::filesystem::path(s.filePath).filename().wstring() + L":" + std::to_wstring(s.line + 1))
+                    : s.detail;
+                items.push_back(std::move(e));
+            }
+        }
+    }
+
+    if (items.empty()) {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        auto snaps = CollectOpenDocSnapshots(m_editorGroups);
+        std::wstring activePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+        auto refs = editor::FindWorkspaceReferences(sym, wsRoot, m_drawer.GetIgnoreEngine(), snaps, 300, 120);
+
+        auto isIdentChar = [](wchar_t ch) {
+            return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+                   (ch >= L'0' && ch <= L'9') || ch == L'_';
+        };
+        auto findWholeWord = [&](const std::wstring& hay, const std::wstring& needle) -> size_t {
+            if (needle.empty()) return std::wstring::npos;
+            size_t p = 0;
+            while ((p = hay.find(needle, p)) != std::wstring::npos) {
+                bool leftOk = (p == 0) || !isIdentChar(hay[p - 1]);
+                bool rightOk = (p + needle.size() >= hay.size()) || !isIdentChar(hay[p + needle.size()]);
+                if (leftOk && rightOk) return p;
+                p += needle.size();
+            }
+            return std::wstring::npos;
+        };
+
+        std::unordered_set<std::wstring> seenLabels;
+        const auto& activeLines = pDoc->buffer.GetLines();
+        for (size_t li = 0; li < activeLines.size(); ++li) {
+            const auto& ln = activeLines[li];
+            if (ln.find(sym) == std::wstring::npos) continue;
+            bool isDecl = (ln.find(L"class ") != std::wstring::npos ||
+                           ln.find(L"struct ") != std::wstring::npos ||
+                           ln.find(L"interface ") != std::wstring::npos);
+            if (!isDecl) continue;
+            size_t symPos = findWholeWord(ln, sym);
+            if (symPos == std::wstring::npos) continue;
+            // Check base list right of ':' or 'extends'/'implements' or '('
+            size_t clausePos = std::wstring::npos;
+            for (const wchar_t* kw : { L"extends", L"implements", L":", L"(" }) {
+                size_t p = ln.find(kw, symPos + sym.size());
+                if (p != std::wstring::npos && (clausePos == std::wstring::npos || p < clausePos)) {
+                    clausePos = p + wcslen(kw);
+                }
+            }
+            if (clausePos == std::wstring::npos) continue;
+            std::wstring baseSlice = ln.substr(clausePos);
+            size_t cut = baseSlice.find_first_of(L"{;)");
+            if (cut != std::wstring::npos) baseSlice.resize(cut);
+            size_t tokStart = 0;
+            while (tokStart < baseSlice.size()) {
+                while (tokStart < baseSlice.size() && !isIdentChar(baseSlice[tokStart])) ++tokStart;
+                if (tokStart >= baseSlice.size()) break;
+                size_t tokEnd = tokStart;
+                while (tokEnd < baseSlice.size() && isIdentChar(baseSlice[tokEnd])) ++tokEnd;
+                std::wstring tok = baseSlice.substr(tokStart, tokEnd - tokStart);
+                tokStart = tokEnd;
+                if (tok == L"public" || tok == L"protected" || tok == L"private" ||
+                    tok == L"virtual" || tok == L"object" || tok == L"extends" ||
+                    tok == L"implements" || tok == sym) {
+                    continue;
+                }
+                if (seenLabels.insert(L"S:" + tok).second) {
+                    ui::EditorCanvas::PeekItemEntry e;
+                    e.label = L"[Super] " + tok;
+                    e.filePath = activePath;
+                    e.line = li;
+                    e.col = symPos;
+                    auto defs = m_symbolIndex.FindDefinitions(tok, activePath);
+                    if (!defs.empty()) {
+                        e.filePath = defs[0].filePath;
+                        e.line = defs[0].line;
+                        e.col = defs[0].col;
+                    }
+                    e.detail = std::filesystem::path(e.filePath).filename().wstring() + L":" + std::to_wstring(e.line + 1);
+                    items.push_back(std::move(e));
+                }
+            }
+        }
+
+        static const std::wregex kDeclInheritRe(LR"(\b(?:class|struct|interface)\s+([A-Za-z_][A-Za-z0-9_]*)\b[^;{]*(?::|extends|implements|\())");
+        for (const auto& r : refs) {
+            std::wsmatch m;
+            if (std::regex_search(r.previewLine, m, kDeclInheritRe)) {
+                std::wstring derived = m[1].str();
+                if (derived != sym && seenLabels.insert(L"D:" + derived).second) {
+                    ui::EditorCanvas::PeekItemEntry e;
+                    e.filePath = r.filePath;
+                    e.line = r.line;
+                    e.col = r.col;
+                    e.label = L"[Sub] " + derived;
+                    e.detail = std::filesystem::path(r.filePath).filename().wstring() + L":" + std::to_wstring(r.line + 1);
+                    items.push_back(std::move(e));
+                    if (items.size() >= 64) break;
+                }
+            }
+        }
+    }
+
+    m_editor.OpenPeekPanel(ui::EditorCanvas::PeekMode::TypeHierarchy,
+                           L"Type Hierarchy: " + sym,
+                           std::to_wstring(items.size()) + L" type edge(s)",
+                           pos.line, std::move(items));
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::DoOpenFolder() {
     ComPtr<IFileOpenDialog> pFolderDlg;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFolderDlg)))) {
@@ -4551,6 +5144,8 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     StartWorkspaceWatcher(path);
     phide::plugin::PluginManager::Instance().LoadWorkspacePlugins(path);
     phide::plugin::PluginManager::Instance().ApplyAppConfigMods(m_config);
+    PushCustomLspServerPaths();
+    m_snippetManager.ImportVscodeWorkspaceSnippets(path);
     m_theme.SetThemeMode(m_theme.GetThemeMode());
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onWorkspaceOpen", path);
 
@@ -5167,6 +5762,27 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         OpenSpecialView(L"test_explorer", L"Test Explorer");
         return;
     }
+    if (actionCmd == L"cmd_rerun_failed_tests") {
+        OpenSpecialView(L"test_explorer", L"Test Explorer");
+        RunFailedWorkspaceTestsAsync();
+        return;
+    }
+    if (actionCmd == L"cmd_refresh_coverage") {
+        RefreshWorkspaceCoverageAsync();
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_coverage_gutter") {
+        m_config.coverageShowGutter = !m_config.coverageShowGutter;
+        SaveSessionState();
+        if (m_config.coverageShowGutter) RefreshWorkspaceCoverageAsync();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_task_runner") {
+        RefreshWorkspaceTasks();
+        OpenSpecialView(L"task_runner", L"Task Runner");
+        return;
+    }
     if (actionCmd == L"cmd_sql_console") {
         OpenSpecialView(L"sql_console", L"SQL Query Console");
         return;
@@ -5211,6 +5827,66 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    if (actionCmd == L"cmd_git_next_change") {
+        DoNavigateDiffHunk(false);
+        return;
+    }
+    if (actionCmd == L"cmd_git_prev_change") {
+        DoNavigateDiffHunk(true);
+        return;
+    }
+    if (actionCmd == L"cmd_git_stage_selected") {
+        StageSelectedGitRange();
+        return;
+    }
+    if (actionCmd == L"cmd_git_toggle_inline_diff") {
+        m_config.gitDiffSideBySide = !m_config.gitDiffSideBySide;
+        SaveCurrentWorkspaceSetting(L"git.diffSideBySide");
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_git_next_conflict") {
+        if (auto* pDoc = GetActiveDoc()) {
+            OpenMergeConflictNext(*pDoc);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_git_open_3way_merge") {
+        if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isDiffView) {
+            OpenThreeWayMergeDocument(pDoc->filePath);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_git_file_history") {
+        OpenActiveFileHistory();
+        return;
+    }
+    if (actionCmd == L"cmd_git_interactive_rebase") {
+        m_config.isDrawerOpen = true;
+        m_drawer.OpenInteractiveRebaseModal();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_git_bisect_start") {
+        m_config.isDrawerOpen = true;
+        m_drawer.OpenBisectStartModal();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_git_bisect_good") { m_drawer.RunGitBisectActionAsync(L"good"); return; }
+    if (actionCmd == L"cmd_git_bisect_bad") { m_drawer.RunGitBisectActionAsync(L"bad"); return; }
+    if (actionCmd == L"cmd_git_bisect_reset") { m_drawer.RunGitBisectActionAsync(L"reset"); return; }
+    if (actionCmd == L"cmd_git_add_worktree") {
+        m_config.isDrawerOpen = true;
+        m_drawer.OpenAddWorktreeModal();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    if (actionCmd == L"cmd_git_update_submodules") {
+        m_drawer.UpdateSubmodulesAsync();
+        return;
+    }
     if (actionCmd == L"cmd_find_inline") { DoFind(); return; }
     if (actionCmd == L"cmd_replace_inline") { DoReplace(); return; }
     if (actionCmd == L"cmd_peek_definition") { DoPeekDefinition(); return; }
@@ -5231,6 +5907,38 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     if (actionCmd == L"cmd_clear_bookmarks") { DoClearBookmarks(); return; }
     if (actionCmd == L"cmd_focus_group_next") { FocusAdjacentEditorGroup(true); return; }
     if (actionCmd == L"cmd_focus_group_prev") { FocusAdjacentEditorGroup(false); return; }
+    if (actionCmd == L"cmd_case_upper") { DoTransformCase(editor::CaseTransform::Upper); return; }
+    if (actionCmd == L"cmd_case_lower") { DoTransformCase(editor::CaseTransform::Lower); return; }
+    if (actionCmd == L"cmd_case_title") { DoTransformCase(editor::CaseTransform::Title); return; }
+    if (actionCmd == L"cmd_case_camel") { DoTransformCase(editor::CaseTransform::Camel); return; }
+    if (actionCmd == L"cmd_case_snake") { DoTransformCase(editor::CaseTransform::Snake); return; }
+    if (actionCmd == L"cmd_case_kebab") { DoTransformCase(editor::CaseTransform::Kebab); return; }
+    if (actionCmd == L"cmd_emmet_wrap") { DoEmmetWrapWithAbbreviation(); return; }
+    if (actionCmd == L"cmd_emmet_balance_outward") { DoEmmetBalance(true); return; }
+    if (actionCmd == L"cmd_emmet_balance_inward") { DoEmmetBalance(false); return; }
+    if (actionCmd == L"cmd_toggle_sticky_scroll") { m_config.enableStickyScroll = !m_config.enableStickyScroll; SaveSessionState(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_toggle_zen_mode") { ToggleZenMode(); return; }
+    if (actionCmd == L"cmd_toggle_centered_layout") { m_config.centeredLayout = !m_config.centeredLayout; SaveSessionState(); InvalidateRect(m_hwnd, nullptr, FALSE); return; }
+    if (actionCmd == L"cmd_tab_toggle_pin") {
+        if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+            ToggleTabPin(m_focusedGroupIdx, m_editorGroups[m_focusedGroupIdx].activeDocIdx);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_move_editor_new_window") {
+        if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+            DetachEditorToNewWindow(m_focusedGroupIdx, m_editorGroups[m_focusedGroupIdx].activeDocIdx, true);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_copy_editor_new_window") {
+        if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
+            DetachEditorToNewWindow(m_focusedGroupIdx, m_editorGroups[m_focusedGroupIdx].activeDocIdx, false);
+        }
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_structured_viewer") { ToggleActiveStructuredViewer(true); return; }
+    if (actionCmd == L"cmd_type_hierarchy") { DoTypeHierarchy(); return; }
     if (phide::plugin::PluginManager::Instance().ExecuteCommand(actionCmd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -5299,23 +6007,7 @@ void Window::DoSaveAll() {
                     doc.isDirty = false;
                     anySaved = true;
                 } else {
-                    if (m_config.formatOnSave && !doc.isSpecialView && !doc.isDiffView) {
-                        std::wstring ext = std::filesystem::path(doc.filePath).extension().wstring();
-                        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-                        if (editor::FormatEngine::CanFormat(ext)) {
-                            int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-                            std::wstring rawText = doc.buffer.GetText();
-                            std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
-                            if (!formatted.empty() && formatted != rawText) {
-                                doc.buffer.PushUndo();
-                                doc.buffer.SetText(formatted);
-                            }
-                        }
-                    }
-                    if (!doc.buffer.IsMemoryMappedReadOnly()) {
-                        auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(doc.filePath);
-                        workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(doc.buffer, ecRules);
-                    }
+                    ApplySaveHooks(doc, doc.filePath, true);
                     s_lastInternalAutoSaveTick = GetTickCount64();
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
@@ -5339,20 +6031,11 @@ void Window::DoSaveAll() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-namespace {
-    struct PendingGitBlameResult {
-        std::wstring docPath;
-        std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo> blameMap;
-    };
-    std::mutex g_gitBlameMutex;
-    std::vector<PendingGitBlameResult> g_pendingGitBlames;
-}
-
 void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
     {
-        std::lock_guard<std::mutex> lock(g_gitBlameMutex);
-        if (!g_pendingGitBlames.empty()) {
-            for (auto& res : g_pendingGitBlames) {
+        std::lock_guard<std::mutex> lock(m_blameMutex);
+        if (!m_pendingGitBlames.empty()) {
+            for (auto& res : m_pendingGitBlames) {
                 for (auto& g : m_editorGroups) {
                     for (auto& d : g.docs) {
                         if (d.filePath == res.docPath) {
@@ -5361,10 +6044,14 @@ void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
                     }
                 }
             }
-            g_pendingGitBlames.clear();
+            m_pendingGitBlames.clear();
         }
     }
-    if (!m_config.enableGitLens || doc.gitBlameLoaded || doc.filePath.empty() || !m_drawer.IsGitRepo()) return;
+    if ((!m_config.enableGitLens && !m_config.gitShowInlineBlame) ||
+        doc.gitBlameLoaded || doc.filePath.empty() || !m_drawer.IsGitRepo() ||
+        m_isDestroying.load()) {
+        return;
+    }
     doc.gitBlameLoaded = true;
     std::wstring relPath = doc.filePath;
     if (m_drawer.HasOpenFolder()) {
@@ -5374,14 +6061,249 @@ void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
     }
     std::wstring docPath = doc.filePath;
     HWND hwnd = m_hwnd;
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
     std::thread([this, relPath, docPath, hwnd]() {
+        struct Guard {
+            Window* self;
+            ~Guard() {
+                std::lock_guard<std::mutex> lk(self->m_bgWorkersMutex);
+                if (self->m_activeBgWorkers > 0) --self->m_activeBgWorkers;
+                self->m_bgWorkersCv.notify_all();
+            }
+        } guard{ this };
+        if (m_isDestroying.load()) return;
         std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo> blameMap;
         m_drawer.ComputeGitBlame(relPath, blameMap);
+        if (m_isDestroying.load()) return;
         {
-            std::lock_guard<std::mutex> lock(g_gitBlameMutex);
-            g_pendingGitBlames.push_back({ docPath, std::move(blameMap) });
+            std::lock_guard<std::mutex> lock(m_blameMutex);
+            m_pendingGitBlames.push_back({ docPath, std::move(blameMap) });
         }
-        if (hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
+        if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
+    }).detach();
+}
+
+void Window::DoNavigateDiffHunk(bool backward) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView) return;
+
+    if (!pDoc->isDiffView && pDoc->diffHunks.empty() && !pDoc->filePath.empty() &&
+        m_drawer.IsGitRepo() && m_drawer.HasOpenFolder() && pDoc->buffer.GetLineCount() <= 5000) {
+        std::error_code relEc;
+        auto rel = std::filesystem::relative(pDoc->filePath, m_drawer.GetOpenFolderPath(), relEc);
+        if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+            std::wstring head = m_drawer.GetGitFileContent(rel.wstring());
+            if (!head.empty()) {
+                pDoc->diffOriginalBuffer.SetText(head);
+                ComputeDiffHunks(*pDoc);
+            }
+        }
+    }
+
+    std::vector<size_t> targets;
+    const size_t totalLines = pDoc->buffer.GetLineCount();
+    if (!pDoc->diffHunks.empty()) {
+        targets.reserve(pDoc->diffHunks.size());
+        for (const auto& h : pDoc->diffHunks) {
+            size_t t = (totalLines > 0) ? (std::min)(h.rightStart, totalLines - 1) : 0;
+            if (targets.empty() || targets.back() != t) targets.push_back(t);
+        }
+    } else {
+        std::set<size_t> allLines = pDoc->diffAddedLines;
+        allLines.insert(pDoc->diffModifiedLines.begin(), pDoc->diffModifiedLines.end());
+        allLines.insert(pDoc->diffDeletedGutterMarkers.begin(), pDoc->diffDeletedGutterMarkers.end());
+        size_t prev = static_cast<size_t>(-2);
+        for (size_t ln : allLines) {
+            if (ln != prev + 1) {
+                size_t t = (totalLines > 0) ? (std::min)(ln, totalLines - 1) : 0;
+                targets.push_back(t);
+            }
+            prev = ln;
+        }
+    }
+    if (targets.empty()) return;
+
+    const size_t curLine = pDoc->buffer.GetCursor().line;
+    size_t chosenIdx = 0;
+    if (!backward) {
+        chosenIdx = 0;
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (targets[i] > curLine) { chosenIdx = i; break; }
+        }
+    } else {
+        chosenIdx = targets.size() - 1;
+        for (size_t i = targets.size(); i-- > 0;) {
+            if (targets[i] < curLine) { chosenIdx = i; break; }
+        }
+    }
+
+    const size_t target = targets[chosenIdx];
+    pDoc->buffer.SetCursor(target, 0);
+    pDoc->ClearSelection();
+    pDoc->scrollLine = (target > 5) ? (target - 5) : 0;
+    if (pDoc->diffPeekActive && !pDoc->diffHunks.empty()) {
+        pDoc->diffPeekLine = target;
+        pDoc->diffPeekHunkIdx = (std::min)(chosenIdx, pDoc->diffHunks.size() - 1);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::StageSelectedGitRange() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || !m_drawer.IsGitRepo() || !m_drawer.HasOpenFolder()) return;
+
+    std::wstring relPath = pDoc->diffRepoRelPath;
+    if (relPath.empty() && !pDoc->filePath.empty()) {
+        std::error_code relEc;
+        auto rel = std::filesystem::relative(pDoc->filePath, m_drawer.GetOpenFolderPath(), relEc);
+        if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+            relPath = rel.generic_wstring();
+        }
+    }
+    if (relPath.empty()) return;
+
+    if (!pDoc->isDiffView && pDoc->diffHunks.empty() && pDoc->buffer.GetLineCount() <= 5000) {
+        std::wstring head = m_drawer.GetGitFileContent(relPath);
+        if (!head.empty()) {
+            pDoc->diffOriginalBuffer.SetText(head);
+            ComputeDiffHunks(*pDoc);
+        }
+    }
+    if (pDoc->diffHunks.empty()) return;
+
+    size_t selStart = pDoc->buffer.GetCursor().line;
+    size_t selEnd = selStart;
+    if (pDoc->HasSelection()) {
+        size_t sl = 0, sc = 0, el = 0, ec = 0;
+        pDoc->GetSelectionRange(sl, sc, el, ec);
+        selStart = sl;
+        selEnd = (ec == 0 && el > sl) ? (el - 1) : el;
+    }
+
+    std::vector<git::GitWorkflowEngine::DiffHunkPatchSpec> specs;
+    specs.reserve(pDoc->diffHunks.size());
+    for (const auto& h : pDoc->diffHunks) {
+        git::GitWorkflowEngine::DiffHunkPatchSpec s;
+        s.leftStart = h.leftStart;
+        s.leftCount = h.leftCount;
+        s.rightStart = h.rightStart;
+        s.rightCount = h.rightCount;
+        specs.push_back(s);
+    }
+
+    std::string patch = git::GitWorkflowEngine::BuildUnifiedSelectedRangePatch(
+        relPath, pDoc->diffOriginalBuffer, pDoc->buffer, specs, selStart, selEnd, pDoc->isDiffStagedMode);
+    if (!patch.empty()) {
+        m_drawer.StageHunkPatchAsync(patch, pDoc->isDiffStagedMode);
+    }
+}
+
+void Window::OpenDiffPeekAtLine(editor::OpenDocument& doc, size_t bufferLine) {
+    if (doc.diffHunks.empty() && !doc.filePath.empty() && m_drawer.IsGitRepo() &&
+        m_drawer.HasOpenFolder() && doc.buffer.GetLineCount() <= 5000) {
+        std::error_code relEc;
+        auto rel = std::filesystem::relative(doc.filePath, m_drawer.GetOpenFolderPath(), relEc);
+        if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+            std::wstring head = m_drawer.GetGitFileContent(rel.wstring());
+            if (!head.empty()) {
+                doc.diffOriginalBuffer.SetText(head);
+                ComputeDiffHunks(doc);
+            }
+        }
+    }
+    if (doc.diffHunks.empty()) return;
+
+    size_t bestIdx = 0;
+    size_t bestDist = static_cast<size_t>(-1);
+    for (size_t i = 0; i < doc.diffHunks.size(); ++i) {
+        const auto& h = doc.diffHunks[i];
+        size_t spanEnd = h.rightStart + (std::max<size_t>)(1, h.rightCount);
+        if (bufferLine >= h.rightStart && bufferLine < spanEnd) {
+            bestIdx = i;
+            bestDist = 0;
+            break;
+        }
+        size_t d = (bufferLine < h.rightStart) ? (h.rightStart - bufferLine) : (bufferLine - spanEnd + 1);
+        if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+        }
+    }
+
+    doc.diffPeekActive = true;
+    doc.diffPeekHunkIdx = bestIdx;
+    doc.diffPeekLine = bufferLine;
+}
+
+void Window::OpenMergeConflictNext(editor::OpenDocument& doc) {
+    RefreshMergeConflicts(doc);
+    if (doc.mergeConflicts.empty()) return;
+    const size_t curLine = doc.buffer.GetCursor().line;
+    size_t targetLine = doc.mergeConflicts[0].startLine;
+    for (const auto& c : doc.mergeConflicts) {
+        if (c.startLine > curLine) {
+            targetLine = c.startLine;
+            break;
+        }
+    }
+    doc.buffer.SetCursor(targetLine, 0);
+    doc.ClearSelection();
+    doc.scrollLine = (targetLine > 4) ? (targetLine - 4) : 0;
+}
+
+void Window::OpenActiveFileHistory() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->filePath.empty()) return;
+    std::wstring targetPath = pDoc->filePath;
+    OpenSpecialView(L"file_history", L"History: " + pDoc->fileName);
+    RefreshActiveFileHistoryAsync(targetPath);
+}
+
+void Window::RefreshActiveFileHistoryAsync(const std::wstring& fullPath) {
+    if (fullPath.empty() || !m_drawer.IsGitRepo() || !m_drawer.HasOpenFolder() || m_isDestroying.load()) {
+        return;
+    }
+    std::wstring repoDir = m_drawer.GetOpenFolderPath();
+    std::error_code relEc;
+    std::filesystem::path relP = std::filesystem::relative(fullPath, m_drawer.GetOpenFolderPath(), relEc);
+    if (relEc || relP.empty()) return;
+    std::wstring relPath = relP.wstring();
+    for (auto& c : relPath) if (c == L'\\') c = L'/';
+
+    m_editor.SetFileHistoryTarget(fullPath, relPath, true);
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+    HWND hwnd = m_hwnd;
+    std::thread([this, fullPath, relPath, repoDir, hwnd]() {
+        struct Guard {
+            Window* self;
+            ~Guard() {
+                std::lock_guard<std::mutex> lk(self->m_bgWorkersMutex);
+                if (self->m_activeBgWorkers > 0) --self->m_activeBgWorkers;
+                self->m_bgWorkersCv.notify_all();
+            }
+        } guard{ this };
+        if (m_isDestroying.load()) return;
+        auto res = ui::RunGitCmd(
+            L"log --follow -n 100 --format=%h%x1f%cr%x1f%an%x1f%s%x1f%H -- \"" + relPath + L"\"", repoDir);
+        if (m_isDestroying.load()) return;
+        auto entries = git::GitWorkflowEngine::ParseFollowHistoryLog(res.output, 100);
+        {
+            std::lock_guard<std::mutex> lk(m_fileHistoryMutex);
+            m_pendingFileHistory.push_back({ fullPath, relPath, std::move(entries) });
+        }
+        if (!m_isDestroying.load() && hwnd && IsWindow(hwnd)) {
+            PostMessageW(hwnd, WM_USER + 232, 0, 0);
+        }
     }).detach();
 }
 
@@ -5468,7 +6390,7 @@ void Window::DoRevertFile() {
 }
 
 void Window::DoCloseEditor() {
-    if (m_autoSave) {
+    if (ShouldAutoSaveOnFocusChange()) {
         FlushPendingAutoSaves();
     }
     auto& group = GetActiveGroup();
@@ -5994,13 +6916,54 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
     if (!key.empty()) {
         s_pendingModifiedKeys.insert(key);
         s_editDebouncePending = true;
-        int delay = m_autoSave ? ((m_config.autoSaveDelay > 0) ? m_config.autoSaveDelay : 1000) : 300;
+        int delay = ShouldAutoSaveAfterDelay() ? ((m_config.autoSaveDelay > 0) ? m_config.autoSaveDelay : 1000) : 300;
         s_editDebounceTargetTime = GetTickCount64() + delay;
     }
 }
 
+static std::wstring GetDocumentLowerExtension(const editor::OpenDocument* pDoc);
+
+void Window::ApplySaveHooks(editor::OpenDocument& doc, const std::wstring& targetPath, bool allowFormatter) {
+    if (doc.isSpecialView || doc.isDiffView || doc.buffer.IsMemoryMappedReadOnly() || targetPath.empty()) return;
+    if (allowFormatter && m_config.formatOnSave) {
+        std::wstring ext = std::filesystem::path(targetPath).extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        if (editor::FormatEngine::CanFormat(ext)) {
+            int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+            auto origPos = doc.buffer.GetCursor();
+            std::wstring rawText = doc.buffer.GetText();
+            std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
+            if (!formatted.empty() && formatted != rawText) {
+                doc.buffer.PushUndo();
+                doc.buffer.SetText(formatted);
+                size_t newLineCount = doc.buffer.GetLineCount();
+                size_t clampedLine = (std::min)(origPos.line, newLineCount > 0 ? newLineCount - 1 : 0);
+                size_t lineLen = doc.buffer.GetLine(clampedLine).length();
+                doc.buffer.SetCursor(clampedLine, (std::min)(origPos.col, lineLen));
+            }
+        }
+    }
+    workspace::EditorConfigRules ecRules{};
+    if (m_config.enableEditorConfig) {
+        ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(targetPath);
+        workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(doc.buffer, ecRules);
+    }
+    if (!ecRules.hasTrimTrailingWhitespace && m_config.trimTrailingWhitespace && doc.buffer.GetLineCount() > 0) {
+        if (doc.buffer.TrimTrailingWhitespace(0, doc.buffer.GetLineCount() - 1)) {
+            auto cur = doc.buffer.GetCursor();
+            size_t lineLen = doc.buffer.GetLine(cur.line).length();
+            if (cur.col > lineLen) {
+                doc.buffer.SetCursor(cur.line, lineLen);
+            }
+        }
+    }
+    if (!ecRules.hasInsertFinalNewline && m_config.insertFinalNewline && !doc.buffer.HasTrailingNewline()) {
+        doc.buffer.SetHasTrailingNewline(true);
+    }
+}
+
 void Window::FlushPendingAutoSaves() {
-    if (!m_autoSave) return;
+    if (!m_autoSave || m_config.autoSave == L"off") return;
     bool anySaved = false;
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
@@ -6010,10 +6973,7 @@ void Window::FlushPendingAutoSaves() {
                     doc.isDirty = false;
                     anySaved = true;
                 } else if (!doc.isSpecialView && !doc.hasExternalDiskConflict) {
-                    if (!doc.buffer.IsMemoryMappedReadOnly()) {
-                        auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(doc.filePath);
-                        workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(doc.buffer, ecRules);
-                    }
+                    ApplySaveHooks(doc, doc.filePath, false);
                     s_lastInternalAutoSaveTick = GetTickCount64();
                     if (doc.buffer.SaveToFile(doc.filePath)) {
                         s_lastInternalAutoSaveTick = GetTickCount64();
@@ -6131,13 +7091,38 @@ void Window::DoPaste() {
                     std::wstring clip(pText);
                     GlobalUnlock(hData);
                     CloseClipboard();
-                    if (pDoc->HasAnyMultiCursor()) {
-                        pDoc->MultiCursorPaste(clip);
-                    } else {
+                    const bool singleCursorPaste = !pDoc->HasAnyMultiCursor();
+                    size_t pasteStartLine = 0, pasteStartCol = 0;
+                    if (singleCursorPaste) {
                         if (pDoc->HasSelection()) {
-                            pDoc->DeleteSelection();
+                            size_t eL = 0, eC = 0;
+                            pDoc->GetSelectionRange(pasteStartLine, pasteStartCol, eL, eC);
+                        } else {
+                            auto cur = pDoc->buffer.GetCursor();
+                            pasteStartLine = cur.line;
+                            pasteStartCol = cur.col;
                         }
-                        pDoc->buffer.InsertText(clip);
+                    }
+                    pDoc->MultiCursorPaste(clip);
+                    if (singleCursorPaste && m_config.formatOnPaste && !pDoc->isDiffView &&
+                        pDoc->buffer.GetLineCount() > 0 && pDoc->buffer.GetLineCount() <= 20000) {
+                        auto pasteEnd = pDoc->buffer.GetCursor();
+                        std::wstring ext = GetDocumentLowerExtension(pDoc);
+                        std::wstring rawText = pDoc->buffer.GetText();
+                        int tabSize = GetDocTabSize(pDoc);
+                        bool insertSpaces = GetDocInsertSpaces(pDoc);
+                        std::wstring formatted = editor::FormatEngine::FormatRange(
+                            rawText, pasteStartLine, pasteStartCol, pasteEnd.line, pasteEnd.col,
+                            ext, tabSize, pDoc->filePath, insertSpaces);
+                        if (!formatted.empty() && formatted != rawText) {
+                            pDoc->buffer.PushUndo();
+                            pDoc->buffer.SetText(formatted);
+                            pDoc->ClearSelection();
+                            size_t newLC = pDoc->buffer.GetLineCount();
+                            size_t cLine = (std::min)(pasteEnd.line, newLC > 0 ? newLC - 1 : 0);
+                            size_t cCol = (std::min)(pasteEnd.col, pDoc->buffer.GetLine(cLine).length());
+                            pDoc->buffer.SetCursor(cLine, cCol);
+                        }
                     }
                     EnsureCursorVisible();
                     MarkDocumentModified(pDoc);
@@ -6516,6 +7501,7 @@ void Window::RunManualGarbageCollection() {
             doc.secondarySelections.shrink_to_fit();
             doc.diffHunks.shrink_to_fit();
             doc.diffHunkActionHits.shrink_to_fit();
+            doc.gutterDiffBarHits.shrink_to_fit();
             doc.mergeConflicts.shrink_to_fit();
             doc.mergePaneActionHits.shrink_to_fit();
             doc.cssPeek.lines.shrink_to_fit();
@@ -6798,6 +7784,37 @@ void Window::DoEmmetExpand() {
             MarkDocumentModified(pDoc);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+    }
+}
+
+void Window::DoEmmetWrapWithAbbreviation() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->buffer.IsMemoryMappedReadOnly()) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+    m_bpPromptMode = InlinePromptMode::EmmetWrap;
+    m_bpPromptInput = L"div";
+    m_bpPromptOpen = true;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::DoEmmetBalance(bool outward) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->buffer.IsMemoryMappedReadOnly()) return;
+    if (pDoc->BalanceEmmetTag(outward)) {
+        EnsureCursorVisible();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::DoTransformCase(editor::CaseTransform mode) {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->buffer.IsMemoryMappedReadOnly()) return;
+    if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) return;
+    if (pDoc->TransformSelectionCase(mode)) {
+        EnsureCursorVisible();
+        MarkDocumentModified(pDoc);
+        if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
@@ -8201,10 +9218,45 @@ void Window::LoadBookmarksForWorkspace() {
     }
 }
 
+namespace {
+void ApplySingleMatchReplacement(editor::Buffer& buffer, size_t lineIdx, size_t col, size_t len, const std::wstring& rep) {
+    if (lineIdx >= buffer.GetLineCount()) return;
+    const std::wstring lineStr = buffer.GetLine(lineIdx);
+    if (col + len > lineStr.length()) return;
+    const std::wstring prefix = lineStr.substr(0, col);
+    const std::wstring suffix = lineStr.substr(col + len);
+    if (rep.find(L'\n') == std::wstring::npos && rep.find(L'\r') == std::wstring::npos) {
+        buffer.SetLine(lineIdx, prefix + rep + suffix);
+        return;
+    }
+    std::vector<std::wstring> sliceLines;
+    std::wstring clean;
+    clean.reserve(rep.size());
+    for (wchar_t c : rep) {
+        if (c != L'\r') clean.push_back(c);
+    }
+    size_t pos = 0;
+    while (true) {
+        size_t nl = clean.find(L'\n', pos);
+        if (nl == std::wstring::npos) {
+            sliceLines.push_back(clean.substr(pos));
+            break;
+        }
+        sliceLines.push_back(clean.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    if (sliceLines.empty()) sliceLines.push_back(L"");
+    sliceLines.front() = prefix + sliceLines.front();
+    sliceLines.back() += suffix;
+    buffer.ReplaceLineSlice(lineIdx, 1, sliceLines);
+}
+} // namespace
+
 void Window::ApplyInlineFindReplaceCurrent() {
     auto* pDoc = GetActiveDoc();
     auto& fb = m_editor.GetFindBar();
     if (!pDoc || pDoc->isSpecialView || !fb.isOpen || fb.query.empty()) return;
+    if (pDoc->buffer.IsMemoryMappedReadOnly()) return;
     if (fb.matches.empty()) m_editor.RecomputeInlineFindMatches(*pDoc);
     if (fb.matches.empty()) return;
     if (fb.currentMatchIdx < 0 || fb.currentMatchIdx >= static_cast<int>(fb.matches.size())) {
@@ -8214,18 +9266,11 @@ void Window::ApplyInlineFindReplaceCurrent() {
     if (m.line >= pDoc->buffer.GetLineCount()) return;
     std::wstring lineStr = pDoc->buffer.GetLine(m.line);
     if (m.col + m.length > lineStr.length()) return;
-    std::wstring matchedText = lineStr.substr(m.col, m.length);
-    std::wstring rep = fb.preserveCase
-        ? editor::ApplyPreserveCase(matchedText, fb.replaceQuery)
-        : fb.replaceQuery;
-    if (fb.useRegex) {
-        std::wstring copy = matchedText;
-        if (editor::ReplaceInLine(copy, fb.query, fb.replaceQuery, fb.matchCase, fb.wholeWord, true, fb.preserveCase)) {
-            rep = std::move(copy);
-        }
-    }
+    std::wstring rep = editor::ExpandSpecificMatchReplacement(
+        lineStr, m.col, m.length, fb.query, fb.replaceQuery,
+        fb.matchCase, fb.wholeWord, fb.useRegex, fb.preserveCase);
     pDoc->buffer.PushUndo();
-    pDoc->buffer.SetLine(m.line, lineStr.substr(0, m.col) + rep + lineStr.substr(m.col + m.length));
+    ApplySingleMatchReplacement(pDoc->buffer, m.line, m.col, m.length, rep);
     MarkDocumentModified(pDoc);
     m_editor.RecomputeInlineFindMatches(*pDoc);
     if (!fb.matches.empty()) {
@@ -8244,6 +9289,7 @@ void Window::ApplyInlineFindReplaceAll() {
     auto* pDoc = GetActiveDoc();
     auto& fb = m_editor.GetFindBar();
     if (!pDoc || pDoc->isSpecialView || !fb.isOpen || fb.query.empty()) return;
+    if (pDoc->buffer.IsMemoryMappedReadOnly()) return;
     m_editor.RecomputeInlineFindMatches(*pDoc);
     if (fb.matches.empty()) return;
 
@@ -8253,17 +9299,10 @@ void Window::ApplyInlineFindReplaceAll() {
         if (m.line >= pDoc->buffer.GetLineCount()) continue;
         std::wstring lineStr = pDoc->buffer.GetLine(m.line);
         if (m.col + m.length > lineStr.length()) continue;
-        std::wstring matchedText = lineStr.substr(m.col, m.length);
-        std::wstring rep = fb.preserveCase
-            ? editor::ApplyPreserveCase(matchedText, fb.replaceQuery)
-            : fb.replaceQuery;
-        if (fb.useRegex) {
-            std::wstring copy = matchedText;
-            if (editor::ReplaceInLine(copy, fb.query, fb.replaceQuery, fb.matchCase, fb.wholeWord, true, fb.preserveCase)) {
-                rep = std::move(copy);
-            }
-        }
-        pDoc->buffer.SetLine(m.line, lineStr.substr(0, m.col) + rep + lineStr.substr(m.col + m.length));
+        std::wstring rep = editor::ExpandSpecificMatchReplacement(
+            lineStr, m.col, m.length, fb.query, fb.replaceQuery,
+            fb.matchCase, fb.wholeWord, fb.useRegex, fb.preserveCase);
+        ApplySingleMatchReplacement(pDoc->buffer, m.line, m.col, m.length, rep);
     }
     MarkDocumentModified(pDoc);
     m_editor.RecomputeInlineFindMatches(*pDoc);
@@ -10799,33 +11838,8 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 return;
             }
         }
-        // Format Document on Save (Shift+Alt+F integrated formatting for HTML, CSS, JS, JSON, PHP)
-        if (m_config.formatOnSave && !pDoc->isSpecialView && !pDoc->isDiffView) {
-            std::wstring ext = std::filesystem::path(path).extension().wstring();
-            for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-            if (editor::FormatEngine::CanFormat(ext)) {
-                int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-                std::wstring rawText = pDoc->buffer.GetText();
-                std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
-                if (!formatted.empty() && formatted != rawText) {
-                    pDoc->buffer.PushUndo();
-                    auto curPos = pDoc->buffer.GetCursor();
-                    size_t origLine = curPos.line;
-                    size_t origCol = curPos.col;
-                    pDoc->buffer.SetText(formatted);
-                    size_t newLineCount = pDoc->buffer.GetLineCount();
-                    size_t clampedLine = (std::min)(origLine, newLineCount > 0 ? newLineCount - 1 : 0);
-                    size_t lineLen = pDoc->buffer.GetLine(clampedLine).length();
-                    size_t clampedCol = (std::min)(origCol, lineLen);
-                    pDoc->buffer.SetCursor(clampedLine, clampedCol);
-                    MarkDocumentModified(pDoc);
-                }
-            }
-        }
-        if (!pDoc->buffer.IsMemoryMappedReadOnly()) {
-            auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(path);
-            workspace::WorkspaceConfigEngine::ApplyEditorConfigToBufferForSave(pDoc->buffer, ecRules);
-        }
+        // Apply unified save hooks (formatOnSave, .editorconfig, trimTrailingWhitespace, insertFinalNewline)
+        ApplySaveHooks(*pDoc, path, true);
         s_lastInternalAutoSaveTick = GetTickCount64();
         if (pDoc->buffer.SaveToFile(path)) {
             s_lastInternalAutoSaveTick = GetTickCount64();
@@ -11301,41 +12315,70 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         });
 
         m_terminal.SetOnDebugEnded([this]() {
-            for (auto& group : m_editorGroups) {
-                for (auto& doc : group.docs) {
-                    doc.debugPausedLine = static_cast<size_t>(-1);
-                }
+            if (m_hwnd && !m_isDestroying.load()) {
+                PostMessageW(m_hwnd, WM_USER + 230, 0, 0);
             }
-            UpdateExecutionButtonStates();
-            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        m_terminal.SetOnDebugResumed([this]() {
+            if (m_hwnd && !m_isDestroying.load()) {
+                PostMessageW(m_hwnd, WM_USER + 230, 1, 0);
+            }
         });
 
         m_terminal.SetOnDebugPaused([this](const std::wstring& filePath, int lineNum1) {
-            if (lineNum1 <= 0) return;
-            size_t line0 = static_cast<size_t>(lineNum1 - 1);
-            std::wstring normPath = filePath;
-            for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
-            std::filesystem::path pTarget(normPath);
+            if (lineNum1 <= 0 || m_isDestroying.load()) return;
+            {
+                std::lock_guard<std::mutex> lk(m_debugUiMutex);
+                m_pendingDebugPausedFile = filePath;
+                m_pendingDebugPausedLine = lineNum1;
+                m_hasPendingDebugPaused = true;
+            }
+            if (m_hwnd && !m_isDestroying.load()) {
+                PostMessageW(m_hwnd, WM_USER + 229, 0, 0);
+            }
+        });
 
+        m_terminal.SetOnToggleBreakpoint([this](const std::wstring& filePath, int line1Based, bool enabled) {
+            if (line1Based <= 0) return;
+            size_t line0 = static_cast<size_t>(line1Based - 1);
             for (auto& group : m_editorGroups) {
                 for (auto& doc : group.docs) {
-                    doc.debugPausedLine = static_cast<size_t>(-1);
-                    std::wstring docNorm = doc.filePath.empty() ? doc.fileName : doc.filePath;
-                    for (auto& c : docNorm) { if (c == L'/') c = L'\\'; }
-                    std::filesystem::path pDoc(docNorm);
-
-                    if (_wcsicmp(normPath.c_str(), docNorm.c_str()) == 0 ||
-                        (!pTarget.filename().empty() && _wcsicmp(pTarget.filename().c_str(), pDoc.filename().c_str()) == 0)) {
-                        doc.debugPausedLine = line0;
-                        if (line0 < doc.buffer.GetLineCount()) {
-                            doc.buffer.SetCursor(line0, 0);
-                            if (line0 < doc.scrollLine || line0 > doc.scrollLine + 18) {
-                                doc.scrollLine = (line0 > 5) ? (line0 - 5) : 0;
-                            }
-                        }
+                    if (doc.isSpecialView) continue;
+                    const std::wstring& dp = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                    if (AreRecentPathsEqual(dp, filePath)) {
+                        doc.SetBreakpointEnabled(line0, enabled);
                     }
                 }
             }
+            SyncAllBreakpointsToDebugger();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        m_terminal.SetOnRemoveBreakpoint([this](const std::wstring& filePath, int line1Based) {
+            if (line1Based <= 0) return;
+            size_t line0 = static_cast<size_t>(line1Based - 1);
+            for (auto& group : m_editorGroups) {
+                for (auto& doc : group.docs) {
+                    if (doc.isSpecialView) continue;
+                    const std::wstring& dp = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                    if (AreRecentPathsEqual(dp, filePath)) {
+                        doc.breakpoints.erase(std::remove(doc.breakpoints.begin(), doc.breakpoints.end(), line0),
+                                              doc.breakpoints.end());
+                        doc.RemoveBreakpointCondition(line0);
+                    }
+                }
+            }
+            SyncAllBreakpointsToDebugger();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        });
+
+        m_terminal.SetOnJumpToDebugLocation([this](const std::wstring& filePath, int line1Based) {
+            JumpToDebugFileLine(filePath, line1Based);
+        });
+
+        m_editor.SetOnFloatingDebugAction([this](int dbgActionId) {
+            m_terminal.TriggerDebugAction(static_cast<ui::DebugAction>(dbgActionId));
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         });
 
@@ -11359,8 +12402,22 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_editor.onTestRunAll = [this]() {
             RunWorkspaceTestsAsync();
         };
+        m_editor.onTestRerunFailed = [this]() {
+            RunFailedWorkspaceTestsAsync();
+        };
         m_editor.onTestRefresh = [this]() {
             RefreshWorkspaceTestsAsync();
+        };
+        m_editor.onToggleCoverageGutter = [this]() {
+            m_config.coverageShowGutter = !m_config.coverageShowGutter;
+            SaveSessionState();
+            if (m_config.coverageShowGutter) {
+                RefreshWorkspaceCoverageAsync();
+            }
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onRefreshCoverage = [this]() {
+            RefreshWorkspaceCoverageAsync();
         };
         m_editor.onTestRunSingle = [this](const phide::dev::TestItem& item) {
             RunWorkspaceTestsAsync(item.name, item.framework, item.filePath);
@@ -11368,6 +12425,37 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_editor.onTestOpenLocation = [this](const std::wstring& filePath, size_t line0) {
             RecordNavCheckpoint();
             JumpToFileAndLocation(filePath, line0, 0);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+
+        // #32 GUI Task Runner Action Wiring
+        m_editor.onTaskRun = [this](const phide::dev::WorkspaceTaskDef& task) {
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            std::wstring cmd = phide::dev::TaskRunnerEngine::FormatCommandLine(task, wsRoot);
+            std::wstring cwd = task.cwd.empty() ? wsRoot : task.cwd;
+            m_terminal.RunWorkspaceTaskTab(task.label, cmd, cwd, true);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onTaskStop = [this](const phide::dev::WorkspaceTaskDef& task) {
+            m_terminal.StopWorkspaceTaskTab(task.label);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onTaskRestart = [this](const phide::dev::WorkspaceTaskDef& task) {
+            m_terminal.StopWorkspaceTaskTab(task.label);
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            std::wstring cmd = phide::dev::TaskRunnerEngine::FormatCommandLine(task, wsRoot);
+            std::wstring cwd = task.cwd.empty() ? wsRoot : task.cwd;
+            m_terminal.RunWorkspaceTaskTab(task.label, cmd, cwd, true);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onIsTaskRunning = [this](const std::wstring& label) {
+            return m_terminal.IsWorkspaceTaskRunning(label);
+        };
+        m_editor.onGetTaskExitCode = [this](const std::wstring& label) {
+            return m_terminal.GetWorkspaceTaskExitCode(label);
+        };
+        m_editor.onTaskRefresh = [this]() {
+            RefreshWorkspaceTasks();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         };
         m_editor.SetSqlNotifyHwnd(m_hwnd);
@@ -11548,6 +12636,18 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_drawer.SetOnGitCommitSucceeded([this]() {
         if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 227, 0, 0);
     });
+    m_drawer.SetOnOpenWorktreeFolder([this](const std::wstring& wtPath) {
+        DoOpenFolderFromPath(wtPath);
+    });
+    m_drawer.SetOnOpenActiveFileHistory([this]() {
+        OpenActiveFileHistory();
+    });
+    m_editor.onFileHistoryRefresh = [this]() {
+        OpenActiveFileHistory();
+    };
+    m_editor.onFileHistoryOpenCommitDiff = [this](const std::wstring& commitHash, const std::wstring& relPath) {
+        OpenCommitDiffDocument(commitHash, relPath);
+    };
 
     // Initialize user snippets engine and adaptive learning engine
     m_snippetManager.Initialize(GetSnippetsConfigPath());
@@ -12182,6 +13282,8 @@ void Window::DiscardDeviceResources() {
     m_editor.DiscardDeviceResources();
     m_header.DiscardDeviceResources();
     m_rail.DiscardDeviceResources();
+    m_drawer.DiscardDeviceResources();
+    m_terminal.DiscardDeviceResources();
     m_pRenderTarget.Reset();
     if (m_popupMenu.IsOpen()) {
         m_popupMenu.Close();
@@ -12268,7 +13370,7 @@ void Window::OnPaint() {
         m_drawer.IsRenaming() || m_drawer.IsCreating() ||
         (m_drawerAnimProgress > 0.001f && (m_drawer.IsGitCommitBoxFocused() || m_drawer.IsSearchFocused()));
 
-    const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float headerH = EffectiveHeaderHeight();
 
     if (!m_terminal.IsOpen() && !m_isTerminalAnimating) {
         m_terminalAnimProgress = 0.0f;
@@ -12651,10 +13753,12 @@ void Window::OnPaint() {
         RenderStatusBar(clientW, clientH);
     }
 
-    // 4. Render Dark Frameless Title Header at Top (with active highlight on Sidebar button when open)
+    // 4. Render Dark Frameless Title Header at Top (hidden in Zen Mode)
     m_header.SetExtensionsActive(m_extensionsPanel.IsOpen());
     UpdateExecutionButtonStates();
-    m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
+    if (!m_config.zenMode) {
+        m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
+    }
 
     // 5. Render Active Popup Dropdown Menu Overlay
     if (m_popupMenu.IsOpen()) {
@@ -13715,7 +14819,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
         // 3. GitLens Status Bar Item (Commit info for current line)
         auto* pActiveDoc = GetActiveDoc();
-        if (pActiveDoc && m_config.enableGitLens) {
+        if (pActiveDoc && (m_config.enableGitLens || m_config.gitShowInlineBlame)) {
             EnsureGitBlameLoaded(*pActiveDoc);
             size_t curLine = pActiveDoc->buffer.GetCursor().line;
             auto itBlame = pActiveDoc->gitBlameMap.find(curLine);
@@ -13831,6 +14935,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     m_rcStatusBarVenvTag = {};
     m_rcStatusBarGraphView = {};
     m_rcStatusBarPrivacyMask = {};
+    m_rcStatusBarStructuredView = {};
     m_currentStatusBarRuntimeId.clear();
 
     auto* curDoc = GetActiveDoc();
@@ -13907,6 +15012,20 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             m_pRenderTarget->DrawText(indStr.c_str(), static_cast<UINT32>(indStr.length()), pFmt, m_rcStatusBarSpaces, textBrush);
         }
         curRightX -= rightPillGap;
+
+        // Word Occurrence Match Count Pill (shown when >= 2 occurrences exist in document)
+        if (curDoc->occurrenceMatchCount > 1 && !curDoc->activeOccurrenceWord.empty()) {
+            std::wstring matchStr = std::to_wstring(curDoc->occurrenceMatchCount) + L" matches";
+            float matchW = measureStatusPillWidth(matchStr, m_config.ScaleF(64.0f));
+            curRightX -= matchW;
+            D2D1_RECT_F rcMatchPill = D2D1::RectF(curRightX, itemY, curRightX + matchW, itemY + itemH);
+            if (pFmt && (m_theme.brushTextMuted || textBrush)) {
+                m_pRenderTarget->DrawText(
+                    matchStr.c_str(), static_cast<UINT32>(matchStr.length()),
+                    pFmt, rcMatchPill, m_theme.brushTextMuted ? m_theme.brushTextMuted.Get() : textBrush);
+            }
+            curRightX -= rightPillGap;
+        }
 
         // Ln, Col (and active multi-cursor / column selection indicator)
         size_t curLine = curDoc->buffer.GetCursor().line + 1;
@@ -14108,6 +15227,54 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
+    // Structured / Hex Viewer Toggle Pill (Hex / CSV Table / JSON Tree / Log Tail <-> Text)
+    if (curDoc && !curDoc->isSpecialView && !curDoc->isImageView && !curDoc->isFolderView) {
+        auto prefMode = ui::StructuredViewMode::None;
+        if (curDoc->structuredView && curDoc->structuredView->mode != ui::StructuredViewMode::None) {
+            prefMode = curDoc->structuredView->mode;
+        } else if (curDoc->isUnsupportedBinary) {
+            prefMode = ui::StructuredViewMode::HexBinary;
+        } else if (!curDoc->filePath.empty()) {
+            prefMode = ui::StructuredViewRenderer::DetectModeForExtension(GetDocumentLowerExtension(curDoc));
+        }
+
+        if (prefMode != ui::StructuredViewMode::None) {
+            const bool isStructuredActive = (curDoc->structuredView && curDoc->structuredView->isActive);
+            const wchar_t* modeTag = L"Text";
+            if (isStructuredActive) {
+                switch (prefMode) {
+                    case ui::StructuredViewMode::HexBinary: modeTag = L"Hex"; break;
+                    case ui::StructuredViewMode::CsvTable:  modeTag = L"Table"; break;
+                    case ui::StructuredViewMode::JsonTree:  modeTag = L"Tree"; break;
+                    case ui::StructuredViewMode::LogTail:   modeTag = L"Tail"; break;
+                    default: break;
+                }
+            }
+            std::wstring viewText = std::wstring(L"View: ") + modeTag;
+            float viewW = measureStatusPillWidth(viewText, m_config.ScaleF(64.0f));
+            curRightX -= (viewW + m_config.ScaleF(8.0f));
+            m_rcStatusBarStructuredView = D2D1::RectF(curRightX, itemY, curRightX + viewW, itemY + itemH);
+            if (isStructuredActive || m_isHoveredStatusBarStructuredView) {
+                D2D1_ROUNDED_RECT rrcView = D2D1::RoundedRect(m_rcStatusBarStructuredView, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> viewBg;
+                D2D1_COLOR_F bgCol = isStructuredActive
+                    ? D2D1::ColorF(0.24f, 0.42f, 0.72f, m_isHoveredStatusBarStructuredView ? 0.95f : 0.78f)
+                    : (m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f));
+                m_pRenderTarget->CreateSolidColorBrush(bgCol, &viewBg);
+                if (viewBg) m_pRenderTarget->FillRoundedRectangle(rrcView, viewBg.Get());
+            }
+            ID2D1Brush* viewTextBrush = isStructuredActive
+                ? (m_theme.brushTextWhite ? static_cast<ID2D1Brush*>(m_theme.brushTextWhite.Get()) : static_cast<ID2D1Brush*>(textBrush))
+                : static_cast<ID2D1Brush*>(textBrush);
+            D2D1_RECT_F rcViewText = D2D1::RectF(
+                m_rcStatusBarStructuredView.left + padX, itemY,
+                m_rcStatusBarStructuredView.right - padX, itemY + itemH);
+            if (pFmt && viewTextBrush) {
+                m_pRenderTarget->DrawText(viewText.c_str(), static_cast<UINT32>(viewText.length()), pFmt, rcViewText, viewTextBrush);
+            }
+        }
+    }
+
     // Plugin & Extension Status Bar Items (left-aligned and right-aligned contributions)
     auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
     const phide::plugin::PluginStatusBarItem* hoveredPluginItem = nullptr;
@@ -14188,6 +15355,11 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             ? L"Screen-Share Privacy Mask is ON (.env values & secrets masked - Click to reveal)"
             : L"Screen-Share Privacy Mask is OFF (Click to mask .env values & secret literals)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarPrivacyMask, clientW);
+    } else if (m_isHoveredStatusBarStructuredView) {
+        std::wstring tip = (curDoc && curDoc->structuredView && curDoc->structuredView->isActive)
+            ? L"Structured Viewer Active (Click to switch back to Text/Binary view)"
+            : L"Switch to Structured / Hex Viewer (CSV Table, JSON Tree, Log Tail, or Hex)";
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarStructuredView, clientW);
     } else if (m_isHoveredStatusBarEncoding && hasActiveDoc) {
         std::wstring encTip = L"Encoding: " + curDoc->buffer.GetEncodingDisplayName() +
                                L", End of Line: " + curDoc->buffer.GetLineEndingDisplayName();
@@ -14206,8 +15378,8 @@ bool Window::HitTestLeftSidebarSplitter(POINT pt) const {
     float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
     float leftEdgeX = railW + currentDrawerW;
     float hitTolerance = m_config.ScaleF(4.0f);
-    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+    float headerH = EffectiveHeaderHeight();
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
     RECT rcClient;
     GetClientRect(m_hwnd, &rcClient);
     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
@@ -14231,8 +15403,8 @@ bool Window::HitTestRightSidebarSplitter(POINT pt) const {
     float currentRightW = fullRightW * m_rightSidebarAnimProgress;
     float rightEdgeX = clientW - currentRightW;
     float hitTolerance = m_config.ScaleF(5.0f);
-    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-    const float statusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+    float headerH = EffectiveHeaderHeight();
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
     return (std::abs(static_cast<float>(pt.x) - rightEdgeX) <= hitTolerance &&
             static_cast<float>(pt.y) >= headerH && static_cast<float>(pt.y) <= (clientH - statusBarH));
 }
@@ -14262,9 +15434,9 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     if (clientPt.x < border) return HTLEFT;
     if (clientPt.x >= w - border) return HTRIGHT;
 
-    // Header region hit testing
-    const int headerH = m_config.Scale(m_config.headerHeight);
-    if (clientPt.y < headerH) {
+    // Header region hit testing (hidden when Zen Mode collapses top bar)
+    const int headerH = m_config.zenMode ? 0 : m_config.Scale(m_config.headerHeight);
+    if (!m_config.zenMode && clientPt.y < headerH) {
         // Returns HTCLIENT for menus & caption buttons, and HTCAPTION for draggable empty header area
         return m_header.HitTestNCHitTest(clientPt, m_config);
     }
@@ -14530,6 +15702,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    if (!topDropdownHit && m_config.debugFloatingToolbar && m_terminal.IsDebugActive()) {
+        if (m_editor.HandleFloatingDebugMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        if (m_editor.IsDraggingFloatingDebug()) {
+            return;
+        }
+    }
+
     if (m_themePicker.IsOpen()) {
         if (m_themePicker.HandleMouseMove(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -14784,7 +15965,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
-            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float headerH = EffectiveHeaderHeight();
             const float tabH = m_config.ScaleF(34.0f);
 
             float currentTermH = GetCurrentTerminalHeight(clientH);
@@ -15050,6 +16231,32 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    if (pActiveDoc && !pActiveDoc->isSpecialView && !pActiveDoc->isDiffView &&
+        (m_config.enableGitLens || m_config.gitShowInlineBlame) && !pActiveDoc->gitBlameMap.empty()) {
+        size_t prevBlameHover = pActiveDoc->hoveredBlameLine;
+        pActiveDoc->hoveredBlameLine = static_cast<size_t>(-1);
+        if (pActiveDoc->hoveredDiagnosticLine == static_cast<size_t>(-1)) {
+            RECT clientRcB;
+            GetClientRect(m_hwnd, &clientRcB);
+            const float clientWB = static_cast<float>(clientRcB.right - clientRcB.left);
+            float cLeftB = 0.0f, cWidthB = 0.0f;
+            GetCanvasLayout(clientWB, cLeftB, cWidthB);
+            if (cWidthB > 10.0f && !m_editorGroups.empty()) {
+                UpdateEditorGroupBounds();
+                int fIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) ? m_focusedGroupIdx : 0;
+                const auto& grpBounds = m_editorGroups[fIdx].bounds;
+                size_t gutterLine = 0;
+                if (m_editor.HitTestGutter(clientPt, m_config, *pActiveDoc, grpBounds.left, grpBounds.bottom, gutterLine) &&
+                    pActiveDoc->gitBlameMap.count(gutterLine)) {
+                    pActiveDoc->hoveredBlameLine = gutterLine;
+                }
+            }
+        }
+        if (pActiveDoc->hoveredBlameLine != prevBlameHover) {
+            needRepaint = true;
+        }
+    }
+
     {
         int stickyHit = (pActiveDoc && !pActiveDoc->isSpecialView && !pActiveDoc->isDiffView)
             ? m_editor.HitTestStickyHeader(clientPt)
@@ -15273,7 +16480,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         float clientW = static_cast<float>(rcClient.right - rcClient.left);
         float canvasLeft = 0.0f, canvasW = 0.0f;
         GetCanvasLayout(clientW, canvasLeft, canvasW);
-        int wmRow = m_editor.HitTestWatermarkCard(clientPt, m_config, canvasLeft, canvasW, m_config.ScaleF(static_cast<float>(m_config.headerHeight)), clientH);
+        int wmRow = m_editor.HitTestWatermarkCard(clientPt, m_config, canvasLeft, canvasW, EffectiveHeaderHeight(), clientH);
         if (m_editor.SetHoveredWatermarkRow(wmRow)) {
             needRepaint = true;
         }
@@ -15399,7 +16606,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     bool isOverDrawer = (m_config.isDrawerOpen && m_drawerAnimProgress > 0.5f &&
                          static_cast<float>(clientPt.x) >= railW &&
                          static_cast<float>(clientPt.x) <= (railW + currentDrawerW) &&
-                         static_cast<float>(clientPt.y) >= m_config.ScaleF(static_cast<float>(m_config.headerHeight)) &&
+                         static_cast<float>(clientPt.y) >= EffectiveHeaderHeight() &&
                          static_cast<float>(clientPt.y) < effectiveDrawerH);
     if (m_drawer.IsMouseOverDrawer() != isOverDrawer) {
         m_drawer.SetMouseOverDrawer(isOverDrawer);
@@ -15446,7 +16653,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
-                const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                const float headerH = EffectiveHeaderHeight();
                 m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, effectiveDrawerH - 70.0f);
                 needRepaint = true;
             } else if (m_drawer.HandleGitMouseMove(clientPt, (wParam & MK_LBUTTON) != 0, &m_theme, &m_config)) {
@@ -15454,6 +16661,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
             if (m_drawer.HandleRemoteMouseMove(clientPt)) {
+                needRepaint = true;
+            }
+        } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug)) {
+            if (m_drawer.HandleDebugMouseMove(clientPt)) {
                 needRepaint = true;
             }
         }
@@ -15536,6 +16747,14 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                               clientPt.y >= m_rcStatusBarPrivacyMask.top && clientPt.y <= m_rcStatusBarPrivacyMask.bottom);
         if (inPrivacyMask != m_isHoveredStatusBarPrivacyMask) {
             m_isHoveredStatusBarPrivacyMask = inPrivacyMask;
+            needRepaint = true;
+        }
+
+        bool inStructuredView = (m_rcStatusBarStructuredView.right > m_rcStatusBarStructuredView.left &&
+                                 clientPt.x >= m_rcStatusBarStructuredView.left && clientPt.x <= m_rcStatusBarStructuredView.right &&
+                                 clientPt.y >= m_rcStatusBarStructuredView.top && clientPt.y <= m_rcStatusBarStructuredView.bottom);
+        if (inStructuredView != m_isHoveredStatusBarStructuredView) {
+            m_isHoveredStatusBarStructuredView = inStructuredView;
             needRepaint = true;
         }
 
@@ -15658,7 +16877,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         m_autoSave = !m_autoSave;
                         m_config.autoSave = m_autoSave ? L"afterDelay" : L"off";
                         SaveSessionState();
-                        if (m_autoSave) {
+                        if (ShouldAutoSaveAfterDelay()) {
                             FlushPendingAutoSaves();
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -15901,9 +17120,16 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         }
                         break;
                     case ui::MenuActionId::LayoutMoveNewWindow:
-                    case ui::MenuActionId::LayoutCopyNewWindow:
-                        DoNewWindow();
+                    case ui::MenuActionId::LayoutCopyNewWindow: {
+                        int activeIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size()))
+                                      ? m_editorGroups[m_focusedGroupIdx].activeDocIdx : -1;
+                        if (activeIdx >= 0) {
+                            DetachEditorToNewWindow(m_focusedGroupIdx, activeIdx, action == ui::MenuActionId::LayoutMoveNewWindow);
+                        } else {
+                            DoNewWindow();
+                        }
                         break;
+                    }
 
                     // Context Menu Actions (Images 4 & 5)
                     case ui::MenuActionId::CtxOpenToSide: {
@@ -16111,22 +17337,21 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::DebugContinue:
                         m_terminal.TriggerDebugAction(ui::DebugAction::Continue);
                         break;
+                    case ui::MenuActionId::DebugPause:
+                        m_terminal.TriggerDebugAction(ui::DebugAction::Pause);
+                        break;
                     case ui::MenuActionId::DebugToggleBreakpoint: {
                         auto* pDoc = GetActiveDoc();
                         if (pDoc && !pDoc->isSpecialView) {
                             size_t curLine = pDoc->buffer.GetCursor().line;
                             auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
-                            bool added = false;
                             if (it != pDoc->breakpoints.end()) {
                                 pDoc->breakpoints.erase(it);
                                 pDoc->RemoveBreakpointCondition(curLine);
-                            } else {
+                                SyncAllBreakpointsToDebugger();
+                            } else if (IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
                                 pDoc->breakpoints.push_back(curLine);
-                                added = true;
-                            }
-                            if (m_terminal.IsDebugActive()) {
-                                m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
-                                m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
+                                SyncAllBreakpointsToDebugger();
                             }
                         }
                         break;
@@ -16361,6 +17586,12 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
+                    case ui::MenuActionId::ViewTaskRunner:
+                        RefreshWorkspaceTasks();
+                        OpenSpecialView(L"task_runner", L"Task Runner");
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
                     case ui::MenuActionId::ViewSqlConsole:
                         OpenSpecialView(L"sql_console", L"SQL Query Console");
                         SaveSessionState();
@@ -16501,6 +17732,88 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::MoreCodeMetrics:
                         DoCodeMetrics();
+                        break;
+                    case ui::MenuActionId::EditEmmetWrap:
+                        DoEmmetWrapWithAbbreviation();
+                        break;
+                    case ui::MenuActionId::EditEmmetBalanceOutward:
+                        DoEmmetBalance(true);
+                        break;
+                    case ui::MenuActionId::EditEmmetBalanceInward:
+                        DoEmmetBalance(false);
+                        break;
+                    case ui::MenuActionId::EditCaseUpper:
+                        DoTransformCase(editor::CaseTransform::Upper);
+                        break;
+                    case ui::MenuActionId::EditCaseLower:
+                        DoTransformCase(editor::CaseTransform::Lower);
+                        break;
+                    case ui::MenuActionId::EditCaseTitle:
+                        DoTransformCase(editor::CaseTransform::Title);
+                        break;
+                    case ui::MenuActionId::EditCaseCamel:
+                        DoTransformCase(editor::CaseTransform::Camel);
+                        break;
+                    case ui::MenuActionId::EditCaseSnake:
+                        DoTransformCase(editor::CaseTransform::Snake);
+                        break;
+                    case ui::MenuActionId::EditCaseKebab:
+                        DoTransformCase(editor::CaseTransform::Kebab);
+                        break;
+                    case ui::MenuActionId::CodeTypeHierarchy:
+                        DoTypeHierarchy();
+                        break;
+                    case ui::MenuActionId::TabClose:
+                        CloseDocument(m_tabContextGroupIdx, m_tabContextDocIdx, true);
+                        break;
+                    case ui::MenuActionId::TabCloseOthers:
+                        CloseOtherTabs(m_tabContextGroupIdx, m_tabContextDocIdx);
+                        break;
+                    case ui::MenuActionId::TabCloseToRight:
+                        CloseTabsToRight(m_tabContextGroupIdx, m_tabContextDocIdx);
+                        break;
+                    case ui::MenuActionId::TabCloseSaved:
+                        CloseSavedTabs(m_tabContextGroupIdx);
+                        break;
+                    case ui::MenuActionId::TabTogglePin:
+                        ToggleTabPin(m_tabContextGroupIdx, m_tabContextDocIdx);
+                        break;
+                    case ui::MenuActionId::TabSplitRight:
+                        SplitTabRight(m_tabContextGroupIdx, m_tabContextDocIdx);
+                        break;
+                    case ui::MenuActionId::TabMoveNewWindow:
+                        DetachEditorToNewWindow(m_tabContextGroupIdx, m_tabContextDocIdx, true);
+                        break;
+                    case ui::MenuActionId::TabCopyNewWindow:
+                        DetachEditorToNewWindow(m_tabContextGroupIdx, m_tabContextDocIdx, false);
+                        break;
+                    case ui::MenuActionId::TabCopyPath:
+                        if (m_tabContextGroupIdx >= 0 && m_tabContextGroupIdx < static_cast<int>(m_editorGroups.size())) {
+                            const auto& gd = m_editorGroups[m_tabContextGroupIdx].docs;
+                            if (m_tabContextDocIdx >= 0 && m_tabContextDocIdx < static_cast<int>(gd.size()) &&
+                                !gd[m_tabContextDocIdx].filePath.empty()) {
+                                SetClipboardText(m_hwnd, gd[m_tabContextDocIdx].filePath);
+                            }
+                        }
+                        break;
+                    case ui::MenuActionId::TabRevealInExplorer:
+                        if (m_tabContextGroupIdx >= 0 && m_tabContextGroupIdx < static_cast<int>(m_editorGroups.size())) {
+                            const auto& gd = m_editorGroups[m_tabContextGroupIdx].docs;
+                            if (m_tabContextDocIdx >= 0 && m_tabContextDocIdx < static_cast<int>(gd.size()) &&
+                                !gd[m_tabContextDocIdx].filePath.empty()) {
+                                std::wstring param = L"/select,\"" + gd[m_tabContextDocIdx].filePath + L"\"";
+                                ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
+                            }
+                        }
+                        break;
+                    case ui::MenuActionId::ViewHexBinary:
+                    case ui::MenuActionId::ViewToggleStructured:
+                        if (m_tabContextGroupIdx >= 0 && m_tabContextGroupIdx < static_cast<int>(m_editorGroups.size()) &&
+                            m_tabContextDocIdx >= 0 && m_tabContextDocIdx < static_cast<int>(m_editorGroups[m_tabContextGroupIdx].docs.size())) {
+                            m_focusedGroupIdx = m_tabContextGroupIdx;
+                            m_editorGroups[m_tabContextGroupIdx].activeDocIdx = m_tabContextDocIdx;
+                        }
+                        ToggleActiveStructuredViewer(true);
                         break;
                     default:
                         break;
@@ -17588,6 +18901,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    if (m_config.debugFloatingToolbar && m_terminal.IsDebugActive() &&
+        m_editor.HandleFloatingDebugLButtonDown(clientPt)) {
+        if (m_editor.IsDraggingFloatingDebug()) {
+            SetCapture(m_hwnd);
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
     // 3f. Extensions Right Sidebar Panel Clicks
     if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(clientPt)) {
         bool handled = m_extensionsPanel.HandleLButtonDown(clientPt);
@@ -17607,8 +18929,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
     if (clientPt.x >= static_cast<LONG>(canvasLeft)) {
         m_drawer.SetSearchFocus(0);
         m_drawer.SetGitCommitBoxFocus(0);
+        m_drawer.ClearDebugFocus();
     }
-    const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    const float headerH = EffectiveHeaderHeight();
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
     const float barY = clientH - statusBarH;
@@ -17665,7 +18988,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             // 4b. Tab Close Button Click in this group
             int closeIdx = m_editor.HitTestTabClose(clientPt, group.docs);
             if (closeIdx >= 0) {
-                CloseDocument(targetGroup, closeIdx);
+                if (group.docs[closeIdx].isPinned) {
+                    ToggleTabPin(targetGroup, closeIdx);
+                } else {
+                    CloseDocument(targetGroup, closeIdx);
+                }
                 return;
             }
 
@@ -17675,7 +19002,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 if (group.activeDocIdx != tabHitIdx) {
                     RecordNavCheckpoint();
                 }
-                if (m_autoSave && group.activeDocIdx != tabHitIdx) {
+                if (ShouldAutoSaveOnFocusChange() && group.activeDocIdx != tabHitIdx) {
                     FlushPendingAutoSaves();
                 }
                 group.activeDocIdx = tabHitIdx;
@@ -17767,6 +19094,23 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 } else if (doc.isUnsupportedBinary) {
+                    if (doc.structuredView && doc.structuredView->isActive) {
+                        bool switchToRaw = false;
+                        if (m_editor.GetStructuredRenderer().HandleLButtonDown(clientPt, *doc.structuredView, m_config, switchToRaw)) {
+                            if (switchToRaw) doc.structuredView->isActive = false;
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                    const auto& hexBtn = doc.unsupportedOpenHexBtn;
+                    if (hexBtn.right > hexBtn.left &&
+                        clientPt.x >= hexBtn.left && clientPt.x <= hexBtn.right &&
+                        clientPt.y >= hexBtn.top && clientPt.y <= hexBtn.bottom) {
+                        ToggleActiveStructuredViewer(true);
+                        return;
+                    }
                     const auto& btn = doc.unsupportedActionBtn;
                     if (clientPt.x >= btn.left && clientPt.x <= btn.right &&
                         clientPt.y >= btn.top && clientPt.y <= btn.bottom) {
@@ -17828,6 +19172,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"task_runner") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleTaskRunnerMouseDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isSpecialView && doc.viewType == L"file_history") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.HandleFileHistoryMouseDown(clientPt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
                 } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleSqlConsoleMouseDown(clientPt, m_config)) {
@@ -17850,7 +19206,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         if (!modifiedId.empty()) {
                             if (modifiedId == L"files.autoSave") {
                                 m_autoSave = (m_config.autoSave != L"off");
-                                if (m_autoSave) {
+                                if (ShouldAutoSaveAfterDelay()) {
                                     FlushPendingAutoSaves();
                                 }
                             } else if (modifiedId == L"editor.fontSize" || modifiedId == L"editor.fontFamily" || modifiedId == L"editor.lineHeight") {
@@ -18057,6 +19413,15 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                     }
 
+                    if (doc.structuredView && doc.structuredView->isActive) {
+                        m_drawer.SetSearchFocus(0);
+                        bool switchToRaw = false;
+                        m_editor.GetStructuredRenderer().HandleLButtonDown(clientPt, *doc.structuredView, m_config, switchToRaw);
+                        if (switchToRaw) doc.structuredView->isActive = false;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
                     if (m_editor.HitTestLightbulb(clientPt)) {
                         DoCodeActions();
                         return;
@@ -18223,6 +19588,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 return;
                             }
                         }
+                        if (!m_config.gitDiffSideBySide && !doc.isMultiFileDiff) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
                         float dividerW = m_config.ScaleF(32.0f);
                         float scrollbarW = m_config.ScaleF(12.0f);
                         float halfW = (paneW - dividerW - scrollbarW) / 2.0f;
@@ -18339,6 +19708,90 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             }
                         }
 
+                        auto inDocRect = [&](const D2D1_RECT_F& r) noexcept -> bool {
+                            return r.right > r.left && r.bottom > r.top &&
+                                   static_cast<float>(clientPt.x) >= r.left && static_cast<float>(clientPt.x) <= r.right &&
+                                   static_cast<float>(clientPt.y) >= r.top && static_cast<float>(clientPt.y) <= r.bottom;
+                        };
+
+                        // Sticky Merge Conflict Banner buttons (#37)
+                        if (!doc.mergeConflicts.empty() && !doc.isMergeView) {
+                            if (inDocRect(doc.mergeStickyOpen3WayBounds)) {
+                                OpenThreeWayMergeDocument(doc.filePath);
+                                return;
+                            }
+                            if (inDocRect(doc.mergeStickyNextBounds)) {
+                                OpenMergeConflictNext(doc);
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                        }
+
+                        // Inline Peek Diff Hunk Popover buttons (#36)
+                        if (doc.diffPeekActive) {
+                            if (inDocRect(doc.diffPeekCloseBtnBounds)) {
+                                doc.diffPeekActive = false;
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inDocRect(doc.diffPeekNextBtnBounds) && !doc.diffHunks.empty()) {
+                                doc.diffPeekHunkIdx = (doc.diffPeekHunkIdx + 1) % doc.diffHunks.size();
+                                doc.diffPeekLine = doc.diffHunks[doc.diffPeekHunkIdx].rightStart;
+                                size_t targetScroll = (doc.diffPeekLine > 4) ? (doc.diffPeekLine - 4) : 0;
+                                doc.scrollLine = targetScroll;
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inDocRect(doc.diffPeekRevertBtnBounds) && doc.diffPeekHunkIdx < doc.diffHunks.size()) {
+                                doc.buffer.PushUndo();
+                                auto reverted = git::GitWorkflowEngine::RevertDiffHunkInLines(
+                                    doc.buffer.GetLines(), doc.diffOriginalBuffer, doc.diffHunks[doc.diffPeekHunkIdx]);
+                                doc.buffer.SetLines(reverted);
+                                MarkDocumentModified(&doc);
+                                ComputeDiffHunks(doc);
+                                if (doc.diffHunks.empty()) {
+                                    doc.diffPeekActive = false;
+                                } else {
+                                    doc.diffPeekHunkIdx = (std::min)(doc.diffPeekHunkIdx, doc.diffHunks.size() - 1);
+                                }
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inDocRect(doc.diffPeekStageBtnBounds) && doc.diffPeekHunkIdx < doc.diffHunks.size() &&
+                                !doc.filePath.empty() && m_drawer.IsGitRepo() && m_drawer.HasOpenFolder()) {
+                                std::error_code relEc;
+                                std::wstring rel = std::filesystem::relative(doc.filePath, m_drawer.GetOpenFolderPath(), relEc).generic_wstring();
+                                if (!relEc && !rel.empty() && rel.rfind(L"..", 0) != 0) {
+                                    std::string patch = git::GitWorkflowEngine::BuildUnifiedHunkPatch(
+                                        rel, doc.diffOriginalBuffer, doc.buffer, doc.diffHunks[doc.diffPeekHunkIdx]);
+                                    if (!patch.empty()) {
+                                        m_drawer.StageHunkPatchAsync(patch, doc.isDiffStagedMode);
+                                    }
+                                }
+                                doc.diffPeekActive = false;
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inDocRect(doc.diffPeekCardBounds)) {
+                                return; // Swallow click inside card body
+                            }
+                        }
+
+                        // Clickable Gutter Diff Bars -> open Peek Diff Hunk Popover (#36)
+                        if (!doc.gutterDiffBarHits.empty()) {
+                            for (const auto& gb : doc.gutterDiffBarHits) {
+                                if (inDocRect(gb.bounds)) {
+                                    OpenDiffPeekAtLine(doc, gb.line);
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                    return;
+                                }
+                            }
+                        }
+
+                        if (doc.diffPeekActive) {
+                            doc.diffPeekActive = false;
+                        }
+
                         // Sticky Scroll enclosing scope header click-to-jump
                         if (!doc.isSpecialView) {
                             int stickyHitIdx = m_editor.HitTestStickyHeader(clientPt);
@@ -18347,7 +19800,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 size_t targetLine = stickyLines[stickyHitIdx].bufferLine;
                                 if (doc.buffer.GetLineCount() > 0) {
                                     size_t clamped = (std::min)(targetLine, doc.buffer.GetLineCount() - 1);
-                                    doc.scrollLine = (clamped > 2) ? (clamped - 2) : 0;
+                                    size_t headroom = static_cast<size_t>(stickyHitIdx);
+                                    doc.scrollLine = (clamped > headroom) ? (clamped - headroom) : 0;
                                     doc.buffer.SetCursor(clamped, 0);
                                     doc.selAnchor = { clamped, 0 };
                                     doc.selEnd = { clamped, 0 };
@@ -18388,22 +19842,21 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 return;
                             }
                             if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                                OpenBreakpointConditionPrompt(clickedLine);
-                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                bool hasExisting = (std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine) != doc.breakpoints.end());
+                                if (hasExisting || IsLineBreakpointAllowedForDoc(doc, clickedLine)) {
+                                    OpenBreakpointConditionPrompt(clickedLine);
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                }
                                 return;
                             }
                             auto it = std::find(doc.breakpoints.begin(), doc.breakpoints.end(), clickedLine);
-                            bool added = false;
                             if (it != doc.breakpoints.end()) {
                                 doc.breakpoints.erase(it);
                                 doc.RemoveBreakpointCondition(clickedLine);
-                            } else {
+                                SyncAllBreakpointsToDebugger();
+                            } else if (IsLineBreakpointAllowedForDoc(doc, clickedLine)) {
                                 doc.breakpoints.push_back(clickedLine);
-                                added = true;
-                            }
-                            if (m_terminal.IsDebugActive()) {
-                                m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(doc));
-                                m_terminal.SyncBreakpoint(doc.filePath, clickedLine, added);
+                                SyncAllBreakpointsToDebugger();
                             }
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
@@ -18661,7 +20114,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         // Center line vertically in editor view
                         RECT rcClient;
                         GetClientRect(m_hwnd, &rcClient);
-                        float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                        float headerH = EffectiveHeaderHeight();
                         float editorH = static_cast<float>(rcClient.bottom - rcClient.top) - headerH;
                         float lineH = m_config.fontSize * m_config.lineHeightMultiplier;
                         size_t visibleLines = (lineH > 0.0f) ? static_cast<size_t>(editorH / lineH) : 25;
@@ -18733,6 +20186,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
             if (m_drawer.HandleRemoteLButtonDown(clientPt, m_config)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+        } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug)) {
+            if (m_drawer.HandleDebugLButtonDown(clientPt, m_config)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
@@ -18870,8 +20328,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     GetClientRect(m_hwnd, &expClientRc);
                     const float expRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
                     const float expDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-                    const float expHeaderH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-                    const float expStatusBarH = m_config.showStatusBar ? m_config.ScaleF(22.0f) : 0.0f;
+                    const float expHeaderH = EffectiveHeaderHeight();
+                    const float expStatusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
                     const float expDrawerBottom = static_cast<float>(expClientRc.bottom - expClientRc.top) - expStatusBarH;
                     if (clientPt.x >= expRailW && clientPt.x < expRailW + expDrawerW &&
                         clientPt.y >= expHeaderH && clientPt.y < expDrawerBottom) {
@@ -18989,6 +20447,14 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    if (m_config.showStatusBar &&
+        m_rcStatusBarStructuredView.right > m_rcStatusBarStructuredView.left &&
+        clientPt.x >= m_rcStatusBarStructuredView.left && clientPt.x <= m_rcStatusBarStructuredView.right &&
+        clientPt.y >= m_rcStatusBarStructuredView.top && clientPt.y <= m_rcStatusBarStructuredView.bottom) {
+        ToggleActiveStructuredViewer(true);
+        return;
+    }
+
     if (m_config.showStatusBar && PtInRectF(clientPt, m_rcStatusBarProblems)) {
         ToggleProblemsPanel();
         return;
@@ -19101,6 +20567,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
             } else if (clickedTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
                 m_drawer.OpenRemoteExplorer();
                 SyncRemoteModalTargetCache();
+            } else if (clickedTab == static_cast<int>(ui::RailTabId::Debug)) {
+                m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
             }
         }
         UpdateDrawerErrorFiles();
@@ -19279,10 +20747,19 @@ void Window::HandleLButtonUp(POINT clientPt) {
 
                 if (srcGroup == targetGrpIdx) {
                     if (targetInsertPos >= 0 && targetInsertPos <= static_cast<int>(fromGrp.docs.size())) {
+                        bool movingPinned = fromGrp.docs[from].isPinned;
                         auto doc = std::move(fromGrp.docs[from]);
                         fromGrp.docs.erase(fromGrp.docs.begin() + from);
+                        size_t pinCount = 0;
+                        while (pinCount < fromGrp.docs.size() && fromGrp.docs[pinCount].isPinned) {
+                            ++pinCount;
+                        }
                         int insertPos = (targetInsertPos > from) ? (targetInsertPos - 1) : targetInsertPos;
-                        insertPos = (std::clamp)(insertPos, 0, static_cast<int>(fromGrp.docs.size()));
+                        if (movingPinned) {
+                            insertPos = (std::clamp)(insertPos, 0, static_cast<int>(pinCount));
+                        } else {
+                            insertPos = (std::clamp)(insertPos, static_cast<int>(pinCount), static_cast<int>(fromGrp.docs.size()));
+                        }
                         fromGrp.docs.insert(fromGrp.docs.begin() + insertPos, std::move(doc));
                         fromGrp.activeDocIdx = insertPos;
                         m_focusedGroupIdx = srcGroup;
@@ -19597,7 +21074,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
             GetCanvasLayout(clientW, canvasLeft, canvasWidth);
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
-            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float headerH = EffectiveHeaderHeight();
             const float tabH = m_config.ScaleF(34.0f);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
@@ -19744,6 +21221,10 @@ void Window::HandleLButtonUp(POINT clientPt) {
             ReleaseCapture();
         }
     }
+    if (m_editor.HandleFloatingDebugLButtonUp(clientPt)) {
+        ReleaseCapture();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
     if (m_isDraggingLeftSidebar) {
         m_isDraggingLeftSidebar = false;
         SaveSessionState();
@@ -19803,7 +21284,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
     float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+    float headerH = EffectiveHeaderHeight();
 
     // 1. Right-click inside Drawer Explorer
     if (!m_config.zenMode && m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
@@ -19857,35 +21338,50 @@ void Window::HandleRButtonDown(POINT clientPt) {
 
     const float tabH = m_config.ScaleF(34.0f);
 
-    // 2. Right-click inside Editor Tab Bar
-    if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH && clientPt.y < headerH + tabH) {
-        std::wstring targetPath;
-        for (const auto& grp : m_editorGroups) {
+    // 2. Right-click inside Editor Tab Bar (any split pane's tab strip)
+    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+        const auto& grp = m_editorGroups[g];
+        if (grp.docs.empty()) continue;
+        D2D1_RECT_F gBounds = (grp.bounds.right > grp.bounds.left && grp.bounds.bottom > grp.bounds.top)
+            ? grp.bounds
+            : D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, clientH);
+        if (clientPt.x >= gBounds.left && clientPt.x < gBounds.right &&
+            clientPt.y >= gBounds.top && clientPt.y < gBounds.top + tabH) {
             int tabHit = m_editor.HitTestTab(clientPt, grp.docs);
-            if (tabHit >= 0 && tabHit < static_cast<int>(grp.docs.size())) {
-                targetPath = grp.docs[tabHit].filePath;
-                break;
+            if (tabHit < 0 || tabHit >= static_cast<int>(grp.docs.size())) {
+                tabHit = (std::max)(0, (std::min)(grp.activeDocIdx, static_cast<int>(grp.docs.size()) - 1));
             }
-        }
-        if (targetPath.empty()) {
-            auto* pDoc = GetActiveDoc();
-            if (pDoc) targetPath = pDoc->filePath;
-        }
+            m_focusedGroupIdx = static_cast<int>(g);
+            m_tabContextGroupIdx = static_cast<int>(g);
+            m_tabContextDocIdx = tabHit;
 
-        if (!targetPath.empty() && std::filesystem::exists(targetPath)) {
-            m_contextTargetPath = targetPath;
-            m_contextTargetIsFolder = std::filesystem::is_directory(targetPath);
-            bool canPaste = !m_clipboardPath.empty() && std::filesystem::exists(m_clipboardPath);
-            m_popupMenu.OpenContextMenu(
+            const auto& tdoc = grp.docs[tabHit];
+            bool isPinned = tdoc.isPinned;
+            bool hasFilePath = !tdoc.filePath.empty() && std::filesystem::exists(tdoc.filePath);
+            bool canCloseOthers = false;
+            for (int di = 0; di < static_cast<int>(grp.docs.size()); ++di) {
+                if (di != tabHit && !grp.docs[di].isPinned) { canCloseOthers = true; break; }
+            }
+            bool canCloseRight = false;
+            for (int di = tabHit + 1; di < static_cast<int>(grp.docs.size()); ++di) {
+                if (!grp.docs[di].isPinned) { canCloseRight = true; break; }
+            }
+            bool canCloseSaved = false;
+            for (const auto& d : grp.docs) {
+                if (!d.isDirty && !d.isPinned) { canCloseSaved = true; break; }
+            }
+            bool canToggleStructured = !tdoc.isSpecialView && !tdoc.isImageView && !tdoc.isFolderView &&
+                                       (tdoc.structuredView != nullptr || !tdoc.filePath.empty());
+            m_popupMenu.OpenTabContextMenu(
                 static_cast<float>(clientPt.x),
                 static_cast<float>(clientPt.y),
-                m_contextTargetIsFolder,
-                targetPath,
-                m_drawer.GetOpenFolderPath(),
                 m_config,
-                canPaste,
-                m_explorerUndo.CanUndo(),
-                m_explorerUndo.CanRedo(),
+                isPinned,
+                hasFilePath,
+                canCloseOthers,
+                canCloseRight,
+                canCloseSaved,
+                canToggleStructured,
                 clientW,
                 clientH
             );
@@ -20100,6 +21596,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             (m_rcStatusBarPrivacyMask.right > m_rcStatusBarPrivacyMask.left &&
                              pt.x >= m_rcStatusBarPrivacyMask.left && pt.x <= m_rcStatusBarPrivacyMask.right &&
                              pt.y >= m_rcStatusBarPrivacyMask.top && pt.y <= m_rcStatusBarPrivacyMask.bottom) ||
+                            (m_rcStatusBarStructuredView.right > m_rcStatusBarStructuredView.left &&
+                             pt.x >= m_rcStatusBarStructuredView.left && pt.x <= m_rcStatusBarStructuredView.right &&
+                             pt.y >= m_rcStatusBarStructuredView.top && pt.y <= m_rcStatusBarStructuredView.bottom) ||
                             (m_rcStatusBarGitBranch.right > m_rcStatusBarGitBranch.left &&
                              pt.x >= m_rcStatusBarGitBranch.left && pt.x <= m_rcStatusBarGitBranch.right &&
                              pt.y >= m_rcStatusBarGitBranch.top && pt.y <= m_rcStatusBarGitBranch.bottom) ||
@@ -20272,9 +21771,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
                 }
+                if (m_config.debugFloatingToolbar && m_terminal.IsDebugActive() && m_editor.HitTestFloatingDebug(pt)) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
                 if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer) && m_drawerAnimProgress > 0.001f) {
                     if (m_drawer.HitTestRemoteInteractive(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+                if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) && m_drawerAnimProgress > 0.001f) {
+                    bool isDbgInput = false;
+                    if (m_drawer.HitTestDebugInteractive(pt, &isDbgInput)) {
+                        SetCursor(LoadCursor(nullptr, isDbgInput ? IDC_IBEAM : IDC_HAND));
                         return TRUE;
                     }
                 }
@@ -20290,9 +21800,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         }
                     }
                 }
-                if (pCurDoc && pCurDoc->isUnsupportedBinary) {
+                if (pCurDoc && pCurDoc->isUnsupportedBinary && !(pCurDoc->structuredView && pCurDoc->structuredView->isActive)) {
+                    const auto& bHex = pCurDoc->unsupportedOpenHexBtn;
                     const auto& b = pCurDoc->unsupportedActionBtn;
-                    if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
+                    if ((bHex.right > bHex.left && pt.x >= bHex.left && pt.x <= bHex.right && pt.y >= bHex.top && pt.y <= bHex.bottom) ||
+                        (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -20377,7 +21889,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     bool overClickable = PtInRectF(pt, m_rcProblemsTabBtn) || PtInRectF(pt, m_rcProblemsTermTabBtn) ||
                         PtInRectF(pt, m_rcProblemsFilterAll) || PtInRectF(pt, m_rcProblemsFilterErr) ||
                         PtInRectF(pt, m_rcProblemsFilterWarn) || PtInRectF(pt, m_rcProblemsFilterInfo) ||
-                        PtInRectF(pt, m_rcProblemsCurFileBtn) || PtInRectF(pt, m_rcProblemsRefreshBtn) ||
+                        PtInRectF(pt, m_rcProblemsCurFileBtn) || PtInRectF(pt, m_rcProblemsGroupBtn) ||
+                        PtInRectF(pt, m_rcProblemsSarifBtn) || PtInRectF(pt, m_rcProblemsRefreshBtn) ||
                         PtInRectF(pt, m_rcProblemsCloseBtn);
                     if (!overClickable) {
                         for (const auto& rb : m_problemsRowBounds) {
@@ -20463,7 +21976,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float clientW = static_cast<float>(rcClient.right - rcClient.left);
                     float canvasLeft = 0.0f, canvasWidth = 0.0f;
                     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
-                    float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+                    float headerH = EffectiveHeaderHeight();
                     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
                     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
                     float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
@@ -20489,6 +22002,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (inCurBtn(pHoverPaneDoc->conflictReloadBtnBounds) ||
                             inCurBtn(pHoverPaneDoc->conflictDiffBtnBounds) ||
                             inCurBtn(pHoverPaneDoc->conflictOverwriteBtnBounds)) {
+                            SetCursor(LoadCursor(nullptr, IDC_HAND));
+                            return TRUE;
+                        }
+                    }
+
+                    auto inCursRect = [&](const D2D1_RECT_F& r) noexcept -> bool {
+                        return r.right > r.left && r.bottom > r.top &&
+                               static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
+                               static_cast<float>(pt.y) >= r.top && static_cast<float>(pt.y) <= r.bottom;
+                    };
+                    if (!pHoverPaneDoc->mergeConflicts.empty() && !pHoverPaneDoc->isMergeView && !pHoverPaneDoc->isDiffView &&
+                        (inCursRect(pHoverPaneDoc->mergeStickyOpen3WayBounds) || inCursRect(pHoverPaneDoc->mergeStickyNextBounds))) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    if (pHoverPaneDoc->diffPeekActive &&
+                        (inCursRect(pHoverPaneDoc->diffPeekCloseBtnBounds) || inCursRect(pHoverPaneDoc->diffPeekNextBtnBounds) ||
+                         inCursRect(pHoverPaneDoc->diffPeekStageBtnBounds) || inCursRect(pHoverPaneDoc->diffPeekRevertBtnBounds))) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    for (const auto& gb : pHoverPaneDoc->gutterDiffBarHits) {
+                        if (inCursRect(gb.bounds)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
@@ -20654,7 +22190,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             float canvasLeft = 0.0f, canvasWidth = 0.0f;
             GetCanvasLayout(clientW, canvasLeft, canvasWidth);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
-            const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            const float headerH = EffectiveHeaderHeight();
 
             // Double click in Explorer tree: open file permanently (not preview)!
             if (!m_config.zenMode && m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
@@ -20797,7 +22333,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
             float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-            float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
+            float headerH = EffectiveHeaderHeight();
 
             // 1. Scroll Drawer Panel tree if mouse is over sidebar
             if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
@@ -20896,6 +22432,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"task_runner") {
+                    if (m_editor.HandleTaskRunnerMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"file_history") {
+                    if (m_editor.HandleFileHistoryMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"sql_console") {
                     if (m_editor.HandleSqlConsoleMouseWheel(pt, delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -20927,6 +22473,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"markdown_preview") {
                     if (m_editor.HandleMarkdownPreviewWheel(delta, *pDoc)) {
+                        SyncMarkdownCompanionScroll(*pDoc, true);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -20945,6 +22492,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     pDoc->folderScrollY = (std::clamp)(pDoc->folderScrollY + vDelta, 0.0f, pDoc->folderMaxScrollY);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
+                } else if (pDoc->structuredView && pDoc->structuredView->isActive) {
+                    bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (m_editor.GetStructuredRenderer().HandleMouseWheel(delta, isShiftDown, *pDoc->structuredView, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
@@ -20963,6 +22516,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         }
                     } else {
                         pDoc->scrollLine += linesToScroll;
+                    }
+                    if (IsMarkdownFile(pDoc->filePath)) {
+                        SyncMarkdownCompanionScroll(*pDoc, false);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -21109,6 +22665,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            // 1c. If Debug sidebar Watch input has focus, route typed characters there
+            if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
+                m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
+                if (m_drawer.HandleDebugChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             auto* pDoc = GetActiveDoc();
             if (pDoc) {
                 wchar_t ch = static_cast<wchar_t>(wParam);
@@ -21164,6 +22729,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->structuredView && pDoc->structuredView->isActive &&
+                           m_editor.GetStructuredRenderer().HandleChar(ch, *pDoc->structuredView)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
                     if (ch >= 32 && ch != 127) {
@@ -21494,7 +23063,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_ACTIVATE: {
             if (LOWORD(wParam) == WA_INACTIVE) {
                 ReleaseCapture();
-                if (m_autoSave) {
+                if (ShouldAutoSaveOnWindowChange()) {
                     FlushPendingAutoSaves();
                 }
             } else {
@@ -21560,7 +23129,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
-            if (m_autoSave) {
+            if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
             }
             RunManualGarbageCollection();
@@ -21837,6 +23406,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // F6: Pause active debugger
+            if (wParam == VK_F6 && m_terminal.IsDebugActive()) {
+                m_terminal.TriggerDebugAction(ui::DebugAction::Pause);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // F7 / Shift+F7: Navigate Next / Previous Diff Hunk / Git Change
+            if (wParam == VK_F7 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+                DoNavigateDiffHunk((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+                return 0;
+            }
+
             // F8 / Shift+F8: Navigate Next / Previous Diagnostic Problem
             if (wParam == VK_F8 && !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
                 NavigateNextProblem((GetKeyState(VK_SHIFT) & 0x8000) != 0);
@@ -21849,26 +23431,43 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pDoc && !pDoc->isSpecialView) {
                     size_t curLine = pDoc->buffer.GetCursor().line;
                     if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-                        OpenBreakpointConditionPrompt(curLine);
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        bool hasExisting = (std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine) != pDoc->breakpoints.end());
+                        if (hasExisting || IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
+                            OpenBreakpointConditionPrompt(curLine);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
                         return 0;
                     }
                     auto it = std::find(pDoc->breakpoints.begin(), pDoc->breakpoints.end(), curLine);
-                    bool added = false;
                     if (it != pDoc->breakpoints.end()) {
                         pDoc->breakpoints.erase(it);
                         pDoc->RemoveBreakpointCondition(curLine);
-                    } else {
+                        SyncAllBreakpointsToDebugger();
+                    } else if (IsLineBreakpointAllowedForDoc(*pDoc, curLine)) {
                         pDoc->breakpoints.push_back(curLine);
-                        added = true;
-                    }
-                    if (m_terminal.IsDebugActive()) {
-                        m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
-                        m_terminal.SyncBreakpoint(pDoc->filePath, curLine, added);
+                        SyncAllBreakpointsToDebugger();
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
+            }
+
+            // Ctrl+Shift+D Run & Debug Sidebar toggle
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+                !(GetKeyState(VK_MENU) & 0x8000) && (wParam == 'D' || wParam == 'd')) {
+                constexpr int kDebugTab = static_cast<int>(ui::RailTabId::Debug);
+                if (m_config.isDrawerOpen && m_config.activeRailTab == kDebugTab) {
+                    ToggleSidebar();
+                } else {
+                    m_config.activeRailTab = kDebugTab;
+                    if (!m_config.isDrawerOpen) {
+                        ToggleSidebar();
+                    }
+                    m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
+                }
+                SaveSessionState();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
             }
 
             // Ctrl+Shift+X Runtimes Panel toggle (Images 1 & 2)
@@ -22334,6 +23933,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
+            // 1c. If Debug Watch input in drawer is focused, navigation keys route to Debug pane
+            if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
+                m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
+                if (m_drawer.HandleDebugKeyDown(wParam)) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             auto* pDoc = GetActiveDoc();
             if (pDoc && pDoc->isSpecialView) {
                 if (pDoc->viewType == L"keybindings") {
@@ -22397,6 +24005,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                }
+            }
+
+            if (pDoc && pDoc->structuredView && pDoc->structuredView->isActive &&
+                m_editor.GetStructuredRenderer().HandleKeyDown(wParam, *pDoc->structuredView)) {
+                if (pDoc->structuredView->filterFocused) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
             }
 
@@ -23051,8 +24667,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->selectedWord = pDoc->GetSelectedText();
                         }
                         size_t curLine = pDoc->buffer.GetCursor().line;
+                        size_t stickyRows = m_config.enableStickyScroll ? m_editor.GetVisibleStickyLines().size() : 0;
                         if (curLine < pDoc->scrollLine) {
                             pDoc->scrollLine = curLine;
+                        } else if (stickyRows > 0 && pDoc->scrollLine > 0 && curLine < pDoc->scrollLine + stickyRows) {
+                            pDoc->scrollLine = (curLine > stickyRows) ? (curLine - stickyRows) : 0;
                         }
                         EnsureCursorVisible();
                         UpdatePrediction();
@@ -23084,23 +24703,53 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                     }
                 } else if (wParam == VK_PRIOR) { // Page Up
+                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (isShift) {
+                        if (!pDoc->hasSelection) {
+                            pDoc->selAnchor = pDoc->buffer.GetCursor();
+                            pDoc->hasSelection = true;
+                        }
+                    } else if (pDoc->HasSelection()) {
+                        pDoc->ClearSelection();
+                    }
                     RECT rc;
                     GetClientRect(m_hwnd, &rc);
                     float h = static_cast<float>(rc.bottom - rc.top);
                     size_t page = static_cast<size_t>(h / m_config.ScaleF(20.0f));
                     if (page < 3) page = 3;
                     for (size_t p = 0; p < page; ++p) pDoc->buffer.MoveCursorUp();
+                    if (isShift) {
+                        pDoc->selEnd = pDoc->buffer.GetCursor();
+                        pDoc->selectedWord = pDoc->GetSelectedText();
+                    }
                     if (pDoc->scrollLine >= page) pDoc->scrollLine -= page;
                     else pDoc->scrollLine = 0;
+                    EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_NEXT) { // Page Down
+                    bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (isShift) {
+                        if (!pDoc->hasSelection) {
+                            pDoc->selAnchor = pDoc->buffer.GetCursor();
+                            pDoc->hasSelection = true;
+                        }
+                    } else if (pDoc->HasSelection()) {
+                        pDoc->ClearSelection();
+                    }
                     RECT rc;
                     GetClientRect(m_hwnd, &rc);
                     float h = static_cast<float>(rc.bottom - rc.top);
                     size_t page = static_cast<size_t>(h / m_config.ScaleF(20.0f));
                     if (page < 3) page = 3;
                     for (size_t p = 0; p < page; ++p) pDoc->buffer.MoveCursorDown();
+                    if (isShift) {
+                        pDoc->selEnd = pDoc->buffer.GetCursor();
+                        pDoc->selectedWord = pDoc->GetSelectedText();
+                    }
                     pDoc->scrollLine += page;
+                    EnsureCursorVisible();
+                    UpdatePrediction();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else if (wParam == VK_TAB) {
                     if (pDoc->buffer.IsMemoryMappedReadOnly()) return 0;
@@ -23441,6 +25090,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
 
+                // Poll active visible Log Tail viewer tabs (zero background work unless active tab uses follow mode)
+                {
+                    bool logUpdated = false;
+                    for (auto& grp : m_editorGroups) {
+                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                            auto& visDoc = grp.docs[grp.activeDocIdx];
+                            if (visDoc.structuredView && visDoc.structuredView->isActive &&
+                                visDoc.structuredView->mode == ui::StructuredViewMode::LogTail &&
+                                visDoc.structuredView->logFollow && !visDoc.filePath.empty()) {
+                                if (visDoc.structuredView->PollLogTail(visDoc.filePath, now)) {
+                                    logUpdated = true;
+                                }
+                            }
+                        }
+                    }
+                    if (logUpdated) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                }
+
                 // Debounced post-edit validation, diff hunks, import cost, and auto-save on typing pause
                 if (s_editDebouncePending && now >= s_editDebounceTargetTime) {
                     s_editDebouncePending = false;
@@ -23504,7 +25173,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             }
                         }
 
-                        if (m_autoSave && !pDoc->filePath.empty() && !pDoc->hasExternalDiskConflict) {
+                        if (ShouldAutoSaveAfterDelay() && !pDoc->filePath.empty() && !pDoc->hasExternalDiskConflict) {
+                            ApplySaveHooks(*pDoc, pDoc->filePath, false);
                             s_lastInternalAutoSaveTick = GetTickCount64();
                             if (pDoc->buffer.SaveToFile(pDoc->filePath)) {
                                 s_lastInternalAutoSaveTick = GetTickCount64();
@@ -23712,6 +25382,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (wParam == m_gcTimerId) {
                 RunManualGarbageCollection();
+                if (m_config.gitAutoFetch && m_drawer.HasOpenFolder() && m_drawer.IsGitRepo() &&
+                    !m_drawer.IsSyncing() && !m_drawer.IsGitLoading()) {
+                    ULONGLONG nowTick = GetTickCount64();
+                    if (m_lastGitAutoFetchTick == 0) {
+                        m_lastGitAutoFetchTick = nowTick;
+                    } else if (nowTick - m_lastGitAutoFetchTick >= 180000ULL) {
+                        m_lastGitAutoFetchTick = nowTick;
+                        m_drawer.FetchAllRemotesQuietAsync();
+                    }
+                }
             }
             return 0;
         }
@@ -24082,11 +25762,38 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         d.inlayHints.clear();
                     }
                     d.codeLensMap = res->codeLensMap;
+                    if (d.buffer.GetVersion() == res->docVersion) {
+                        if (res->hasSemanticTokens) {
+                            d.semanticTokensData = res->semanticTokensData;
+                            d.semanticTokensVersion = res->docVersion;
+                        }
+                        if (res->hasLspFolds) {
+                            d.lspFoldingRanges = res->lspFoldingRanges;
+                        }
+                        if (res->hasLspCodeLenses) {
+                            d.lspCodeLenses = res->lspCodeLenses;
+                        }
+                    }
                 }
             }
             if (res->hasLinterResults) {
                 std::wstring key = NormalizeRecentPath(res->filePath);
                 for (auto& ch : key) ch = static_cast<wchar_t>(towlower(ch));
+                std::wstring extLow;
+                if (auto dot = res->filePath.find_last_of(L'.'); dot != std::wstring::npos) {
+                    extLow = res->filePath.substr(dot);
+                    for (auto& ch : extLow) ch = static_cast<wchar_t>(towlower(ch));
+                }
+                if (extLow == L".ts" || extLow == L".tsx" || extLow == L".js" || extLow == L".jsx" ||
+                    extLow == L".mts" || extLow == L".cts" || extLow == L".mjs" || extLow == L".cjs") {
+                    for (auto it = m_externalLinterProblems.begin(); it != m_externalLinterProblems.end();) {
+                        if (it->first != key) {
+                            std::erase_if(it->second, [](const editor::ProblemEntry& pe) { return pe.source == L"tsc"; });
+                            if (it->second.empty()) { it = m_externalLinterProblems.erase(it); continue; }
+                        }
+                        ++it;
+                    }
+                }
                 if (res->linterProblems.empty()) {
                     m_externalLinterProblems.erase(key);
                 } else {
@@ -24112,6 +25819,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             SyncTestResultsToOpenDocs(itemsCopy);
             if (wParam == 1) {
                 m_editor.GetActivityHeatmapView().RecordTestRun(summaryCopy.failed == 0 && summaryCopy.exitCode == 0);
+                RefreshWorkspaceCoverageAsync();
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_USER + 231: {
+            if (m_isDestroying.load()) return 0;
+            phide::dev::WorkspaceCoverageSummary covCopy;
+            {
+                std::lock_guard<std::mutex> lk(m_covMutex);
+                covCopy = m_workspaceCoverage;
+            }
+            m_editor.SetWorkspaceCoverage(covCopy);
+            for (auto& grp : m_editorGroups) {
+                for (auto& d : grp.docs) {
+                    if (d.isSpecialView || d.filePath.empty()) continue;
+                    d.gutterCoverage.clear();
+                    if (const auto* fc = phide::dev::CoverageReportEngine::FindCoverageForFile(covCopy, d.filePath)) {
+                        for (const auto& lh : fc->lineHits) {
+                            d.gutterCoverage[lh.first] = (lh.second > 0);
+                        }
+                    }
+                }
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return 0;
@@ -24201,20 +25932,54 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        case WM_CLOSE: {
-            if (m_autoSave) {
-                for (auto& grp : m_editorGroups) {
-                    for (auto& d : grp.docs) {
-                        if (!d.isSpecialView && !d.filePath.empty() && d.isDirty && !d.hasExternalDiskConflict) {
-                            s_lastInternalAutoSaveTick = GetTickCount64();
-                            if (d.buffer.SaveToFile(d.filePath)) {
-                                s_lastInternalAutoSaveTick = GetTickCount64();
-                                d.isDirty = false;
-                                OnDocumentDiskSaved(d);
-                            }
-                        }
+        case WM_USER + 229: {
+            if (!m_isDestroying.load()) {
+                std::wstring filePath;
+                int lineNum1 = 1;
+                bool hasPending = false;
+                {
+                    std::lock_guard<std::mutex> lk(m_debugUiMutex);
+                    if (m_hasPendingDebugPaused) {
+                        filePath = std::move(m_pendingDebugPausedFile);
+                        lineNum1 = m_pendingDebugPausedLine;
+                        m_hasPendingDebugPaused = false;
+                        hasPending = true;
                     }
                 }
+                if (hasPending) {
+                    ApplyDebugPausedUiState(filePath, lineNum1);
+                }
+            }
+            return 0;
+        }
+
+        case WM_USER + 230: {
+            if (!m_isDestroying.load()) {
+                ClearDebugPausedUiState(wParam == 0);
+            }
+            return 0;
+        }
+
+        case WM_USER + 232: {
+            if (!m_isDestroying.load()) {
+                std::vector<PendingFileHistoryResult> pending;
+                {
+                    std::lock_guard<std::mutex> lk(m_fileHistoryMutex);
+                    pending.swap(m_pendingFileHistory);
+                }
+                for (auto& res : pending) {
+                    m_editor.SetFileHistoryEntries(res.fullPath, std::move(res.entries));
+                }
+                if (!pending.empty()) {
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+
+        case WM_CLOSE: {
+            if (ShouldAutoSaveOnWindowChange()) {
+                FlushPendingAutoSaves();
             }
             s_pendingModifiedKeys.clear();
             s_editDebouncePending = false;
@@ -24225,19 +25990,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
-            if (m_autoSave) {
-                for (auto& grp : m_editorGroups) {
-                    for (auto& d : grp.docs) {
-                        if (!d.isSpecialView && !d.filePath.empty() && d.isDirty && !d.hasExternalDiskConflict) {
-                            s_lastInternalAutoSaveTick = GetTickCount64();
-                            if (d.buffer.SaveToFile(d.filePath)) {
-                                s_lastInternalAutoSaveTick = GetTickCount64();
-                                d.isDirty = false;
-                                OnDocumentDiskSaved(d);
-                            }
-                        }
-                    }
-                }
+            if (ShouldAutoSaveOnWindowChange()) {
+                FlushPendingAutoSaves();
             }
             phide::plugin::PluginManager::Instance().DispatchEvent(L"onShutdown");
             m_isDestroying.store(true);
@@ -25087,6 +26841,146 @@ void Window::SetupRemoteCallbacks() {
         }
     };
     m_drawer.SetRemoteCallbacks(std::move(drawerCbs));
+
+    ui::DrawerPanel::DebugPaneCallbacks dbgCbs;
+    dbgCbs.fetchState = [this](phide::dev::DapSessionSnapshot& outSnap,
+                               std::vector<phide::dev::DapBreakpoint>& outBps,
+                               std::vector<phide::dev::LaunchConfig>& outConfigs,
+                               size_t& outSelectedCfg,
+                               bool& outIsActive,
+                               bool& outIsPaused) {
+        outSnap = m_terminal.GetDapClient().GetSnapshot();
+        outBps = BuildAllOpenDapBreakpoints();
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        auto* pActive = GetActiveDoc();
+        std::wstring activePath = (pActive && !pActive->isSpecialView) ? pActive->filePath : L"";
+        if (!wsRoot.empty()) {
+            outConfigs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath);
+        }
+        if (outSelectedCfg >= outConfigs.size()) {
+            outSelectedCfg = 0;
+        }
+        outIsActive = m_terminal.IsDebugActive();
+        outIsPaused = outIsActive && m_terminal.IsDebugPaused();
+    };
+    dbgCbs.onStartDebug = [this](int cfgIdx) {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        auto* pActive = GetActiveDoc();
+        std::wstring activePath = (pActive && !pActive->isSpecialView) ? pActive->filePath : L"";
+        auto cfgs = !wsRoot.empty() ? phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, activePath)
+                                    : std::vector<phide::dev::LaunchConfig>{};
+        if (cfgIdx >= 0 && cfgIdx < static_cast<int>(cfgs.size())) {
+            LaunchDebugWithConfig(cfgs[static_cast<size_t>(cfgIdx)]);
+        } else {
+            DoDebugActiveDocument();
+        }
+    };
+    dbgCbs.onDebugAction = [this](int dbgActionId) {
+        m_terminal.TriggerDebugAction(static_cast<ui::DebugAction>(dbgActionId));
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onOpenLaunchJson = [this]() {
+        std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        if (wsRoot.empty()) return;
+        std::error_code ec;
+        std::filesystem::path vscodeDir = std::filesystem::path(wsRoot) / L".vscode";
+        std::filesystem::create_directories(vscodeDir, ec);
+        std::filesystem::path launchPath = vscodeDir / L"launch.json";
+        if (!std::filesystem::exists(launchPath, ec)) {
+            std::ofstream ofs(launchPath, std::ios::binary);
+            if (ofs.is_open()) {
+                ofs << "{\n"
+                    << "  \"version\": \"0.2.0\",\n"
+                    << "  \"configurations\": [\n"
+                    << "    {\n"
+                    << "      \"name\": \"Python: Current File\",\n"
+                    << "      \"type\": \"python\",\n"
+                    << "      \"request\": \"launch\",\n"
+                    << "      \"program\": \"${file}\"\n"
+                    << "    }\n"
+                    << "  ]\n"
+                    << "}\n";
+            }
+        }
+        OpenFileDocument(launchPath.wstring(), false);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onOpenDebugConsole = [this]() {
+        if (!m_terminal.IsOpen()) {
+            std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            m_terminal.Open(dir);
+        }
+        AnimateTerminalOpen();
+        m_terminal.ShowDebugConsole();
+        m_isTerminalFocused = true;
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onSelectStackFrame = [this](int frameId) {
+        m_terminal.GetDapClient().SelectStackFrame(frameId);
+        auto snap = m_terminal.GetDapClient().GetSnapshot();
+        for (const auto& fr : snap.callStack) {
+            if (fr.id == frameId && !fr.sourcePath.empty() && fr.line1Based > 0) {
+                ApplyDebugPausedUiState(fr.sourcePath, fr.line1Based);
+                break;
+            }
+        }
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onExpandVariable = [this](int varRef) {
+        m_terminal.GetDapClient().ExpandVariableChildren(varRef);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onAddWatch = [this](const std::wstring& expr) {
+        m_terminal.GetDapClient().AddWatch(expr);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onRemoveWatch = [this](size_t idx) {
+        m_terminal.GetDapClient().RemoveWatch(idx);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onSetExceptions = [this](bool breakOnRaised, bool breakOnUncaught) {
+        phide::dev::DapExceptionOptions opts;
+        opts.breakOnRaised = breakOnRaised;
+        opts.breakOnUncaught = breakOnUncaught;
+        m_terminal.GetDapClient().SetExceptionOptions(opts);
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onToggleBreakpoint = [this](const std::wstring& filePath, int line1Based, bool enabled) {
+        if (line1Based <= 0) return;
+        size_t line0 = static_cast<size_t>(line1Based - 1);
+        for (auto& group : m_editorGroups) {
+            for (auto& doc : group.docs) {
+                if (doc.isSpecialView) continue;
+                const std::wstring& dp = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                if (AreRecentPathsEqual(dp, filePath)) {
+                    doc.SetBreakpointEnabled(line0, enabled);
+                }
+            }
+        }
+        SyncAllBreakpointsToDebugger();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onRemoveBreakpoint = [this](const std::wstring& filePath, int line1Based) {
+        if (line1Based <= 0) return;
+        size_t line0 = static_cast<size_t>(line1Based - 1);
+        for (auto& group : m_editorGroups) {
+            for (auto& doc : group.docs) {
+                if (doc.isSpecialView) continue;
+                const std::wstring& dp = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                if (AreRecentPathsEqual(dp, filePath)) {
+                    doc.breakpoints.erase(std::remove(doc.breakpoints.begin(), doc.breakpoints.end(), line0),
+                                          doc.breakpoints.end());
+                    doc.RemoveBreakpointCondition(line0);
+                }
+            }
+        }
+        SyncAllBreakpointsToDebugger();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    dbgCbs.onJumpToLocation = [this](const std::wstring& filePath, int line1Based) {
+        JumpToDebugFileLine(filePath, line1Based);
+    };
+    m_drawer.SetDebugPaneCallbacks(std::move(dbgCbs));
 
     ui::RemoteWindowCallbacks modalCbs;
     modalCbs.onConnectSshTerminal = [this](const ui::remote::SshHostEntry& host, const std::wstring& initialDir) {
@@ -26505,6 +28399,11 @@ void Window::PushCustomLspServerPaths() {
         paths[L"cpp"] = m_config.lspPathCpp;
         paths[L"c"] = m_config.lspPathCpp;
     }
+    for (const auto& psrv : phide::plugin::PluginManager::Instance().GetLanguageServers()) {
+        if (!psrv.languageId.empty() && !psrv.command.empty() && paths.find(psrv.languageId) == paths.end()) {
+            paths[psrv.languageId] = psrv.command;
+        }
+    }
     if (m_activeRemoteSession.IsRemote()) {
         for (auto& [langKey, cmdStr] : paths) {
             if (!cmdStr.empty()) {
@@ -26828,11 +28727,13 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
     if (pDoc->buffer.GetLineCount() == 0 || pDoc->buffer.GetText().size() > 1536 * 1024) return;
 
     uint64_t gen = m_langIntelGen.fetch_add(1) + 1;
+    uint64_t docVersion = pDoc->buffer.GetVersion();
     std::wstring filePath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     auto lines = pDoc->buffer.GetLines();
     bool enableHints = m_config.enableInlayHints;
     bool hasLsp = (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath));
+    bool needSemanticTokens = hasLsp && (pDoc->semanticTokensVersion != docVersion);
 
     std::vector<std::wstring> peerTexts;
     for (const auto& grp : m_editorGroups) {
@@ -26852,13 +28753,14 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
         ++m_activeBgWorkers;
     }
 
-    std::thread([this, gen, filePath, wsRoot, lines = std::move(lines), peerTexts = std::move(peerTexts),
-                 enableHints, runExternalLinters, hasLsp]() {
+    std::thread([this, gen, docVersion, filePath, wsRoot, lines = std::move(lines), peerTexts = std::move(peerTexts),
+                 enableHints, runExternalLinters, hasLsp, needSemanticTokens]() {
         BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
         if (m_isDestroying.load() || m_langIntelGen.load() != gen) return;
 
         auto* payload = new PendingLangIntelUpdate();
         payload->gen = gen;
+        payload->docVersion = docVersion;
         payload->filePath = filePath;
 
         if (enableHints) {
@@ -26891,6 +28793,43 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
                     ih.isGhostText = false;
                     payload->inlayHints.push_back(std::move(ih));
                 }
+            }
+        }
+
+        if (hasLsp && !m_isDestroying.load()) {
+            if (needSemanticTokens) {
+                std::vector<lsp::SemanticToken> semTokens;
+                if (m_lsp.RequestSemanticTokensFull(filePath, semTokens)) {
+                    payload->hasSemanticTokens = true;
+                    const size_t cap = (std::min<size_t>)(semTokens.size(), 4096);
+                    payload->semanticTokensData.reserve(cap * 4);
+                    for (size_t i = 0; i < cap; ++i) {
+                        const auto& st = semTokens[i];
+                        payload->semanticTokensData.push_back(static_cast<uint32_t>(st.line));
+                        payload->semanticTokensData.push_back(static_cast<uint32_t>(st.startCol));
+                        payload->semanticTokensData.push_back(static_cast<uint32_t>(st.length));
+                        payload->semanticTokensData.push_back(st.tokenType);
+                    }
+                }
+            }
+
+            std::vector<lsp::LspFoldRange> lspFolds;
+            if (!m_isDestroying.load() && m_lsp.RequestFoldingRange(filePath, lspFolds)) {
+                payload->hasLspFolds = true;
+                payload->lspFoldingRanges = std::move(lspFolds);
+            }
+
+            std::vector<lsp::LspCodeLens> lspLenses;
+            if (!m_isDestroying.load() && m_lsp.RequestCodeLens(filePath, lspLenses)) {
+                size_t resolvedCount = 0;
+                for (auto& lens : lspLenses) {
+                    if (lens.title.empty() && !lens.rawJson.empty() && resolvedCount < 16) {
+                        m_lsp.ResolveCodeLens(filePath, lens);
+                        ++resolvedCount;
+                    }
+                }
+                payload->hasLspCodeLenses = true;
+                payload->lspCodeLenses = std::move(lspLenses);
             }
         }
 
@@ -27019,8 +28958,46 @@ void Window::RebuildProblemsCache() {
     }
     m_cachedFilteredProblems = editor::ExternalLinterEngine::FilterProblems(
         all, m_problemsFilter, activePath);
+    m_problemsDisplayRows = editor::ExternalLinterEngine::BuildDisplayRows(
+        m_cachedFilteredProblems, m_problemsFilter.groupByFile, m_problemsCollapsedFiles);
     if (m_problemsSelectedIdx >= static_cast<int>(m_cachedFilteredProblems.size())) {
         m_problemsSelectedIdx = m_cachedFilteredProblems.empty() ? -1 : 0;
+    }
+}
+
+void Window::ApplyQuickFixForProblem(const editor::ProblemEntry& prob) {
+    RecordNavCheckpoint();
+    JumpToFileAndLocation(prob.filePath, prob.line, prob.col);
+    if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isDiffView) {
+        pDoc->buffer.SetCursor(prob.line, prob.col);
+        pDoc->hasSelection = false;
+        RequestCodeActionsAsync(pDoc, true, false);
+    }
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ExportProblemsSarif() {
+    if (m_cachedFilteredProblems.empty()) RebuildProblemsCache();
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::string sarif = editor::ExternalLinterEngine::GenerateSarifJson(m_cachedFilteredProblems, wsRoot);
+
+    wchar_t szFile[MAX_PATH] = { 0 };
+    wcscpy_s(szFile, L"phide-problems.sarif");
+    OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+    ofn.hwndOwner = m_hwnd;
+    ofn.lpstrFilter = L"SARIF v2.1.0 (*.sarif;*.json)\0*.sarif;*.json\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"sarif";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_ENABLESIZING;
+
+    if (GetSaveFileNameW(&ofn)) {
+        std::ofstream out(std::filesystem::path{ szFile }, std::ios::binary | std::ios::trunc);
+        if (out.is_open()) {
+            out.write(sarif.data(), static_cast<std::streamsize>(sarif.size()));
+            out.close();
+            OpenFileDocument(szFile, true);
+        }
     }
 }
 
@@ -27058,6 +29035,7 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     m_rcProblemsPanel = D2D1::RectF(panelLeft, panelTop, panelRight, panelBottom);
     m_rcProblemsResizeBorder = D2D1::RectF(panelLeft, panelTop - m_config.ScaleF(3.0f), panelRight, panelTop + m_config.ScaleF(4.0f));
     m_problemsRowBounds.clear();
+    m_problemsFixBtnBounds.clear();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, headerBgBrush, borderBrush, activePillBrush, pillBgBrush, selRowBrush, accentBrush, errBrush, warnBrush, infoBrush;
     if (m_theme.IsDarkMode()) {
@@ -27152,8 +29130,9 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     drawFilterPill(L"Warnings (" + std::to_wstring(m_totalProblemWarnings) + L")", m_problemsFilter.severityFilter == 2, m_rcProblemsFilterWarn);
     drawFilterPill(L"Info (" + std::to_wstring(m_totalProblemInfos) + L")", m_problemsFilter.severityFilter == 3, m_rcProblemsFilterInfo);
     drawFilterPill(L"Current File", m_problemsFilter.currentFileOnly, m_rcProblemsCurFileBtn);
+    drawFilterPill(L"Group by File", m_problemsFilter.groupByFile, m_rcProblemsGroupBtn);
 
-    // Right controls: Close X, Search box, Run Linters button
+    // Right controls: Close X, Search box, Export SARIF, Run Linters button
     float rightX = panelRight - m_config.ScaleF(10.0f);
     float closeW = m_config.ScaleF(24.0f);
     m_rcProblemsCloseBtn = D2D1::RectF(rightX - closeW, pillY, rightX, pillY + pillH);
@@ -27162,7 +29141,7 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     }
     rightX -= (closeW + m_config.ScaleF(8.0f));
 
-    float searchW = (std::min)(m_config.ScaleF(200.0f), (std::max)(m_config.ScaleF(110.0f), (panelRight - panelLeft) * 0.18f));
+    float searchW = (std::min)(m_config.ScaleF(180.0f), (std::max)(m_config.ScaleF(100.0f), (panelRight - panelLeft) * 0.15f));
     m_rcProblemsSearchBox = D2D1::RectF(rightX - searchW, pillY, rightX, pillY + pillH);
     if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsSearchBox, 4.0f, 4.0f), pillBgBrush.Get());
     pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcProblemsSearchBox, 4.0f, 4.0f),
@@ -27173,12 +29152,26 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
         if (uiFmt) pRT->DrawText(sTxt.c_str(), static_cast<UINT32>(sTxt.size()), uiFmt, rcSTxt,
                                  m_problemsFilter.searchText.empty() ? textSec : textPrim);
     }
-    rightX -= (searchW + m_config.ScaleF(8.0f));
+    rightX -= (searchW + m_config.ScaleF(6.0f));
+
+    std::wstring sarifLbl = L"SARIF";
+    float sarifW = measureTextW(sarifLbl) + m_config.ScaleF(14.0f);
+    m_rcProblemsSarifBtn = D2D1::RectF(rightX - sarifW, pillY, rightX, pillY + pillH);
+    if (m_rcProblemsSarifBtn.left > curX + m_config.ScaleF(6.0f)) {
+        if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsSarifBtn, 4.0f, 4.0f), pillBgBrush.Get());
+        if (uiFmt && textPrim) {
+            D2D1_RECT_F rcS = D2D1::RectF(m_rcProblemsSarifBtn.left + m_config.ScaleF(7.0f), pillY, m_rcProblemsSarifBtn.right - m_config.ScaleF(4.0f), pillY + pillH);
+            pRT->DrawText(sarifLbl.c_str(), static_cast<UINT32>(sarifLbl.size()), uiFmt, rcS, textPrim);
+        }
+        rightX -= (sarifW + m_config.ScaleF(6.0f));
+    } else {
+        m_rcProblemsSarifBtn = {};
+    }
 
     std::wstring lintLbl = L"Run Linters";
     float lintW = measureTextW(lintLbl) + m_config.ScaleF(16.0f);
     m_rcProblemsRefreshBtn = D2D1::RectF(rightX - lintW, pillY, rightX, pillY + pillH);
-    if (m_rcProblemsRefreshBtn.left > curX + m_config.ScaleF(8.0f)) {
+    if (m_rcProblemsRefreshBtn.left > curX + m_config.ScaleF(6.0f)) {
         if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsRefreshBtn, 4.0f, 4.0f), pillBgBrush.Get());
         if (uiFmt && textPrim) {
             D2D1_RECT_F rcL = D2D1::RectF(m_rcProblemsRefreshBtn.left + m_config.ScaleF(8.0f), pillY, m_rcProblemsRefreshBtn.right - m_config.ScaleF(4.0f), pillY + pillH);
@@ -27194,14 +29187,19 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     const float listH = (std::max)(10.0f, listBottom - listTop);
     const float rowH = m_config.ScaleF(24.0f);
 
-    if (m_cachedFilteredProblems.empty()) {
+    if (m_problemsDisplayRows.empty() && !m_cachedFilteredProblems.empty()) {
+        m_problemsDisplayRows = editor::ExternalLinterEngine::BuildDisplayRows(
+            m_cachedFilteredProblems, m_problemsFilter.groupByFile, m_problemsCollapsedFiles);
+    }
+
+    if (m_problemsDisplayRows.empty()) {
         m_problemsMaxScrollY = 0.0f;
         m_problemsScrollY = 0.0f;
         D2D1_RECT_F rcEmpty = D2D1::RectF(panelLeft + m_config.ScaleF(18.0f), listTop + m_config.ScaleF(10.0f), panelRight - m_config.ScaleF(18.0f), listTop + m_config.ScaleF(34.0f));
         std::wstring emptyMsg = L"No problems detected in workspace matching current filter.";
         if (bodyFmt && textSec) pRT->DrawText(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.size()), bodyFmt, rcEmpty, textSec);
     } else {
-        float totalContentH = static_cast<float>(m_cachedFilteredProblems.size()) * rowH;
+        float totalContentH = static_cast<float>(m_problemsDisplayRows.size()) * rowH;
         m_problemsMaxScrollY = (std::max)(0.0f, totalContentH - listH);
         m_problemsScrollY = (std::clamp)(m_problemsScrollY, 0.0f, m_problemsMaxScrollY);
 
@@ -27209,33 +29207,67 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
         pRT->PushAxisAlignedClip(rcListClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         size_t firstIdx = static_cast<size_t>((std::max)(0.0f, std::floor(m_problemsScrollY / rowH)));
-        for (size_t i = firstIdx; i < m_cachedFilteredProblems.size(); ++i) {
+        for (size_t i = firstIdx; i < m_problemsDisplayRows.size(); ++i) {
             float ry = listTop + static_cast<float>(i) * rowH - m_problemsScrollY;
             if (ry >= listBottom) break;
             if (ry + rowH <= listTop) continue;
 
-            const auto& prob = m_cachedFilteredProblems[i];
+            const auto& drow = m_problemsDisplayRows[i];
             D2D1_RECT_F rcRow = D2D1::RectF(panelLeft + m_config.ScaleF(6.0f), ry, panelRight - m_config.ScaleF(10.0f), ry + rowH);
             while (m_problemsRowBounds.size() <= i) m_problemsRowBounds.push_back({});
+            while (m_problemsFixBtnBounds.size() <= i) m_problemsFixBtnBounds.push_back({});
             m_problemsRowBounds[i] = rcRow;
 
-            if (static_cast<int>(i) == m_problemsSelectedIdx && selRowBrush) {
+            if (drow.isFileHeader) {
+                if (headerBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), headerBgBrush.Get());
+                std::wstring glyph = drow.collapsed ? L"\x25B8 " : L"\x25BE ";
+                std::wstring hdrTxt = glyph + drow.fileLabel + L"  (" +
+                                      std::to_wstring(drow.fileErrorCount) + L"E / " +
+                                      std::to_wstring(drow.fileWarningCount) + L"W / " +
+                                      std::to_wstring(drow.fileInfoCount) + L"I)";
+                D2D1_RECT_F rcHdr = D2D1::RectF(rcRow.left + m_config.ScaleF(8.0f), ry + m_config.ScaleF(2.0f),
+                                                rcRow.right - m_config.ScaleF(8.0f), ry + rowH - m_config.ScaleF(2.0f));
+                if (uiFmt && textPrim) {
+                    pRT->DrawText(hdrTxt.c_str(), static_cast<UINT32>(hdrTxt.size()), uiFmt, rcHdr, textPrim);
+                }
+                continue;
+            }
+
+            if (drow.problemIndex < 0 || drow.problemIndex >= static_cast<int>(m_cachedFilteredProblems.size())) continue;
+            const auto& prob = m_cachedFilteredProblems[static_cast<size_t>(drow.problemIndex)];
+
+            if (drow.problemIndex == m_problemsSelectedIdx && selRowBrush) {
                 pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), selRowBrush.Get());
             }
 
+            float indent = m_problemsFilter.groupByFile ? m_config.ScaleF(18.0f) : 0.0f;
             ID2D1SolidColorBrush* sevBrush = (prob.severity == 1) ? errBrush.Get() : (prob.severity == 2 ? warnBrush.Get() : infoBrush.Get());
             float dotR = m_config.ScaleF(4.0f);
-            float dotX = rcRow.left + m_config.ScaleF(10.0f);
+            float dotX = rcRow.left + indent + m_config.ScaleF(10.0f);
             float dotY = ry + rowH * 0.5f;
             if (sevBrush) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), sevBrush);
 
-            std::wstring locStr = (prob.displayPath.empty() ? prob.filePath : prob.displayPath) +
-                                  L":" + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1);
-            float locW = (std::min)(m_config.ScaleF(280.0f), measureTextW(locStr) + m_config.ScaleF(16.0f));
-            D2D1_RECT_F rcLoc = D2D1::RectF(rcRow.right - locW, ry + m_config.ScaleF(2.0f), rcRow.right - m_config.ScaleF(6.0f), ry + rowH - m_config.ScaleF(2.0f));
+            float rightCursor = rcRow.right - m_config.ScaleF(6.0f);
+            if (prob.severity <= 2 && !prob.filePath.empty()) {
+                float fixW = m_config.ScaleF(36.0f);
+                D2D1_RECT_F rcFix = D2D1::RectF(rightCursor - fixW, ry + m_config.ScaleF(3.0f), rightCursor, ry + rowH - m_config.ScaleF(3.0f));
+                m_problemsFixBtnBounds[i] = rcFix;
+                if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcFix, 3.0f, 3.0f), pillBgBrush.Get());
+                if (uiFmt && accentBrush) {
+                    pRT->DrawText(L" Fix", 4, uiFmt, rcFix, accentBrush.Get());
+                }
+                rightCursor -= (fixW + m_config.ScaleF(8.0f));
+            }
+
+            std::wstring locStr = m_problemsFilter.groupByFile
+                ? (L"Ln " + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1))
+                : ((prob.displayPath.empty() ? prob.filePath : prob.displayPath) +
+                   L":" + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1));
+            float locW = (std::min)(m_config.ScaleF(260.0f), measureTextW(locStr) + m_config.ScaleF(14.0f));
+            D2D1_RECT_F rcLoc = D2D1::RectF(rightCursor - locW, ry + m_config.ScaleF(2.0f), rightCursor, ry + rowH - m_config.ScaleF(2.0f));
             if (uiFmt && textSec) pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.size()), uiFmt, rcLoc, textSec);
 
-            std::wstring msgLine = L"[" + prob.source + L"] " + prob.message;
+            std::wstring msgLine = L"[" + prob.source + (prob.code.empty() ? L"" : L":" + prob.code) + L"] " + prob.message;
             D2D1_RECT_F rcMsg = D2D1::RectF(dotX + m_config.ScaleF(10.0f), ry + m_config.ScaleF(2.0f), rcLoc.left - m_config.ScaleF(10.0f), ry + rowH - m_config.ScaleF(2.0f));
             if (bodyFmt && textPrim && rcMsg.right > rcMsg.left + 20.0f) {
                 pRT->DrawText(msgLine.c_str(), static_cast<UINT32>(msgLine.size()), bodyFmt, rcMsg, textPrim);
@@ -27294,6 +29326,16 @@ bool Window::HandleProblemsPanelMouseDown(POINT pt) {
         RebuildProblemsCache();
         return true;
     }
+    if (PtInRectF(pt, m_rcProblemsGroupBtn)) {
+        m_problemsFilter.groupByFile = !m_problemsFilter.groupByFile;
+        m_problemsScrollY = 0.0f;
+        RebuildProblemsCache();
+        return true;
+    }
+    if (PtInRectF(pt, m_rcProblemsSarifBtn)) {
+        ExportProblemsSarif();
+        return true;
+    }
     if (PtInRectF(pt, m_rcProblemsRefreshBtn)) {
         if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
             ScheduleLangIntelAndLintersAsync(pDoc, true);
@@ -27306,10 +29348,28 @@ bool Window::HandleProblemsPanelMouseDown(POINT pt) {
     }
     m_problemsSearchFocused = false;
 
-    for (size_t i = 0; i < m_problemsRowBounds.size() && i < m_cachedFilteredProblems.size(); ++i) {
+    for (size_t i = 0; i < m_problemsRowBounds.size() && i < m_problemsDisplayRows.size(); ++i) {
         if (PtInRectF(pt, m_problemsRowBounds[i])) {
-            m_problemsSelectedIdx = static_cast<int>(i);
-            const auto& entry = m_cachedFilteredProblems[i];
+            const auto& drow = m_problemsDisplayRows[i];
+            if (drow.isFileHeader) {
+                auto it = std::find(m_problemsCollapsedFiles.begin(), m_problemsCollapsedFiles.end(), drow.fileKey);
+                if (it != m_problemsCollapsedFiles.end()) {
+                    m_problemsCollapsedFiles.erase(it);
+                } else {
+                    m_problemsCollapsedFiles.push_back(drow.fileKey);
+                }
+                RebuildProblemsCache();
+                return true;
+            }
+            if (drow.problemIndex < 0 || drow.problemIndex >= static_cast<int>(m_cachedFilteredProblems.size())) {
+                return true;
+            }
+            const auto& entry = m_cachedFilteredProblems[static_cast<size_t>(drow.problemIndex)];
+            m_problemsSelectedIdx = drow.problemIndex;
+            if (i < m_problemsFixBtnBounds.size() && PtInRectF(pt, m_problemsFixBtnBounds[i])) {
+                ApplyQuickFixForProblem(entry);
+                return true;
+            }
             RecordNavCheckpoint();
             JumpToFileAndLocation(entry.filePath, entry.line, entry.col);
             return true;
@@ -27391,6 +29451,7 @@ bool Window::HandleProblemsPanelKeyDown(WPARAM vk) {
 void Window::OpenBreakpointConditionPrompt(size_t line0) {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
+    m_bpPromptMode = InlinePromptMode::Breakpoint;
     m_bpPromptLine0 = line0;
     m_bpPromptInput.clear();
     if (const auto* existing = pDoc->GetBreakpointCondition(line0)) {
@@ -27414,6 +29475,22 @@ void Window::SubmitBreakpointConditionPrompt() {
     while (!trimmed.empty() && trimmed.front() == L' ') trimmed.erase(trimmed.begin());
     while (!trimmed.empty() && trimmed.back() == L' ') trimmed.pop_back();
 
+    if (m_bpPromptMode == InlinePromptMode::EmmetWrap) {
+        if (!trimmed.empty()) {
+            int tabSize = GetDocTabSize(pDoc);
+            bool insertSpaces = GetDocInsertSpaces(pDoc);
+            std::wstring indentUnit = insertSpaces ? std::wstring(static_cast<size_t>((std::max)(1, tabSize)), L' ') : L"\t";
+            std::wstring ext = GetDocumentLowerExtension(pDoc);
+            bool isJsx = (ext == L"jsx" || ext == L"tsx");
+            if (pDoc->WrapSelectionWithEmmet(trimmed, indentUnit, isJsx)) {
+                EnsureCursorVisible();
+                MarkDocumentModified(pDoc);
+                if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
+            }
+        }
+        return;
+    }
+
     if (trimmed.empty()) {
         pDoc->RemoveBreakpointCondition(m_bpPromptLine0);
     } else if (trimmed.rfind(L"log:", 0) == 0) {
@@ -27427,7 +29504,9 @@ void Window::SubmitBreakpointConditionPrompt() {
     }
 
     if (m_terminal.IsDebugActive()) {
-        m_terminal.UpdateDapBreakpoints(BuildDapBreakpointsForDoc(*pDoc));
+        SyncAllBreakpointsToDebugger();
+    } else {
+        m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
     }
 }
 
@@ -27457,7 +29536,9 @@ void Window::RenderBreakpointConditionPrompt(float clientW, float clientH) {
     ID2D1Brush* txtPrim = m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : m_theme.brushTextPrimary.Get();
     ID2D1Brush* txtSec = m_theme.brushTextSecondary ? m_theme.brushTextSecondary.Get() : txtPrim;
 
-    std::wstring hdr = L"Edit Breakpoint (Line " + std::to_wstring(m_bpPromptLine0 + 1) + L") - expr | hit:N | log:msg";
+    std::wstring hdr = (m_bpPromptMode == InlinePromptMode::EmmetWrap)
+        ? L"Emmet: Wrap with Abbreviation (e.g. div.card>section, ul>li*)"
+        : (L"Edit Breakpoint (Line " + std::to_wstring(m_bpPromptLine0 + 1) + L") - expr | hit:N | log:msg");
     if (fTitle && txtPrim) {
         m_pRenderTarget->DrawText(hdr.c_str(), static_cast<UINT32>(hdr.size()), fTitle,
                                   D2D1::RectF(left + m_config.ScaleF(14.0f), top + m_config.ScaleF(10.0f), left + boxW - m_config.ScaleF(14.0f), top + m_config.ScaleF(32.0f)),
@@ -27466,7 +29547,11 @@ void Window::RenderBreakpointConditionPrompt(float clientW, float clientH) {
 
     D2D1_RECT_F rcIn = D2D1::RectF(left + m_config.ScaleF(14.0f), top + m_config.ScaleF(40.0f), left + boxW - m_config.ScaleF(14.0f), top + m_config.ScaleF(68.0f));
     if (brBorder) m_pRenderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rcIn, 4.0f, 4.0f), brAccent ? brAccent.Get() : brBorder.Get(), 1.0f);
-    std::wstring disp = m_bpPromptInput.empty() ? L"e.g. x > 5   or   hit:3   or   log:x={x}" : m_bpPromptInput;
+    std::wstring disp = m_bpPromptInput.empty()
+        ? ((m_bpPromptMode == InlinePromptMode::EmmetWrap)
+            ? L"e.g. div.wrapper   or   ul>li*   or   a[href=\"#\"]"
+            : L"e.g. x > 5   or   hit:3   or   log:x={x}")
+        : m_bpPromptInput;
     if (fHint) {
         m_pRenderTarget->DrawText(disp.c_str(), static_cast<UINT32>(disp.size()), fHint,
                                   D2D1::RectF(rcIn.left + m_config.ScaleF(8.0f), rcIn.top + m_config.ScaleF(5.0f), rcIn.right - m_config.ScaleF(8.0f), rcIn.bottom),
@@ -27546,8 +29631,226 @@ bool Window::ExecuteWorkspaceTaskByLabel(const std::wstring& taskLabel) {
     return true;
 }
 
+std::vector<phide::dev::DapBreakpoint> Window::BuildAllOpenDapBreakpoints() const {
+    std::vector<phide::dev::DapBreakpoint> all;
+    for (const auto& group : m_editorGroups) {
+        for (const auto& doc : group.docs) {
+            if (doc.isSpecialView || doc.isUnsupportedBinary) continue;
+            auto docBps = BuildDapBreakpointsForDoc(doc);
+            for (auto& bp : docBps) {
+                if (bp.filePath.empty()) bp.filePath = doc.fileName;
+                bool dup = false;
+                for (const auto& ex : all) {
+                    if (ex.line1Based == bp.line1Based && AreRecentPathsEqual(ex.filePath, bp.filePath)) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    all.push_back(std::move(bp));
+                }
+            }
+        }
+    }
+    return all;
+}
+
+void Window::SyncAllBreakpointsToDebugger() {
+    auto allBps = BuildAllOpenDapBreakpoints();
+    m_terminal.SetBreakpointsSnapshot(allBps);
+    if (m_terminal.IsDebugActive()) {
+        m_terminal.UpdateDapBreakpoints(allBps);
+    }
+}
+
+bool Window::IsLineBreakpointAllowedForDoc(const editor::OpenDocument& doc, size_t line0) const {
+    if (doc.isSpecialView || doc.isUnsupportedBinary || line0 >= doc.buffer.GetLineCount()) {
+        return false;
+    }
+    if (m_config.debugBreakpointsEverywhere) {
+        return true;
+    }
+    if (!doc.filePath.empty()) {
+        std::wstring ext = std::filesystem::path(doc.filePath).extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        if (ext == L".md" || ext == L".txt" || ext == L".log" || ext == L".json" ||
+            ext == L".yaml" || ext == L".yml" || ext == L".xml" || ext == L".ini" ||
+            ext == L".toml" || ext == L".csv" || ext == L".svg") {
+            return false;
+        }
+    }
+    const std::wstring& line = doc.buffer.GetLine(line0);
+    size_t i = 0;
+    while (i < line.size() && (line[i] == L' ' || line[i] == L'\t')) ++i;
+    if (i >= line.size()) return false;
+    if (i + 1 < line.size() && line[i] == L'/' && (line[i + 1] == L'/' || line[i + 1] == L'*')) return false;
+    if (line[i] == L'#' || line[i] == L'*') return false;
+    return true;
+}
+
+void Window::JumpToDebugFileLine(const std::wstring& filePath, int line1Based) {
+    if (filePath.empty() || line1Based <= 0) return;
+    std::wstring normPath = filePath;
+    for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
+    std::filesystem::path pTarget(normPath);
+
+    auto findOpenDoc = [&]() -> std::pair<int, int> {
+        for (size_t gi = 0; gi < m_editorGroups.size(); ++gi) {
+            const auto& docs = m_editorGroups[gi].docs;
+            for (size_t di = 0; di < docs.size(); ++di) {
+                if (docs[di].isSpecialView) continue;
+                std::wstring dp = docs[di].filePath.empty() ? docs[di].fileName : docs[di].filePath;
+                if (AreRecentPathsEqual(dp, normPath)) {
+                    return { static_cast<int>(gi), static_cast<int>(di) };
+                }
+            }
+        }
+        if (!pTarget.filename().empty()) {
+            for (size_t gi = 0; gi < m_editorGroups.size(); ++gi) {
+                const auto& docs = m_editorGroups[gi].docs;
+                for (size_t di = 0; di < docs.size(); ++di) {
+                    if (docs[di].isSpecialView) continue;
+                    std::filesystem::path pd(docs[di].filePath.empty() ? docs[di].fileName : docs[di].filePath);
+                    if (_wcsicmp(pTarget.filename().c_str(), pd.filename().c_str()) == 0) {
+                        return { static_cast<int>(gi), static_cast<int>(di) };
+                    }
+                }
+            }
+        }
+        return { -1, -1 };
+    };
+
+    auto match = findOpenDoc();
+    if (match.first < 0) {
+        std::error_code ec;
+        if (std::filesystem::exists(pTarget, ec) && std::filesystem::is_regular_file(pTarget, ec)) {
+            OpenFileDocument(normPath, false);
+            match = findOpenDoc();
+        }
+    }
+
+    if (match.first >= 0 && match.first < static_cast<int>(m_editorGroups.size())) {
+        m_focusedGroupIdx = match.first;
+        auto& group = m_editorGroups[static_cast<size_t>(match.first)];
+        if (match.second >= 0 && match.second < static_cast<int>(group.docs.size())) {
+            group.activeDocIdx = match.second;
+            auto& doc = group.docs[static_cast<size_t>(match.second)];
+            size_t line0 = static_cast<size_t>(line1Based - 1);
+            if (line0 < doc.buffer.GetLineCount()) {
+                doc.buffer.SetCursor(line0, 0);
+                if (line0 < doc.scrollLine || line0 > doc.scrollLine + 18) {
+                    doc.scrollLine = (line0 > 5) ? (line0 - 5) : 0;
+                }
+            }
+        }
+    }
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ApplyDebugPausedUiState(const std::wstring& filePath, int lineNum1) {
+    if (lineNum1 <= 0) return;
+    JumpToDebugFileLine(filePath, lineNum1);
+
+    size_t line0 = static_cast<size_t>(lineNum1 - 1);
+    std::wstring normPath = filePath;
+    for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
+    std::filesystem::path pTarget(normPath);
+
+    auto stripDebugHints = [](editor::OpenDocument& doc) {
+        doc.inlayHints.erase(
+            std::remove_if(doc.inlayHints.begin(), doc.inlayHints.end(),
+                           [](const editor::OpenDocument::InlayHint& h) { return h.isDebugValue; }),
+            doc.inlayHints.end());
+    };
+
+    auto snap = m_terminal.GetDapClient().GetSnapshot();
+
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            doc.debugPausedLine = static_cast<size_t>(-1);
+            stripDebugHints(doc);
+            if (doc.isSpecialView) continue;
+
+            std::wstring docNorm = doc.filePath.empty() ? doc.fileName : doc.filePath;
+            for (auto& c : docNorm) { if (c == L'/') c = L'\\'; }
+            std::filesystem::path pDoc(docNorm);
+
+            if (AreRecentPathsEqual(normPath, docNorm) ||
+                (!pTarget.filename().empty() && _wcsicmp(pTarget.filename().c_str(), pDoc.filename().c_str()) == 0)) {
+                doc.debugPausedLine = line0;
+                if (m_config.debugInlineValues && !snap.scopes.empty() && line0 < doc.buffer.GetLineCount()) {
+                    auto isIdent = [](wchar_t c) noexcept {
+                        return (c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'Z') ||
+                               (c >= L'a' && c <= L'z') || c == L'_';
+                    };
+                    size_t startL = (line0 > 35) ? (line0 - 35) : 0;
+                    size_t endL = (std::min)(doc.buffer.GetLineCount(), line0 + 10);
+                    size_t addedTotal = 0;
+                    const auto& vars = snap.scopes.front().variables;
+                    for (size_t li = startL; li < endL && addedTotal < 128; ++li) {
+                        const std::wstring& txt = doc.buffer.GetLine(li);
+                        if (txt.empty() || txt.size() > 512) continue;
+                        size_t lineAdded = 0;
+                        for (const auto& v : vars) {
+                            if (addedTotal >= 128 || lineAdded >= 3) break;
+                            if (v.name.empty() || v.value.empty() || v.name.size() > 64) continue;
+                            if (v.name.front() == L'_' && v.name.size() > 1 && v.name[1] == L'_') continue;
+                            size_t pos = txt.find(v.name);
+                            while (pos != std::wstring::npos) {
+                                bool leftOk = (pos == 0 || !isIdent(txt[pos - 1]));
+                                size_t after = pos + v.name.size();
+                                bool rightOk = (after >= txt.size() || !isIdent(txt[after]));
+                                if (leftOk && rightOk) {
+                                    std::wstring val = v.value;
+                                    if (val.size() > 36) val = val.substr(0, 33) + L"...";
+                                    editor::OpenDocument::InlayHint ih;
+                                    ih.line = li;
+                                    ih.col = txt.size();
+                                    ih.label = v.name + L" = " + val;
+                                    ih.isGhostText = false;
+                                    ih.isDebugValue = true;
+                                    doc.inlayHints.push_back(std::move(ih));
+                                    ++addedTotal;
+                                    ++lineAdded;
+                                    break;
+                                }
+                                pos = txt.find(v.name, pos + 1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (m_config.debugOpenOnBreak) {
+        m_config.activeRailTab = static_cast<int>(ui::RailTabId::Debug);
+        if (!m_config.isDrawerOpen) {
+            ToggleSidebar();
+        }
+    }
+    m_editor.SetFloatingDebugState(m_terminal.IsDebugActive(), true);
+    m_terminal.SetBreakpointsSnapshot(BuildAllOpenDapBreakpoints());
+    UpdateExecutionButtonStates();
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::ClearDebugPausedUiState(bool sessionEnded) {
+    for (auto& group : m_editorGroups) {
+        for (auto& doc : group.docs) {
+            doc.debugPausedLine = static_cast<size_t>(-1);
+            doc.inlayHints.erase(
+                std::remove_if(doc.inlayHints.begin(), doc.inlayHints.end(),
+                               [](const editor::OpenDocument::InlayHint& h) { return h.isDebugValue; }),
+                doc.inlayHints.end());
+        }
+    }
+    m_editor.SetFloatingDebugState(!sessionEnded && m_terminal.IsDebugActive(), false);
+    UpdateExecutionButtonStates();
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg) {
-    auto* pDoc = GetActiveDoc();
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
     if (!cfg.preLaunchTask.empty()) {
         ExecuteWorkspaceTaskByLabel(cfg.preLaunchTask);
@@ -27562,16 +29865,15 @@ void Window::LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg) {
         }
     }
 
-    std::vector<phide::dev::DapBreakpoint> bps;
-    if (pDoc && !pDoc->isSpecialView) {
-        bps = BuildDapBreakpointsForDoc(*pDoc);
-    }
+    std::vector<phide::dev::DapBreakpoint> bps = BuildAllOpenDapBreakpoints();
+    m_terminal.SetBreakpointsSnapshot(bps);
 
     if (!m_terminal.IsOpen()) {
         m_terminal.Open(cfg.cwd.empty() ? wsRoot : cfg.cwd);
     }
     AnimateTerminalOpen();
     m_terminal.StartDapDebugSession(cfg, bps, pythonExe);
+    m_editor.SetFloatingDebugState(true, false);
     m_isTerminalFocused = true;
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -27677,6 +29979,167 @@ void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
         if (m_activeBgWorkers > 0) --m_activeBgWorkers;
         m_bgWorkersCv.notify_all();
     }).detach();
+}
+
+void Window::RunFailedWorkspaceTestsAsync() {
+    if (m_testsRunningAsync.exchange(true) || m_isDestroying.load()) {
+        return;
+    }
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (wsRoot.empty()) {
+        m_testsRunningAsync.store(false);
+        return;
+    }
+
+    std::vector<phide::dev::TestItem> currentSnapshot;
+    std::vector<phide::dev::TestItem> failedSubset;
+    {
+        std::lock_guard<std::mutex> lk(m_testsMutex);
+        currentSnapshot = m_workspaceTests;
+        for (const auto& it : m_workspaceTests) {
+            if (it.status == phide::dev::TestStatus::Failed) {
+                failedSubset.push_back(it);
+                if (failedSubset.size() >= 32) break;
+            }
+        }
+    }
+    if (failedSubset.empty()) {
+        m_testsRunningAsync.store(false);
+        RunWorkspaceTestsAsync();
+        return;
+    }
+
+    m_editor.SetTestIsRunning(true);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        ++m_activeBgWorkers;
+    }
+    std::thread([this, wsRoot, currentSnapshot = std::move(currentSnapshot), failedSubset = std::move(failedSubset)]() mutable {
+        int worstExit = 0;
+        for (const auto& fItem : failedSubset) {
+            if (m_isDestroying.load()) break;
+            std::vector<phide::dev::TestItem> oneVec = { fItem };
+            auto s = phide::dev::TestExplorerEngine::ExecuteTestsSync(
+                wsRoot, fItem.framework, oneVec, fItem.name, fItem.filePath, 30000);
+            if (s.exitCode != 0) worstExit = s.exitCode;
+            for (auto& orig : currentSnapshot) {
+                if (orig.id == fItem.id || (orig.name == fItem.name && orig.filePath == fItem.filePath)) {
+                    orig.status = oneVec[0].status;
+                    if (oneVec[0].durationMs > 0.0) orig.durationMs = oneVec[0].durationMs;
+                    orig.failureMessage = oneVec[0].failureMessage;
+                    orig.expectedValue = oneVec[0].expectedValue;
+                    orig.actualValue = oneVec[0].actualValue;
+                    break;
+                }
+            }
+        }
+
+        phide::dev::TestRunSummary summary;
+        summary.exitCode = worstExit;
+        for (const auto& it : currentSnapshot) {
+            summary.total++;
+            if (it.status == phide::dev::TestStatus::Passed) summary.passed++;
+            else if (it.status == phide::dev::TestStatus::Failed) summary.failed++;
+            else if (it.status == phide::dev::TestStatus::Skipped) summary.skipped++;
+        }
+
+        if (!m_isDestroying.load()) {
+            {
+                std::lock_guard<std::mutex> lk(m_testsMutex);
+                m_workspaceTests = std::move(currentSnapshot);
+                m_workspaceTestSummary = std::move(summary);
+            }
+            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 1, 0);
+        }
+        m_testsRunningAsync.store(false);
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_activeBgWorkers > 0) --m_activeBgWorkers;
+        m_bgWorkersCv.notify_all();
+    }).detach();
+}
+
+void Window::RefreshWorkspaceCoverageAsync() {
+    if (m_isDestroying.load()) return;
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (wsRoot.empty()) return;
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        ++m_activeBgWorkers;
+    }
+    std::thread([this, wsRoot]() {
+        auto cov = phide::dev::CoverageReportEngine::DiscoverAndLoadCoverage(wsRoot);
+        if (!m_isDestroying.load()) {
+            {
+                std::lock_guard<std::mutex> lk(m_covMutex);
+                m_workspaceCoverage = std::move(cov);
+            }
+            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 231, 0, 0);
+        }
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_activeBgWorkers > 0) --m_activeBgWorkers;
+        m_bgWorkersCv.notify_all();
+    }).detach();
+}
+
+void Window::RefreshWorkspaceTasks() {
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    if (wsRoot.empty()) {
+        m_editor.SetWorkspaceTasks({});
+        return;
+    }
+    auto tasks = phide::dev::TaskRunnerEngine::DiscoverAllTasks(wsRoot);
+    m_editor.SetWorkspaceTasks(std::move(tasks));
+}
+
+void Window::SyncMarkdownCompanionScroll(const editor::OpenDocument& changedDoc, bool fromPreview) {
+    if (!m_config.markdownSyncScroll || changedDoc.filePath.empty()) return;
+    double ratio = 0.0;
+    if (fromPreview) {
+        if (changedDoc.markdownMaxScrollY <= 0.0f) return;
+        ratio = static_cast<double>(changedDoc.markdownScrollY) / static_cast<double>(changedDoc.markdownMaxScrollY);
+    } else {
+        size_t lc = changedDoc.buffer.GetLineCount();
+        if (lc <= 1) return;
+        ratio = static_cast<double>(changedDoc.scrollLine) / static_cast<double>(lc - 1);
+    }
+    ratio = (std::clamp)(ratio, 0.0, 1.0);
+
+    auto PathsMatch = [this](const std::wstring& p1, const std::wstring& p2) -> bool {
+        if (p1.empty() || p2.empty()) return false;
+        std::wstring c1 = p1;
+        std::wstring c2 = p2;
+        for (auto& c : c1) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        for (auto& c : c2) { if (c == L'/') c = L'\\'; c = towlower(c); }
+        if (c1 == c2) return true;
+        if (m_drawer.HasOpenFolder() && !m_drawer.GetOpenFolderPath().empty()) {
+            std::wstring root = m_drawer.GetOpenFolderPath();
+            for (auto& c : root) { if (c == L'/') c = L'\\'; c = towlower(c); }
+            if (!root.empty() && root.back() != L'\\') root += L'\\';
+            std::wstring full1 = (c1.length() >= 2 && (c1[1] == L':' || (c1[0] == L'\\' && c1[1] == L'\\'))) ? c1 : (root + c1);
+            std::wstring full2 = (c2.length() >= 2 && (c2[1] == L':' || (c2[0] == L'\\' && c2[1] == L'\\'))) ? c2 : (root + c2);
+            if (full1 == full2) return true;
+        }
+        return false;
+    };
+
+    for (auto& grp : m_editorGroups) {
+        for (auto& other : grp.docs) {
+            if (!PathsMatch(other.filePath, changedDoc.filePath)) continue;
+            if (fromPreview && !other.isSpecialView) {
+                size_t lc = other.buffer.GetLineCount();
+                if (lc > 1) {
+                    other.scrollLine = static_cast<size_t>(ratio * static_cast<double>(lc - 1) + 0.5);
+                }
+            } else if (!fromPreview && other.isSpecialView && other.viewType == L"markdown_preview") {
+                if (other.markdownMaxScrollY > 0.0f) {
+                    other.markdownScrollY = static_cast<float>(ratio * static_cast<double>(other.markdownMaxScrollY));
+                }
+            }
+        }
+    }
 }
 
 } // namespace phide::app

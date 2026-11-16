@@ -167,6 +167,8 @@ static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) 
     if (id == L"debug.showSubSessionsInToolBar")          return &cfg.debugFloatingToolbar;
     if (id == L"database.autoDiscoverServers")            return &cfg.dbAutoDiscoverServers;
     if (id == L"liveServer.autoOpenBrowser")              return &cfg.liveServerAutoOpenBrowser;
+    if (id == L"coverage.showGutter")                     return &cfg.coverageShowGutter;
+    if (id == L"markdown.syncScroll")                     return &cfg.markdownSyncScroll;
     return nullptr;
 }
 
@@ -202,6 +204,7 @@ static std::wstring ReadDropdownSetting(const std::wstring& id, const app::AppCo
     if (id == L"terminal.integrated.shell.windows") return cfg.terminalDefaultShell;
     if (id == L"terminal.integrated.cursorStyle")  return cfg.terminalCursorStyle;
     if (id == L"liveServer.root")                  return cfg.liveServerRoot;
+    if (id == L"editor.rulers")                    return cfg.editorRulers;
     return L"";
 }
 
@@ -225,6 +228,8 @@ static void WriteDropdownSetting(const std::wstring& id, const std::wstring& val
         cfg.autoClosingQuotes = val;
     } else if (id == L"editor.multiCursorModifier") {
         cfg.multiCursorModifier = val;
+    } else if (id == L"editor.rulers") {
+        cfg.editorRulers = val;
     } else if (id == L"workbench.colorTheme") {
         theme.SetThemeMode(DisplayNameToThemeMode(val));
     } else if (id == L"workbench.sideBar.location") {
@@ -505,6 +510,10 @@ void SettingsView::InitializeSettings() {
     addToggle(L"editor.matchBrackets", L"EDITOR", L"Highlight Matching Brackets",
               L"Highlight the matching opening or closing bracket when the cursor touches a delimiter.",
               SettingCategory::TextEditor, false, true);
+    addDropdown(L"editor.rulers", L"EDITOR", L"Column Rulers",
+                L"Render vertical column wrap guides after the specified number of monospace characters.",
+                SettingCategory::TextEditor, true, true,
+                { L"off", L"80", L"100", L"120", L"80, 120" });
     addToggle(L"editor.formatOnPaste", L"EDITOR", L"Format On Paste",
               L"Automatically format pasted multi-line code blocks using the active language formatter.",
               SettingCategory::TextEditor, false, false);
@@ -689,6 +698,12 @@ void SettingsView::InitializeSettings() {
     addToggle(L"php.validate.enable", L"PHP LINTER", L"Enable PHP Validation",
               L"Run built-in PHP syntax, undefined class/function, and variable checks on open buffers.",
               SettingCategory::Extensions, false, false);
+    addToggle(L"coverage.showGutter", L"TESTING & COVERAGE", L"Show Code Coverage In Gutter",
+              L"Highlight covered (green) and uncovered (red) lines in the editor gutter from lcov.info or coverage.xml.",
+              SettingCategory::TerminalTasks, false, false);
+    addToggle(L"markdown.syncScroll", L"MARKDOWN", L"Synchronized Scroll In Markdown Preview",
+              L"Synchronize vertical scrolling proportionally between the Markdown editor and live preview pane.",
+              SettingCategory::TextEditor, false, false);
     addToggle(L"javascript.validate.enable", L"JS / TS LINTER", L"Enable JS/TS Validation",
               L"Run semantic and syntax diagnostics on JavaScript, TypeScript, JSX, and TSX files.",
               SettingCategory::Extensions, false, false);

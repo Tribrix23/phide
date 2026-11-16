@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <unordered_map>
 
 namespace phide::dev {
 
@@ -75,6 +76,7 @@ struct WorkspaceTaskDef {
     std::wstring cwd;
     std::wstring group;           ///< "build", "test", or ""
     bool isDefault = false;
+    bool isBackground = false;
     std::vector<std::wstring> dependsOn;
     std::wstring problemMatcher;  ///< e.g. "$msCompile", "$gcc", "$tsc", "$eslint-stylish"
     std::wstring source;          ///< Origin file (e.g. ".vscode/tasks.json")
@@ -141,6 +143,8 @@ struct TestItem {
     TestStatus status = TestStatus::Unknown;
     double durationMs = 0.0;
     std::wstring failureMessage;
+    std::wstring expectedValue;
+    std::wstring actualValue;
 };
 
 struct TestRunSummary {
@@ -189,6 +193,43 @@ public:
         const std::wstring& filterName = L"",
         const std::wstring& filePath = L"",
         int timeoutMs = 45000);
+
+    static void ExtractExpectedActualDiff(
+        const std::wstring& failureMsg,
+        std::wstring& outExpected,
+        std::wstring& outActual);
+};
+
+// =========================================================================
+// #31 Code Coverage Report Parser (lcov.info, Cobertura coverage.xml, Clover)
+// =========================================================================
+
+struct FileCoverage {
+    std::unordered_map<size_t, int> lineHits; ///< 0-based line -> execution hit count
+    size_t coveredLines = 0;
+    size_t totalLines = 0;
+};
+
+struct WorkspaceCoverageSummary {
+    std::unordered_map<std::wstring, FileCoverage> filesByNormPath;
+    size_t totalInstrumented = 0;
+    size_t totalCovered = 0;
+    double percent = 0.0;
+    std::wstring reportPath;
+    bool loaded = false;
+};
+
+class CoverageReportEngine {
+public:
+    static constexpr size_t kMaxReportBytes = 16u * 1024u * 1024u;
+    static constexpr size_t kMaxCoverageFiles = 5000u;
+    static constexpr size_t kMaxLinesPerFile = 50000u;
+
+    [[nodiscard]] static std::wstring NormalizePathKey(const std::wstring& path);
+    [[nodiscard]] static WorkspaceCoverageSummary ParseLcovContent(const std::string& utf8, const std::wstring& workspaceRoot);
+    [[nodiscard]] static WorkspaceCoverageSummary ParseXmlCoverageContent(const std::string& utf8, const std::wstring& workspaceRoot);
+    [[nodiscard]] static WorkspaceCoverageSummary DiscoverAndLoadCoverage(const std::wstring& workspaceRoot);
+    [[nodiscard]] static const FileCoverage* FindCoverageForFile(const WorkspaceCoverageSummary& cov, const std::wstring& filePath);
 };
 
 } // namespace phide::dev

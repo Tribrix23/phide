@@ -38,6 +38,21 @@ public:
     void LoadSnippets();
 
     /**
+     * @brief Imports a VS Code .code-snippets or language JSON snippets file (bounded <= 1 MB).
+     */
+    bool ImportVscodeSnippetsFromFile(const std::wstring& filePath, const std::wstring& defaultScope = L"");
+
+    /**
+     * @brief Imports all .vscode/*.code-snippets files inside a workspace folder (bounded <= 32 files).
+     */
+    size_t ImportVscodeWorkspaceSnippets(const std::wstring& workspaceRoot);
+
+    /**
+     * @brief Parses a JSON/JSONC snippets payload in memory and merges matching entries into m_snippets.
+     */
+    size_t ParseSnippetsJsonContent(const std::wstring& content, const std::wstring& defaultScope = L"");
+
+    /**
      * @brief Creates the snippets file with rich default templates if it does not exist or is legacy stub.
      */
     void EnsureDefaultSnippetsFile();

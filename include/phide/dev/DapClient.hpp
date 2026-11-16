@@ -32,7 +32,7 @@ enum class DapAdapterType {
 
 struct LaunchConfig {
     std::wstring name;
-    std::wstring type;           ///< "python", "node", "cppdbg", "gdb", "lldb", "php"
+    std::wstring type;           ///< "python", "node", "cppdbg", "gdb", "lldb", "php", "dap"
     std::wstring request = L"launch"; ///< "launch" | "attach"
     std::wstring program;
     std::vector<std::wstring> args;
@@ -41,6 +41,8 @@ struct LaunchConfig {
     int port = 0;                ///< Attach/listen port (e.g., 9229 Node, 9003 Xdebug)
     std::wstring preLaunchTask;
     std::wstring miDebuggerPath;
+    std::wstring adapterCommand; ///< External DAP executable (e.g., "debugpy-adapter", "lldb-dap")
+    std::vector<std::wstring> adapterArgs;
 };
 
 struct DapBreakpoint {
@@ -193,9 +195,25 @@ public:
         const std::function<std::wstring(const std::wstring&)>& evalFn,
         std::wstring& outLogpointMessage);
 
-    // Exposed GDB/MI parser for unit testing
+    // Exposed parsers for unit testing multi-backend parity deterministically
     static void ParseGdbMiFrames(const std::string& miRecord, std::vector<DapStackFrame>& outFrames);
     static void ParseGdbMiVariables(const std::string& miRecord, std::vector<DapVariable>& outVars);
+    static void ParsePhpDbgpStack(const std::string& stackXml,
+                                  const std::wstring& fallbackProgram,
+                                  std::vector<DapStackFrame>& outFrames);
+    static void ParsePhpDbgpContextVars(const std::string& ctxXml,
+                                        std::vector<DapVariable>& outVars,
+                                        const std::function<int(const std::string&)>& allocVarRef = nullptr);
+    static std::wstring DecodePhpDbgpEvalResult(const std::string& evalXml);
+    static void ParseNodeCdpFrames(const std::string& pausedMsgJson,
+                                   const std::wstring& fallbackProgram,
+                                   const std::vector<std::pair<std::string, std::wstring>>& scriptIdToPath,
+                                   std::vector<DapStackFrame>& outFrames,
+                                   std::vector<std::string>& outCallFrameIds,
+                                   std::vector<std::string>& outScopeObjIds);
+    static void ParseNodeCdpProperties(const std::string& propsJson,
+                                       std::vector<DapVariable>& outVars,
+                                       const std::function<int(const std::string&)>& allocVarRef = nullptr);
 
 private:
     void WorkerLoop(LaunchConfig cfg, std::wstring pythonExe);
@@ -203,11 +221,18 @@ private:
     void RunGdbMiSession(const LaunchConfig& cfg);
     void RunNodeCdpSession(const LaunchConfig& cfg);
     void RunPhpDbGpSession(const LaunchConfig& cfg);
+    void RunExternalDapSession(const LaunchConfig& cfg);
 
     bool HandleBreakpointEvaluationLocked(
         const std::wstring& filePath,
         int line1Based,
         const std::function<std::wstring(const std::wstring&)>& evalFn);
+
+    static bool AssignVariableChildrenRecursive(
+        std::vector<DapVariable>& vars,
+        int targetVarRef,
+        std::vector<DapVariable>&& children,
+        int depth = 0);
 
     void WritePipeLine(const std::string& line);
     void QueueControlCmd(const std::string& cmd, const std::wstring& arg = L"", int intArg = 0);
@@ -222,6 +247,9 @@ private:
     void* m_hChildProc = nullptr;
     void* m_hStdinWrite = nullptr;
     void* m_hStdoutRead = nullptr;
+    unsigned long m_childPid = 0;
+    std::wstring m_tempBridgeFile;
+    std::wstring m_tempBridgeCfgFile;
     uintptr_t m_sockHandle = static_cast<uintptr_t>(-1);
 
     std::mutex m_cmdMutex;
@@ -233,6 +261,7 @@ private:
     };
     std::queue<ControlMsg> m_cmdQueue;
 
+    std::mutex m_evalCallMutex;
     std::mutex m_evalMutex;
     std::condition_variable m_evalCv;
     bool m_evalReady = false;

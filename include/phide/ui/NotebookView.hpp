@@ -9,12 +9,16 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 #include <vector>
 #include <string>
 #include <memory>
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <list>
+#include <unordered_map>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
@@ -74,7 +78,11 @@ public:
     void RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd);
     void RunAllCells(editor::OpenDocument& doc, HWND hwnd);
     void StopExecution(editor::OpenDocument& doc);
-    void RestartKernel(editor::OpenDocument& doc);
+    void DiscardDeviceResources();
+    void RestartKernel(editor::OpenDocument& doc, HWND hwnd = nullptr);
+    void RefreshPythonKernels(editor::OpenDocument& doc);
+    void QueryVariablesAsync(const std::shared_ptr<editor::NotebookDocument>& nbDoc, HWND hwnd);
+    void RefreshKernelDropdown(editor::OpenDocument& doc) { RefreshPythonKernels(doc); }
 
     [[nodiscard]] bool IsExecuting() const noexcept { return m_isExecuting.load(); }
     void SetScrollY(float s) noexcept { m_scrollY = s; }
@@ -148,6 +156,49 @@ private:
     D2D1_RECT_F m_btnClearAll{};
     D2D1_RECT_F m_btnAddCode{};
     D2D1_RECT_F m_btnAddText{};
+    D2D1_RECT_F m_btnKernelPicker{};
+    D2D1_RECT_F m_btnRestartKernel{};
+    D2D1_RECT_F m_btnVariables{};
+    D2D1_RECT_F m_kernelDropdownBounds{};
+    std::vector<D2D1_RECT_F> m_kernelDropdownItemBounds;
+    bool m_kernelDropdownOpen = false;
+    bool m_hoverDropdownItemIdx = false;
+    int m_hoveredKernelDropdownIdx = -1;
+
+    // Cached D2D brushes / WIC / bounded LRU bitmap cache (per-RT, cleared in DiscardDeviceResources)
+    struct CachedNbBitmap {
+        uint64_t imageId = 0;
+        float pxW = 0.0f;
+        float pxH = 0.0f;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+    };
+    static constexpr size_t kMaxCachedNbBitmaps = 16u;
+    std::list<CachedNbBitmap> m_bitmapLru;
+    std::unordered_map<uint64_t, std::list<CachedNbBitmap>::iterator> m_bitmapIndex;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> m_pWicFactory;
+    ID2D1RenderTarget* m_cachedNbRT = nullptr;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbInner;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbStop;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbSpin;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbIdleBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbIdleHover;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbErrRed;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbOkGreen;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbTrack;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbThumb;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbThumbDrag;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbBlueText;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbPillBgDark;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbPillBgLight;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbPopupBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushNbRowHover;
+
+    std::atomic<bool> m_isDestroying{ false };
+    std::atomic<int> m_activeWorkers{ 0 };
+
+    void EnsureNbBrushes(ID2D1RenderTarget* pRT);
+    ID2D1Bitmap* GetOrCreateOutputBitmap(ID2D1RenderTarget* pRT, uint64_t imageId, const std::vector<BYTE>& pngBytes, float& outW, float& outH);
+    std::vector<std::wstring> DiscoverPythonExecutables(const std::wstring& targetFilePath) const;
 
     // Background execution engine & sequential queue
     editor::NotebookKernel m_kernel;

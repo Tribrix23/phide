@@ -26,6 +26,7 @@
 #include "phide/editor/WorkspaceNavigation.hpp"
 #include "phide/editor/LanguageIntelligence.hpp"
 #include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/git/GitWorkflowEngine.hpp"
 #include "phide/db/SqlEngine.hpp"
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/ui/KeyboardShortcutsView.hpp"
@@ -39,6 +40,7 @@
 #include "phide/ui/WelcomeView.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
+#include "phide/ui/StructuredViewers.hpp"
 #include <unordered_map>
 
 namespace phide::ui {
@@ -276,6 +278,7 @@ public:
      * @return True if startLine begins a foldable block.
      */
     static bool GetFoldRange(const editor::Buffer& buffer, size_t startLine, size_t& outEndLine);
+    static bool GetFoldRangeForDoc(const editor::OpenDocument& doc, size_t startLine, size_t& outEndLine);
 
     /**
      * @brief Folds all foldable blocks and #region markers in the document.
@@ -413,6 +416,19 @@ public:
 
     void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
     [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
+
+    // --- Floating Debug Toolbar & Cached Debug Resources (#28) ---
+    void SetFloatingDebugState(bool active, bool isPaused) noexcept {
+        m_floatingDebugActive = active;
+        m_floatingDebugPaused = isPaused;
+        if (!active) m_floatingDebugDragging = false;
+    }
+    void SetOnFloatingDebugAction(std::function<void(int dbgActionId)> cb) { m_onFloatingDebugAction = std::move(cb); }
+    bool HandleFloatingDebugMouseMove(POINT pt);
+    bool HandleFloatingDebugLButtonDown(POINT pt);
+    bool HandleFloatingDebugLButtonUp(POINT pt) noexcept;
+    [[nodiscard]] bool HitTestFloatingDebug(POINT pt) const noexcept;
+    [[nodiscard]] bool IsDraggingFloatingDebug() const noexcept { return m_floatingDebugDragging; }
 
 private:
     std::wstring m_workspaceRoot;
@@ -786,9 +802,43 @@ public:
     bool HandleSnippetEditorKeyDown(WPARAM wParam);
 
     std::function<void()> onTestRunAll;
+    std::function<void()> onTestRerunFailed;
     std::function<void()> onTestRefresh;
+    std::function<void()> onToggleCoverageGutter;
+    std::function<void()> onRefreshCoverage;
     std::function<void(const phide::dev::TestItem&)> onTestRunSingle;
     std::function<void(const std::wstring& filePath, size_t line0)> onTestOpenLocation;
+
+    void SetWorkspaceCoverage(phide::dev::WorkspaceCoverageSummary cov);
+    [[nodiscard]] const phide::dev::WorkspaceCoverageSummary& GetWorkspaceCoverage() const noexcept { return m_workspaceCoverage; }
+
+    // #32 GUI Workspace Task Runner View (`task_runner`)
+    void SetWorkspaceTasks(std::vector<phide::dev::WorkspaceTaskDef> tasks);
+    [[nodiscard]] const std::vector<phide::dev::WorkspaceTaskDef>& GetWorkspaceTasks() const noexcept { return m_workspaceTasks; }
+    void RenderTaskRunnerView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleTaskRunnerMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleTaskRunnerMouseWheel(short delta) noexcept;
+    std::function<void(const phide::dev::WorkspaceTaskDef&)> onTaskRun;
+    std::function<void(const phide::dev::WorkspaceTaskDef&)> onTaskStop;
+    std::function<void(const phide::dev::WorkspaceTaskDef&)> onTaskRestart;
+    std::function<bool(const std::wstring& label)> onIsTaskRunning;
+    std::function<DWORD(const std::wstring& label)> onGetTaskExitCode;
+    std::function<void()> onTaskRefresh;
+
+    // #40 Active-File Git History (--follow) View (`file_history`)
+    void SetFileHistoryTarget(const std::wstring& fullPath, const std::wstring& relPath, bool loading);
+    void SetFileHistoryEntries(const std::wstring& fullPath,
+                               std::vector<phide::git::GitWorkflowEngine::FileHistoryEntry> entries);
+    [[nodiscard]] const std::vector<phide::git::GitWorkflowEngine::FileHistoryEntry>& GetFileHistoryEntries() const noexcept {
+        return m_fileHistoryEntries;
+    }
+    void RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               float canvasLeft, float canvasWidth, float topY, float clientHeight);
+    bool HandleFileHistoryMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleFileHistoryMouseWheel(short delta) noexcept;
+    std::function<void()> onFileHistoryRefresh;
+    std::function<void(const std::wstring& commitHash, const std::wstring& relPath)> onFileHistoryOpenCommitDiff;
     float m_lastExtSubTabY = 0.0f;
     float m_lastExtSubTabH = 0.0f;
     float m_lastExtTab0X = 0.0f;
@@ -1077,7 +1127,8 @@ public:
         PeekDefinition = 0,
         References = 1,
         CallHierarchy = 2,
-        CodeMetrics = 3
+        CodeMetrics = 3,
+        TypeHierarchy = 4
     };
 
     struct PeekItemEntry {
@@ -1285,7 +1336,36 @@ private:
     D2D1_RECT_F m_rcTestRunAllBtn{};
     D2D1_RECT_F m_rcTestRefreshBtn{};
     D2D1_RECT_F m_rcTestFilterBtns[3]{};
+    D2D1_RECT_F m_rcTestRerunFailedBtn{};
+    D2D1_RECT_F m_rcCovToggleBtn{};
+    D2D1_RECT_F m_rcCovRefreshBtn{};
     std::vector<TestRowHit> m_testRowHits;
+    phide::dev::WorkspaceCoverageSummary m_workspaceCoverage;
+
+    // #32 GUI Workspace Task Runner state & cached Test/Task brushes (reset in DiscardDeviceResources)
+    struct TaskRowHit {
+        D2D1_RECT_F rcRow{};
+        D2D1_RECT_F rcRunBtn{};
+        D2D1_RECT_F rcStopBtn{};
+        size_t taskIdx = 0;
+    };
+    std::vector<phide::dev::WorkspaceTaskDef> m_workspaceTasks;
+    std::vector<TaskRowHit> m_taskRowHits;
+    float m_taskScrollY = 0.0f;
+    float m_taskMaxScrollY = 0.0f;
+    D2D1_RECT_F m_rcTaskRefreshBtn{};
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestRowBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestRowSel;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestBtnBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestPass;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestFail;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestWarn;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestExpectedBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestActualBg;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushCovGreen;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushCovRed;
+    ID2D1RenderTarget* m_cachedTestTaskRT = nullptr;
+    void EnsureTestTaskBrushes(ID2D1RenderTarget* pRT);
     std::vector<GutterTestHit> m_visibleGutterTests;
 
     // #42 SQL Query Console state
@@ -1408,6 +1488,82 @@ private:
     D2D1_RECT_F m_rcSnipListPane{};
     D2D1_RECT_F m_rcSnipField[5]{};
     std::vector<SnipListHit> m_snipListHits;
+
+    // Cached render-target brushes for EditorCanvas (recreated only on theme switch / device reset)
+    void EnsureCachedEditorBrushes(ID2D1RenderTarget* pRT, const Theme& theme);
+    bool m_cachedEditorBrushDark = true;
+    bool m_hasCachedEditorBrushes = false;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pOccWordFillBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pOccWordBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pRulerBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pStickyBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pStickyHoverBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pStickySepBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pStickyShadowBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pInlayBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pInlayBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugGutterRedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugGutterAmberBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugGutterGreenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugFloatBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pInlineBlameBrush;
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pPausedArrowGeo;
+    StructuredViewRenderer m_structuredRenderer;
+
+    // #35 Cached inline unified diff rows (avoids 60fps re-diff allocations, bounded to 50000 rows)
+    std::wstring m_inlineDiffCacheKey;
+    size_t m_inlineDiffCacheLeftCount = 0;
+    size_t m_inlineDiffCacheRightCount = 0;
+    size_t m_inlineDiffCacheHunkCount = 0;
+    size_t m_inlineDiffCacheAddedCount = 0;
+    size_t m_inlineDiffCacheModifiedCount = 0;
+    size_t m_inlineDiffCacheDeletedCount = 0;
+    std::vector<git::GitWorkflowEngine::InlineDiffRow> m_cachedInlineDiffRows;
+
+    // #40 Active-File Git History (--follow) View state (bounded <= 100 entries)
+    struct FileHistoryRowHit {
+        size_t idx = 0;
+        D2D1_RECT_F rowBounds{};
+        D2D1_RECT_F diffBtnBounds{};
+    };
+    std::wstring m_fileHistoryTargetPath;
+    std::wstring m_fileHistoryRelPath;
+    bool m_fileHistoryLoading = false;
+    std::vector<phide::git::GitWorkflowEngine::FileHistoryEntry> m_fileHistoryEntries;
+    std::vector<FileHistoryRowHit> m_fileHistoryRowHits;
+    float m_fileHistoryScrollY = 0.0f;
+    float m_fileHistoryMaxScrollY = 0.0f;
+    D2D1_RECT_F m_rcFileHistoryRefreshBtn{};
+
+    void RenderInlineDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                              float topY, float clientHeight, bool isFocused);
+    void RenderDiffPeekPopover(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                               float topY, float clientHeight, float lineH, float gutterW,
+                               size_t visualLineIdx);
+    void RenderBlameHoverPopover(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 const editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                 float topY, float clientHeight, float lineH, float gutterW,
+                                 size_t visualLineIdx);
+
+    bool m_floatingDebugActive = false;
+    bool m_floatingDebugPaused = false;
+    bool m_floatingDebugDragging = false;
+    float m_floatingDebugDragStartX = 0.0f;
+    float m_floatingDebugStartOffset = 0.0f;
+    float m_floatingDebugOffsetX = 0.0f;
+    int m_hoveredFloatingDbgIdx = -1;
+    D2D1_RECT_F m_floatingDebugBounds{};
+    D2D1_RECT_F m_floatingDebugGripBounds{};
+    struct FloatingDbgBtn { int actionId = 0; D2D1_RECT_F bounds{}; };
+    std::vector<FloatingDbgBtn> m_floatingDebugBtns;
+    std::function<void(int dbgActionId)> m_onFloatingDebugAction;
+    void RenderFloatingDebugToolbar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                    float canvasLeft, float canvasWidth, float headerH);
+
+public:
+    [[nodiscard]] StructuredViewRenderer& GetStructuredRenderer() noexcept { return m_structuredRenderer; }
 };
 
 } // namespace phide::ui

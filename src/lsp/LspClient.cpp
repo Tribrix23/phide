@@ -835,19 +835,30 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
                << "\"rangeFormatting\":{},"
                << "\"rename\":{\"prepareSupport\":true},"
                << "\"inlayHint\":{},"
+               << "\"semanticTokens\":{\"requests\":{\"full\":true},"
+               << "\"tokenTypes\":[\"namespace\",\"type\",\"class\",\"enum\",\"interface\",\"struct\",\"typeParameter\",\"parameter\",\"variable\",\"property\",\"enumMember\",\"event\",\"function\",\"method\",\"macro\",\"keyword\",\"modifier\",\"comment\",\"string\",\"number\",\"regexp\",\"operator\"],"
+               << "\"tokenModifiers\":[\"declaration\",\"definition\",\"readonly\",\"static\",\"deprecated\",\"abstract\",\"async\",\"modification\",\"documentation\",\"defaultLibrary\"],"
+               << "\"formats\":[\"relative\"],\"overlappingTokenSupport\":false,\"multilineTokenSupport\":false},"
+               << "\"codeLens\":{},"
+               << "\"foldingRange\":{\"lineFoldingOnly\":true},"
+               << "\"typeHierarchy\":{},"
                << "\"publishDiagnostics\":{\"relatedInformation\":false,\"codeDescriptionSupport\":true}"
                << "}"
                << "}"
                << "}";
 
     m_syncKind.store(TextDocumentSyncKind::Full);
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_semanticTokenTypes.clear();
+    }
     std::string initResp;
     if (!SendRequestAndWait("initialize", initParams.str(), initResp, 1800)) {
         Shutdown();
         return false;
     }
 
-    // Negotiate TextDocumentSyncKind (None=0, Full=1, Incremental=2)
+    // Negotiate TextDocumentSyncKind (None=0, Full=1, Incremental=2) & SemanticTokens legend
     {
         JsonValue initRoot;
         JsonParser parser(initResp);
@@ -864,6 +875,21 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
                         if (kindNum == 0) m_syncKind.store(TextDocumentSyncKind::None);
                         else if (kindNum == 2) m_syncKind.store(TextDocumentSyncKind::Incremental);
                         else m_syncKind.store(TextDocumentSyncKind::Full);
+                    }
+                    if (const JsonValue* stp = caps->Get("semanticTokensProvider")) {
+                        if (const JsonValue* legend = stp->Get("legend")) {
+                            if (const JsonValue* ttypes = legend->Get("tokenTypes"); ttypes && ttypes->type == JsonValue::Type::Array) {
+                                std::lock_guard<std::mutex> lock(m_stateMutex);
+                                m_semanticTokenTypes.clear();
+                                m_semanticTokenTypes.reserve((std::min<size_t>)(ttypes->arrVal.size(), 64));
+                                for (const auto& t : ttypes->arrVal) {
+                                    if (t.type == JsonValue::Type::String) {
+                                        m_semanticTokenTypes.push_back(t.strVal);
+                                        if (m_semanticTokenTypes.size() >= 64) break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -893,6 +919,10 @@ void LspClient::Shutdown() {
             kv.second->cv.notify_all();
         }
         m_pendingRequests.clear();
+    }
+    {
+        std::lock_guard<std::mutex> sl(m_stateMutex);
+        std::vector<std::string>().swap(m_semanticTokenTypes);
     }
 
     // Close stdin write pipe under m_writeMutex so servers reading EOF terminate promptly
@@ -2065,6 +2095,283 @@ bool LspClient::RequestInlayHints(const std::wstring& fileUri, size_t startLine,
     return !outHints.empty();
 }
 
+uint32_t LspClient::MapSemanticTokenLegendName(const std::string& legendName) noexcept {
+    // Canonical compact roles stored in OpenDocument::semanticTokensData:
+    // 0=none, 1=Type/Class/Interface/Struct/Enum/Namespace, 2=Keyword/Modifier,
+    // 3=String/Regexp, 4=Number, 5=Comment, 6=Function/Method/Macro
+    if (legendName == "namespace" || legendName == "type" || legendName == "class" ||
+        legendName == "enum" || legendName == "interface" || legendName == "struct" ||
+        legendName == "typeParameter") {
+        return 1;
+    }
+    if (legendName == "keyword" || legendName == "modifier") return 2;
+    if (legendName == "string" || legendName == "regexp") return 3;
+    if (legendName == "number") return 4;
+    if (legendName == "comment") return 5;
+    if (legendName == "function" || legendName == "method" || legendName == "macro") return 6;
+    return 0;
+}
+
+bool LspClient::ParseSemanticTokensResponse(
+    const std::string& respJson,
+    const std::vector<std::string>& legendTypes,
+    std::vector<SemanticToken>& outTokens,
+    size_t maxTokens)
+{
+    outTokens.clear();
+    if (maxTokens == 0) return false;
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+    const JsonValue* data = result->Get("data");
+    if (!data || data->type != JsonValue::Type::Array) return false;
+
+    static const char* kDefaultLegend[] = {
+        "namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+        "parameter", "variable", "property", "enumMember", "event", "function",
+        "method", "macro", "keyword", "modifier", "comment", "string", "number",
+        "regexp", "operator"
+    };
+
+    const size_t n = data->arrVal.size();
+    outTokens.reserve((std::min)(maxTokens, n / 5));
+    size_t curLine = 0;
+    size_t curCol = 0;
+    for (size_t i = 0; i + 4 < n; i += 5) {
+        if (outTokens.size() >= maxTokens) break;
+        const size_t dLine = static_cast<size_t>((std::max)(0LL, static_cast<long long>(data->arrVal[i].numVal)));
+        const size_t dCol  = static_cast<size_t>((std::max)(0LL, static_cast<long long>(data->arrVal[i + 1].numVal)));
+        const size_t len   = static_cast<size_t>((std::max)(0LL, static_cast<long long>(data->arrVal[i + 2].numVal)));
+        const uint32_t rawType = static_cast<uint32_t>((std::max)(0LL, static_cast<long long>(data->arrVal[i + 3].numVal)));
+        const uint32_t mods    = static_cast<uint32_t>((std::max)(0LL, static_cast<long long>(data->arrVal[i + 4].numVal)));
+
+        if (dLine > 0) {
+            curLine += dLine;
+            curCol = dCol;
+        } else {
+            curCol += dCol;
+        }
+        if (len == 0) continue;
+
+        std::string legendName;
+        if (!legendTypes.empty() && rawType < legendTypes.size()) {
+            legendName = legendTypes[rawType];
+        } else if (rawType < (sizeof(kDefaultLegend) / sizeof(kDefaultLegend[0]))) {
+            legendName = kDefaultLegend[rawType];
+        }
+        uint32_t mappedRole = MapSemanticTokenLegendName(legendName);
+        if (mappedRole == 0) continue;
+
+        SemanticToken tok;
+        tok.line = curLine;
+        tok.startCol = curCol;
+        tok.length = len;
+        tok.tokenType = mappedRole;
+        tok.tokenModifiers = mods;
+        outTokens.push_back(tok);
+    }
+    return !outTokens.empty();
+}
+
+bool LspClient::ParseCodeLensResponse(
+    const std::string& respJson,
+    std::vector<LspCodeLens>& outLenses,
+    size_t maxLenses)
+{
+    outLenses.clear();
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (outLenses.size() >= maxLenses) break;
+        if (el.type != JsonValue::Type::Object) continue;
+        const JsonValue* range = el.Get("range");
+        if (!range) continue;
+        const JsonValue* start = range->Get("start");
+        if (!start) continue;
+
+        LspCodeLens lens;
+        lens.startLine = static_cast<size_t>((std::max)(0LL, start->GetInt("line", 0)));
+        lens.startCol  = static_cast<size_t>((std::max)(0LL, start->GetInt("character", 0)));
+        if (const JsonValue* cmd = el.Get("command"); cmd && cmd->type == JsonValue::Type::Object) {
+            lens.title = Utf8ToWide(cmd->GetString("title"));
+            lens.command = Utf8ToWide(cmd->GetString("command"));
+        }
+        if (lens.title.empty()) {
+            lens.rawJson = SerializeJsonValue(el);
+        }
+        outLenses.push_back(std::move(lens));
+    }
+    return !outLenses.empty();
+}
+
+bool LspClient::ParseFoldingRangesResponse(
+    const std::string& respJson,
+    std::vector<LspFoldRange>& outRanges,
+    size_t maxRanges)
+{
+    outRanges.clear();
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (outRanges.size() >= maxRanges) break;
+        if (el.type != JsonValue::Type::Object) continue;
+        long long s = el.GetInt("startLine", -1);
+        long long e = el.GetInt("endLine", -1);
+        if (s < 0 || e <= s) continue;
+        LspFoldRange fr;
+        fr.startLine = static_cast<size_t>(s);
+        fr.endLine   = static_cast<size_t>(e);
+        fr.kind      = Utf8ToWide(el.GetString("kind"));
+        outRanges.push_back(std::move(fr));
+    }
+    std::sort(outRanges.begin(), outRanges.end(), [](const LspFoldRange& a, const LspFoldRange& b) {
+        if (a.startLine != b.startLine) return a.startLine < b.startLine;
+        return a.endLine > b.endLine;
+    });
+    return !outRanges.empty();
+}
+
+bool LspClient::ParseTypeHierarchyResponse(
+    const std::string& respJson,
+    std::vector<TypeHierarchyItem>& outItems)
+{
+    outItems.clear();
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Array) return false;
+    for (const auto& el : result->arrVal) {
+        if (el.type != JsonValue::Type::Object) continue;
+        CallHierarchyItem ch = ParseCallHierarchyObject(el);
+        if (ch.name.empty()) continue;
+        TypeHierarchyItem th;
+        th.name = std::move(ch.name);
+        th.detail = std::move(ch.detail);
+        th.kind = ch.kind;
+        th.filePath = std::move(ch.filePath);
+        th.line = ch.line;
+        th.col = ch.col;
+        th.rawItemJson = SerializeJsonValue(el);
+        outItems.push_back(std::move(th));
+        if (outItems.size() >= 64) break;
+    }
+    return !outItems.empty();
+}
+
+bool LspClient::RequestSemanticTokensFull(const std::wstring& fileUri, std::vector<SemanticToken>& outTokens) {
+    outTokens.clear();
+    if (!m_isRunning.load()) return false;
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::string params = "{\"textDocument\":{\"uri\":" + EscapeJsonString(uri) + "}}";
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/semanticTokens/full", params, respJson, 750)) {
+        return false;
+    }
+    std::vector<std::string> legendCopy;
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        legendCopy = m_semanticTokenTypes;
+    }
+    return ParseSemanticTokensResponse(respJson, legendCopy, outTokens, 4096);
+}
+
+bool LspClient::RequestCodeLens(const std::wstring& fileUri, std::vector<LspCodeLens>& outLenses) {
+    outLenses.clear();
+    if (!m_isRunning.load()) return false;
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::string params = "{\"textDocument\":{\"uri\":" + EscapeJsonString(uri) + "}}";
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/codeLens", params, respJson, 550)) {
+        return false;
+    }
+    return ParseCodeLensResponse(respJson, outLenses, 128);
+}
+
+bool LspClient::ResolveCodeLens(LspCodeLens& lens) {
+    if (!lens.title.empty()) return true;
+    if (!m_isRunning.load() || lens.rawJson.empty()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("codeLens/resolve", lens.rawJson, respJson, 450)) {
+        return false;
+    }
+    JsonValue root;
+    JsonParser parser(respJson);
+    if (!parser.Parse(root)) return false;
+    const JsonValue* result = root.Get("result");
+    if (!result || result->type != JsonValue::Type::Object) return false;
+    if (const JsonValue* cmd = result->Get("command"); cmd && cmd->type == JsonValue::Type::Object) {
+        lens.title = Utf8ToWide(cmd->GetString("title"));
+        lens.command = Utf8ToWide(cmd->GetString("command"));
+    }
+    return !lens.title.empty();
+}
+
+bool LspClient::RequestFoldingRange(const std::wstring& fileUri, std::vector<LspFoldRange>& outRanges) {
+    outRanges.clear();
+    if (!m_isRunning.load()) return false;
+    std::string uri = EnsureFileUriUtf8(fileUri);
+    std::string params = "{\"textDocument\":{\"uri\":" + EscapeJsonString(uri) + "}}";
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/foldingRange", params, respJson, 550)) {
+        return false;
+    }
+    return ParseFoldingRangesResponse(respJson, outRanges, 2048);
+}
+
+static std::string SerializeTypeHierarchyItemJson(const TypeHierarchyItem& item) {
+    if (!item.rawItemJson.empty()) return item.rawItemJson;
+    CallHierarchyItem tmp;
+    tmp.name = item.name;
+    tmp.detail = item.detail;
+    tmp.kind = item.kind;
+    tmp.filePath = item.filePath;
+    tmp.line = item.line;
+    tmp.col = item.col;
+    return SerializeCallHierarchyItemJson(tmp);
+}
+
+bool LspClient::PrepareTypeHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                                     std::vector<TypeHierarchyItem>& outItems) {
+    outItems.clear();
+    if (!m_isRunning.load()) return false;
+    std::string respJson;
+    if (!SendRequestAndWait("textDocument/prepareTypeHierarchy", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+        return false;
+    }
+    return ParseTypeHierarchyResponse(respJson, outItems);
+}
+
+bool LspClient::RequestTypeHierarchySupertypes(const TypeHierarchyItem& item, std::vector<TypeHierarchyItem>& outSupers) {
+    outSupers.clear();
+    if (!m_isRunning.load() || item.name.empty()) return false;
+    std::string params = "{\"item\":" + SerializeTypeHierarchyItemJson(item) + "}";
+    std::string respJson;
+    if (!SendRequestAndWait("typeHierarchy/supertypes", params, respJson, 700)) {
+        return false;
+    }
+    return ParseTypeHierarchyResponse(respJson, outSupers);
+}
+
+bool LspClient::RequestTypeHierarchySubtypes(const TypeHierarchyItem& item, std::vector<TypeHierarchyItem>& outSubs) {
+    outSubs.clear();
+    if (!m_isRunning.load() || item.name.empty()) return false;
+    std::string params = "{\"item\":" + SerializeTypeHierarchyItemJson(item) + "}";
+    std::string respJson;
+    if (!SendRequestAndWait("typeHierarchy/subtypes", params, respJson, 700)) {
+        return false;
+    }
+    return ParseTypeHierarchyResponse(respJson, outSubs);
+}
+
 // =============================================================================
 // LspManager — Multi-Server Concurrent LSP Coordinator (#19)
 // =============================================================================
@@ -2428,6 +2735,44 @@ bool LspManager::RequestInlayHints(const std::wstring& fileUri, size_t startLine
                                    std::vector<InlayHintItem>& outHints) {
     auto c = ResolveClientForDocument(fileUri);
     return c ? c->RequestInlayHints(fileUri, startLine, endLine, outHints) : false;
+}
+
+bool LspManager::RequestSemanticTokensFull(const std::wstring& fileUri, std::vector<SemanticToken>& outTokens) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestSemanticTokensFull(fileUri, outTokens) : false;
+}
+
+bool LspManager::RequestCodeLens(const std::wstring& fileUri, std::vector<LspCodeLens>& outLenses) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestCodeLens(fileUri, outLenses) : false;
+}
+
+bool LspManager::ResolveCodeLens(const std::wstring& fileUri, LspCodeLens& lens) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->ResolveCodeLens(lens) : false;
+}
+
+bool LspManager::RequestFoldingRange(const std::wstring& fileUri, std::vector<LspFoldRange>& outRanges) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestFoldingRange(fileUri, outRanges) : false;
+}
+
+bool LspManager::PrepareTypeHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                                      std::vector<TypeHierarchyItem>& outItems) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->PrepareTypeHierarchy(fileUri, line, col, outItems) : false;
+}
+
+bool LspManager::RequestTypeHierarchySupertypes(const std::wstring& fileUri, const TypeHierarchyItem& item,
+                                                std::vector<TypeHierarchyItem>& outSupers) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestTypeHierarchySupertypes(item, outSupers) : false;
+}
+
+bool LspManager::RequestTypeHierarchySubtypes(const std::wstring& fileUri, const TypeHierarchyItem& item,
+                                              std::vector<TypeHierarchyItem>& outSubs) {
+    auto c = ResolveClientForDocument(fileUri);
+    return c ? c->RequestTypeHierarchySubtypes(item, outSubs) : false;
 }
 
 bool LspManager::IsRunning() const {

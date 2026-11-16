@@ -24,11 +24,86 @@ enum class NotebookCellType {
     Markdown
 };
 
+inline constexpr size_t kMaxNotebookCellImages = 4u;
+inline constexpr size_t kMaxNotebookPngBytes = 2u * 1024u * 1024u;
+
+inline uint64_t NextCellImageId() {
+    static std::atomic<uint64_t> s_nextId{ 1 };
+    return s_nextId.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline bool DecodeBase64PngBounded(const std::string& b64, std::vector<BYTE>& outBytes) {
+    outBytes.clear();
+    if (b64.empty() || b64.size() > (kMaxNotebookPngBytes * 4u) / 3u + 16u) return false;
+    static const int kDec[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+    };
+    outBytes.reserve((b64.size() * 3u) / 4u + 4u);
+    uint32_t val = 0;
+    int valb = -8;
+    for (unsigned char c : b64) {
+        if (c == '=') break;
+        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        int d = kDec[c];
+        if (d == -1) { outBytes.clear(); return false; }
+        val = (val << 6) + static_cast<uint32_t>(d);
+        valb += 6;
+        if (valb >= 0) {
+            outBytes.push_back(static_cast<BYTE>((val >> valb) & 0xFFu));
+            if (outBytes.size() > kMaxNotebookPngBytes) {
+                outBytes.clear();
+                return false;
+            }
+            valb -= 8;
+        }
+    }
+    if (outBytes.size() < 8 ||
+        outBytes[0] != 0x89 || outBytes[1] != 'P' || outBytes[2] != 'N' || outBytes[3] != 'G') {
+        outBytes.clear();
+        return false;
+    }
+    return true;
+}
+
+inline std::string EncodeBase64Bytes(const std::vector<BYTE>& bytes) {
+    static const char kTbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((bytes.size() + 2u) / 3u) * 4u);
+    uint32_t val = 0;
+    int valb = -6;
+    for (BYTE b : bytes) {
+        val = (val << 8) + b;
+        valb += 8;
+        while (valb >= 0) {
+            out.push_back(kTbl[(val >> valb) & 0x3Fu]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) out.push_back(kTbl[((val << 8) >> (valb + 8)) & 0x3Fu]);
+    while (out.size() % 4u) out.push_back('=');
+    return out;
+}
+
+struct NotebookVariableInfo {
+    std::wstring name;
+    std::wstring typeName;
+    std::wstring valuePreview;
+};
+
 struct CellOutput {
-    std::wstring streamName = L"stdout"; // stdout, stderr
+    std::wstring streamName = L"stdout"; // stdout, stderr, image/png
     std::wstring text;
     bool isError = false;
     ULONGLONG elapsedMs = 0;
+    std::vector<BYTE> imagePngBytes;
+    uint64_t imageId = 0;
 };
 
 struct NotebookCell {
@@ -246,6 +321,10 @@ public:
     std::wstring filePath;
     std::wstring title = L"Notebook 1.ipynb";
     std::wstring kernelLanguage = L"python";
+    std::wstring selectedPythonExe;
+    std::vector<std::wstring> discoveredPythonExes;
+    std::vector<NotebookVariableInfo> inspectorVariables;
+    bool showVariableInspector = false;
     std::vector<NotebookCell> cells;
     int activeCellIdx = 0;
     bool isRunningAll = false;
@@ -522,19 +601,27 @@ public:
             for (size_t oi = 0; oi < c.outputs.size(); ++oi) {
                 const auto& out = c.outputs[oi];
                 ss << "    {\n";
-                ss << "     \"name\": \"" << WideToUtf8(out.streamName) << "\",\n";
-                ss << "     \"output_type\": \"stream\",\n";
-                ss << "     \"text\": [\n";
-                std::string u8Text = WideToUtf8(out.text);
-                std::istringstream textStream(u8Text);
-                std::string line;
-                bool firstLine = true;
-                while (std::getline(textStream, line)) {
-                    if (!firstLine) ss << ",\n";
-                    firstLine = false;
-                    ss << "      \"" << EscapeJson(line + "\n") << "\"";
+                if (!out.imagePngBytes.empty()) {
+                    ss << "     \"data\": {\n";
+                    ss << "      \"image/png\": \"" << EncodeBase64Bytes(out.imagePngBytes) << "\"\n";
+                    ss << "     },\n";
+                    ss << "     \"metadata\": {},\n";
+                    ss << "     \"output_type\": \"display_data\"\n";
+                } else {
+                    ss << "     \"name\": \"" << WideToUtf8(out.streamName) << "\",\n";
+                    ss << "     \"output_type\": \"stream\",\n";
+                    ss << "     \"text\": [\n";
+                    std::string u8Text = WideToUtf8(out.text);
+                    std::istringstream textStream(u8Text);
+                    std::string line;
+                    bool firstLine = true;
+                    while (std::getline(textStream, line)) {
+                        if (!firstLine) ss << ",\n";
+                        firstLine = false;
+                        ss << "      \"" << EscapeJson(line + "\n") << "\"";
+                    }
+                    ss << "\n     ]\n";
                 }
-                ss << "\n     ]\n";
                 ss << "    }" << (oi + 1 < c.outputs.size() ? "," : "") << "\n";
             }
             ss << "   ],\n";
@@ -752,6 +839,32 @@ public:
 
                                 // Preserve ANSI color escape codes for rich terminal & Colab rendering
                                 // (StripAnsi is applied for text clipboard selection and measurement)
+
+                                // Image output ("data": {"image/png": "..."})
+                                size_t imgPos = outObjStr.find("\"image/png\"");
+                                size_t cellImgCount = 0;
+                                for (const auto& existingOut : cell.outputs) {
+                                    if (!existingOut.imagePngBytes.empty()) cellImgCount++;
+                                }
+                                if (imgPos != std::string::npos && cellImgCount < kMaxNotebookCellImages) {
+                                    std::wstring b64W = ExtractStringOrArray(outObjStr, imgPos);
+                                    std::string b64Ascii;
+                                    b64Ascii.reserve(b64W.size());
+                                    for (wchar_t ch : b64W) {
+                                        if (ch >= 0 && ch <= 127 && ch != L'\n' && ch != L'\r' && ch != L' ') {
+                                            b64Ascii.push_back(static_cast<char>(ch));
+                                        }
+                                    }
+                                    CellOutput imgOut;
+                                    imgOut.streamName = L"image/png";
+                                    if (DecodeBase64PngBounded(b64Ascii, imgOut.imagePngBytes)) {
+                                        imgOut.imageId = NextCellImageId();
+                                        cell.outputs.push_back(std::move(imgOut));
+                                        if (cell.executionCount <= 0) {
+                                            cell.executionCount = nextExecutionCount++;
+                                        }
+                                    }
+                                }
 
                                 if (!outText.empty()) {
                                     co.text = outText;

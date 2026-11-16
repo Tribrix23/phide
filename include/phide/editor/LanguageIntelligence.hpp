@@ -121,7 +121,19 @@ struct ProblemEntry {
 struct ProblemsFilterState {
     int severityFilter = 0; // 0 = All, 1 = Errors, 2 = Warnings, 3 = Info
     bool currentFileOnly = false;
+    bool groupByFile = false;
     std::wstring searchText;
+};
+
+struct ProblemDisplayRow {
+    bool isFileHeader = false;
+    std::wstring fileKey;
+    std::wstring fileLabel;
+    int fileErrorCount = 0;
+    int fileWarningCount = 0;
+    int fileInfoCount = 0;
+    bool collapsed = false;
+    int problemIndex = -1;
 };
 
 class ExternalLinterEngine {
@@ -137,11 +149,20 @@ public:
 
     /// Runs applicable available CLI linters asynchronously/synchronously in background worker with strict timeout.
     [[nodiscard]] static std::vector<ProblemEntry> RunLintersForFile(const std::wstring& filePath,
-                                                                     const std::wstring& workspaceRoot);
+                                                                     const std::wstring& workspaceRoot,
+                                                                     bool bypassTscCooldown = false);
 
     [[nodiscard]] static std::vector<ProblemEntry> FilterProblems(const std::vector<ProblemEntry>& all,
                                                                   const ProblemsFilterState& filter,
                                                                   const std::wstring& activeFilePath);
+
+    [[nodiscard]] static std::vector<ProblemDisplayRow> BuildDisplayRows(
+        const std::vector<ProblemEntry>& filteredProblems,
+        bool groupByFile,
+        const std::vector<std::wstring>& collapsedFiles);
+
+    [[nodiscard]] static std::string GenerateSarifJson(const std::vector<ProblemEntry>& problems,
+                                                         const std::wstring& workspaceRoot);
 
     static void CountSeverities(const std::vector<ProblemEntry>& all,
                                 int& outErrors,

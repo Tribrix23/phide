@@ -491,6 +491,11 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::ParseVscodeTasksJson(
                 } else {
                     ExtractJsonStringField(obj, L"group", task.group);
                 }
+                if (obj.find(L"\"isBackground\"") != std::wstring::npos &&
+                    (obj.find(L"\"isBackground\":true") != std::wstring::npos ||
+                     obj.find(L"\"isBackground\": true") != std::wstring::npos)) {
+                    task.isBackground = true;
+                }
                 if (!task.label.empty() || !task.command.empty()) {
                     if (task.label.empty()) task.label = task.command;
                     out.push_back(std::move(task));
@@ -537,13 +542,24 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
                     for (auto it = std::wsregex_iterator(block.begin(), block.end(), kScriptRe);
                          it != std::wsregex_iterator(); ++it) {
                         WorkspaceTaskDef t;
-                        t.label = L"npm: " + (*it)[1].str();
+                        std::wstring scriptName = (*it)[1].str();
+                        std::wstring scriptBody = (*it)[2].str();
+                        std::wstring lowerName = ToLowerW(scriptName);
+                        std::wstring lowerBody = ToLowerW(scriptBody);
+                        t.label = L"npm: " + scriptName;
                         t.type = L"npm";
-                        t.command = L"npm run " + (*it)[1].str();
+                        t.command = L"npm run " + scriptName;
                         t.cwd = workspaceRoot;
                         t.source = L"package.json";
-                        if ((*it)[1].str() == L"build") t.group = L"build";
-                        else if ((*it)[1].str() == L"test") t.group = L"test";
+                        if (lowerName == L"build") t.group = L"build";
+                        else if (lowerName == L"test") t.group = L"test";
+                        if (lowerName == L"dev" || lowerName == L"watch" || lowerName == L"serve" ||
+                            lowerName == L"start" || lowerName == L"preview" || lowerName == L"storybook" ||
+                            lowerName.rfind(L"watch:", 0) == 0 || lowerName.rfind(L"dev:", 0) == 0 ||
+                            lowerBody.find(L"--watch") != std::wstring::npos ||
+                            lowerBody.find(L"nodemon") != std::wstring::npos) {
+                            t.isBackground = true;
+                        }
                         tasks.push_back(std::move(t));
                     }
                 }
@@ -565,11 +581,17 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
                     for (auto it = std::wsregex_iterator(block.begin(), block.end(), kCompRe);
                          it != std::wsregex_iterator(); ++it) {
                         WorkspaceTaskDef t;
-                        t.label = L"composer: " + (*it)[1].str();
+                        std::wstring scriptName = (*it)[1].str();
+                        std::wstring lowerName = ToLowerW(scriptName);
+                        t.label = L"composer: " + scriptName;
                         t.type = L"composer";
-                        t.command = L"composer run-script " + (*it)[1].str();
+                        t.command = L"composer run-script " + scriptName;
                         t.cwd = workspaceRoot;
                         t.source = L"composer.json";
+                        if (lowerName == L"serve" || lowerName == L"watch" || lowerName == L"dev" ||
+                            lowerName == L"work" || lowerName.rfind(L"queue:", 0) == 0) {
+                            t.isBackground = true;
+                        }
                         tasks.push_back(std::move(t));
                     }
                 }
@@ -928,18 +950,38 @@ TestRunSummary TestExplorerEngine::ParseTestOutput(
 
     auto markMatch = [&](const std::wstring& nameFragment, TestStatus st, double durMs, const std::wstring& msg) {
         if (nameFragment.empty()) return;
+        bool matched = false;
         for (auto& it : items) {
             if (it.framework != fw && fw != TestFramework::Unknown) continue;
-            if (it.name == nameFragment || nameFragment.find(it.name) != std::wstring::npos ||
-                it.id.find(nameFragment) != std::wstring::npos) {
+            if (it.name == nameFragment ||
+                (!it.name.empty() && nameFragment.find(it.name) != std::wstring::npos) ||
+                (!it.id.empty() && it.id.find(nameFragment) != std::wstring::npos)) {
+                matched = true;
                 it.status = st;
                 if (durMs > 0.0) it.durationMs = durMs;
-                if (!msg.empty()) it.failureMessage = msg;
+                if (!msg.empty()) {
+                    it.failureMessage = msg;
+                    TestExplorerEngine::ExtractExpectedActualDiff(msg, it.expectedValue, it.actualValue);
+                }
             }
+        }
+        if (!matched && items.size() < 4096) {
+            TestItem item;
+            item.id = nameFragment;
+            item.name = nameFragment;
+            item.framework = fw;
+            item.status = st;
+            item.durationMs = durMs;
+            if (!msg.empty()) {
+                item.failureMessage = msg;
+                TestExplorerEngine::ExtractExpectedActualDiff(msg, item.expectedValue, item.actualValue);
+            }
+            items.push_back(std::move(item));
         }
     };
 
-    for (const auto& ln : lines) {
+    for (size_t li = 0; li < lines.size(); ++li) {
+        const auto& ln = lines[li];
         // Pytest -v: "path.py::test_fn PASSED [ 50%]" / FAILED / SKIPPED
         {
             static const std::wregex kPytestRe(LR"(^(.+?::([A-Za-z0-9_:\.\[\]]+))\s+(PASSED|FAILED|SKIPPED|ERROR)\b)");
@@ -978,13 +1020,30 @@ TestRunSummary TestExplorerEngine::ParseTestOutput(
                 continue;
             }
         }
-        // PHPUnit: " ✔ testName" / " ✘ testName"
+        // PHPUnit: " ✔ testName" / " ✘ testName" / "N) FooTest::testName"
         {
             if (ln.find(L'\u2714') != std::wstring::npos || ln.find(L"OK (") != std::wstring::npos) {
                 static const std::wregex kPhpOkRe(LR"(\u2714\s+([A-Za-z0-9_ ]+))");
                 std::wsmatch m;
                 if (std::regex_search(ln, m, kPhpOkRe)) {
                     markMatch(TrimW(m[1].str()), TestStatus::Passed, 0.0, L"");
+                }
+            } else if (ln.find(L'\u2718') != std::wstring::npos) {
+                static const std::wregex kPhpFailRe(LR"(\u2718\s+([A-Za-z0-9_ ]+))");
+                std::wsmatch m;
+                if (std::regex_search(ln, m, kPhpFailRe)) {
+                    markMatch(TrimW(m[1].str()), TestStatus::Failed, 0.0, ln);
+                }
+            } else {
+                static const std::wregex kPhpNumFailRe(LR"(^\d+\)\s+[A-Za-z0-9_\\]+::([A-Za-z0-9_]+)\b)");
+                std::wsmatch m;
+                if (std::regex_search(ln, m, kPhpNumFailRe)) {
+                    std::wstring blk = ln;
+                    for (size_t k = li + 1; k < (std::min)(lines.size(), li + 16); ++k) {
+                        if (lines[k].empty() && k > li + 2) break;
+                        blk += L"\n" + lines[k];
+                    }
+                    markMatch(TrimW(m[1].str()), TestStatus::Failed, 0.0, blk);
                 }
             }
         }
@@ -999,6 +1058,30 @@ TestRunSummary TestExplorerEngine::ParseTestOutput(
                 double sec = 0.0;
                 try { sec = std::stod(m[3].str()); } catch (...) {}
                 markMatch(m[1].str(), st, sec * 1000.0, st == TestStatus::Failed ? ln : L"");
+            }
+        }
+    }
+
+    // Enrich failed test items with structured Expected vs Actual diffs from detailed failure blocks
+    for (auto& it : items) {
+        if (it.status != TestStatus::Failed) continue;
+        if (!it.expectedValue.empty() && !it.actualValue.empty()) continue;
+        if (it.name.empty()) continue;
+
+        size_t startSearch = outputText.find(L"FAILURES");
+        size_t pos = (startSearch != std::wstring::npos)
+            ? outputText.find(it.name, startSearch)
+            : std::wstring::npos;
+        if (pos == std::wstring::npos) {
+            pos = outputText.rfind(it.name);
+        }
+        if (pos != std::wstring::npos) {
+            size_t len = (std::min)(static_cast<size_t>(1600), outputText.size() - pos);
+            std::wstring block = outputText.substr(pos, len);
+            TestExplorerEngine::ExtractExpectedActualDiff(block, it.expectedValue, it.actualValue);
+            if ((!it.expectedValue.empty() || !it.actualValue.empty()) &&
+                it.failureMessage.size() < 120) {
+                it.failureMessage = block.substr(0, (std::min)(block.size(), static_cast<size_t>(512)));
             }
         }
     }
@@ -1093,6 +1176,385 @@ TestRunSummary TestExplorerEngine::ExecuteTestsSync(
 
     std::wstring outW = Utf8ToWide(rawBytes);
     return ParseTestOutput(fw, outW, items, static_cast<int>(exitCode));
+}
+
+void TestExplorerEngine::ExtractExpectedActualDiff(
+    const std::wstring& failureMsg,
+    std::wstring& outExpected,
+    std::wstring& outActual) {
+    outExpected.clear();
+    outActual.clear();
+    if (failureMsg.empty()) return;
+
+    auto clipVal = [](std::wstring s) -> std::wstring {
+        s = TrimW(s);
+        if (s.size() > 512) s = s.substr(0, 512) + L"...";
+        return s;
+    };
+
+    // 1. Jest / Vitest: "Expected: ..." and "Received: ..."
+    {
+        static const std::wregex kExpRe(LR"(Expected\s*:\s*([^\r\n]+))", std::regex_constants::icase);
+        static const std::wregex kRecRe(LR"((?:Received|Actual)\s*:\s*([^\r\n]+))", std::regex_constants::icase);
+        std::wsmatch m1, m2;
+        if (std::regex_search(failureMsg, m1, kExpRe) && std::regex_search(failureMsg, m2, kRecRe)) {
+            outExpected = clipVal(m1[1].str());
+            outActual = clipVal(m2[1].str());
+            if (!outExpected.empty() || !outActual.empty()) return;
+        }
+    }
+
+    // 2. PHPUnit: "Failed asserting that <actual> matches expected <expected>." or "is identical to <expected>."
+    {
+        static const std::wregex kPhpUnitRe(
+            LR"(Failed asserting that\s+(.+?)\s+(?:matches expected|is identical to)\s+(.+?)\.?$)",
+            std::regex_constants::icase);
+        std::wsmatch m;
+        if (std::regex_search(failureMsg, m, kPhpUnitRe)) {
+            outActual = clipVal(m[1].str());
+            outExpected = clipVal(m[2].str());
+            if (!outExpected.empty() && !outActual.empty()) return;
+        }
+    }
+
+    // 3. PHPUnit multi-line diff ("--- Expected" / "+++ Actual")
+    {
+        auto lines = SplitLinesW(failureMsg);
+        std::wstring expLines, actLines;
+        for (const auto& raw : lines) {
+            std::wstring ln = TrimW(raw);
+            if (ln.rfind(L"---", 0) == 0 || ln.rfind(L"+++", 0) == 0 || ln.rfind(L"@@", 0) == 0) continue;
+            if (!ln.empty() && ln[0] == L'-') {
+                if (!expLines.empty()) expLines += L"\n";
+                expLines += TrimW(ln.substr(1));
+            } else if (!ln.empty() && ln[0] == L'+') {
+                if (!actLines.empty()) actLines += L"\n";
+                actLines += TrimW(ln.substr(1));
+            }
+        }
+        if (!expLines.empty() || !actLines.empty()) {
+            outExpected = clipVal(expLines);
+            outActual = clipVal(actLines);
+            return;
+        }
+    }
+
+    // 4. Python Pytest / unittest / generic: "assert A == B" or "AssertionError: A != B"
+    {
+        static const std::wregex kPyAssertRe(LR"((?:assert\s+|AssertionError:\s*)(.+?)\s*(?:==|!=)\s*(.+?)$)");
+        std::wsmatch m;
+        if (std::regex_search(failureMsg, m, kPyAssertRe)) {
+            outActual = clipVal(m[1].str());
+            outExpected = clipVal(m[2].str());
+            return;
+        }
+    }
+}
+
+namespace {
+
+static std::wstring NormalizeJoinedPath(const std::wstring& rawPath, const std::wstring& workspaceRoot) {
+    if (rawPath.empty()) return L"";
+    std::wstring clean = rawPath;
+    for (auto& ch : clean) {
+        if (ch == L'/') ch = L'\\';
+    }
+    fs::path p(clean);
+    if (!p.is_absolute() && !workspaceRoot.empty()) {
+        p = fs::path(workspaceRoot) / p;
+    }
+    return CoverageReportEngine::NormalizePathKey(p.lexically_normal().wstring());
+}
+
+static std::string ExtractXmlAttr(const std::string& tag, const char* attrName) {
+    if (!attrName || !*attrName) return {};
+    std::string needle1 = std::string(" ") + attrName + "=\"";
+    std::string needle2 = std::string(" ") + attrName + "='";
+    size_t pos = tag.find(needle1);
+    char quote = '"';
+    size_t valStart = 0;
+    if (pos != std::string::npos) {
+        valStart = pos + needle1.size();
+    } else {
+        pos = tag.find(needle2);
+        if (pos == std::string::npos) return {};
+        quote = '\'';
+        valStart = pos + needle2.size();
+    }
+    size_t valEnd = tag.find(quote, valStart);
+    if (valEnd == std::string::npos) return {};
+    return tag.substr(valStart, valEnd - valStart);
+}
+
+static void RecomputeCoverageTotals(WorkspaceCoverageSummary& summary) {
+    summary.totalInstrumented = 0;
+    summary.totalCovered = 0;
+    for (auto& kv : summary.filesByNormPath) {
+        FileCoverage& fc = kv.second;
+        fc.totalLines = fc.lineHits.size();
+        size_t cov = 0;
+        for (const auto& lh : fc.lineHits) {
+            if (lh.second > 0) cov++;
+        }
+        fc.coveredLines = cov;
+        summary.totalInstrumented += fc.totalLines;
+        summary.totalCovered += fc.coveredLines;
+    }
+    summary.percent = (summary.totalInstrumented > 0)
+        ? (static_cast<double>(summary.totalCovered) * 100.0 / static_cast<double>(summary.totalInstrumented))
+        : 0.0;
+}
+
+} // namespace
+
+std::wstring CoverageReportEngine::NormalizePathKey(const std::wstring& path) {
+    if (path.empty()) return L"";
+    std::wstring normalized = fs::path(path).lexically_normal().wstring();
+    for (auto& ch : normalized) {
+        if (ch == L'/') ch = L'\\';
+        else if (ch >= L'A' && ch <= L'Z') ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
+    while (normalized.size() > 3 && normalized.back() == L'\\') {
+        normalized.pop_back();
+    }
+    return normalized;
+}
+
+WorkspaceCoverageSummary CoverageReportEngine::ParseLcovContent(
+    const std::string& utf8,
+    const std::wstring& workspaceRoot) {
+    WorkspaceCoverageSummary summary;
+    if (utf8.empty() || utf8.size() > kMaxReportBytes) return summary;
+
+    std::wstring currentFileKey;
+    FileCoverage currentCov;
+    bool hasActiveFile = false;
+
+    auto flushCurrent = [&]() {
+        if (!hasActiveFile || currentFileKey.empty()) return;
+        if (summary.filesByNormPath.size() >= kMaxCoverageFiles &&
+            summary.filesByNormPath.find(currentFileKey) == summary.filesByNormPath.end()) {
+            hasActiveFile = false;
+            currentCov = FileCoverage{};
+            return;
+        }
+        FileCoverage& dst = summary.filesByNormPath[currentFileKey];
+        for (const auto& kv : currentCov.lineHits) {
+            if (dst.lineHits.size() >= kMaxLinesPerFile && dst.lineHits.find(kv.first) == dst.lineHits.end()) break;
+            auto it = dst.lineHits.find(kv.first);
+            if (it == dst.lineHits.end()) {
+                dst.lineHits.emplace(kv.first, kv.second);
+            } else {
+                it->second += kv.second;
+            }
+        }
+        hasActiveFile = false;
+        currentFileKey.clear();
+        currentCov = FileCoverage{};
+    };
+
+    size_t pos = 0;
+    const size_t n = utf8.size();
+    while (pos < n) {
+        size_t eol = utf8.find('\n', pos);
+        if (eol == std::string::npos) eol = n;
+        size_t len = eol - pos;
+        if (len > 0 && utf8[pos + len - 1] == '\r') len--;
+        std::string_view sv(utf8.data() + pos, len);
+        pos = (eol < n) ? (eol + 1) : n;
+
+        if (sv.rfind("SF:", 0) == 0) {
+            flushCurrent();
+            std::wstring relOrAbs = Utf8ToWide(std::string(sv.substr(3)));
+            currentFileKey = NormalizeJoinedPath(relOrAbs, workspaceRoot);
+            currentCov = FileCoverage{};
+            hasActiveFile = !currentFileKey.empty();
+        } else if (hasActiveFile && sv.rfind("DA:", 0) == 0) {
+            if (currentCov.lineHits.size() >= kMaxLinesPerFile) continue;
+            std::string_view rest = sv.substr(3);
+            size_t comma = rest.find(',');
+            if (comma != std::string_view::npos) {
+                try {
+                    long long line1 = std::stoll(std::string(rest.substr(0, comma)));
+                    std::string_view hitsSv = rest.substr(comma + 1);
+                    size_t comma2 = hitsSv.find(',');
+                    if (comma2 != std::string_view::npos) hitsSv = hitsSv.substr(0, comma2);
+                    long long hits = std::stoll(std::string(hitsSv));
+                    if (line1 > 0) {
+                        size_t line0 = static_cast<size_t>(line1 - 1);
+                        currentCov.lineHits[line0] += (hits > 0) ? static_cast<int>((std::min)(hits, 1000000LL)) : 0;
+                    }
+                } catch (...) {}
+            }
+        } else if (sv == "end_of_record") {
+            flushCurrent();
+        }
+    }
+    flushCurrent();
+
+    RecomputeCoverageTotals(summary);
+    summary.loaded = !summary.filesByNormPath.empty();
+    return summary;
+}
+
+WorkspaceCoverageSummary CoverageReportEngine::ParseXmlCoverageContent(
+    const std::string& utf8,
+    const std::wstring& workspaceRoot) {
+    WorkspaceCoverageSummary summary;
+    if (utf8.empty() || utf8.size() > kMaxReportBytes) return summary;
+
+    std::wstring sourceBase = workspaceRoot;
+    std::wstring activeFileKey;
+    size_t i = 0;
+    const size_t n = utf8.size();
+
+    while (i < n) {
+        size_t lt = utf8.find('<', i);
+        if (lt == std::string::npos) break;
+        size_t gt = utf8.find('>', lt + 1);
+        if (gt == std::string::npos) break;
+        std::string tag = utf8.substr(lt, gt - lt + 1);
+        i = gt + 1;
+
+        if (tag.rfind("<source>", 0) == 0 || tag.rfind("<source ", 0) == 0) {
+            size_t closeSrc = utf8.find("</source>", i);
+            if (closeSrc != std::string::npos && closeSrc - i < 1024) {
+                std::wstring srcW = TrimW(Utf8ToWide(utf8.substr(i, closeSrc - i)));
+                if (!srcW.empty()) {
+                    fs::path sp(srcW);
+                    if (!sp.is_absolute() && !workspaceRoot.empty()) sp = fs::path(workspaceRoot) / sp;
+                    sourceBase = sp.lexically_normal().wstring();
+                }
+                i = closeSrc + 9;
+            }
+            continue;
+        }
+
+        if (tag.rfind("<class ", 0) == 0 || tag.rfind("<file ", 0) == 0) {
+            std::string fn = ExtractXmlAttr(tag, "filename");
+            if (fn.empty()) fn = ExtractXmlAttr(tag, "name");
+            if (!fn.empty()) {
+                std::wstring fnW = Utf8ToWide(fn);
+                std::wstring joined = NormalizeJoinedPath(fnW, sourceBase);
+                if (joined.empty() || (!workspaceRoot.empty() && !fs::path(fnW).is_absolute())) {
+                    std::error_code ec;
+                    fs::path candidateSource = fs::path(sourceBase) / fnW;
+                    fs::path candidateRoot = fs::path(workspaceRoot) / fnW;
+                    if (!fs::exists(candidateSource, ec) && fs::exists(candidateRoot, ec)) {
+                        joined = NormalizeJoinedPath(fnW, workspaceRoot);
+                    }
+                }
+                if (summary.filesByNormPath.size() < kMaxCoverageFiles ||
+                    summary.filesByNormPath.find(joined) != summary.filesByNormPath.end()) {
+                    activeFileKey = joined;
+                } else {
+                    activeFileKey.clear();
+                }
+            }
+            continue;
+        }
+
+        if (tag.rfind("</class", 0) == 0 || tag.rfind("</file", 0) == 0) {
+            activeFileKey.clear();
+            continue;
+        }
+
+        if (!activeFileKey.empty() && (tag.rfind("<line ", 0) == 0 || tag.rfind("<line\t", 0) == 0)) {
+            // Cobertura: number="12" hits="3" ; PHPUnit Clover: num="12" type="stmt" count="3"
+            std::string numStr = ExtractXmlAttr(tag, "number");
+            if (numStr.empty()) numStr = ExtractXmlAttr(tag, "num");
+            std::string hitsStr = ExtractXmlAttr(tag, "hits");
+            if (hitsStr.empty()) hitsStr = ExtractXmlAttr(tag, "count");
+            std::string typeStr = ExtractXmlAttr(tag, "type");
+            if (!typeStr.empty() && typeStr != "stmt" && typeStr != "method" && typeStr != "cond") {
+                continue;
+            }
+            if (!numStr.empty() && !hitsStr.empty()) {
+                try {
+                    long long line1 = std::stoll(numStr);
+                    long long hits = std::stoll(hitsStr);
+                    if (line1 > 0) {
+                        FileCoverage& fc = summary.filesByNormPath[activeFileKey];
+                        if (fc.lineHits.size() < kMaxLinesPerFile || fc.lineHits.find(static_cast<size_t>(line1 - 1)) != fc.lineHits.end()) {
+                            fc.lineHits[static_cast<size_t>(line1 - 1)] += (hits > 0) ? static_cast<int>((std::min)(hits, 1000000LL)) : 0;
+                        }
+                    }
+                } catch (...) {}
+            }
+        }
+    }
+
+    RecomputeCoverageTotals(summary);
+    summary.loaded = !summary.filesByNormPath.empty();
+    return summary;
+}
+
+WorkspaceCoverageSummary CoverageReportEngine::DiscoverAndLoadCoverage(const std::wstring& workspaceRoot) {
+    WorkspaceCoverageSummary best;
+    if (workspaceRoot.empty()) return best;
+
+    std::error_code ec;
+    fs::path root(workspaceRoot);
+    static const wchar_t* kCandidates[] = {
+        L"coverage\\lcov.info",
+        L"lcov.info",
+        L"coverage\\coverage.lcov",
+        L"coverage.xml",
+        L"coverage\\coverage.xml",
+        L"coverage\\cobertura-coverage.xml",
+        L"build\\coverage.xml",
+        L"clover.xml",
+        L"coverage\\clover.xml"
+    };
+
+    for (const wchar_t* rel : kCandidates) {
+        fs::path p = root / rel;
+        if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) continue;
+        auto sz = fs::file_size(p, ec);
+        if (ec || sz == 0 || sz > kMaxReportBytes) continue;
+
+        std::ifstream ifs(p, std::ios::binary);
+        if (!ifs) continue;
+        std::string bytes(static_cast<size_t>(sz), '\0');
+        ifs.read(bytes.data(), static_cast<std::streamsize>(sz));
+        if (!ifs) continue;
+
+        std::wstring ext = ToLowerW(p.extension().wstring());
+        WorkspaceCoverageSummary parsed = (ext == L".xml")
+            ? ParseXmlCoverageContent(bytes, workspaceRoot)
+            : ParseLcovContent(bytes, workspaceRoot);
+        if (parsed.loaded) {
+            parsed.reportPath = p.wstring();
+            return parsed;
+        }
+    }
+    return best;
+}
+
+const FileCoverage* CoverageReportEngine::FindCoverageForFile(
+    const WorkspaceCoverageSummary& cov,
+    const std::wstring& filePath) {
+    if (!cov.loaded || filePath.empty()) return nullptr;
+    std::wstring key = NormalizePathKey(filePath);
+    auto it = cov.filesByNormPath.find(key);
+    if (it != cov.filesByNormPath.end()) return &it->second;
+
+    // Fallback suffix match (e.g. if CI generated lcov under a different checkout root)
+    fs::path fp(key);
+    std::wstring tail = fp.filename().wstring();
+    if (!fp.parent_path().empty()) {
+        tail = (fp.parent_path().filename() / fp.filename()).wstring();
+    }
+    if (!tail.empty()) {
+        for (const auto& kv : cov.filesByNormPath) {
+            if (kv.first.size() > tail.size() + 1 &&
+                kv.first[kv.first.size() - tail.size() - 1] == L'\\' &&
+                kv.first.ends_with(tail)) {
+                return &kv.second;
+            }
+        }
+    }
+    return nullptr;
 }
 
 } // namespace phide::dev

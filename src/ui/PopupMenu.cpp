@@ -161,6 +161,7 @@ void PopupMenu::OpenDebugMenu(float x, float y, const app::AppConfig& config,
     m_items.push_back({ MenuActionId::DebugStepInto, L"Step Into", L"F11", false, false, false, isDebugActive, {}, {} });
     m_items.push_back({ MenuActionId::DebugStepOut, L"Step Out", L"Shift+F11", false, false, false, isDebugActive, {}, {} });
     m_items.push_back({ MenuActionId::DebugContinue, L"Continue", L"F5", false, false, false, isDebugActive, {}, {} });
+    m_items.push_back({ MenuActionId::DebugPause, L"Pause", L"F6", false, false, false, isDebugActive, {}, {} });
 
     // --- Separator ---
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
@@ -234,6 +235,7 @@ void PopupMenu::OpenCodeMenu(float x, float y, const app::AppConfig& config,
     // 6. Symbol Search, References, History & Bookmarks
     m_items.push_back({ MenuActionId::CodeFindReferences,   L"Find All References",          L"Shift+F12",   false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::CodeTypeDefinition,   L"Go to Type Definition",        L"",            false, false, false, hasDoc, {}, {} });
+    m_items.push_back({ MenuActionId::CodeTypeHierarchy,    L"Show Type Hierarchy",          L"",            false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::CodeImplementation,   L"Go to Implementation",         L"Ctrl+F12",    false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::CodeGoToSymbol,       L"Go to Symbol in Editor...",    L"Ctrl+Shift+O",false, false, false, hasDoc, {}, {} });
     m_items.push_back({ MenuActionId::NavBack,              L"Navigate Back",                L"Alt+Left",    false, false, false, true,   {}, {} });
@@ -383,6 +385,7 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     // 1. Monitor
     m_items.push_back({ MenuActionId::ViewMonitor, L"Monitor", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewTestExplorer, L"Test Explorer", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::ViewTaskRunner, L"Task Runner", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewSqlConsole, L"SQL Query Console...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewHeatmap, L"Activity Heatmap...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
@@ -484,8 +487,25 @@ void PopupMenu::BuildEditMenuItems(bool canUndo, bool canRedo, bool hasSelection
     m_items.push_back({ MenuActionId::EditToggleLineComment, L"Toggle Line Comment", L"Ctrl+/", false, false, false, true, {}, {} });
     // 11. Toggle Block Comment (Shift+Alt+A)
     m_items.push_back({ MenuActionId::EditToggleBlockComment, L"Toggle Block Comment", L"Shift+Alt+A", false, false, false, true, {}, {} });
-    // 12. Emmet: Expand Abbreviation (Tab)
+    // 12. Emmet: Expand / Wrap / Balance
     m_items.push_back({ MenuActionId::EditEmmetExpand, L"Emmet: Expand Abbreviation", L"Tab", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditEmmetWrap, L"Emmet: Wrap with Abbreviation...", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditEmmetBalanceOutward, L"Emmet: Balance (Outward)", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EditEmmetBalanceInward, L"Emmet: Balance (Inward)", L"", false, false, false, true, {}, {} });
+
+    // 12b. Transform Case Submenu
+    PopupMenuItem caseItem;
+    caseItem.actionId = MenuActionId::EditCaseTransform;
+    caseItem.label = L"Transform Case";
+    caseItem.hasSubmenu = true;
+    caseItem.isEnabled = true;
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseUpper, L"UPPERCASE", L"", false, false, false, true, {}, {} });
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseLower, L"lowercase", L"", false, false, false, true, {}, {} });
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseTitle, L"Title Case", L"", false, false, false, true, {}, {} });
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseCamel, L"camelCase", L"", false, false, false, true, {}, {} });
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseSnake, L"snake_case", L"", false, false, false, true, {}, {} });
+    caseItem.submenuItems.push_back({ MenuActionId::EditCaseKebab, L"kebab-case", L"", false, false, false, true, {}, {} });
+    m_items.push_back(std::move(caseItem));
 
     // --- Separator ---
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
@@ -1214,6 +1234,38 @@ bool PopupMenu::HitTestMenuArea(POINT clientPt) const {
     if (PtInRectF(clientPt, m_mainMenuBounds)) return true;
     if (m_activeSubmenuIdx >= 0 && PtInRectF(clientPt, m_submenuBounds)) return true;
     return false;
+}
+
+void PopupMenu::OpenTabContextMenu(float x, float y, const app::AppConfig& config,
+                                    bool isPinned, bool hasFilePath,
+                                    bool canCloseOthers, bool canCloseRight,
+                                    bool canCloseSaved, bool canToggleStructured,
+                                    float clientW, float clientH) {
+    m_isOpen = true;
+    m_hoveredMainIdx = -1;
+    m_activeSubmenuIdx = -1;
+    m_hoveredSubmenuIdx = -1;
+
+    m_items.clear();
+    m_items.push_back({ MenuActionId::TabClose,            L"Close",                     L"Ctrl+W", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::TabCloseOthers,      L"Close Others",              L"",       false, false, false, canCloseOthers, {}, {} });
+    m_items.push_back({ MenuActionId::TabCloseToRight,     L"Close to the Right",        L"",       false, false, false, canCloseRight, {}, {} });
+    m_items.push_back({ MenuActionId::TabCloseSaved,       L"Close Saved",               L"",       false, false, false, canCloseSaved, {}, {} });
+    m_items.push_back({ MenuActionId::None,                L"",                          L"",       true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::TabTogglePin,        isPinned ? L"Unpin Tab" : L"Pin Tab", L"", false, isPinned, false, true, {}, {} });
+    if (canToggleStructured) {
+        m_items.push_back({ MenuActionId::ViewToggleStructured, L"Toggle Structured / Hex Viewer", L"", false, false, false, true, {}, {} });
+    }
+    m_items.push_back({ MenuActionId::None,                L"",                          L"",       true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::TabSplitRight,       L"Split Right",               L"Ctrl+\\", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::TabMoveNewWindow,    L"Move into New Window",      L"",       false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::TabCopyNewWindow,    L"Copy into New Window",      L"",       false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::None,                L"",                          L"",       true,  false, false, false, {}, {} });
+    m_items.push_back({ MenuActionId::TabCopyPath,         L"Copy Path",                 L"Shift+Alt+C", false, false, false, hasFilePath, {}, {} });
+    m_items.push_back({ MenuActionId::TabRevealInExplorer, L"Reveal in File Explorer",   L"Shift+Alt+R", false, false, false, hasFilePath, {}, {} });
+
+    const float menuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(245.0f));
+    LayoutMenu(m_items, x, y, menuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
 } // namespace phide::ui

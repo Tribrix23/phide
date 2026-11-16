@@ -134,6 +134,79 @@ public:
      * @brief Sanitizes user-entered branch or tag names into safe Git ref characters.
      */
     [[nodiscard]] static std::wstring SanitizeBranchOrTagName(const std::wstring& raw);
+
+    struct DiffHunkPatchSpec {
+        size_t leftStart = 0;
+        size_t leftCount = 0;
+        size_t rightStart = 0;
+        size_t rightCount = 0;
+    };
+
+    struct InlineDiffRow {
+        enum class Kind { Context, Deleted, Added } kind = Kind::Context;
+        size_t leftLine = 0;   // 1-based display line (0 if N/A)
+        size_t rightLine = 0;  // 1-based display line (0 if N/A)
+        size_t hunkIdx = static_cast<size_t>(-1);
+        std::wstring text;
+    };
+
+    struct FileHistoryEntry {
+        std::wstring shortHash;
+        std::wstring fullHash;
+        std::wstring date;
+        std::wstring author;
+        std::wstring message;
+    };
+
+    struct WorktreeEntry {
+        std::wstring path;
+        std::wstring headHash;
+        std::wstring branch;
+        bool isBare = false;
+        bool isDetached = false;
+        bool isLocked = false;
+    };
+
+    struct SubmoduleEntry {
+        wchar_t state = L' '; // ' ' initialized, '-' uninitialized, '+' ahead/dirty, 'U' merge conflict
+        std::wstring hash;
+        std::wstring path;
+        std::wstring refDesc;
+    };
+
+    struct RebaseTodoItem {
+        std::wstring action = L"pick"; // pick, reword, squash, fixup, drop
+        std::wstring hash;
+        std::wstring subject;
+    };
+
+    [[nodiscard]] static std::string BuildUnifiedSelectedRangePatch(
+        const std::wstring& repoRelPath,
+        const editor::Buffer& leftBuf,
+        const editor::Buffer& rightBuf,
+        const std::vector<DiffHunkPatchSpec>& hunks,
+        size_t selStartLine,
+        size_t selEndLine,
+        bool reverse = false);
+
+    [[nodiscard]] static std::vector<InlineDiffRow> BuildInlineUnifiedDiffRows(
+        const editor::Buffer& leftBuf,
+        const editor::Buffer& rightBuf,
+        const std::vector<DiffHunkPatchSpec>& hunks,
+        size_t maxRows = 50000);
+
+    [[nodiscard]] static std::vector<FileHistoryEntry> ParseFollowHistoryLog(
+        const std::wstring& logOutput,
+        size_t maxEntries = 100);
+
+    [[nodiscard]] static std::vector<WorktreeEntry> ParseWorktreeListPorcelain(
+        const std::wstring& porcelainOutput);
+
+    [[nodiscard]] static std::vector<SubmoduleEntry> ParseSubmoduleStatus(
+        const std::wstring& statusOutput);
+
+    [[nodiscard]] static std::string BuildInteractiveRebaseSequence(
+        const std::vector<RebaseTodoItem>& items);
 };
 
 } // namespace phide::git

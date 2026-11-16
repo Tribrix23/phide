@@ -144,6 +144,38 @@ struct CallHierarchyItem {
     std::string rawItemJson;
 };
 
+struct TypeHierarchyItem {
+    std::wstring name;
+    std::wstring detail;
+    int kind = 5; // 5=Class, 11=Interface, 23=Struct
+    std::wstring filePath;
+    size_t line = 0;
+    size_t col = 0;
+    std::string rawItemJson;
+};
+
+struct LspFoldRange {
+    size_t startLine = 0;
+    size_t endLine = 0;
+    std::wstring kind; // e.g. "comment", "imports", "region"
+};
+
+struct LspCodeLens {
+    size_t startLine = 0;
+    size_t startCol = 0;
+    std::wstring title;
+    std::wstring command;
+    std::string rawJson;
+};
+
+struct SemanticToken {
+    size_t line = 0;
+    size_t startCol = 0;
+    size_t length = 0;
+    uint32_t tokenType = 0;
+    uint32_t tokenModifiers = 0;
+};
+
 /**
  * @class LspClient
  * @brief Orchestrates language server process lifecycle and JSON-RPC 2.0 request/response dispatch.
@@ -248,6 +280,29 @@ public:
     bool ResolveCodeAction(CodeActionItem& action);
     bool RequestInlayHints(const std::wstring& fileUri, size_t startLine, size_t endLine,
                            std::vector<InlayHintItem>& outHints);
+    bool RequestSemanticTokensFull(const std::wstring& fileUri, std::vector<SemanticToken>& outTokens);
+    bool RequestCodeLens(const std::wstring& fileUri, std::vector<LspCodeLens>& outLenses);
+    bool ResolveCodeLens(LspCodeLens& lens);
+    bool RequestFoldingRange(const std::wstring& fileUri, std::vector<LspFoldRange>& outRanges);
+    bool PrepareTypeHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                              std::vector<TypeHierarchyItem>& outItems);
+    bool RequestTypeHierarchySupertypes(const TypeHierarchyItem& item, std::vector<TypeHierarchyItem>& outSupers);
+    bool RequestTypeHierarchySubtypes(const TypeHierarchyItem& item, std::vector<TypeHierarchyItem>& outSubs);
+
+    // Deterministic JSON-RPC response parsers (exposed for direct verification & bounded memory tests)
+    [[nodiscard]] static uint32_t MapSemanticTokenLegendName(const std::string& legendName) noexcept;
+    static bool ParseSemanticTokensResponse(const std::string& respJson,
+                                            const std::vector<std::string>& legendTypes,
+                                            std::vector<SemanticToken>& outTokens,
+                                            size_t maxTokens = 4096);
+    static bool ParseCodeLensResponse(const std::string& respJson,
+                                      std::vector<LspCodeLens>& outLenses,
+                                      size_t maxLenses = 128);
+    static bool ParseFoldingRangesResponse(const std::string& respJson,
+                                           std::vector<LspFoldRange>& outRanges,
+                                           size_t maxRanges = 2048);
+    static bool ParseTypeHierarchyResponse(const std::string& respJson,
+                                           std::vector<TypeHierarchyItem>& outItems);
 
     /**
      * @brief Configures optional custom language server executable paths (keyed by language family e.g. "typescript", "python", "php", "cpp").
@@ -319,6 +374,7 @@ private:
     std::unordered_map<std::wstring, std::wstring> m_docSyncedTexts;
     std::unordered_map<std::wstring, std::wstring> m_customServerPaths;
     std::unordered_set<std::wstring> m_failedDiscoveryKeys;
+    std::vector<std::string> m_semanticTokenTypes;
     DiagnosticsCallback m_diagnosticsCallback;
 
     std::mutex m_writeMutex;
@@ -387,6 +443,16 @@ public:
     bool ResolveCodeAction(const std::wstring& fileUri, CodeActionItem& action);
     bool RequestInlayHints(const std::wstring& fileUri, size_t startLine, size_t endLine,
                            std::vector<InlayHintItem>& outHints);
+    bool RequestSemanticTokensFull(const std::wstring& fileUri, std::vector<SemanticToken>& outTokens);
+    bool RequestCodeLens(const std::wstring& fileUri, std::vector<LspCodeLens>& outLenses);
+    bool ResolveCodeLens(const std::wstring& fileUri, LspCodeLens& lens);
+    bool RequestFoldingRange(const std::wstring& fileUri, std::vector<LspFoldRange>& outRanges);
+    bool PrepareTypeHierarchy(const std::wstring& fileUri, size_t line, size_t col,
+                              std::vector<TypeHierarchyItem>& outItems);
+    bool RequestTypeHierarchySupertypes(const std::wstring& fileUri, const TypeHierarchyItem& item,
+                                        std::vector<TypeHierarchyItem>& outSupers);
+    bool RequestTypeHierarchySubtypes(const std::wstring& fileUri, const TypeHierarchyItem& item,
+                                      std::vector<TypeHierarchyItem>& outSubs);
 
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] bool IsRunningForFile(const std::wstring& fileUriOrPath) const;
