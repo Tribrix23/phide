@@ -580,12 +580,14 @@ class PhideBdb(bdb.Bdb):
         paused_state["pause_req"] = False
         paused_state["frame"] = frame
         paused_state["frames"] = {}
+        bridge_abs = os.path.normcase(os.path.abspath(__file__))
         frames = []
         f = frame
         fid = 0
         while f is not None and len(frames) < 64:
             fn = os.path.abspath(f.f_code.co_filename)
-            if "string" not in fn or fn == self.target_file:
+            is_bridge = (os.path.normcase(fn) == bridge_abs) or os.path.basename(fn).startswith("phide_bdb_")
+            if not is_bridge and ("string" not in fn or fn == self.target_file):
                 paused_state["frames"][fid] = f
                 frames.append({
                     "id": fid,
@@ -596,20 +598,25 @@ class PhideBdb(bdb.Bdb):
                 fid += 1
             f = f.f_back
 
-        locals_list, globals_list = extract_frame_vars(frame, self.obj_map, self.obj_depths)
+        active_frame = paused_state["frames"].get(0, frame)
+        stop_file = frames[0]["file"] if frames else self.target_file
+        stop_line = frames[0]["line"] if frames else 1
+        locals_list, globals_list = extract_frame_vars(active_frame, self.obj_map, self.obj_depths)
 
         loaded = []
         for mname, mobj in list(sys.modules.items())[:80]:
             mf = getattr(mobj, "__file__", None)
             if mf:
-                loaded.append(os.path.abspath(mf))
+                af = os.path.abspath(mf)
+                if os.path.normcase(af) != bridge_abs and not os.path.basename(af).startswith("phide_bdb_"):
+                    loaded.append(af)
 
         emit({
             "event": "stopped",
             "reason": reason,
             "text": exc_text,
-            "file": os.path.abspath(frame.f_code.co_filename),
-            "line": frame.f_lineno,
+            "file": stop_file,
+            "line": stop_line,
             "frames": frames,
             "locals": locals_list,
             "globals": globals_list,
@@ -736,11 +743,16 @@ except bdb.BdbQuit:
     pass
 except Exception as ex:
     if paused_state.get("break_uncaught", True):
+        bridge_abs = os.path.normcase(os.path.abspath(__file__))
+        best_tb = None
         tb = ex.__traceback__
-        while tb and tb.tb_next:
+        while tb is not None:
+            fn = os.path.abspath(tb.tb_frame.f_code.co_filename)
+            if os.path.normcase(fn) != bridge_abs and not os.path.basename(fn).startswith("phide_bdb_"):
+                best_tb = tb
             tb = tb.tb_next
-        if tb is not None:
-            d._emit_stop(tb.tb_frame, "exception", f"Uncaught {type(ex).__name__}: {ex}")
+        if best_tb is not None:
+            d._emit_stop(best_tb.tb_frame, "exception", f"Uncaught {type(ex).__name__}: {ex}")
     emit({"event": "error", "text": f"Uncaught {type(ex).__name__}: {ex}"})
     exit_code = 1
 finally:
@@ -1324,7 +1336,7 @@ DapAdapterType DapClient::DetectAdapterForFile(const std::wstring& filePath) noe
     if (filePath.empty()) return DapAdapterType::None;
     std::wstring ext = ToLowerW(fs::path(filePath).extension().wstring());
     if (ext == L".py" || ext == L".pyw") return DapAdapterType::Python;
-    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts") return DapAdapterType::NodeInspect;
+    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".tsx" || ext == L".jsx") return DapAdapterType::NodeInspect;
     if (ext == L".c" || ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".exe") return DapAdapterType::GdbMi;
     if (ext == L".php") return DapAdapterType::PhpXdebug;
     return DapAdapterType::None;
@@ -2283,7 +2295,23 @@ void DapClient::RunGdbMiSession(const LaunchConfig& cfg) {
 
 void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
     int port = cfg.port > 0 ? cfg.port : PickFreeLoopbackPort();
-    std::wstring nodeCmd = L"node.exe --inspect-brk=127.0.0.1:" + std::to_wstring(port) + L" \"" + cfg.program + L"\"";
+    std::wstring ext = ToLowerW(fs::path(cfg.program).extension().wstring());
+    std::wstring extraFlags;
+    if (ext == L".ts" || ext == L".mts" || ext == L".cts") {
+        extraFlags = L" --experimental-strip-types";
+    } else if ((ext == L".tsx" || ext == L".jsx") && !cfg.cwd.empty()) {
+        std::error_code tec;
+        fs::path tsxLoader = fs::path(cfg.cwd) / L"node_modules" / L"tsx" / L"dist" / L"esm" / L"index.mjs";
+        if (!fs::exists(tsxLoader, tec)) {
+            tsxLoader = fs::path(cfg.cwd) / L"node_modules" / L"tsx" / L"dist" / L"loader.mjs";
+        }
+        if (fs::exists(tsxLoader, tec)) {
+            extraFlags = L" --import \"" + tsxLoader.wstring() + L"\"";
+        } else if (onOutput) {
+            onOutput(L"[Node CDP] Note: Node.js cannot execute raw JSX/TSX without a transpiler/loader (e.g. 'npm i -D tsx'). Attempting execution...\r\n");
+        }
+    }
+    std::wstring nodeCmd = L"node.exe" + extraFlags + L" --inspect-brk=127.0.0.1:" + std::to_wstring(port) + L" \"" + cfg.program + L"\"";
     for (const auto& a : cfg.args) nodeCmd += L" \"" + a + L"\"";
 
     SECURITY_ATTRIBUTES sa{};
@@ -2656,16 +2684,22 @@ void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
             }
         }
 
-        // Pipe Node stdout to Debug Console
-        DWORD avail = 0;
-        if (PeekNamedPipe(m_hStdoutRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
-            char pbuf[2048];
-            DWORD rd = 0;
-            if (ReadFile(m_hStdoutRead, pbuf, sizeof(pbuf), &rd, nullptr) && rd > 0 && onOutput) {
-                onOutput(Utf8ToWide(std::string(pbuf, rd)));
+        // Drain Node stdout/stderr pipes cleanly without dropping buffered chunks
+        auto drainNodePipe = [&]() {
+            DWORD avail = 0;
+            while (PeekNamedPipe(m_hStdoutRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                char pbuf[2048];
+                DWORD rd = 0;
+                if (ReadFile(m_hStdoutRead, pbuf, sizeof(pbuf), &rd, nullptr) && rd > 0 && onOutput) {
+                    onOutput(Utf8ToWide(std::string(pbuf, rd)));
+                } else {
+                    break;
+                }
             }
-        }
+        };
+        drainNodePipe();
 
+        bool execContextEnded = false;
         drainWsSocket(15);
         while (!queuedMessages.empty()) {
             std::string msg = std::move(queuedMessages.front());
@@ -2673,7 +2707,45 @@ void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
 
             std::string method;
             if (!ExtractJsonStringA(msg, "method", method)) continue;
-            if (method == "Debugger.scriptParsed") {
+            if (method == "Runtime.consoleAPICalled") {
+                std::string ctype;
+                ExtractJsonStringA(msg, "type", ctype);
+                std::string argVal;
+                if (!ExtractJsonStringA(msg, "value", argVal)) {
+                    ExtractJsonStringA(msg, "description", argVal);
+                }
+                if (argVal.empty()) {
+                    argVal = ExtractJsonPrimitiveA(msg, "value");
+                }
+                if (!argVal.empty() && onOutput) {
+                    std::wstring prefix = (ctype == "error") ? L"[Error] " : ((ctype == "warn" || ctype == "warning") ? L"[Warn] " : L"");
+                    onOutput(prefix + Utf8ToWide(argVal) + L"\r\n");
+                }
+            } else if (method == "Runtime.exceptionThrown") {
+                std::string exWrap, exObj, desc, exText, exUrl;
+                int exLine0 = -1;
+                ExtractNestedObjectA(msg, "exceptionDetails", exWrap);
+                ExtractJsonStringA(exWrap.empty() ? msg : exWrap, "text", exText);
+                ExtractJsonStringA(exWrap.empty() ? msg : exWrap, "url", exUrl);
+                ExtractJsonIntA(exWrap.empty() ? msg : exWrap, "lineNumber", exLine0);
+                if (ExtractNestedObjectA(exWrap.empty() ? msg : exWrap, "exception", exObj)) {
+                    ExtractJsonStringA(exObj, "description", desc);
+                    if (desc.empty()) ExtractJsonStringA(exObj, "value", desc);
+                }
+                std::wstring errLine = L"Uncaught Exception";
+                if (!desc.empty()) errLine = Utf8ToWide(desc);
+                else if (!exText.empty()) errLine = Utf8ToWide(exText);
+                if (!exUrl.empty() && exLine0 >= 0) {
+                    std::wstring loc = FileUrlToWindowsPathW(exUrl);
+                    errLine += L" (" + fs::path(loc).filename().wstring() + L":" + std::to_wstring(exLine0 + 1) + L")";
+                }
+                if (onOutput) onOutput(errLine + L"\r\n");
+            } else if (method == "Runtime.executionContextDestroyed") {
+                int ctxId = 0;
+                if (!ExtractJsonIntA(msg, "executionContextId", ctxId) || ctxId <= 1) {
+                    execContextEnded = true;
+                }
+            } else if (method == "Debugger.scriptParsed") {
                 std::string sid, surl;
                 ExtractJsonStringA(msg, "scriptId", sid);
                 ExtractJsonStringA(msg, "url", surl);
@@ -2753,8 +2825,21 @@ void DapClient::RunNodeCdpSession(const LaunchConfig& cfg) {
                 if (onStateChanged) onStateChanged();
             }
         }
-        if (WaitForSingleObject(m_hChildProc, 5) == WAIT_OBJECT_0) break;
+        if (execContextEnded) {
+            // Detach inspector cleanly so Node exits instead of hanging at "Waiting for debugger to disconnect"
+            sendWsFrame(0x8, "");
+            closesocket(ws);
+            m_sockHandle = static_cast<uintptr_t>(INVALID_SOCKET);
+            WaitForSingleObject(m_hChildProc, 600);
+            drainNodePipe();
+            break;
+        }
+        if (WaitForSingleObject(m_hChildProc, 5) == WAIT_OBJECT_0) {
+            drainNodePipe();
+            break;
+        }
     }
+    if (m_hStdoutRead) drainNodePipe();
 }
 
 // =========================================================================

@@ -681,6 +681,50 @@ std::wstring BuildInteractiveDockerCommand(const std::wstring& containerId, bool
     return execCmd;
 }
 
+static std::vector<RemoteFileEntry> ParsePosixLsEntries(
+    const std::wstring& out,
+    std::wstring& outResolvedPath,
+    int depth
+) {
+    std::vector<RemoteFileEntry> entries;
+    std::wstringstream ss(out);
+    std::wstring line;
+    std::wstring resolvedBase;
+    while (std::getline(ss, line)) {
+        line = TrimWS(line);
+        if (line.empty()) continue;
+        if (line.rfind(L"__PHIDE_PWD__:", 0) == 0) {
+            resolvedBase = line.substr(14);
+            if (!resolvedBase.empty()) outResolvedPath = resolvedBase;
+            continue;
+        }
+        if (line == L"." || line == L".." || line == L"./" || line == L"../") continue;
+
+        bool isDir = false;
+        if (line.back() == L'/') {
+            isDir = true;
+            line.pop_back();
+        }
+        if (line.empty()) continue;
+
+        RemoteFileEntry e{};
+        e.name = line;
+        e.isDir = isDir;
+        e.depth = depth;
+        std::wstring base = outResolvedPath;
+        if (!base.empty() && base.back() != L'/') base += L'/';
+        e.fullPath = base + line;
+        entries.push_back(std::move(e));
+        if (entries.size() >= 500) break;
+    }
+
+    std::sort(entries.begin(), entries.end(), [](const RemoteFileEntry& a, const RemoteFileEntry& b) {
+        if (a.isDir != b.isDir) return a.isDir > b.isDir;
+        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+    return entries;
+}
+
 std::vector<RemoteFileEntry> FetchRemoteSshDirectory(
     const SshHostEntry& host,
     const std::wstring& remotePath,
@@ -690,10 +734,9 @@ std::vector<RemoteFileEntry> FetchRemoteSshDirectory(
 ) {
     outError.clear();
     outResolvedPath = remotePath.empty() ? L"~" : remotePath;
-    std::vector<RemoteFileEntry> entries;
     if (!HasSshClientTool()) {
         outError = L"OpenSSH client (ssh.exe) was not found.";
-        return entries;
+        return {};
     }
 
     std::wstring targetDir = TrimWS(remotePath);
@@ -725,44 +768,10 @@ std::vector<RemoteFileEntry> FetchRemoteSshDirectory(
         } else {
             outError = out.empty() ? L"Remote SSH command failed." : TrimWS(out);
         }
-        return entries;
+        return {};
     }
 
-    std::wstringstream ss(out);
-    std::wstring line;
-    std::wstring resolvedBase;
-    while (std::getline(ss, line)) {
-        line = TrimWS(line);
-        if (line.empty()) continue;
-        if (line.rfind(L"__PHIDE_PWD__:", 0) == 0) {
-            resolvedBase = line.substr(14);
-            if (!resolvedBase.empty()) outResolvedPath = resolvedBase;
-            continue;
-        }
-        if (line == L"." || line == L".." || line == L"./" || line == L"../") continue;
-
-        bool isDir = false;
-        if (line.back() == L'/') {
-            isDir = true;
-            line.pop_back();
-        }
-        if (line.empty()) continue;
-
-        RemoteFileEntry e{};
-        e.name = line;
-        e.isDir = isDir;
-        e.depth = depth;
-        std::wstring base = outResolvedPath;
-        if (!base.empty() && base.back() != L'/') base += L'/';
-        e.fullPath = base + line;
-        entries.push_back(std::move(e));
-    }
-
-    std::sort(entries.begin(), entries.end(), [](const RemoteFileEntry& a, const RemoteFileEntry& b) {
-        if (a.isDir != b.isDir) return a.isDir > b.isDir;
-        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
-    });
-    return entries;
+    return ParsePosixLsEntries(out, outResolvedPath, depth);
 }
 
 bool DownloadRemoteSshFile(
@@ -1000,6 +1009,146 @@ bool UploadRemoteSessionFile(
     }
     outError.clear();
     return true;
+}
+
+std::vector<RemoteFileEntry> FetchRemoteContainerDirectory(
+    const DevContainerEntry& container,
+    const std::wstring& remotePath,
+    std::wstring& outResolvedPath,
+    std::wstring& outError,
+    int depth
+) {
+    outError.clear();
+    outResolvedPath = remotePath.empty() ? L"/" : remotePath;
+    if (container.id.empty() || !HasDockerTool()) {
+        outError = L"Docker CLI not detected or invalid container.";
+        return {};
+    }
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring targetDir = TrimWS(remotePath);
+    if (targetDir.empty()) targetDir = L"/";
+    std::wstring script = L"cd " + QuotePosixSingle(targetDir) + L" && printf '__PHIDE_PWD__:%s\\n' \"$PWD\" && LC_ALL=C ls -1pA";
+    std::wstring fullCmd = QuoteWinArg(dockerExe) + L" exec -i " + QuoteWinArg(container.id) + L" sh -lc " + QuoteWinArg(script);
+    DWORD exitCode = 1;
+    std::wstring out = RunSilentProcessOutput(fullCmd, 6000, &exitCode);
+    if (exitCode != 0) {
+        outError = out.empty() ? L"Failed to inspect container directory." : TrimWS(out);
+        return {};
+    }
+    return ParsePosixLsEntries(out, outResolvedPath, depth);
+}
+
+bool RunDockerContainerAction(
+    const std::wstring& containerId,
+    const std::wstring& action,
+    std::wstring& outOutput
+) {
+    outOutput.clear();
+    if (containerId.empty() || !HasDockerTool()) {
+        outOutput = L"Docker CLI not available.";
+        return false;
+    }
+    if (action != L"start" && action != L"stop" && action != L"restart" && action != L"rm") {
+        outOutput = L"Unsupported Docker container action.";
+        return false;
+    }
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring fullCmd = QuoteWinArg(dockerExe) + L" " + action + L" " +
+                           ((action == L"rm") ? L"-f " : L"") + QuoteWinArg(containerId);
+    DWORD exitCode = 1;
+    outOutput = RunSilentProcessOutput(fullCmd, 15000, &exitCode);
+    return exitCode == 0;
+}
+
+std::wstring FetchDockerContainerLogs(const std::wstring& containerId, int tailLines) {
+    if (containerId.empty() || !HasDockerTool()) return L"";
+    int clampedTail = (std::max)(10, (std::min)(tailLines, 400));
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring fullCmd = QuoteWinArg(dockerExe) + L" logs --tail " + std::to_wstring(clampedTail) +
+                           L" --timestamps " + QuoteWinArg(containerId);
+    DWORD exitCode = 1;
+    std::wstring out = RunSilentProcessOutput(fullCmd, 6000, &exitCode);
+    if (out.size() > 128 * 1024) {
+        out = out.substr(out.size() - 128 * 1024);
+    }
+    return out;
+}
+
+std::vector<DockerImageEntry> ProbeDockerImages(std::wstring* outStatusMsg) {
+    if (outStatusMsg) outStatusMsg->clear();
+    std::vector<DockerImageEntry> list;
+    if (!HasDockerTool()) return list;
+    DWORD exitCode = 1;
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring out = RunSilentProcessOutput(
+        QuoteWinArg(dockerExe) + L" images --format \"{{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}\"",
+        3500, &exitCode);
+    if (exitCode != 0) return list;
+    std::wstringstream ss(out);
+    std::wstring line;
+    while (std::getline(ss, line) && list.size() < 64) {
+        line = TrimWS(line);
+        if (line.empty()) continue;
+        std::vector<std::wstring> cols;
+        std::wstringstream ls(line);
+        std::wstring part;
+        while (std::getline(ls, part, L'|')) cols.push_back(TrimWS(part));
+        if (cols.size() >= 4) {
+            list.push_back({ cols[0], cols[1], cols[2], cols[3] });
+        }
+    }
+    return list;
+}
+
+std::vector<DockerVolumeEntry> ProbeDockerVolumes(std::wstring* outStatusMsg) {
+    if (outStatusMsg) outStatusMsg->clear();
+    std::vector<DockerVolumeEntry> list;
+    if (!HasDockerTool()) return list;
+    DWORD exitCode = 1;
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring out = RunSilentProcessOutput(
+        QuoteWinArg(dockerExe) + L" volume ls --format \"{{.Name}}|{{.Driver}}|{{.Mountpoint}}\"",
+        3500, &exitCode);
+    if (exitCode != 0) return list;
+    std::wstringstream ss(out);
+    std::wstring line;
+    while (std::getline(ss, line) && list.size() < 64) {
+        line = TrimWS(line);
+        if (line.empty()) continue;
+        std::vector<std::wstring> cols;
+        std::wstringstream ls(line);
+        std::wstring part;
+        while (std::getline(ls, part, L'|')) cols.push_back(TrimWS(part));
+        if (!cols.empty() && !cols[0].empty()) {
+            list.push_back({
+                cols[0],
+                cols.size() >= 2 ? cols[1] : L"",
+                cols.size() >= 3 ? cols[2] : L""
+            });
+        }
+    }
+    return list;
+}
+
+bool RunDockerComposeCommand(
+    const std::wstring& workspaceRoot,
+    const std::wstring& subCommand,
+    std::wstring& outOutput
+) {
+    outOutput.clear();
+    if (!HasDockerTool() || workspaceRoot.empty()) {
+        outOutput = L"Docker CLI or workspace folder unavailable.";
+        return false;
+    }
+    std::wstring dockerExe = ResolveExePath(L"docker.exe", L"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe");
+    std::wstring cmd = QuoteWinArg(dockerExe) + L" compose " + subCommand;
+    std::wstring fullCmd = L"cmd.exe /d /s /c \"cd /d " + QuoteWinArg(workspaceRoot) + L" && " + cmd + L"\"";
+    DWORD exitCode = 1;
+    outOutput = RunSilentProcessOutput(fullCmd, 20000, &exitCode);
+    if (outOutput.size() > 128 * 1024) {
+        outOutput = outOutput.substr(outOutput.size() - 128 * 1024);
+    }
+    return exitCode == 0;
 }
 
 } // namespace remote

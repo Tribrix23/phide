@@ -14,8 +14,23 @@
 #include <sstream>
 #include <filesystem>
 #include <unordered_set>
+#include <regex>
+#include <atomic>
 
 namespace phide::editor {
+
+namespace {
+std::atomic<uint64_t> g_defaultMmapThresholdBytes{ Buffer::kMemoryMappedThresholdBytes };
+}
+
+void Buffer::SetDefaultMemoryMappedThresholdMB(int mb) noexcept {
+    int clamped = (std::max)(1, (std::min)(512, mb));
+    g_defaultMmapThresholdBytes.store(static_cast<uint64_t>(clamped) * 1024ULL * 1024ULL, std::memory_order_relaxed);
+}
+
+uint64_t Buffer::GetDefaultMemoryMappedThresholdBytes() noexcept {
+    return g_defaultMmapThresholdBytes.load(std::memory_order_relaxed);
+}
 
 // --- SyntaxLexer Implementation ---
 
@@ -1786,10 +1801,113 @@ bool Buffer::ReopenWithEncoding(TextEncoding enc) {
     return true;
 }
 
-bool Buffer::LoadFromFile(const std::wstring& path) {
+bool Buffer::FindMatchesInMappedFile(const std::wstring& query,
+                                     bool matchCase,
+                                     bool wholeWord,
+                                     bool useRegex,
+                                     std::vector<MappedSearchHit>& outMatches,
+                                     size_t maxMatches) const {
+    outMatches.clear();
+    if (!m_mappedState || !m_mappedState->view || m_mappedState->fileSize == 0 || query.empty() || maxMatches == 0) {
+        return false;
+    }
+
+    auto isWordChar = [](wchar_t ch) noexcept -> bool {
+        return ::iswalnum(ch) || ch == L'_';
+    };
+
+    std::wregex re;
+    if (useRegex) {
+        try {
+            auto flags = std::regex_constants::ECMAScript;
+            if (!matchCase) flags |= std::regex_constants::icase;
+            re = std::wregex(query, flags);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    std::wstring queryFolded = query;
+    if (!matchCase && !useRegex) {
+        for (wchar_t& c : queryFolded) c = static_cast<wchar_t>(::towlower(c));
+    }
+
+    const char* data = reinterpret_cast<const char*>(m_mappedState->view);
+    const uint64_t totalBytes = m_mappedState->fileSize;
+    std::wstring lineW;
+    std::wstring lineFolded;
+    uint64_t pos = 0;
+    size_t lineIdx = 0;
+
+    while (pos < totalBytes && outMatches.size() < maxMatches) {
+        uint64_t lineStart = pos;
+        while (pos < totalBytes && data[pos] != '\n') ++pos;
+        uint64_t lineEnd = pos;
+        if (pos < totalBytes && data[pos] == '\n') ++pos;
+        if (lineEnd > lineStart && data[lineEnd - 1] == '\r') --lineEnd;
+
+        // Decode at most 64 KB per line so pathological single-line blobs cannot exhaust heap
+        const size_t chunkBytes = static_cast<size_t>((std::min<uint64_t>)(lineEnd - lineStart, 65536ULL));
+        lineW.clear();
+        if (chunkBytes > 0) {
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, data + lineStart, static_cast<int>(chunkBytes), nullptr, 0);
+            if (wlen > 0) {
+                lineW.resize(static_cast<size_t>(wlen));
+                MultiByteToWideChar(CP_UTF8, 0, data + lineStart, static_cast<int>(chunkBytes), lineW.data(), wlen);
+            }
+        }
+
+        if (!lineW.empty()) {
+            if (useRegex) {
+                std::wsregex_iterator it(lineW.begin(), lineW.end(), re);
+                std::wsregex_iterator end;
+                for (; it != end && outMatches.size() < maxMatches; ++it) {
+                    const size_t col = static_cast<size_t>(it->position());
+                    const size_t len = static_cast<size_t>(it->length());
+                    if (len == 0) continue;
+                    if (wholeWord) {
+                        bool leftOk = (col == 0) || !isWordChar(lineW[col - 1]);
+                        bool rightOk = (col + len >= lineW.size()) || !isWordChar(lineW[col + len]);
+                        if (!leftOk || !rightOk) continue;
+                    }
+                    outMatches.push_back({ lineIdx, col, len });
+                }
+            } else {
+                const std::wstring* hay = &lineW;
+                const std::wstring* needle = &query;
+                if (!matchCase) {
+                    lineFolded = lineW;
+                    for (wchar_t& c : lineFolded) c = static_cast<wchar_t>(::towlower(c));
+                    hay = &lineFolded;
+                    needle = &queryFolded;
+                }
+                size_t searchPos = 0;
+                while (searchPos <= hay->size() && outMatches.size() < maxMatches) {
+                    size_t hit = hay->find(*needle, searchPos);
+                    if (hit == std::wstring::npos) break;
+                    bool ok = true;
+                    if (wholeWord) {
+                        bool leftOk = (hit == 0) || !isWordChar(lineW[hit - 1]);
+                        bool rightOk = (hit + needle->size() >= lineW.size()) || !isWordChar(lineW[hit + needle->size()]);
+                        ok = leftOk && rightOk;
+                    }
+                    if (ok) {
+                        outMatches.push_back({ lineIdx, hit, needle->size() });
+                    }
+                    searchPos = hit + (std::max<size_t>)(1, needle->size());
+                }
+            }
+        }
+        ++lineIdx;
+    }
+    return !outMatches.empty();
+}
+
+bool Buffer::LoadFromFile(const std::wstring& path, uint64_t mmapThresholdOverride) {
+    const uint64_t threshold = (mmapThresholdOverride > 0) ? mmapThresholdOverride : GetDefaultMemoryMappedThresholdBytes();
     std::error_code mmapEc;
     uint64_t mmapSize = std::filesystem::file_size(std::filesystem::path(path), mmapEc);
-    if (!mmapEc && mmapSize > kMemoryMappedThresholdBytes) {
+    if (!mmapEc && mmapSize > threshold) {
         if (LoadFromFileMapped(path)) {
             return true;
         }

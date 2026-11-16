@@ -1663,6 +1663,7 @@ struct OpenDocument {
     D2D1_RECT_F conflictReloadBtnBounds{};
     D2D1_RECT_F conflictDiffBtnBounds{};
     D2D1_RECT_F conflictOverwriteBtnBounds{};
+    D2D1_RECT_F conflictDismissBtnBounds{};
 };
 
 /**

@@ -3,15 +3,23 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef SECURITY_WIN32
+#define SECURITY_WIN32
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <security.h>
+#include <schannel.h>
+#include <wincrypt.h>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <filesystem>
 #include <vector>
+#include <unordered_map>
+#include <memory>
 #include <cstdint>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -62,6 +70,18 @@ public:
     [[nodiscard]] bool IsSpaFallback() const noexcept { return m_spaFallback.load(); }
     [[nodiscard]] uint64_t GetReloadRevision() const noexcept { return m_reloadRevision.load(); }
     [[nodiscard]] size_t GetConnectedClientCount() const;
+    void SetTlsEnabled(bool enabled) noexcept { m_tlsEnabled.store(enabled); }
+    [[nodiscard]] bool IsTlsEnabled() const noexcept { return m_tlsEnabled.load(); }
+    [[nodiscard]] bool IsTlsActive() const noexcept { return m_tlsActive.load(); }
+
+    /**
+     * @brief Ensures a cached localhost self-signed TLS certificate (.pfx, .crt, .key) exists under certDir.
+     */
+    static bool EnsureLocalDevCertificate(const std::wstring& certDir,
+                                          std::wstring& outPfxPath,
+                                          std::wstring& outCertPemPath,
+                                          std::wstring& outKeyPemPath,
+                                          std::wstring& outError);
 
     struct PhpRuntimeEntry {
         std::wstring version;
@@ -73,15 +93,24 @@ public:
                                                  const std::wstring& serverName,
                                                  int port,
                                                  const std::wstring& docRoot,
-                                                 int phpFpmPort = 9000);
+                                                 int phpFpmPort = 9000,
+                                                 int upstreamPort = 3000,
+                                                 const std::wstring& sslCertPath = L"",
+                                                 const std::wstring& sslKeyPath = L"");
     static std::string BuildWebSocketAcceptKey(const std::string& clientKey);
     static std::vector<uint8_t> EncodeWebSocketTextFrame(const std::string& payload);
     static bool TryDecodeWebSocketTextFrame(const std::vector<uint8_t>& frameBytes, std::string& outPayload);
+
+    struct TlsState;
+    struct TlsSocketSession;
 
 private:
     void ServerWorker();
     void WatcherWorker();
     void HandleClient(SOCKET clientSock);
+    void InitTlsCredentials();
+    void CleanupTlsCredentials();
+    bool SendClientRawOrTls(SOCKET clientSock, TlsSocketSession* tlsSession, const char* data, int len) const;
     std::string GetMimeType(const std::filesystem::path& path) const;
     static std::string InjectLiveReloadScript(std::string html);
     void DiscoverNetworkIp();
@@ -89,6 +118,9 @@ private:
     std::atomic<bool> m_isRunning{false};
     std::atomic<bool> m_liveReloadEnabled{true};
     std::atomic<bool> m_spaFallback{false};
+    std::atomic<bool> m_tlsEnabled{false};
+    std::atomic<bool> m_tlsActive{false};
+    std::atomic<int> m_activeClients{0};
     std::atomic<uint64_t> m_reloadRevision{1};
     SOCKET m_listenSock = INVALID_SOCKET;
     int m_port = 5500;
@@ -103,6 +135,8 @@ private:
     mutable std::mutex m_clientsMutex;
     std::vector<SOCKET> m_sseClients;
     std::vector<SOCKET> m_wsClients;
+    std::unordered_map<SOCKET, std::shared_ptr<TlsSocketSession>> m_clientTlsMap;
+    std::unique_ptr<TlsState> m_tlsState;
     bool m_wsaInitialized = false;
 };
 

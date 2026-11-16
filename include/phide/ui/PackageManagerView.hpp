@@ -88,11 +88,15 @@ struct PackageEntry {
     bool isInstalledProject = false;
     bool isInstalledGlobal = false;
     bool isInstalling = false;
+    bool isOutdated = false;
+    std::wstring installedVersion;
+    std::wstring latestVersion;
 
     // Card interactive regions
     D2D1_RECT_F bounds{};
     D2D1_RECT_F rcInstallBtn{};     ///< Main install button (e.g. "Install")
     D2D1_RECT_F rcSplitArrowBtn{};  ///< Split dropdown button ("▾")
+    D2D1_RECT_F rcUpgradeBtn{};     ///< Upgrade button when outdated
 };
 
 /**
@@ -174,6 +178,9 @@ public:
      * @brief Scans workspace virtual environment and system site-packages to reflect installed status.
      */
     void ScanInstalledPackages(const std::wstring& wsFolder = L"");
+    void CheckOutdatedPackagesAsync(const std::wstring& wsFolder = L"");
+    void ParseOutdatedOutputJson(RuntimeLanguage lang, const std::string& jsonUtf8);
+    void MarkPackageUpgraded(const std::wstring& pkgName);
 
     /**
      * @brief Fetches packages from Supabase remote REST API asynchronously.
@@ -280,10 +287,17 @@ private:
     D2D1_RECT_F m_rcRightPreview{};
     D2D1_RECT_F m_rcGithubHeaderLink{};
     D2D1_RECT_F m_rcGithubOpenBtn{};
+    D2D1_RECT_F m_rcCheckOutdatedBtn{};
+    D2D1_RECT_F m_rcOutdatedFilterBtn{};
 
     bool m_isHoveringBack = false;
     bool m_isHoveringGithubLink = false;
     bool m_isHoveringGithubOpen = false;
+    bool m_showOutdatedOnly = false;
+    std::atomic<bool> m_isCheckingOutdated{ false };
+    std::wstring m_outdatedStatusText;
+    std::wstring m_workspaceFolder;
+    std::shared_ptr<std::atomic<bool>> m_viewAlive = std::make_shared<std::atomic<bool>>(true);
 
     // Supabase REST API state
     std::atomic<bool> m_isFetchingRemote{ false };

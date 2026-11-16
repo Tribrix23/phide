@@ -163,6 +163,47 @@ struct RemoteWorkspaceSession {
     std::wstring& outError
 );
 
+struct DockerImageEntry {
+    std::wstring id;
+    std::wstring repository;
+    std::wstring tag;
+    std::wstring size;
+};
+
+struct DockerVolumeEntry {
+    std::wstring name;
+    std::wstring driver;
+    std::wstring mountpoint;
+};
+
+[[nodiscard]] std::vector<RemoteFileEntry> FetchRemoteContainerDirectory(
+    const DevContainerEntry& container,
+    const std::wstring& remotePath,
+    std::wstring& outResolvedPath,
+    std::wstring& outError,
+    int depth = 0
+);
+
+[[nodiscard]] bool RunDockerContainerAction(
+    const std::wstring& containerId,
+    const std::wstring& action, // "start", "stop", "restart", "rm"
+    std::wstring& outOutput
+);
+
+[[nodiscard]] std::wstring FetchDockerContainerLogs(
+    const std::wstring& containerId,
+    int tailLines = 200
+);
+
+[[nodiscard]] std::vector<DockerImageEntry> ProbeDockerImages(std::wstring* outStatusMsg = nullptr);
+[[nodiscard]] std::vector<DockerVolumeEntry> ProbeDockerVolumes(std::wstring* outStatusMsg = nullptr);
+
+[[nodiscard]] bool RunDockerComposeCommand(
+    const std::wstring& workspaceRoot,
+    const std::wstring& subCommand, // "up -d", "down", "ps", "logs --tail=120"
+    std::wstring& outOutput
+);
+
 } // namespace remote
 
 enum class RemoteModalMode {

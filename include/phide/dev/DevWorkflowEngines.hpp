@@ -192,7 +192,8 @@ public:
         std::vector<TestItem>& items,
         const std::wstring& filterName = L"",
         const std::wstring& filePath = L"",
-        int timeoutMs = 45000);
+        int timeoutMs = 45000,
+        const std::atomic<bool>* cancelFlag = nullptr);
 
     static void ExtractExpectedActualDiff(
         const std::wstring& failureMsg,

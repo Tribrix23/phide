@@ -295,25 +295,34 @@ void LucideIcons::DrawFiles(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, I
 
 void LucideIcons::DrawDebug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
 
     const float bw = bounds.right - bounds.left;
     const float bh = bounds.bottom - bounds.top;
-    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float iconSize = (std::min)(bw, bh) * 0.54f;
     const float s = iconSize / 24.0f;
     const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
     const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
 
-    // 1. Play Triangle (pointing right)
-    pRT->DrawLine(MapPoint(9.0f, 4.5f, ox, oy, s), MapPoint(19.0f, 11.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(19.0f, 11.5f, ox, oy, s), MapPoint(9.0f, 18.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(9.0f, 18.5f, ox, oy, s), MapPoint(9.0f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // 1. Crisp upright Play Triangle on the left (flat vertical spine, symmetrical tip)
+    pRT->DrawLine(MapPoint(4.5f, 4.5f, ox, oy, s), MapPoint(13.5f, 10.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(13.5f, 10.5f, ox, oy, s), MapPoint(4.5f, 16.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(4.5f, 16.5f, ox, oy, s), MapPoint(4.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
 
-    // 2. Bug Glyph on lower left:
-    D2D1_ELLIPSE bugBody = D2D1::Ellipse(MapPoint(6.5f, 16.5f, ox, oy, s), 2.5f * s, 3.0f * s);
-    pRT->DrawEllipse(bugBody, pBrush, strokeWidth, m_pStrokeStyle.Get());
-    // Bug Legs / Whiskers
-    pRT->DrawLine(MapPoint(4.0f, 15.0f, ox, oy, s), MapPoint(2.5f, 14.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(4.0f, 18.0f, ox, oy, s), MapPoint(2.5f, 19.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    // 2. Upright symmetrical Bug / Breakpoint Beetle on lower right
+    D2D1_ROUNDED_RECT bugBody = D2D1::RoundedRect(
+        D2D1::RectF(ox + 12.5f * s, oy + 12.0f * s, ox + 19.5f * s, oy + 20.5f * s),
+        3.5f * s, 3.5f * s
+    );
+    pRT->DrawRoundedRectangle(bugBody, pBrush, strokeWidth * 0.95f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.5f, 15.0f, ox, oy, s), MapPoint(19.5f, 15.0f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    // Symmetric antennae & level legs
+    pRT->DrawLine(MapPoint(14.3f, 12.0f, ox, oy, s), MapPoint(13.2f, 9.8f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(17.7f, 12.0f, ox, oy, s), MapPoint(18.8f, 9.8f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.5f, 15.5f, ox, oy, s), MapPoint(10.0f, 15.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.5f, 15.5f, ox, oy, s), MapPoint(22.0f, 15.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.8f, 18.5f, ox, oy, s), MapPoint(10.5f, 19.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(19.2f, 18.5f, ox, oy, s), MapPoint(21.5f, 19.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
 }
 
 void LucideIcons::DrawExtensions(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
@@ -538,39 +547,37 @@ void LucideIcons::DrawRestart(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds,
 
 void LucideIcons::DrawBug(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
     if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
     const float bw = bounds.right - bounds.left;
     const float bh = bounds.bottom - bounds.top;
-    const float iconSize = (std::min)(bw, bh) * 0.52f;
+    const float iconSize = (std::min)(bw, bh) * 0.56f;
     const float s = iconSize / 24.0f;
     const float ox = bounds.left + (bw - 24.0f * s) / 2.0f;
     const float oy = bounds.top + (bh - 24.0f * s) / 2.0f;
 
-    // Beetle body capsule
+    // Symmetrical, upright Lucide Beetle body
     D2D1_ROUNDED_RECT body = D2D1::RoundedRect(
-        D2D1::RectF(ox + 8.5f * s, oy + 7.5f * s, ox + 15.5f * s, oy + 18.5f * s),
-        3.5f * s, 3.5f * s
+        D2D1::RectF(ox + 7.5f * s, oy + 7.0f * s, ox + 16.5f * s, oy + 19.5f * s),
+        4.5f * s, 4.5f * s
     );
     pRT->DrawRoundedRectangle(body, pBrush, strokeWidth, m_pStrokeStyle.Get());
 
-    // Head line
-    pRT->DrawLine(MapPoint(8.5f, 11.0f, ox, oy, s), MapPoint(15.5f, 11.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Horizontal thorax collar & center wing seam (gives unmistakable crisp upright beetle silhouette)
+    pRT->DrawLine(MapPoint(7.5f, 11.2f, ox, oy, s), MapPoint(16.5f, 11.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(12.0f, 11.2f, ox, oy, s), MapPoint(12.0f, 19.5f, ox, oy, s), pBrush, strokeWidth * 0.85f, m_pStrokeStyle.Get());
 
-    // Antennae
-    pRT->DrawLine(MapPoint(10.0f, 7.5f, ox, oy, s), MapPoint(7.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(14.0f, 7.5f, ox, oy, s), MapPoint(16.5f, 4.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // Symmetric antennae
+    pRT->DrawLine(MapPoint(9.8f, 7.0f, ox, oy, s), MapPoint(8.0f, 4.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(14.2f, 7.0f, ox, oy, s), MapPoint(16.0f, 4.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
 
-    // 3 Pairs of Legs:
-    // Top pair
-    pRT->DrawLine(MapPoint(8.5f, 11.0f, ox, oy, s), MapPoint(4.5f, 9.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(15.5f, 11.0f, ox, oy, s), MapPoint(19.5f, 9.0f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-
-    // Middle pair
-    pRT->DrawLine(MapPoint(8.5f, 14.5f, ox, oy, s), MapPoint(4.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(15.5f, 14.5f, ox, oy, s), MapPoint(20.0f, 14.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-
-    // Bottom pair
-    pRT->DrawLine(MapPoint(8.5f, 17.0f, ox, oy, s), MapPoint(4.5f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
-    pRT->DrawLine(MapPoint(15.5f, 17.0f, ox, oy, s), MapPoint(19.5f, 19.5f, ox, oy, s), pBrush, strokeWidth, m_pStrokeStyle.Get());
+    // 3 Crisp symmetric leg pairs (level middle, gently angled top/bottom)
+    pRT->DrawLine(MapPoint(7.5f, 11.5f, ox, oy, s), MapPoint(4.5f, 10.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.5f, 11.5f, ox, oy, s), MapPoint(19.5f, 10.0f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.5f, 14.5f, ox, oy, s), MapPoint(4.0f, 14.5f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.5f, 14.5f, ox, oy, s), MapPoint(20.0f, 14.5f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(7.8f, 17.5f, ox, oy, s), MapPoint(4.5f, 19.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
+    pRT->DrawLine(MapPoint(16.2f, 17.5f, ox, oy, s), MapPoint(19.5f, 19.2f, ox, oy, s), pBrush, strokeWidth * 0.9f, m_pStrokeStyle.Get());
 }
 
 void LucideIcons::DrawTerminal(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {

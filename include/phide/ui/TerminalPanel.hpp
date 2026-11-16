@@ -15,6 +15,7 @@
 #include <filesystem>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
+#include "phide/ui/LucideIcons.hpp"
 #include "phide/dev/DevWorkflowEngines.hpp"
 #include "phide/dev/DapClient.hpp"
 
@@ -152,6 +153,19 @@ inline std::vector<TerminalProfileDef> DetectAvailableShells() {
         profiles.push_back({ L"Python", TerminalShellType::Python, L"python.exe", L"-i", true });
     }
 
+    // 6. Windows Subsystem for Linux (WSL)
+    std::wstring wslPath = std::wstring(sysDir) + L"\\wsl.exe";
+    if (std::filesystem::exists(wslPath) || SearchPathW(NULL, L"wsl.exe", NULL, 0, NULL, NULL) > 0) {
+        profiles.push_back({ L"WSL (Linux Shell)", TerminalShellType::Custom,
+                             std::filesystem::exists(wslPath) ? wslPath : L"wsl.exe", L"", true });
+    }
+
+    // 7. PowerShell 7 (pwsh)
+    wchar_t pwshBuf[MAX_PATH] = {};
+    if (SearchPathW(NULL, L"pwsh.exe", NULL, MAX_PATH, pwshBuf, NULL) > 0) {
+        profiles.push_back({ L"PowerShell 7 (pwsh)", TerminalShellType::Custom, pwshBuf, L"-NoLogo", true });
+    }
+
     return profiles;
 }
 
@@ -238,6 +252,8 @@ struct TerminalTab {
     std::function<void()> onDebugResumed;
     std::function<void()> onDebugEnded;
     bool isIdleDebugConsole = false;
+    bool hasCustomTitle = false;
+    int maxScrollbackLines = 5000;
     DebugBackend debugBackend = DebugBackend::None;
     size_t lastScannedLineIdx = 0;
     bool hadExecutionErrorInCurrentCommand = false;
@@ -457,7 +473,9 @@ public:
     void UpdateDapBreakpoints(const std::vector<phide::dev::DapBreakpoint>& bps);
     [[nodiscard]] phide::dev::DapClient& GetDapClient() noexcept { return m_dap; }
     [[nodiscard]] const phide::dev::DapClient& GetDapClient() const noexcept { return m_dap; }
-    [[nodiscard]] bool IsDebugPaused() const noexcept { return !m_useDapBackend || m_dap.IsPaused(); }
+    [[nodiscard]] bool IsDebugPaused() const noexcept {
+        return m_useDapBackend ? m_dap.IsPaused() : (m_debugBackend != DebugBackend::None);
+    }
     void DiscardDeviceResources();
     void SetBreakpointsSnapshot(const std::vector<phide::dev::DapBreakpoint>& bps);
     [[nodiscard]] const std::vector<phide::dev::DapBreakpoint>& GetBreakpointsSnapshot() const noexcept { return m_activeDapBreakpoints; }
@@ -499,6 +517,48 @@ public:
     // Keyboard Input Handling
     bool OnChar(wchar_t ch);
     bool OnKeyDown(UINT vk, bool isCtrl, bool isShift);
+
+    // #41 Configurable Scrollback, Copy-on-Selection, Find, Tab Rename & Env/Proxy Injection
+    void SetScrollbackLines(int lines) noexcept;
+    [[nodiscard]] int GetScrollbackLines() const noexcept { return m_scrollbackLines; }
+    void SetCopyOnSelection(bool enabled) noexcept { m_copyOnSelection = enabled; }
+    [[nodiscard]] bool GetCopyOnSelection() const noexcept { return m_copyOnSelection; }
+    void SetWorkspaceEnvironment(const std::wstring& workspaceDir,
+                                   const std::wstring& httpProxy = L"",
+                                   const std::wstring& httpsProxy = L"") {
+        m_envWorkspaceDir = workspaceDir;
+        m_envHttpProxy = httpProxy;
+        m_envHttpsProxy = httpsProxy;
+    }
+    void AddCustomProfile(const TerminalProfileDef& profile);
+    void RebuildAvailableProfiles();
+    void NewTabFromProfileIndex(size_t profileIdx, const std::wstring& workingDir);
+    void OpenFindBar() noexcept {
+        m_showFindBar = true;
+        m_findFocused = true;
+    }
+    void CloseFindBar() noexcept {
+        m_showFindBar = false;
+        m_findFocused = false;
+        m_findMatches.clear();
+        m_findMatchIdx = -1;
+    }
+    [[nodiscard]] bool IsFindBarOpen() const noexcept { return m_showFindBar; }
+    void SetFindQuery(const std::wstring& q);
+    void StepFindMatch(int delta);
+    [[nodiscard]] size_t GetFindMatchCount() const noexcept { return m_findMatches.size(); }
+    void StartTabRename(int tabIdx);
+    void CommitTabRename();
+    void CancelTabRename() noexcept { m_renamingTabIdx = -1; m_renameBuffer.clear(); }
+    [[nodiscard]] bool IsRenamingTab() const noexcept { return m_renamingTabIdx >= 0; }
+    [[nodiscard]] static bool ParseArbitraryFileLineCol(const std::wstring& text,
+                                                        const std::wstring& workingDir,
+                                                        std::wstring& outFile,
+                                                        int& outLine1,
+                                                        int& outCol1,
+                                                        size_t& outStart,
+                                                        size_t& outLen);
+    [[nodiscard]] std::vector<wchar_t> BuildTabEnvBlock() const;
 
     // Text Selection (Hold and drag)
     [[nodiscard]] bool HasSelection() const noexcept;
@@ -701,6 +761,11 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDbgBtnBrush;
     void EnsureDebugBrushes(ID2D1RenderTarget* pRT, const Theme& theme);
     DebugAction m_hoveredDebugAction = DebugAction::None;
+    LucideIcons m_icons;
+    int m_debugConsoleFilterMode = 0; // 0 = All, 1 = Info, 2 = Errors
+    D2D1_RECT_F m_dbgFilterAllBounds{};
+    D2D1_RECT_F m_dbgFilterInfoBounds{};
+    D2D1_RECT_F m_dbgFilterErrorsBounds{};
     D2D1_RECT_F m_clearConsoleBtnBounds{};
     bool m_hoverClearConsole = false;
     mutable std::vector<TerminalUrlHit> m_visibleUrls;
@@ -739,6 +804,35 @@ private:
     std::function<void()> m_onMinimize;
     std::function<void(bool)> m_onToggleFullScreen;
     float m_fullScreenProgress = 0.0f;
+
+    // #41 Configurable Scrollback, Copy-on-Selection, Find-in-Terminal, Tab Rename & Env Injection
+    struct TerminalFindMatch {
+        int line = 0;
+        size_t col = 0;
+        size_t len = 0;
+    };
+    int m_scrollbackLines = 5000;
+    bool m_copyOnSelection = false;
+    bool m_showFindBar = false;
+    bool m_findFocused = false;
+    bool m_findCaseSensitive = false;
+    std::wstring m_findQuery;
+    std::vector<TerminalFindMatch> m_findMatches;
+    int m_findMatchIdx = -1;
+    D2D1_RECT_F m_findBarBounds{};
+    D2D1_RECT_F m_findInputBounds{};
+    D2D1_RECT_F m_findPrevBounds{};
+    D2D1_RECT_F m_findNextBounds{};
+    D2D1_RECT_F m_findCaseBounds{};
+    D2D1_RECT_F m_findCloseBounds{};
+    int m_renamingTabIdx = -1;
+    std::wstring m_renameBuffer;
+    ULONGLONG m_lastTabClickTick = 0;
+    int m_lastClickedTabIdx = -1;
+    std::wstring m_envWorkspaceDir;
+    std::wstring m_envHttpProxy;
+    std::wstring m_envHttpsProxy;
+    std::vector<TerminalProfileDef> m_customProfiles;
 };
 
 } // namespace phide::ui

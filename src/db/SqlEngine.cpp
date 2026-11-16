@@ -1828,6 +1828,18 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                     }
                 }
             }
+            SqlQueryResult fkRes = ExecuteQuery(profile, L"PRAGMA foreign_key_list(" + QuoteSqlIdent(t.name) + L");");
+            if (fkRes.success) {
+                for (const auto& fkr : fkRes.rows) {
+                    if (fkr.size() >= 5) {
+                        SqlForeignKeyInfo fk;
+                        fk.refTable = fkr[2];
+                        fk.column = fkr[3];
+                        fk.refColumn = fkr[4];
+                        t.foreignKeys.push_back(std::move(fk));
+                    }
+                }
+            }
             SqlQueryResult cntRes = ExecuteQuery(profile, L"SELECT COUNT(*) FROM " + QuoteSqlIdent(t.name) + L";");
             if (cntRes.success && !cntRes.rows.empty() && !cntRes.rows[0].empty()) {
                 try { t.rowCount = std::stoll(cntRes.rows[0][0]); } catch (...) {}
@@ -1912,6 +1924,27 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 tables[it->second].columns.push_back(std::move(ci));
             }
         }
+        // Foreign Keys for MySQL
+        {
+            std::wostringstream fkSql;
+            fkSql << L"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
+                  << L"FROM information_schema.KEY_COLUMN_USAGE "
+                  << L"WHERE REFERENCED_TABLE_NAME IS NOT NULL ";
+            if (!profile.database.empty()) {
+                fkSql << L"AND TABLE_SCHEMA = '" << EscapeSqlLiteral(profile.database) << L"' ";
+            }
+            fkSql << L"LIMIT 2000;";
+            SqlQueryResult fkRes = ExecuteQuery(serverProf, fkSql.str());
+            if (fkRes.success) {
+                for (const auto& fkr : fkRes.rows) {
+                    if (fkr.size() < 5) continue;
+                    auto it = tableIndexMap.find({ fkr[0], fkr[1] });
+                    if (it != tableIndexMap.end()) {
+                        tables[it->second].foreignKeys.push_back({ fkr[2], fkr[3], fkr[4] });
+                    }
+                }
+            }
+        }
         return tables;
     }
 
@@ -1976,6 +2009,25 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 ci.notNull = (ToLowerW(r[5]) == L"no");
                 ci.isPrimaryKey = (r[6] == L"PRI");
                 tables[it->second].columns.push_back(std::move(ci));
+            }
+        }
+        // Foreign Keys for PostgreSQL
+        {
+            const std::wstring fkSql =
+                L"SELECT tc.table_schema, tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name "
+                L"FROM information_schema.table_constraints tc "
+                L"JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema "
+                L"JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema "
+                L"WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema NOT IN ('pg_catalog','information_schema') LIMIT 2000;";
+            SqlQueryResult fkRes = ExecuteQuery(profile, fkSql);
+            if (fkRes.success) {
+                for (const auto& fkr : fkRes.rows) {
+                    if (fkr.size() < 5) continue;
+                    auto it = tableIndexMap.find({ fkr[0], fkr[1] });
+                    if (it != tableIndexMap.end()) {
+                        tables[it->second].foreignKeys.push_back({ fkr[2], fkr[3], fkr[4] });
+                    }
+                }
             }
         }
         return tables;
@@ -2097,6 +2149,128 @@ bool SqlEngine::ExportJson(const SqlQueryResult& res, const std::wstring& outFil
     }
     ofs << "]\n";
     return true;
+}
+
+static std::wstring QuoteIdentForDialect(SqlDialect dialect, const std::wstring& ident) {
+    if (dialect == SqlDialect::MySQL) {
+        std::wstring out = L"`";
+        for (wchar_t c : ident) {
+            if (c == L'`') out += L"``";
+            else out.push_back(c);
+        }
+        out += L"`";
+        return out;
+    }
+    return QuoteSqlIdent(ident);
+}
+
+static bool HasExplicitSqlPagingClause(const std::wstring& sqlLower) {
+    return sqlLower.find(L" limit ") != std::wstring::npos ||
+           sqlLower.find(L"\nlimit ") != std::wstring::npos ||
+           sqlLower.find(L"\tlimit ") != std::wstring::npos ||
+           sqlLower.find(L" offset ") != std::wstring::npos ||
+           sqlLower.find(L" fetch next ") != std::wstring::npos ||
+           sqlLower.find(L" fetch first ") != std::wstring::npos;
+}
+
+std::wstring SqlEngine::BuildPagedSelectQuery(const SqlConnectionProfile& profile,
+                                              const SqlTableInfo& table,
+                                              size_t pageIndex,
+                                              size_t pageSize) {
+    const size_t safeSize = (std::clamp<size_t>)(pageSize, 10, 500);
+    const size_t offset = pageIndex * safeSize;
+    std::wstring qualified = (!table.schemaName.empty() && profile.dialect != SqlDialect::SQLite)
+        ? (QuoteIdentForDialect(profile.dialect, table.schemaName) + L"." + QuoteIdentForDialect(profile.dialect, table.name))
+        : QuoteIdentForDialect(profile.dialect, table.name);
+    if (profile.dialect == SqlDialect::SQLServer) {
+        return L"SELECT * FROM " + qualified + L" ORDER BY (SELECT NULL) OFFSET " +
+               std::to_wstring(offset) + L" ROWS FETCH NEXT " + std::to_wstring(safeSize) + L" ROWS ONLY;";
+    }
+    return L"SELECT * FROM " + qualified + L" LIMIT " + std::to_wstring(safeSize) +
+           L" OFFSET " + std::to_wstring(offset) + L";";
+}
+
+SqlQueryResult SqlEngine::ExecuteQueryWithPagination(const SqlConnectionProfile& profile,
+                                                     const std::wstring& sqlText,
+                                                     size_t pageIndex,
+                                                     size_t pageSize,
+                                                     int64_t& outTotalRows,
+                                                     bool& outUsedServerPaging) {
+    outTotalRows = -1;
+    outUsedServerPaging = false;
+    std::wstring trimmed = TrimW(sqlText);
+    while (!trimmed.empty() && trimmed.back() == L';') {
+        trimmed.pop_back();
+        trimmed = TrimW(trimmed);
+    }
+    std::wstring lower = ToLowerW(trimmed);
+    const size_t semi = trimmed.find(L';');
+    const bool isSingleSelect = (lower.rfind(L"select ", 0) == 0 || lower.rfind(L"select\t", 0) == 0 || lower.rfind(L"select\n", 0) == 0) &&
+                                (semi == std::wstring::npos);
+
+    if (!isSingleSelect || HasExplicitSqlPagingClause(lower) || lower.find(L"into ") != std::wstring::npos) {
+        SqlQueryResult r = ExecuteQuery(profile, sqlText);
+        if (r.success && r.isSelect) outTotalRows = static_cast<int64_t>(r.rows.size());
+        return r;
+    }
+
+    const size_t safeSize = (std::clamp<size_t>)(pageSize, 10, 500);
+    const size_t offset = pageIndex * safeSize;
+
+    // Count total rows on server cleanly when single SELECT
+    std::wstring countSql = L"SELECT COUNT(*) FROM (" + trimmed + L") AS _phide_cnt;";
+    SqlQueryResult cntRes = ExecuteQuery(profile, countSql);
+    if (cntRes.success && !cntRes.rows.empty() && !cntRes.rows[0].empty()) {
+        try { outTotalRows = std::stoll(cntRes.rows[0][0]); } catch (...) {}
+    }
+
+    std::wstring pagedSql;
+    if (profile.dialect == SqlDialect::SQLServer) {
+        pagedSql = trimmed + L" ORDER BY (SELECT NULL) OFFSET " + std::to_wstring(offset) +
+                   L" ROWS FETCH NEXT " + std::to_wstring(safeSize) + L" ROWS ONLY;";
+    } else {
+        pagedSql = trimmed + L" LIMIT " + std::to_wstring(safeSize) + L" OFFSET " + std::to_wstring(offset) + L";";
+    }
+    SqlQueryResult r = ExecuteQuery(profile, pagedSql);
+    if (r.success) {
+        outUsedServerPaging = true;
+        return r;
+    }
+    // Fallback to raw execution if dialect syntax rejected appended LIMIT
+    return ExecuteQuery(profile, sqlText);
+}
+
+SqlQueryResult SqlEngine::UpdateTableCell(const SqlConnectionProfile& profile,
+                                          const std::wstring& schemaName,
+                                          const std::wstring& tableName,
+                                          const std::wstring& targetCol,
+                                          const std::wstring& newValue,
+                                          const std::vector<std::pair<std::wstring, std::wstring>>& pkColumnsAndValues) {
+    SqlQueryResult res;
+    if (tableName.empty() || targetCol.empty() || pkColumnsAndValues.empty()) {
+        res.errorMessage = L"Inline cell update requires a valid table, column, and primary key.";
+        return res;
+    }
+    std::wstring qualified = (!schemaName.empty() && profile.dialect != SqlDialect::SQLite)
+        ? (QuoteIdentForDialect(profile.dialect, schemaName) + L"." + QuoteIdentForDialect(profile.dialect, tableName))
+        : QuoteIdentForDialect(profile.dialect, tableName);
+
+    std::wostringstream sql;
+    sql << L"UPDATE " << qualified << L" SET " << QuoteIdentForDialect(profile.dialect, targetCol) << L" = ";
+    if (newValue == L"NULL") sql << L"NULL";
+    else sql << L"'" << EscapeSqlLiteral(newValue) << L"'";
+    sql << L" WHERE ";
+    for (size_t i = 0; i < pkColumnsAndValues.size(); ++i) {
+        if (i > 0) sql << L" AND ";
+        sql << QuoteIdentForDialect(profile.dialect, pkColumnsAndValues[i].first);
+        if (pkColumnsAndValues[i].second == L"NULL") {
+            sql << L" IS NULL";
+        } else {
+            sql << L" = '" << EscapeSqlLiteral(pkColumnsAndValues[i].second) << L"'";
+        }
+    }
+    sql << L";";
+    return ExecuteQuery(profile, sql.str());
 }
 
 } // namespace phide::db

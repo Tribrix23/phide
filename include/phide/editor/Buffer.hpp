@@ -142,12 +142,27 @@ public:
      * @brief Loads text file from disk into buffer lines.
      */
     static constexpr uint64_t kMemoryMappedThresholdBytes = 50ULL * 1024ULL * 1024ULL;
-    bool LoadFromFile(const std::wstring& path);
+    static void SetDefaultMemoryMappedThresholdMB(int mb) noexcept;
+    [[nodiscard]] static uint64_t GetDefaultMemoryMappedThresholdBytes() noexcept;
+
+    struct MappedSearchHit {
+        size_t line = 0;
+        size_t col = 0;
+        size_t length = 0;
+    };
+
+    bool LoadFromFile(const std::wstring& path, uint64_t mmapThresholdOverride = 0);
     bool LoadFromFileMapped(const std::wstring& path);
     void CloseFileMapping() noexcept;
     [[nodiscard]] bool IsMemoryMappedReadOnly() const noexcept { return m_mappedState != nullptr; }
     [[nodiscard]] uint64_t GetMappedByteSize() const noexcept { return m_mappedByteSize; }
     bool ReadMappedBytes(uint64_t offset, size_t maxBytes, std::vector<uint8_t>& outBytes) const;
+    bool FindMatchesInMappedFile(const std::wstring& query,
+                                 bool matchCase,
+                                 bool wholeWord,
+                                 bool useRegex,
+                                 std::vector<MappedSearchHit>& outMatches,
+                                 size_t maxMatches = 2000) const;
 
     /**
      * @brief Saves buffer lines to file on disk.

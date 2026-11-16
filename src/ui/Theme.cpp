@@ -1597,6 +1597,9 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         if (lower == L".venv" || lower == L"venv" || lower.rfind(L"python", 0) == 0) {
             return { 0xE079, brushSetiPython ? brushSetiPython.Get() : brushIconBlue.Get() };
         }
+        if (lower == L".devcontainer") {
+            return { 0xE025, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
+        }
         if (lower == L"external libraries") {
             return { 0xE061, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
         }
@@ -1633,7 +1636,9 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
     if (lower == L".editorconfig") {
         return { 0xE026, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
     }
-    if (lower == L"dockerfile") {
+    if (lower == L"dockerfile" || lower == L"devcontainer.json" ||
+        lower == L"docker-compose.yml" || lower == L"docker-compose.yaml" ||
+        lower == L"compose.yml" || lower == L"compose.yaml") {
         return { 0xE025, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
     }
     if (lower == L"license" || lower == L"license.txt" || lower == L"license.md") {

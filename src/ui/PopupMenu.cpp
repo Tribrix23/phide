@@ -534,8 +534,11 @@ void PopupMenu::Close() {
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
     m_hoveredSubmenuIdx = -1;
+    m_activeSubmenu2Idx = -1;
+    m_hoveredSubmenu2Idx = -1;
     m_mainMenuBounds = {};
     m_submenuBounds = {};
+    m_submenu2Bounds = {};
 }
 
 void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarOpen, bool isZoomed, bool wordWrap,
@@ -854,6 +857,9 @@ void PopupMenu::BuildContextMenuItems(bool isFolder, const std::wstring& targetP
         m_items.push_back({ MenuActionId::None,                 L"",                                     L"",                    true,  false, false, false, {}, {} });
         m_items.push_back({ MenuActionId::CtxRename,            L"Rename...",                            L"F2",                  false, false, false, hasTarget && !isMulti, {}, {} });
         m_items.push_back({ MenuActionId::CtxDelete,            L"Delete" + multiSuffix,                 L"Delete",              false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::None,                 L"",                                     L"",                    true,  false, false, false, {}, {} });
+        m_items.push_back({ MenuActionId::CtxGitStage,          L"Stage Changes (Git)" + multiSuffix,    L"",                    false, false, false, hasTarget, {}, {} });
+        m_items.push_back({ MenuActionId::CtxGitUnstage,        L"Unstage Changes (Git)" + multiSuffix,  L"",                    false, false, false, hasTarget, {}, {} });
     };
 
     // 0. Undo and Redo actions (Image 1: Explorer Undo/Redo)
@@ -927,7 +933,40 @@ void PopupMenu::LayoutMenu(std::vector<PopupMenuItem>& items, float startX, floa
     outBounds = D2D1::RectF(finalX, finalY, finalX + width, curY + padY);
 }
 
+void PopupMenu::LayoutCascadingPanel(std::vector<PopupMenuItem>& subItems, const D2D1_RECT_F& parentBounds,
+                                     const D2D1_RECT_F& parentItemBounds, float minW,
+                                     const app::AppConfig& config, D2D1_RECT_F& outBounds,
+                                     float clientW, float clientH) {
+    const float subW = CalculateOptimalMenuWidth(subItems, config, config.ScaleF(minW));
+    float subX = parentBounds.right - config.ScaleF(2.0f);
+    float subY = parentItemBounds.top - config.ScaleF(4.0f);
+
+    const float padY  = config.ScaleF(4.0f);
+    const float itemH = config.ScaleF(23.5f);
+    const float sepH  = config.ScaleF(7.0f);
+    float totalH = padY * 2.0f;
+    for (const auto& sub : subItems) {
+        totalH += sub.isSeparator ? sepH : itemH;
+    }
+
+    const float topMargin = config.ScaleF(static_cast<float>(config.headerHeight)) + 2.0f;
+    const float bottomMargin = config.ScaleF(10.0f);
+
+    if (subY + totalH > clientH - bottomMargin) {
+        subY = (std::max)(topMargin, clientH - totalH - bottomMargin);
+    }
+    if (subX + subW > clientW - config.ScaleF(8.0f)) {
+        subX = (std::max)(config.ScaleF(8.0f), parentBounds.left - subW + config.ScaleF(2.0f));
+    }
+
+    LayoutMenu(subItems, subX, subY, subW, config, outBounds);
+}
+
 void PopupMenu::LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH) {
+    m_activeSubmenu2Idx = -1;
+    m_hoveredSubmenu2Idx = -1;
+    m_submenu2Bounds = {};
+
     if (parentItemIdx < 0 || parentItemIdx >= static_cast<int>(m_items.size())) {
         m_activeSubmenuIdx = -1;
         m_submenuBounds = {};
@@ -942,31 +981,30 @@ void PopupMenu::LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, f
     }
 
     m_activeSubmenuIdx = parentItemIdx;
-    const float subW = CalculateOptimalMenuWidth(parent.submenuItems, config, config.ScaleF(265.0f));
-    float subX = m_mainMenuBounds.right - config.ScaleF(2.0f);
-    float subY = parent.bounds.top - config.ScaleF(4.0f);
+    LayoutCascadingPanel(parent.submenuItems, m_mainMenuBounds, parent.bounds, 265.0f, config, m_submenuBounds, clientW, clientH);
+}
 
-    // Calculate approximate submenu height
-    const float padY  = config.ScaleF(4.0f);
-    const float itemH = config.ScaleF(23.5f);
-    const float sepH  = config.ScaleF(7.0f);
-    float totalH = padY * 2.0f;
-    for (const auto& sub : parent.submenuItems) {
-        totalH += sub.isSeparator ? sepH : itemH;
+void PopupMenu::LayoutSubmenu2(int subItemIdx, const app::AppConfig& config, float clientW, float clientH) {
+    if (m_activeSubmenuIdx < 0 || m_activeSubmenuIdx >= static_cast<int>(m_items.size())) {
+        m_activeSubmenu2Idx = -1;
+        m_submenu2Bounds = {};
+        return;
+    }
+    auto& parent = m_items[m_activeSubmenuIdx];
+    if (subItemIdx < 0 || subItemIdx >= static_cast<int>(parent.submenuItems.size())) {
+        m_activeSubmenu2Idx = -1;
+        m_submenu2Bounds = {};
+        return;
+    }
+    auto& subParent = parent.submenuItems[subItemIdx];
+    if (!subParent.hasSubmenu || subParent.submenuItems.empty()) {
+        m_activeSubmenu2Idx = -1;
+        m_submenu2Bounds = {};
+        return;
     }
 
-    // Clamp vertically to stay entirely within the window client area
-    const float topMargin = config.ScaleF(static_cast<float>(config.headerHeight)) + 2.0f;
-    const float bottomMargin = config.ScaleF(10.0f);
-
-    if (subY + totalH > clientH - bottomMargin) {
-        subY = (std::max)(topMargin, clientH - totalH - bottomMargin);
-    }
-    if (subX + subW > clientW - config.ScaleF(8.0f)) {
-        subX = m_mainMenuBounds.left - subW + config.ScaleF(2.0f);
-    }
-
-    LayoutMenu(parent.submenuItems, subX, subY, subW, config, m_submenuBounds);
+    m_activeSubmenu2Idx = subItemIdx;
+    LayoutCascadingPanel(subParent.submenuItems, m_submenuBounds, subParent.bounds, 160.0f, config, m_submenu2Bounds, clientW, clientH);
 }
 
 void PopupMenu::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
@@ -975,11 +1013,19 @@ void PopupMenu::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     // 1. Render Main Menu
     RenderMenuPanel(pRT, theme, config, m_items, m_mainMenuBounds, m_hoveredMainIdx, m_activeSubmenuIdx);
 
-    // 2. Render Cascading Submenu (Appearance) if active
+    // 2. Render Cascading Submenu (e.g. Appearance) if active
     if (m_activeSubmenuIdx >= 0 && m_activeSubmenuIdx < static_cast<int>(m_items.size())) {
         const auto& parent = m_items[m_activeSubmenuIdx];
         if (parent.hasSubmenu && !parent.submenuItems.empty()) {
-            RenderMenuPanel(pRT, theme, config, parent.submenuItems, m_submenuBounds, m_hoveredSubmenuIdx, -1);
+            RenderMenuPanel(pRT, theme, config, parent.submenuItems, m_submenuBounds, m_hoveredSubmenuIdx, m_activeSubmenu2Idx);
+
+            // 3. Render Level-2 Cascading Submenu (e.g. Panel Position / Activity Bar Position) if active
+            if (m_activeSubmenu2Idx >= 0 && m_activeSubmenu2Idx < static_cast<int>(parent.submenuItems.size())) {
+                const auto& subParent = parent.submenuItems[m_activeSubmenu2Idx];
+                if (subParent.hasSubmenu && !subParent.submenuItems.empty()) {
+                    RenderMenuPanel(pRT, theme, config, subParent.submenuItems, m_submenu2Bounds, m_hoveredSubmenu2Idx, -1);
+                }
+            }
         }
     }
 }
@@ -1132,12 +1178,35 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
 
     bool stateChanged = false;
 
-    // 1. Check if hovering inside active Cascading Submenu
+    // 0. Check if hovering inside active Level-2 Cascading Submenu
+    if (m_activeSubmenuIdx >= 0 && m_activeSubmenu2Idx >= 0 && PtInRectF(clientPt, m_submenu2Bounds)) {
+        const auto& parent = m_items[m_activeSubmenuIdx];
+        if (m_activeSubmenu2Idx < static_cast<int>(parent.submenuItems.size())) {
+            const auto& subParent = parent.submenuItems[m_activeSubmenu2Idx];
+            int newHover2 = -1;
+            for (size_t i = 0; i < subParent.submenuItems.size(); ++i) {
+                if (!subParent.submenuItems[i].isSeparator && subParent.submenuItems[i].isEnabled &&
+                    PtInRectF(clientPt, subParent.submenuItems[i].bounds)) {
+                    newHover2 = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (m_hoveredSubmenu2Idx != newHover2) {
+                m_hoveredSubmenu2Idx = newHover2;
+                stateChanged = true;
+            }
+        }
+        return stateChanged;
+    }
+
+    // 1. Check if hovering inside active Level-1 Cascading Submenu
     if (m_activeSubmenuIdx >= 0 && PtInRectF(clientPt, m_submenuBounds)) {
         const auto& parent = m_items[m_activeSubmenuIdx];
         int newHover = -1;
         for (size_t i = 0; i < parent.submenuItems.size(); ++i) {
-            if (!parent.submenuItems[i].isSeparator && parent.submenuItems[i].isEnabled && PtInRectF(clientPt, parent.submenuItems[i].bounds)) {
+            if (!parent.submenuItems[i].isSeparator &&
+                (parent.submenuItems[i].isEnabled || parent.submenuItems[i].hasSubmenu) &&
+                PtInRectF(clientPt, parent.submenuItems[i].bounds)) {
                 newHover = static_cast<int>(i);
                 break;
             }
@@ -1145,6 +1214,20 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
         if (m_hoveredSubmenuIdx != newHover) {
             m_hoveredSubmenuIdx = newHover;
             stateChanged = true;
+        }
+        if (newHover >= 0 && parent.submenuItems[newHover].hasSubmenu) {
+            if (m_activeSubmenu2Idx != newHover) {
+                LayoutSubmenu2(newHover, config, clientW, clientH);
+                m_hoveredSubmenu2Idx = -1;
+                stateChanged = true;
+            }
+        } else if (newHover >= 0 && !parent.submenuItems[newHover].hasSubmenu) {
+            if (m_activeSubmenu2Idx != -1) {
+                m_activeSubmenu2Idx = -1;
+                m_hoveredSubmenu2Idx = -1;
+                m_submenu2Bounds = {};
+                stateChanged = true;
+            }
         }
         return stateChanged;
     }
@@ -1179,6 +1262,9 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
                 m_activeSubmenuIdx = -1;
                 m_hoveredSubmenuIdx = -1;
                 m_submenuBounds = {};
+                m_activeSubmenu2Idx = -1;
+                m_hoveredSubmenu2Idx = -1;
+                m_submenu2Bounds = {};
                 stateChanged = true;
             }
         }
@@ -1186,10 +1272,11 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
         return stateChanged;
     }
 
-    // 3. Outside both menus: reset hover highlights
-    if (m_hoveredMainIdx != -1 || m_hoveredSubmenuIdx != -1) {
+    // 3. Outside all menus: reset hover highlights
+    if (m_hoveredMainIdx != -1 || m_hoveredSubmenuIdx != -1 || m_hoveredSubmenu2Idx != -1) {
         m_hoveredMainIdx = -1;
         m_hoveredSubmenuIdx = -1;
+        m_hoveredSubmenu2Idx = -1;
         stateChanged = true;
     }
 
@@ -1199,11 +1286,27 @@ bool PopupMenu::HandleMouseMove(POINT clientPt, const app::AppConfig& config, fl
 MenuActionId PopupMenu::HandleLButtonDown(POINT clientPt) {
     if (!m_isOpen) return MenuActionId::None;
 
-    // 1. Click inside Cascading Submenu
+    // 0. Click inside Level-2 Cascading Submenu
+    if (m_activeSubmenuIdx >= 0 && m_activeSubmenu2Idx >= 0 && PtInRectF(clientPt, m_submenu2Bounds)) {
+        const auto& parent = m_items[m_activeSubmenuIdx];
+        if (m_activeSubmenu2Idx < static_cast<int>(parent.submenuItems.size())) {
+            const auto& subParent = parent.submenuItems[m_activeSubmenu2Idx];
+            for (const auto& item : subParent.submenuItems) {
+                if (!item.isSeparator && PtInRectF(clientPt, item.bounds)) {
+                    if (!item.isEnabled) return MenuActionId::None;
+                    return item.actionId;
+                }
+            }
+        }
+        return MenuActionId::None;
+    }
+
+    // 1. Click inside Level-1 Cascading Submenu
     if (m_activeSubmenuIdx >= 0 && PtInRectF(clientPt, m_submenuBounds)) {
         const auto& parent = m_items[m_activeSubmenuIdx];
         for (const auto& item : parent.submenuItems) {
             if (!item.isSeparator && PtInRectF(clientPt, item.bounds)) {
+                if (item.hasSubmenu) return MenuActionId::None;
                 if (!item.isEnabled) return MenuActionId::None;
                 return item.actionId;
             }
@@ -1233,6 +1336,7 @@ bool PopupMenu::HitTestMenuArea(POINT clientPt) const {
     if (!m_isOpen) return false;
     if (PtInRectF(clientPt, m_mainMenuBounds)) return true;
     if (m_activeSubmenuIdx >= 0 && PtInRectF(clientPt, m_submenuBounds)) return true;
+    if (m_activeSubmenuIdx >= 0 && m_activeSubmenu2Idx >= 0 && PtInRectF(clientPt, m_submenu2Bounds)) return true;
     return false;
 }
 

@@ -167,6 +167,7 @@ static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) 
     if (id == L"debug.showSubSessionsInToolBar")          return &cfg.debugFloatingToolbar;
     if (id == L"database.autoDiscoverServers")            return &cfg.dbAutoDiscoverServers;
     if (id == L"liveServer.autoOpenBrowser")              return &cfg.liveServerAutoOpenBrowser;
+    if (id == L"liveServer.https")                        return &cfg.liveServerHttps;
     if (id == L"coverage.showGutter")                     return &cfg.coverageShowGutter;
     if (id == L"markdown.syncScroll")                     return &cfg.markdownSyncScroll;
     return nullptr;
@@ -773,6 +774,9 @@ void SettingsView::InitializeSettings() {
               SettingCategory::DebugDatabase, false, false);
     addToggle(L"liveServer.autoOpenBrowser", L"LIVE SERVER", L"Auto-Open Browser On Start",
               L"Automatically launch the default web browser when starting the integrated Live Server.",
+              SettingCategory::DebugDatabase, false, false);
+    addToggle(L"liveServer.https", L"LIVE SERVER", L"Serve Local Live Server Over HTTPS (TLS)",
+              L"Use a cached local self-signed TLS certificate (%LOCALAPPDATA%\\phide\\certs) with Schannel TLS.",
               SettingCategory::DebugDatabase, false, false);
     addDropdown(L"liveServer.root", L"LIVE SERVER", L"Live Server Document Root",
                 L"Default relative folder served as the HTTP root directory.",

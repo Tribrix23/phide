@@ -188,7 +188,7 @@ struct AppConfig {
 
     bool gitEnabled = true;
     bool gitAutoFetch = false;
-    bool gitConfirmSync = true;
+    bool gitConfirmSync = false;
     bool gitSmartCommit = true;
     bool gitShowInlineBlame = true;
     bool gitExplorerDecorations = true;
@@ -200,6 +200,7 @@ struct AppConfig {
     bool dbAutoDiscoverServers = true;
     int dbQueryTimeoutSec = 15;
     bool liveServerAutoOpenBrowser = true;
+    bool liveServerHttps = false;
     std::wstring liveServerRoot = L"/";
     std::wstring editorRulers = L"off";                  ///< Comma-separated column rulers (e.g., "80", "80, 120") or "off".
 

@@ -263,14 +263,35 @@ void EditorCanvas::OpenInlineFindBar(
 }
 
 void EditorCanvas::RecomputeInlineFindMatches(const editor::OpenDocument& doc) {
-    m_findBar.matches = editor::FindMatchesInLines(
-        doc.buffer.GetLines(),
-        m_findBar.query,
-        m_findBar.matchCase,
-        m_findBar.wholeWord,
-        m_findBar.useRegex,
-        (m_findBar.inSelection && m_findBar.hasSelectionFilter) ? m_findBar.selFilter : editor::SearchRangeFilter{}
-    );
+    if (doc.buffer.IsMemoryMappedReadOnly()) {
+        std::vector<editor::Buffer::MappedSearchHit> rawHits;
+        doc.buffer.FindMatchesInMappedFile(
+            m_findBar.query,
+            m_findBar.matchCase,
+            m_findBar.wholeWord,
+            m_findBar.useRegex,
+            rawHits,
+            2000
+        );
+        m_findBar.matches.clear();
+        m_findBar.matches.reserve(rawHits.size());
+        const bool useFilter = (m_findBar.inSelection && m_findBar.hasSelectionFilter);
+        for (const auto& h : rawHits) {
+            if (useFilter && (h.line < m_findBar.selFilter.startLine || h.line > m_findBar.selFilter.endLine)) {
+                continue;
+            }
+            m_findBar.matches.push_back({ h.line, h.col, h.length });
+        }
+    } else {
+        m_findBar.matches = editor::FindMatchesInLines(
+            doc.buffer.GetLines(),
+            m_findBar.query,
+            m_findBar.matchCase,
+            m_findBar.wholeWord,
+            m_findBar.useRegex,
+            (m_findBar.inSelection && m_findBar.hasSelectionFilter) ? m_findBar.selFilter : editor::SearchRangeFilter{}
+        );
+    }
     if (m_findBar.matches.empty()) {
         m_findBar.currentMatchIdx = -1;
         return;

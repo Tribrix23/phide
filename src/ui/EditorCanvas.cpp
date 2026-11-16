@@ -8,6 +8,7 @@
 #include <iphlpapi.h>
 #include <tlhelp32.h>
 #include "phide/ui/EditorCanvas.hpp"
+#include "phide/ui/LucideIcons.hpp"
 #include "phide/ui/WatermarkLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/editor/TailwindHelper.hpp"
@@ -520,7 +521,9 @@ static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     curRightX = x - config.ScaleF(4.0f);
 }
 
-EditorCanvas::EditorCanvas() = default;
+EditorCanvas::EditorCanvas() {
+    LoadSqlConsoleState();
+}
 
 EditorCanvas::~EditorCanvas() {
     if (m_sqlAsyncInbox) {
@@ -2757,6 +2760,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     doc.conflictReloadBtnBounds = {};
     doc.conflictDiffBtnBounds = {};
     doc.conflictOverwriteBtnBounds = {};
+    doc.conflictDismissBtnBounds = {};
     if (doc.hasExternalDiskConflict) {
         const float bannerH = config.ScaleF(34.0f);
         D2D1_RECT_F rcBanner = D2D1::RectF(canvasLeft, topY, canvasRight, topY + bannerH);
@@ -2800,6 +2804,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             rightEdge -= (w + gapBtn);
         };
 
+        drawBannerBtn(L"Keep Mine", config.ScaleF(78.0f), btnGhost.Get(),
+                      theme.brushTextPrimary ? theme.brushTextPrimary.Get() : whiteBrush.Get(), doc.conflictDismissBtnBounds);
         drawBannerBtn(L"Overwrite", config.ScaleF(78.0f), btnWarn.Get(), whiteBrush.Get(), doc.conflictOverwriteBtnBounds);
         drawBannerBtn(L"Compare Diff", config.ScaleF(98.0f), btnGhost.Get(),
                       theme.brushTextPrimary ? theme.brushTextPrimary.Get() : whiteBrush.Get(), doc.conflictDiffBtnBounds);
@@ -12091,6 +12097,12 @@ bool EditorCanvas::HitTestMonitorInteractive(POINT pt) const {
             return true;
         }
     }
+    if (m_rcMonitorKillBtn.right > m_rcMonitorKillBtn.left) {
+        if (pt.x >= m_rcMonitorKillBtn.left && pt.x <= m_rcMonitorKillBtn.right &&
+            pt.y >= m_rcMonitorKillBtn.top && pt.y <= m_rcMonitorKillBtn.bottom) {
+            return true;
+        }
+    }
     if (m_rcMonitorPrevPage.right > m_rcMonitorPrevPage.left) {
         if (pt.x >= m_rcMonitorPrevPage.left && pt.x <= m_rcMonitorPrevPage.right &&
             pt.y >= m_rcMonitorPrevPage.top && pt.y <= m_rcMonitorPrevPage.bottom) {
@@ -12921,14 +12933,38 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     pRT->DrawText(L"⟳", 1, fSmallCenter, m_rcMonitorRefreshBtn,
                   subTextBrush ? subTextBrush.Get() : theme.brushTextSecondary.Get());
 
+    const bool hasKillableSel = (m_monitorSelectedProcessIndex >= 0 &&
+                                 static_cast<size_t>(m_monitorSelectedProcessIndex) < m_cachedDevPorts.size() &&
+                                 m_cachedDevPorts[static_cast<size_t>(m_monitorSelectedProcessIndex)].pid != 0 &&
+                                 m_cachedDevPorts[static_cast<size_t>(m_monitorSelectedProcessIndex)].pid != GetCurrentProcessId());
+    const float killBtnW = config.ScaleF(86.0f);
+    m_rcMonitorKillBtn = D2D1::RectF(
+        m_rcMonitorRefreshBtn.left - config.ScaleF(6.0f) - killBtnW,
+        m_rcMonitorRefreshBtn.top,
+        m_rcMonitorRefreshBtn.left - config.ScaleF(6.0f),
+        m_rcMonitorRefreshBtn.bottom
+    );
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> killBg;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> killBrd;
+        pRT->CreateSolidColorBrush(hasKillableSel ? D2D1::ColorF(0.75f, 0.20f, 0.22f, 0.28f) : D2D1::ColorF(0.20f, 0.20f, 0.24f, 0.25f), &killBg);
+        pRT->CreateSolidColorBrush(hasKillableSel ? D2D1::ColorF(0.85f, 0.28f, 0.30f, 0.75f) : D2D1::ColorF(0.35f, 0.35f, 0.40f, 0.45f), &killBrd);
+        D2D1_ROUNDED_RECT rrcKill = D2D1::RoundedRect(m_rcMonitorKillBtn, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (killBg) pRT->FillRoundedRectangle(rrcKill, killBg.Get());
+        if (killBrd) pRT->DrawRoundedRectangle(rrcKill, killBrd.Get(), 1.0f);
+        pRT->DrawText(L"Kill Process", 12, fSmallCenter, m_rcMonitorKillBtn,
+                      hasKillableSel ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextWhite.Get())
+                                     : (subTextBrush ? subTextBrush.Get() : theme.brushTextMuted.Get()));
+    }
+
     D2D1_RECT_F rcTblTitle = D2D1::RectF(tableX + config.ScaleF(16.0f), tableY + config.ScaleF(6.0f),
                                          tableX + config.ScaleF(190.0f), tableY + tblHeaderH - config.ScaleF(6.0f));
     std::wstring tblTitleStr = L"Processes (" + std::to_wstring(m_cachedDevPorts.size()) + L")";
     pRT->DrawText(tblTitleStr.c_str(), static_cast<UINT32>(tblTitleStr.length()), fCardTitle, rcTblTitle, theme.brushTextWhite.Get());
 
-    if (tableW >= config.ScaleF(430.0f)) {
+    if (tableW >= config.ScaleF(500.0f)) {
         D2D1_RECT_F rcTblSub = D2D1::RectF(tableX + config.ScaleF(180.0f), tableY + config.ScaleF(6.0f),
-                                           m_rcMonitorRefreshBtn.left - config.ScaleF(10.0f), tableY + tblHeaderH - config.ScaleF(6.0f));
+                                           m_rcMonitorKillBtn.left - config.ScaleF(10.0f), tableY + tblHeaderH - config.ScaleF(6.0f));
         const wchar_t* tblSubStr = L"Real-time Process & Port Telemetry";
         pRT->DrawText(tblSubStr, static_cast<UINT32>(wcslen(tblSubStr)), fSubRight, rcTblSub,
                       subTextBrush ? subTextBrush.Get() : theme.brushTextSecondary.Get());
@@ -13504,6 +13540,39 @@ void EditorCanvas::RenderMonitorView(ID2D1RenderTarget* pRT, Theme& theme, const
     }
 }
 
+bool EditorCanvas::KillSelectedDevPortProcess() {
+    if (m_monitorSelectedProcessIndex < 0 ||
+        static_cast<size_t>(m_monitorSelectedProcessIndex) >= m_cachedDevPorts.size()) {
+        return false;
+    }
+    const DWORD pid = m_cachedDevPorts[static_cast<size_t>(m_monitorSelectedProcessIndex)].pid;
+    if (pid == 0 || pid == GetCurrentProcessId()) {
+        return false;
+    }
+    HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (!hProc) {
+        hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    }
+    if (!hProc) {
+        return false;
+    }
+    const BOOL killed = TerminateProcess(hProc, 1);
+    if (killed) {
+        WaitForSingleObject(hProc, 1200);
+    }
+    CloseHandle(hProc);
+    if (killed) {
+        m_cachedDevPorts = QueryActiveDevPorts();
+        m_lastDevPortsQueryTick = GetTickCount64();
+        if (m_cachedDevPorts.empty()) {
+            m_monitorSelectedProcessIndex = -1;
+        } else if (m_monitorSelectedProcessIndex >= static_cast<int>(m_cachedDevPorts.size())) {
+            m_monitorSelectedProcessIndex = static_cast<int>(m_cachedDevPorts.size()) - 1;
+        }
+    }
+    return killed != FALSE;
+}
+
 bool EditorCanvas::HandleMonitorClick(POINT pt, const app::AppConfig& config) {
     (void)config;
 
@@ -13515,6 +13584,15 @@ bool EditorCanvas::HandleMonitorClick(POINT pt, const app::AppConfig& config) {
             m_lastDevPortsQueryTick = GetTickCount64();
             m_projectStorage.lastScanTick = 0;
             UpdateProjectStorageTelemetry(m_workspaceRoot);
+            return true;
+        }
+    }
+
+    // 1b. Kill Process Button (#45)
+    if (m_rcMonitorKillBtn.right > m_rcMonitorKillBtn.left) {
+        if (pt.x >= m_rcMonitorKillBtn.left && pt.x <= m_rcMonitorKillBtn.right &&
+            pt.y >= m_rcMonitorKillBtn.top && pt.y <= m_rcMonitorKillBtn.bottom) {
+            KillSelectedDevPortProcess();
             return true;
         }
     }
@@ -13681,11 +13759,13 @@ void EditorCanvas::RenderTestExplorerView(ID2D1RenderTarget* pRT, Theme& theme, 
         }
     }
 
-    if (brGreen) {
-        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcTestRunAllBtn, 4.0f, 4.0f), m_testIsRunning ? brAmber : brGreen);
+    if (m_testIsRunning && brRed) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcTestRunAllBtn, 4.0f, 4.0f), brRed);
+    } else if (brGreen) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcTestRunAllBtn, 4.0f, 4.0f), brGreen);
     }
     if (fBody) {
-        std::wstring runLbl = m_testIsRunning ? L"Running..." : L"Run All Tests";
+        std::wstring runLbl = m_testIsRunning ? L"■ Stop Tests" : L"Run All Tests";
         pRT->DrawText(runLbl.c_str(), static_cast<UINT32>(runLbl.size()), fBody,
                       D2D1::RectF(m_rcTestRunAllBtn.left + config.ScaleF(10.0f), m_rcTestRunAllBtn.top + config.ScaleF(4.0f), m_rcTestRunAllBtn.right - config.ScaleF(6.0f), m_rcTestRunAllBtn.bottom),
                       theme.brushTextWhite ? theme.brushTextWhite.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -13925,13 +14005,34 @@ void EditorCanvas::RenderTestExplorerView(ID2D1RenderTarget* pRT, Theme& theme, 
     pRT->PopAxisAlignedClip();
 }
 
+bool EditorCanvas::IsPointInTestExplorerInteractive(POINT pt) const noexcept {
+    auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
+        return rc.right > rc.left && p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
+    };
+    if (inRect(pt, m_rcTestRunAllBtn) || inRect(pt, m_rcTestRerunFailedBtn) ||
+        inRect(pt, m_rcTestRefreshBtn) || inRect(pt, m_rcCovToggleBtn) || inRect(pt, m_rcCovRefreshBtn)) {
+        return true;
+    }
+    for (int fi = 0; fi < 3; ++fi) {
+        if (inRect(pt, m_rcTestFilterBtns[fi])) return true;
+    }
+    for (const auto& rh : m_testRowHits) {
+        if (inRect(pt, rh.runBtnBounds) || inRect(pt, rh.rowBounds)) return true;
+    }
+    return false;
+}
+
 bool EditorCanvas::HandleTestExplorerMouseDown(POINT pt, const app::AppConfig& config) {
     (void)config;
     auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
         return rc.right > rc.left && p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
     if (inRect(pt, m_rcTestRunAllBtn)) {
-        if (onTestRunAll) onTestRunAll();
+        if (m_testIsRunning) {
+            if (onTestStop) onTestStop();
+        } else if (onTestRunAll) {
+            onTestRunAll();
+        }
         return true;
     }
     if (inRect(pt, m_rcTestRerunFailedBtn)) {
@@ -14215,6 +14316,13 @@ void EditorCanvas::SetFileHistoryTarget(const std::wstring& fullPath, const std:
     m_fileHistoryTargetPath = fullPath;
     m_fileHistoryRelPath = relPath;
     m_fileHistoryLoading = loading;
+    std::wstring root = m_workspaceRoot;
+    if (root.empty() && !fullPath.empty()) {
+        root = std::filesystem::path(fullPath).parent_path().wstring();
+    }
+    m_timelineEntries = (!fullPath.empty() && !phide::app::LocalTimeline::IsSensitiveOrExcludedPath(fullPath))
+        ? phide::app::LocalTimeline::ListSnapshots(root, fullPath)
+        : std::vector<phide::app::TimelineSnapshotEntry>{};
     if (loading) {
         m_fileHistoryEntries.clear();
         m_fileHistoryScrollY = 0.0f;
@@ -14228,6 +14336,14 @@ void EditorCanvas::SetFileHistoryEntries(const std::wstring& fullPath,
     }
     if (entries.size() > 100) entries.resize(100);
     m_fileHistoryEntries = std::move(entries);
+    std::wstring target = !fullPath.empty() ? fullPath : m_fileHistoryTargetPath;
+    std::wstring root = m_workspaceRoot;
+    if (root.empty() && !target.empty()) {
+        root = std::filesystem::path(target).parent_path().wstring();
+    }
+    m_timelineEntries = (!target.empty() && !phide::app::LocalTimeline::IsSensitiveOrExcludedPath(target))
+        ? phide::app::LocalTimeline::ListSnapshots(root, target)
+        : std::vector<phide::app::TimelineSnapshotEntry>{};
     m_fileHistoryLoading = false;
     m_fileHistoryScrollY = 0.0f;
 }
@@ -14237,6 +14353,7 @@ void EditorCanvas::RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, c
     if (!pRT || canvasWidth <= 20.0f || clientHeight <= topY + 20.0f) return;
     EnsureTestTaskBrushes(pRT);
     m_fileHistoryRowHits.clear();
+    m_timelineRowHits.clear();
     m_rcFileHistoryRefreshBtn = {};
 
     D2D1_RECT_F rcViewport = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight);
@@ -14257,7 +14374,7 @@ void EditorCanvas::RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, c
     float innerW = (std::max)(config.ScaleF(240.0f), canvasWidth - padX * 2.0f);
     float curY = topY + config.ScaleF(16.0f);
 
-    std::wstring hdrTitle = L"File Git History (--follow)";
+    std::wstring hdrTitle = L"File History & Local Timeline";
     if (!m_fileHistoryRelPath.empty()) hdrTitle += L"  -  " + m_fileHistoryRelPath;
     if (fTitle && textPrimary) {
         pRT->DrawText(hdrTitle.c_str(), static_cast<UINT32>(hdrTitle.size()), fTitle,
@@ -14281,7 +14398,8 @@ void EditorCanvas::RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, c
 
     std::wstring sub = m_fileHistoryLoading
         ? L"Loading follow history (git log --follow -n 100)..."
-        : (std::to_wstring(m_fileHistoryEntries.size()) + L" commit(s) touching this file across renames");
+        : (std::to_wstring(m_fileHistoryEntries.size()) + L" commit(s) via git --follow  |  " +
+           std::to_wstring(m_timelineEntries.size()) + L" local snapshot(s) in %LOCALAPPDATA%");
     if (fSmall && textMuted) {
         pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.size()), fSmall,
                       D2D1::RectF(canvasLeft + padX, curY, canvasLeft + padX + innerW, curY + config.ScaleF(18.0f)),
@@ -14290,8 +14408,9 @@ void EditorCanvas::RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, c
     curY += config.ScaleF(24.0f);
 
     float rowH = config.ScaleF(48.0f);
+    float tlHeaderH = m_timelineEntries.empty() ? 0.0f : config.ScaleF(34.0f);
     float viewH = (std::max)(config.ScaleF(40.0f), clientHeight - curY - config.ScaleF(8.0f));
-    float totalH = static_cast<float>(m_fileHistoryEntries.size()) * (rowH + config.ScaleF(4.0f));
+    float totalH = static_cast<float>(m_fileHistoryEntries.size() + m_timelineEntries.size()) * (rowH + config.ScaleF(4.0f)) + tlHeaderH;
     m_fileHistoryMaxScrollY = (std::max)(0.0f, totalH - viewH);
     if (m_fileHistoryScrollY > m_fileHistoryMaxScrollY) m_fileHistoryScrollY = m_fileHistoryMaxScrollY;
 
@@ -14341,6 +14460,74 @@ void EditorCanvas::RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, c
         ry += rowH + config.ScaleF(4.0f);
     }
 
+    if (!m_timelineEntries.empty()) {
+        if (!m_fileHistoryEntries.empty()) ry += config.ScaleF(8.0f);
+        if (ry + config.ScaleF(24.0f) >= curY && ry <= clientHeight && fBody && textPrimary) {
+            pRT->DrawText(L"Local Timeline (Out-of-Workspace Save Snapshots)", 49, fBody,
+                          D2D1::RectF(canvasLeft + padX, ry + config.ScaleF(4.0f), canvasLeft + padX + innerW, ry + config.ScaleF(24.0f)),
+                          textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        ry += config.ScaleF(26.0f);
+
+        for (size_t i = 0; i < m_timelineEntries.size(); ++i) {
+            if (ry + rowH >= curY && ry <= clientHeight) {
+                const auto& e = m_timelineEntries[i];
+                D2D1_RECT_F rcRow = D2D1::RectF(canvasLeft + padX, ry, canvasLeft + padX + innerW, ry + rowH);
+                if (brCard) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f), brCard);
+                if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f), theme.brushBorderSubtle.Get(), 1.0f);
+
+                float restW = config.ScaleF(74.0f);
+                float diffBtnW = config.ScaleF(84.0f);
+                D2D1_RECT_F rcRestoreBtn = D2D1::RectF(rcRow.right - restW - config.ScaleF(10.0f), ry + config.ScaleF(10.0f),
+                                                       rcRow.right - config.ScaleF(10.0f), ry + rowH - config.ScaleF(10.0f));
+                D2D1_RECT_F rcDiffBtn = D2D1::RectF(rcRestoreBtn.left - config.ScaleF(8.0f) - diffBtnW, ry + config.ScaleF(10.0f),
+                                                    rcRestoreBtn.left - config.ScaleF(8.0f), ry + rowH - config.ScaleF(10.0f));
+                if (theme.brushBrandAccent) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRestoreBtn, 3.5f, 3.5f), theme.brushBrandAccent.Get());
+                if (m_brushTestBtnBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcDiffBtn, 3.5f, 3.5f), m_brushTestBtnBg.Get());
+                if (fSmall && textPrimary) {
+                    pRT->DrawText(L"Open Diff", 9, fSmall,
+                                  D2D1::RectF(rcDiffBtn.left + config.ScaleF(12.0f), rcDiffBtn.top + config.ScaleF(5.0f),
+                                              rcDiffBtn.right, rcDiffBtn.bottom),
+                                  textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    pRT->DrawText(L"Restore", 7, fSmall,
+                                  D2D1::RectF(rcRestoreBtn.left + config.ScaleF(14.0f), rcRestoreBtn.top + config.ScaleF(5.0f),
+                                              rcRestoreBtn.right, rcRestoreBtn.bottom),
+                                  theme.brushTextWhite ? theme.brushTextWhite.Get() : textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+
+                std::wstring badge = L"SNAP #" + std::to_wstring(i + 1);
+                D2D1_RECT_F rcHash = D2D1::RectF(rcRow.left + config.ScaleF(12.0f), ry + config.ScaleF(8.0f),
+                                                 rcRow.left + config.ScaleF(92.0f), ry + config.ScaleF(26.0f));
+                if (fCode && theme.brushBrandAccent) {
+                    pRT->DrawText(badge.c_str(), static_cast<UINT32>(badge.size()), fCode, rcHash,
+                                  theme.brushBrandAccent.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                std::wstring titleTxt = !e.displayTime.empty() ? (L"Saved at " + e.displayTime) : e.timestampId;
+                D2D1_RECT_F rcMsg = D2D1::RectF(rcHash.right + config.ScaleF(6.0f), ry + config.ScaleF(7.0f),
+                                                rcDiffBtn.left - config.ScaleF(10.0f), ry + config.ScaleF(25.0f));
+                if (fBody && textPrimary && rcMsg.right > rcMsg.left) {
+                    pRT->DrawText(titleTxt.c_str(), static_cast<UINT32>(titleTxt.size()), fBody, rcMsg,
+                                  textPrimary, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                wchar_t szBuf[64]{};
+                swprintf_s(szBuf, L"%.1f KB  •  %016llx", static_cast<double>(e.byteSize) / 1024.0,
+                           static_cast<unsigned long long>(e.contentHash));
+                if (fSmall && textMuted) {
+                    pRT->DrawText(szBuf, static_cast<UINT32>(wcslen(szBuf)), fSmall,
+                                  D2D1::RectF(rcHash.right + config.ScaleF(6.0f), ry + config.ScaleF(26.0f),
+                                              rcDiffBtn.left - config.ScaleF(10.0f), ry + config.ScaleF(43.0f)),
+                                  textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+                m_timelineRowHits.push_back({ i, rcRow, rcDiffBtn, rcRestoreBtn });
+            }
+            ry += rowH + config.ScaleF(4.0f);
+        }
+    } else if (!m_fileHistoryLoading && m_fileHistoryEntries.empty() && fBody && textMuted) {
+        pRT->DrawText(L"No commit history or local snapshots recorded yet for this file.", 65, fBody,
+                      D2D1::RectF(canvasLeft + padX, ry + config.ScaleF(8.0f), canvasLeft + padX + innerW, ry + config.ScaleF(30.0f)),
+                      textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
     pRT->PopAxisAlignedClip();
     pRT->PopAxisAlignedClip();
 }
@@ -14360,6 +14547,23 @@ bool EditorCanvas::HandleFileHistoryMouseDown(POINT pt, const app::AppConfig& co
             if (onFileHistoryOpenCommitDiff) {
                 std::wstring h = e.fullHash.empty() ? e.shortHash : e.fullHash;
                 onFileHistoryOpenCommitDiff(h, m_fileHistoryRelPath);
+            }
+            return true;
+        }
+    }
+    for (const auto& th : m_timelineRowHits) {
+        if (th.idx >= m_timelineEntries.size()) continue;
+        const auto& e = m_timelineEntries[th.idx];
+        if (inRect(pt, th.restoreBtnBounds)) {
+            if (onFileHistoryRestoreTimeline) {
+                onFileHistoryRestoreTimeline(e.snapshotPath, m_fileHistoryTargetPath);
+            }
+            return true;
+        }
+        if (inRect(pt, th.diffBtnBounds) || inRect(pt, th.rowBounds)) {
+            if (onFileHistoryOpenTimelineDiff) {
+                std::wstring label = !e.displayTime.empty() ? e.displayTime : e.timestampId;
+                onFileHistoryOpenTimelineDiff(e.snapshotPath, label, m_fileHistoryTargetPath);
             }
             return true;
         }
@@ -14421,13 +14625,12 @@ std::wstring BuildSelectTableQuery(const phide::db::SqlConnectionProfile& prof, 
         target = QuoteSqlIdent(prof.dialect, tbl.schemaName) + L"." + QuoteSqlIdent(prof.dialect, tbl.name);
     } else if (!tbl.schemaName.empty() && prof.dialect == phide::db::SqlDialect::PostgreSQL && tbl.schemaName != L"public") {
         target = QuoteSqlIdent(prof.dialect, tbl.schemaName) + L"." + QuoteSqlIdent(prof.dialect, tbl.name);
+    } else if (!tbl.schemaName.empty() && prof.dialect == phide::db::SqlDialect::MySQL) {
+        target = QuoteSqlIdent(prof.dialect, tbl.schemaName) + L"." + QuoteSqlIdent(prof.dialect, tbl.name);
     } else {
         target = QuoteSqlIdent(prof.dialect, tbl.name);
     }
-    if (prof.dialect == phide::db::SqlDialect::SQLServer) {
-        return L"SELECT TOP 100 * FROM " + target + L";";
-    }
-    return L"SELECT * FROM " + target + L" LIMIT 100;";
+    return L"SELECT * FROM " + target + L";";
 }
 
 bool SqlNeedsSchemaRefresh(const std::wstring& sqlText) {
@@ -14582,6 +14785,184 @@ void EditorCanvas::RefreshActiveSqlSchema() {
     }
 }
 
+static std::wstring GetSqlConsoleStateFilePath() {
+    wchar_t localApp[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return L"";
+    std::filesystem::path dir = std::filesystem::path(localApp) / L"phide";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return (dir / L"sql_console_state.json").wstring();
+}
+
+static std::string SqlWideToUtf8Local(const std::wstring& w) {
+    if (w.empty()) return {};
+    int sz = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (sz <= 0) return {};
+    std::string out(static_cast<size_t>(sz), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), sz, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring SqlUtf8ToWideLocal(const std::string& s) {
+    if (s.empty()) return {};
+    int sz = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (sz <= 0) return {};
+    std::wstring out(static_cast<size_t>(sz), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), sz);
+    return out;
+}
+
+static std::string SqlJsonEscapeLocal(const std::wstring& w) {
+    std::string s = SqlWideToUtf8Local(w);
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c >= 0x20) out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+
+static bool SqlReadJsonStringAt(const std::string& raw, size_t& pos, std::string& out) {
+    out.clear();
+    if (pos >= raw.size() || raw[pos] != '"') return false;
+    ++pos;
+    while (pos < raw.size()) {
+        char c = raw[pos++];
+        if (c == '"') return true;
+        if (c == '\\' && pos < raw.size()) {
+            char e = raw[pos++];
+            if (e == 'n') out.push_back('\n');
+            else if (e == 'r') out.push_back('\r');
+            else if (e == 't') out.push_back('\t');
+            else out.push_back(e);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return false;
+}
+
+void EditorCanvas::SaveSqlConsoleState() const {
+    std::wstring path = GetSqlConsoleStateFilePath();
+    if (path.empty()) return;
+    std::ostringstream out;
+    out << "{\n  \"snippets\": [\n";
+    for (size_t i = 0; i < m_sqlSavedSnippets.size(); ++i) {
+        out << "    {\"name\":\"" << SqlJsonEscapeLocal(m_sqlSavedSnippets[i].first)
+            << "\",\"sql\":\"" << SqlJsonEscapeLocal(m_sqlSavedSnippets[i].second) << "\"}";
+        if (i + 1 < m_sqlSavedSnippets.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ],\n  \"history\": [\n";
+    for (size_t i = 0; i < m_sqlQueryHistory.size(); ++i) {
+        out << "    \"" << SqlJsonEscapeLocal(m_sqlQueryHistory[i]) << "\"";
+        if (i + 1 < m_sqlQueryHistory.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]\n}\n";
+    std::string payload = out.str();
+    std::wstring tmpPath = path + L".tmp";
+    HANDLE hFile = CreateFileW(tmpPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    BOOL ok = payload.empty() ? TRUE : WriteFile(hFile, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr);
+    CloseHandle(hFile);
+    if (ok && written == payload.size()) {
+        MoveFileExW(tmpPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    } else {
+        DeleteFileW(tmpPath.c_str());
+    }
+}
+
+void EditorCanvas::LoadSqlConsoleState() {
+    std::wstring path = GetSqlConsoleStateFilePath();
+    if (path.empty()) return;
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER fsz{};
+    if (!GetFileSizeEx(hFile, &fsz) || fsz.QuadPart <= 0 || fsz.QuadPart > 2 * 1024 * 1024) {
+        CloseHandle(hFile);
+        return;
+    }
+    std::string raw(static_cast<size_t>(fsz.QuadPart), '\0');
+    DWORD readBytes = 0;
+    BOOL ok = ReadFile(hFile, raw.data(), static_cast<DWORD>(raw.size()), &readBytes, nullptr);
+    CloseHandle(hFile);
+    if (!ok) return;
+    raw.resize(readBytes);
+
+    m_sqlSavedSnippets.clear();
+    m_sqlQueryHistory.clear();
+    size_t snipArr = raw.find("\"snippets\"");
+    size_t histArr = raw.find("\"history\"");
+    if (snipArr != std::string::npos) {
+        size_t endLimit = (histArr != std::string::npos && histArr > snipArr) ? histArr : raw.size();
+        size_t cur = snipArr;
+        while (cur < endLimit && m_sqlSavedSnippets.size() < 50) {
+            size_t np = raw.find("\"name\"", cur);
+            if (np == std::string::npos || np >= endLimit) break;
+            size_t q1 = raw.find('"', np + 6);
+            std::string nVal, sVal;
+            if (q1 == std::string::npos || !SqlReadJsonStringAt(raw, q1, nVal)) break;
+            size_t sp = raw.find("\"sql\"", q1);
+            if (sp == std::string::npos || sp >= endLimit) break;
+            size_t q2 = raw.find('"', sp + 5);
+            if (q2 == std::string::npos || !SqlReadJsonStringAt(raw, q2, sVal)) break;
+            if (!nVal.empty() && !sVal.empty()) {
+                m_sqlSavedSnippets.emplace_back(SqlUtf8ToWideLocal(nVal), SqlUtf8ToWideLocal(sVal));
+            }
+            cur = q2;
+        }
+    }
+    if (histArr != std::string::npos) {
+        size_t arrStart = raw.find('[', histArr);
+        size_t arrEnd = (arrStart != std::string::npos) ? raw.find(']', arrStart) : std::string::npos;
+        size_t cur = (arrStart != std::string::npos) ? arrStart + 1 : raw.size();
+        while (cur < arrEnd && arrEnd != std::string::npos && m_sqlQueryHistory.size() < 100) {
+            size_t q = raw.find('"', cur);
+            if (q == std::string::npos || q >= arrEnd) break;
+            std::string hVal;
+            if (!SqlReadJsonStringAt(raw, q, hVal)) break;
+            if (!hVal.empty()) m_sqlQueryHistory.push_back(SqlUtf8ToWideLocal(hVal));
+            cur = q;
+        }
+    }
+}
+
+void EditorCanvas::SaveCurrentSqlAsSnippet(const std::wstring& name) {
+    std::wstring trimmed = m_sqlQueryText;
+    while (!trimmed.empty() && iswspace(trimmed.front())) trimmed.erase(trimmed.begin());
+    while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
+    if (trimmed.empty()) return;
+    std::wstring title = name;
+    if (title.empty()) {
+        title = trimmed.substr(0, (std::min<size_t>)(32, trimmed.size()));
+        for (wchar_t& c : title) {
+            if (c == L'\r' || c == L'\n' || c == L'\t') c = L' ';
+        }
+    }
+    for (auto& existing : m_sqlSavedSnippets) {
+        if (existing.first == title) {
+            existing.second = trimmed;
+            m_sqlStatusBanner = L"Updated SQL snippet: " + title;
+            SaveSqlConsoleState();
+            return;
+        }
+    }
+    if (m_sqlSavedSnippets.size() >= 50) {
+        m_sqlSavedSnippets.erase(m_sqlSavedSnippets.begin());
+    }
+    m_sqlSavedSnippets.emplace_back(title, trimmed);
+    m_sqlStatusBanner = L"Saved SQL snippet: " + title;
+    SaveSqlConsoleState();
+}
+
 void EditorCanvas::ExecuteActiveSqlQuery() {
     if (m_sqlSelectedProfileIdx >= m_sqlProfiles.size()) {
         m_sqlResult = {};
@@ -14591,9 +14972,24 @@ void EditorCanvas::ExecuteActiveSqlQuery() {
         return;
     }
     auto& prof = m_sqlProfiles[m_sqlSelectedProfileIdx];
-    m_sqlResult = phide::db::SqlEngine::ExecuteQuery(prof, m_sqlQueryText);
-    m_sqlPage = 0;
+    std::wstring qTrim = m_sqlQueryText;
+    while (!qTrim.empty() && iswspace(qTrim.front())) qTrim.erase(qTrim.begin());
+    if (!qTrim.empty() && (m_sqlQueryHistory.empty() || m_sqlQueryHistory.back() != qTrim)) {
+        if (m_sqlQueryHistory.size() >= 100) m_sqlQueryHistory.erase(m_sqlQueryHistory.begin());
+        m_sqlQueryHistory.push_back(qTrim);
+        SaveSqlConsoleState();
+    }
+
+    int64_t totalServerRows = -1;
+    bool usedServerPaging = false;
+    m_sqlResult = phide::db::SqlEngine::ExecuteQueryWithPagination(
+        prof, m_sqlQueryText, m_sqlPage, m_sqlPageSize, totalServerRows, usedServerPaging);
+    m_sqlServerPagedMode = usedServerPaging;
+    m_sqlServerTotalRows = usedServerPaging ? totalServerRows : -1;
+    m_sqlPagedBaseQuery = usedServerPaging ? m_sqlQueryText : L"";
+    if (!usedServerPaging) m_sqlPage = 0;
     m_sqlSortCol = -1;
+    m_sqlCellEditActive = false;
     m_sqlGridScrollY = 0.0f;
     m_sqlGridScrollX = 0.0f;
     if (m_sqlResult.success) {
@@ -14783,9 +15179,24 @@ void EditorCanvas::StartExecuteActiveSqlQueryAsync() {
         m_sqlStatusBanner = L"Error: " + m_sqlResult.errorMessage;
         return;
     }
+    std::wstring qTrim = m_sqlQueryText;
+    while (!qTrim.empty() && iswspace(qTrim.front())) qTrim.erase(qTrim.begin());
+    if (!qTrim.empty() && (m_sqlQueryHistory.empty() || m_sqlQueryHistory.back() != qTrim)) {
+        if (m_sqlQueryHistory.size() >= 100) m_sqlQueryHistory.erase(m_sqlQueryHistory.begin());
+        m_sqlQueryHistory.push_back(qTrim);
+        SaveSqlConsoleState();
+    }
+    if (m_sqlPagedBaseQuery != m_sqlQueryText) {
+        m_sqlPage = 0;
+        m_sqlPagedBaseQuery = m_sqlQueryText;
+    }
+    m_sqlCellEditActive = false;
+
     const uint64_t qryGen = ++m_sqlQueryReqGen;
     const phide::db::SqlConnectionProfile profCopy = m_sqlProfiles[m_sqlSelectedProfileIdx];
     const std::wstring sqlCopy = m_sqlQueryText;
+    const size_t reqPage = m_sqlPage;
+    const size_t reqPageSize = m_sqlPageSize;
     const bool needRefresh = SqlNeedsSchemaRefresh(sqlCopy);
     auto inbox = m_sqlAsyncInbox;
     HWND notifyHwnd = m_sqlNotifyHwnd;
@@ -14793,9 +15204,12 @@ void EditorCanvas::StartExecuteActiveSqlQueryAsync() {
     m_sqlIsBusy = true;
     m_sqlStatusBanner = L"Executing query...";
 
-    std::thread([profCopy, sqlCopy, needRefresh, qryGen, inbox, notifyHwnd]() {
+    std::thread([profCopy, sqlCopy, reqPage, reqPageSize, needRefresh, qryGen, inbox, notifyHwnd]() {
         if (!inbox->alive.load()) return;
-        auto res = phide::db::SqlEngine::ExecuteQuery(profCopy, sqlCopy);
+        int64_t totalRows = -1;
+        bool usedPaging = false;
+        auto res = phide::db::SqlEngine::ExecuteQueryWithPagination(
+            profCopy, sqlCopy, reqPage, reqPageSize, totalRows, usedPaging);
         if (!inbox->alive.load()) return;
         {
             std::lock_guard<std::mutex> lk(inbox->mtx);
@@ -14803,6 +15217,9 @@ void EditorCanvas::StartExecuteActiveSqlQueryAsync() {
             if (qryGen >= inbox->queryReqGen) {
                 inbox->queryReqGen = qryGen;
                 inbox->queryResult = std::move(res);
+                inbox->queryServerTotalRows = usedPaging ? totalRows : -1;
+                inbox->queryUsedServerPaging = usedPaging;
+                inbox->queryRequestedPage = usedPaging ? reqPage : 0;
                 inbox->refreshSchemaAfterQuery = needRefresh && inbox->queryResult.success;
                 inbox->hasQueryUpdate = true;
             }
@@ -14946,6 +15363,9 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
     std::vector<std::wstring> schDbs;
     std::wstring schErr;
     phide::db::SqlQueryResult qryRes;
+    int64_t qryTotalRows = -1;
+    bool qryUsedPaging = false;
+    size_t qryReqPage = 0;
     bool refreshAfterQry = false;
     size_t togProfIdx = 0;
     bool togConnected = false;
@@ -14976,6 +15396,9 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
             hasQry = true;
             m_sqlAsyncInbox->hasQueryUpdate = false;
             qryRes = std::move(m_sqlAsyncInbox->queryResult);
+            qryTotalRows = m_sqlAsyncInbox->queryServerTotalRows;
+            qryUsedPaging = m_sqlAsyncInbox->queryUsedServerPaging;
+            qryReqPage = m_sqlAsyncInbox->queryRequestedPage;
             refreshAfterQry = m_sqlAsyncInbox->refreshSchemaAfterQuery;
             m_sqlAsyncInbox->refreshSchemaAfterQuery = false;
         }
@@ -15079,8 +15502,11 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
     if (hasQry && seenQryGen == m_sqlQueryReqGen) {
         m_sqlResult = std::move(qryRes);
         if (onSqlQueryExecuted) onSqlQueryExecuted();
-        m_sqlPage = 0;
+        m_sqlServerPagedMode = qryUsedPaging;
+        m_sqlServerTotalRows = qryUsedPaging ? qryTotalRows : -1;
+        m_sqlPage = qryUsedPaging ? qryReqPage : 0;
         m_sqlSortCol = -1;
+        m_sqlCellEditActive = false;
         m_sqlGridScrollY = 0.0f;
         m_sqlGridScrollX = 0.0f;
         if (m_sqlResult.success) {
@@ -15120,6 +15546,8 @@ LPCWSTR EditorCanvas::GetSqlConsoleCursorForPoint(POINT pt) const noexcept {
         SqlPtInRectF(pt, m_rcSqlStartMysqlBtn) ||
         SqlPtInRectF(pt, m_rcSqlExportCsvBtn) ||
         SqlPtInRectF(pt, m_rcSqlExportJsonBtn) ||
+        SqlPtInRectF(pt, m_rcSqlSaveSnipBtn) ||
+        SqlPtInRectF(pt, m_rcSqlHistoryBtn) ||
         SqlPtInRectF(pt, m_rcSqlPrevPageBtn) ||
         SqlPtInRectF(pt, m_rcSqlNextPageBtn)) {
         return IDC_HAND;
@@ -15150,6 +15578,8 @@ bool EditorCanvas::UpdateSqlConsoleHover(POINT pt) noexcept {
     else if (SqlPtInRectF(pt, m_rcSqlStartMysqlBtn)) newBtnId = 4;
     else if (SqlPtInRectF(pt, m_rcSqlExportCsvBtn)) newBtnId = 5;
     else if (SqlPtInRectF(pt, m_rcSqlExportJsonBtn)) newBtnId = 6;
+    else if (SqlPtInRectF(pt, m_rcSqlSaveSnipBtn)) newBtnId = 9;
+    else if (SqlPtInRectF(pt, m_rcSqlHistoryBtn)) newBtnId = 10;
     else if (SqlPtInRectF(pt, m_rcSqlPrevPageBtn)) newBtnId = 7;
     else if (SqlPtInRectF(pt, m_rcSqlNextPageBtn)) newBtnId = 8;
 
@@ -15378,6 +15808,10 @@ void EditorCanvas::RenderSqlConsoleView(
 
     drawBtn(m_rcSqlExportCsvBtn, 5, L"Export CSV", brPanel.Get(), brBorder.Get(), txtMain);
     drawBtn(m_rcSqlExportJsonBtn, 6, L"Export JSON", brPanel.Get(), brBorder.Get(), txtMain);
+    drawBtn(m_rcSqlSaveSnipBtn, 9, L"Save SQL", brPanel.Get(), brBorder.Get(), txtMain);
+    std::wstring histLbl = L"History (" + std::to_wstring(m_sqlQueryHistory.size() + m_sqlSavedSnippets.size()) + L") ▼";
+    drawBtn(m_rcSqlHistoryBtn, 10, histLbl.c_str(), m_sqlHistoryMenuOpen ? brAccent.Get() : brPanel.Get(),
+            m_sqlHistoryMenuOpen ? brAccent.Get() : brBorder.Get(), m_sqlHistoryMenuOpen ? txtWhite : txtMain);
 
     if (m_sqlIsBusy) {
         const float busyW = MeasureDWriteTextWidth(dwf, fRowUse, L"Working...", config.ScaleF(7.0f)) + config.ScaleF(16.0f);
@@ -15502,6 +15936,15 @@ void EditorCanvas::RenderSqlConsoleView(
                         pRT->DrawText(cText.c_str(), static_cast<UINT32>(cText.size()), fRowUse, rcC, txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
                     }
                     sideContentY += colH;
+                }
+                for (const auto& fk : tbl.foreignKeys) {
+                    const float fkH = config.ScaleF(18.0f);
+                    D2D1_RECT_F rcFk = D2D1::RectF(rcSideClip.left + config.ScaleF(20.0f), sideContentY, rcSideClip.right - config.ScaleF(6.0f), sideContentY + fkH);
+                    std::wstring fkText = L"↳ " + fk.column + L" → " + fk.refTable + L"." + fk.refColumn;
+                    if (fRowUse && brAccent) {
+                        pRT->DrawText(fkText.c_str(), static_cast<UINT32>(fkText.size()), fRowUse, rcFk, brAccent.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                    sideContentY += fkH;
                 }
             }
         }
@@ -15630,8 +16073,11 @@ void EditorCanvas::RenderSqlConsoleView(
         pRT->DrawLine(D2D1::Point2F(m_rcSqlGrid.left, m_rcSqlGrid.top + hdrH),
                       D2D1::Point2F(m_rcSqlGrid.right, m_rcSqlGrid.top + hdrH), brBorder.Get(), 1.0f);
 
-        const size_t startRow = m_sqlPage * m_sqlPageSize;
-        const size_t endRow = (std::min)(m_sqlResult.rows.size(), startRow + m_sqlPageSize);
+        m_sqlCellHits.clear();
+        const size_t startRow = m_sqlServerPagedMode ? 0 : (m_sqlPage * m_sqlPageSize);
+        const size_t endRow = m_sqlServerPagedMode
+            ? m_sqlResult.rows.size()
+            : (std::min)(m_sqlResult.rows.size(), startRow + m_sqlPageSize);
         const size_t visibleRows = (endRow > startRow) ? (endRow - startRow) : 0;
         const float bodyAreaH = (std::max)(1.0f, m_rcSqlGrid.bottom - (m_rcSqlGrid.top + hdrH));
         m_sqlMaxGridScrollY = (std::max)(0.0f, static_cast<float>(visibleRows) * rowH - bodyAreaH + config.ScaleF(6.0f));
@@ -15651,8 +16097,18 @@ void EditorCanvas::RenderSqlConsoleView(
             for (size_t c = 0; c < nCols && c < row.size(); ++c) {
                 const float x0 = m_rcSqlGrid.left - m_sqlGridScrollX + static_cast<float>(c) * colW;
                 if (x0 + colW < m_rcSqlGrid.left || x0 > m_rcSqlGrid.right) continue;
+                D2D1_RECT_F rcCellHit = D2D1::RectF((std::max)(x0, m_rcSqlGrid.left), ry,
+                                                    (std::min)(x0 + colW, m_rcSqlGrid.right), ry + rowH);
+                m_sqlCellHits.push_back({ rcCellHit, r, c });
                 D2D1_RECT_F rcCell = D2D1::RectF(x0 + config.ScaleF(8.0f), ry, x0 + colW - config.ScaleF(6.0f), ry + rowH);
-                if (fGridUse && txtMain) {
+                if (m_sqlCellEditActive && m_sqlEditRow == r && m_sqlEditCol == c) {
+                    pRT->FillRectangle(rcCellHit, brInput.Get());
+                    pRT->DrawRectangle(rcCellHit, brAccent.Get(), 1.6f);
+                    std::wstring editDisp = m_sqlCellEditText + L"|";
+                    if (fGridUse && txtWhite) {
+                        pRT->DrawText(editDisp.c_str(), static_cast<UINT32>(editDisp.size()), fGridUse, rcCell, txtWhite, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                } else if (fGridUse && txtMain) {
                     pRT->DrawText(row[c].c_str(), static_cast<UINT32>(row[c].size()), fGridUse, rcCell, txtMain, D2D1_DRAW_TEXT_OPTIONS_CLIP);
                 }
             }
@@ -15678,12 +16134,53 @@ void EditorCanvas::RenderSqlConsoleView(
         pRT->DrawText(L"< Prev", 6, fBtnUse, m_rcSqlPrevPageBtn, txtMain);
         pRT->DrawText(L"Next >", 6, fBtnUse, m_rcSqlNextPageBtn, txtMain);
     }
-    const size_t totalPages = (std::max<size_t>)(1, (m_sqlResult.rows.size() + m_sqlPageSize - 1) / m_sqlPageSize);
+    const size_t effTotalRows = (m_sqlServerPagedMode && m_sqlServerTotalRows >= 0)
+        ? static_cast<size_t>(m_sqlServerTotalRows)
+        : m_sqlResult.rows.size();
+    const size_t totalPages = (std::max<size_t>)(1, (effTotalRows + m_sqlPageSize - 1) / m_sqlPageSize);
     std::wstring pageInfo = L"Page " + std::to_wstring(m_sqlPage + 1) + L" / " + std::to_wstring(totalPages) +
-                            L" (" + std::to_wstring(m_sqlResult.rows.size()) + L" total rows)";
+                            L" (" + std::to_wstring(effTotalRows) + (m_sqlServerPagedMode ? L" server rows)" : L" rows)");
     if (fRowUse && txtMuted) {
         D2D1_RECT_F rcPI = D2D1::RectF(m_rcSqlNextPageBtn.right + config.ScaleF(14.0f), footY, rightRight, footY + pageBtnH);
         pRT->DrawText(pageInfo.c_str(), static_cast<UINT32>(pageInfo.size()), fRowUse, rcPI, txtMuted);
+    }
+
+    // Floating History / Saved Snippets Dropdown (#44)
+    m_sqlHistoryHits.clear();
+    if (m_sqlHistoryMenuOpen && m_rcSqlHistoryBtn.right > m_rcSqlHistoryBtn.left) {
+        const float dropW = config.ScaleF(360.0f);
+        const float itemH = config.ScaleF(24.0f);
+        const size_t maxItems = (std::min<size_t>)(10, m_sqlSavedSnippets.size() + m_sqlQueryHistory.size());
+        const float dropH = config.ScaleF(28.0f) + static_cast<float>((std::max<size_t>)(1, maxItems)) * itemH;
+        float dx = (std::min)(m_rcSqlHistoryBtn.left, rightRight - dropW);
+        float dy = m_rcSqlHistoryBtn.bottom + config.ScaleF(4.0f);
+        m_rcSqlHistoryPopup = D2D1::RectF(dx, dy, dx + dropW, dy + dropH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcSqlHistoryPopup, 5.0f, 5.0f), brPanel.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcSqlHistoryPopup, 5.0f, 5.0f), brBorder.Get(), 1.2f);
+        float iy = dy + config.ScaleF(6.0f);
+        if (m_sqlSavedSnippets.empty() && m_sqlQueryHistory.empty() && fRowUse && txtMuted) {
+            pRT->DrawText(L"(No saved SQL snippets or history yet)", 38, fRowUse,
+                          D2D1::RectF(dx + 10.0f, iy, dx + dropW - 10.0f, iy + itemH), txtMuted);
+        } else {
+            for (const auto& snip : m_sqlSavedSnippets) {
+                if (m_sqlHistoryHits.size() >= 10) break;
+                D2D1_RECT_F rcH = D2D1::RectF(dx + 6.0f, iy, dx + dropW - 6.0f, iy + itemH);
+                m_sqlHistoryHits.push_back({ rcH, snip.second });
+                std::wstring lbl = L"★ " + snip.first;
+                if (fRowUse && txtMain) pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), fRowUse, rcH, txtMain, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                iy += itemH;
+            }
+            for (auto it = m_sqlQueryHistory.rbegin(); it != m_sqlQueryHistory.rend() && m_sqlHistoryHits.size() < 10; ++it) {
+                D2D1_RECT_F rcH = D2D1::RectF(dx + 6.0f, iy, dx + dropW - 6.0f, iy + itemH);
+                m_sqlHistoryHits.push_back({ rcH, *it });
+                std::wstring lbl = *it;
+                for (wchar_t& c : lbl) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' ';
+                if (fRowUse && txtMuted) pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), fRowUse, rcH, txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                iy += itemH;
+            }
+        }
+    } else {
+        m_rcSqlHistoryPopup = {};
     }
 }
 
@@ -15755,15 +16252,47 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
         if (onSqlStatusToast) onSqlStatusToast(m_sqlStatusBanner);
         return true;
     }
+    if (SqlPtInRectF(pt, m_rcSqlSaveSnipBtn)) {
+        SaveCurrentSqlAsSnippet();
+        return true;
+    }
+    if (SqlPtInRectF(pt, m_rcSqlHistoryBtn)) {
+        m_sqlHistoryMenuOpen = !m_sqlHistoryMenuOpen;
+        return true;
+    }
+    if (m_sqlHistoryMenuOpen) {
+        if (SqlPtInRectF(pt, m_rcSqlHistoryPopup)) {
+            for (const auto& hh : m_sqlHistoryHits) {
+                if (SqlPtInRectF(pt, hh.bounds)) {
+                    m_sqlQueryText = hh.sql;
+                    m_sqlCursorPos = m_sqlQueryText.size();
+                    m_sqlEditorFocused = true;
+                    m_sqlHistoryMenuOpen = false;
+                    return true;
+                }
+            }
+            return true;
+        }
+        m_sqlHistoryMenuOpen = false;
+    }
     if (SqlPtInRectF(pt, m_rcSqlPrevPageBtn)) {
-        if (m_sqlPage > 0) --m_sqlPage;
-        m_sqlGridScrollY = 0.0f;
+        if (m_sqlPage > 0) {
+            --m_sqlPage;
+            m_sqlGridScrollY = 0.0f;
+            if (m_sqlServerPagedMode) StartExecuteActiveSqlQueryAsync();
+        }
         return true;
     }
     if (SqlPtInRectF(pt, m_rcSqlNextPageBtn)) {
-        const size_t totalPages = (std::max<size_t>)(1, (m_sqlResult.rows.size() + m_sqlPageSize - 1) / m_sqlPageSize);
-        if (m_sqlPage + 1 < totalPages) ++m_sqlPage;
-        m_sqlGridScrollY = 0.0f;
+        const size_t effTotalRows = (m_sqlServerPagedMode && m_sqlServerTotalRows >= 0)
+            ? static_cast<size_t>(m_sqlServerTotalRows)
+            : m_sqlResult.rows.size();
+        const size_t totalPages = (std::max<size_t>)(1, (effTotalRows + m_sqlPageSize - 1) / m_sqlPageSize);
+        if (m_sqlPage + 1 < totalPages) {
+            ++m_sqlPage;
+            m_sqlGridScrollY = 0.0f;
+            if (m_sqlServerPagedMode) StartExecuteActiveSqlQueryAsync();
+        }
         return true;
     }
     for (const auto& t : m_sqlTableHits) {
@@ -15771,6 +16300,9 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
             const int ti = static_cast<int>(t.tableIndex);
             m_sqlExpandedTableIdx = (m_sqlExpandedTableIdx == ti) ? -1 : ti;
             if (t.tableIndex < m_sqlTables.size() && m_sqlSelectedProfileIdx < m_sqlProfiles.size()) {
+                m_sqlActiveTableSchema = m_sqlTables[t.tableIndex].schemaName;
+                m_sqlActiveTableName = m_sqlTables[t.tableIndex].name;
+                m_sqlPage = 0;
                 m_sqlQueryText = BuildSelectTableQuery(m_sqlProfiles[m_sqlSelectedProfileIdx], m_sqlTables[t.tableIndex]);
                 m_sqlCursorPos = m_sqlQueryText.size();
                 m_sqlEditorFocused = true;
@@ -15778,6 +16310,18 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
                 StartExecuteActiveSqlQueryAsync();
             }
             return true;
+        }
+    }
+    for (const auto& ch : m_sqlCellHits) {
+        if (SqlPtInRectF(pt, ch.bounds)) {
+            if (!m_sqlActiveTableName.empty() && ch.row < m_sqlResult.rows.size() && ch.col < m_sqlResult.rows[ch.row].size()) {
+                m_sqlCellEditActive = true;
+                m_sqlEditRow = ch.row;
+                m_sqlEditCol = ch.col;
+                m_sqlCellEditText = m_sqlResult.rows[ch.row][ch.col];
+                m_sqlEditorFocused = false;
+                return true;
+            }
         }
     }
     for (const auto& ch : m_sqlColHeaderHits) {
@@ -15850,6 +16394,13 @@ bool EditorCanvas::HandleSqlConsoleMouseWheel(POINT pt, short delta) noexcept {
 }
 
 bool EditorCanvas::HandleSqlConsoleChar(wchar_t ch) {
+    if (m_sqlCellEditActive) {
+        if (ch == L'\r' || ch == L'\n' || ch == 27 || ch == L'\b') return true;
+        if (ch >= 0x20 && m_sqlCellEditText.size() < 2048) {
+            m_sqlCellEditText.push_back(ch);
+        }
+        return true;
+    }
     if (!m_sqlEditorFocused) return false;
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) return false;
     if (ch == L'\r') ch = L'\n';
@@ -15867,6 +16418,56 @@ bool EditorCanvas::HandleSqlConsoleChar(wchar_t ch) {
 }
 
 bool EditorCanvas::HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd) {
+    if (m_sqlCellEditActive) {
+        if (wParam == VK_ESCAPE) {
+            m_sqlCellEditActive = false;
+            return true;
+        }
+        if (wParam == VK_BACK) {
+            if (!m_sqlCellEditText.empty()) m_sqlCellEditText.pop_back();
+            return true;
+        }
+        if (wParam == VK_RETURN) {
+            m_sqlCellEditActive = false;
+            if (m_sqlSelectedProfileIdx < m_sqlProfiles.size() &&
+                m_sqlEditRow < m_sqlResult.rows.size() &&
+                m_sqlEditCol < m_sqlResult.columns.size() &&
+                !m_sqlActiveTableName.empty()) {
+                std::vector<std::pair<std::wstring, std::wstring>> pks;
+                for (const auto& t : m_sqlTables) {
+                    if (t.name == m_sqlActiveTableName &&
+                        (m_sqlActiveTableSchema.empty() || t.schemaName == m_sqlActiveTableSchema)) {
+                        for (const auto& col : t.columns) {
+                            if (col.isPrimaryKey) {
+                                for (size_t c = 0; c < m_sqlResult.columns.size() && c < m_sqlResult.rows[m_sqlEditRow].size(); ++c) {
+                                    if (m_sqlResult.columns[c] == col.name) {
+                                        pks.emplace_back(col.name, m_sqlResult.rows[m_sqlEditRow][c]);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (pks.empty() && !m_sqlResult.columns.empty() && !m_sqlResult.rows[m_sqlEditRow].empty()) {
+                    pks.emplace_back(m_sqlResult.columns[0], m_sqlResult.rows[m_sqlEditRow][0]);
+                }
+                auto updRes = phide::db::SqlEngine::UpdateTableCell(
+                    m_sqlProfiles[m_sqlSelectedProfileIdx],
+                    m_sqlActiveTableSchema, m_sqlActiveTableName,
+                    m_sqlResult.columns[m_sqlEditCol], m_sqlCellEditText, pks);
+                if (updRes.success) {
+                    m_sqlResult.rows[m_sqlEditRow][m_sqlEditCol] = m_sqlCellEditText;
+                    m_sqlStatusBanner = L"Updated cell (" + m_sqlResult.columns[m_sqlEditCol] + L")";
+                } else {
+                    m_sqlStatusBanner = L"Error: " + updRes.errorMessage;
+                }
+            }
+            return true;
+        }
+        return true;
+    }
     if ((wParam == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000) != 0) || wParam == VK_F5) {
         StartExecuteActiveSqlQueryAsync();
         return true;

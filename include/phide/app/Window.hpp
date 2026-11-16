@@ -836,6 +836,8 @@ private:
     void OpenRemoteWindowPopup(ui::RemoteModalMode mode = ui::RemoteModalMode::MainMenu, bool sshCurrentWindow = false);
     void ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, const std::wstring& initialDir);
     void OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::wstring& remotePath, const std::wstring& localCachePath);
+    void OpenRemoteContainerFile(const ui::remote::DevContainerEntry& container, const std::wstring& remotePath, const std::wstring& localCachePath);
+    void OpenVirtualTextTab(const std::wstring& title, const std::wstring& content);
     void SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc);
     void OpenSshConfigFile();
     void SetupOrCopySshKey();
@@ -1037,7 +1039,8 @@ private:
     void RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, bool isRefactorMode);
     void DoCodeActions();
     void ApplyCodeActionItem(editor::OpenDocument* pDoc, lsp::CodeActionItem action);
-    void ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters);
+    void ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters, bool forceFreshLinters = false);
+    void ClearStaleExternalLinterProblemsForFile(const std::wstring& filePath);
 
     // --- #23 Bottom Filterable Problems Panel ---
     bool m_problemsPanelOpen = false;
@@ -1121,6 +1124,7 @@ private:
     void RunWorkspaceTestsAsync(const std::wstring& filterName = L"",
                                 phide::dev::TestFramework fw = phide::dev::TestFramework::Unknown,
                                 const std::wstring& filePath = L"");
+    void StopWorkspaceTests();
     void RunFailedWorkspaceTestsAsync();
     void RefreshWorkspaceCoverageAsync();
     void RefreshWorkspaceTasks();
@@ -1129,6 +1133,7 @@ private:
     phide::dev::WorkspaceCoverageSummary m_workspaceCoverage;
     void SyncTestResultsToOpenDocs(const std::vector<phide::dev::TestItem>& items);
     std::atomic<bool> m_testsRunningAsync{false};
+    std::atomic<bool> m_testCancelRequested{false};
     std::mutex m_testsMutex;
     std::vector<phide::dev::TestItem> m_workspaceTests;
     phide::dev::TestRunSummary m_workspaceTestSummary{};

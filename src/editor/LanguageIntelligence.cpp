@@ -2119,11 +2119,27 @@ std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wst
                 ToolExistsOnDisk(L"tsc.exe", workspaceRoot, tscTool)) {
                 static std::mutex s_tscMutex;
                 static std::atomic<bool> s_tscInFlight{false};
+                static std::atomic<uint64_t> s_tscEpoch{0};
                 static ULONGLONG s_lastTscRunTick = 0;
                 static std::wstring s_lastTscDir;
                 static std::vector<ProblemEntry> s_cachedTscProblems;
 
                 std::wstring dirKey = ToLowerW(tsConfigDir);
+                if (bypassTscCooldown) {
+                    s_tscEpoch.fetch_add(1);
+                    {
+                        std::lock_guard<std::mutex> lk(s_tscMutex);
+                        if (s_lastTscDir == dirKey) {
+                            s_lastTscRunTick = 0;
+                            s_cachedTscProblems.clear();
+                        }
+                    }
+                    // Wait briefly for any older in-flight tsc run to complete so post-save checks aren't skipped
+                    for (int w = 0; w < 60 && s_tscInFlight.load(); ++w) {
+                        Sleep(25);
+                    }
+                }
+
                 ULONGLONG nowTick = GetTickCount64();
                 bool useCacheOnly = false;
                 std::vector<ProblemEntry> cachedCopy;
@@ -2133,7 +2149,7 @@ std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wst
                                            s_lastTscRunTick != 0 && (nowTick - s_lastTscRunTick) < 8000ULL);
                     if (withinCooldown || s_tscInFlight.load()) {
                         useCacheOnly = true;
-                        if (s_lastTscDir == dirKey) {
+                        if (s_lastTscDir == dirKey && !bypassTscCooldown) {
                             cachedCopy = s_cachedTscProblems;
                         }
                     }
@@ -2147,13 +2163,14 @@ std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wst
                         ~InFlightReset() { flag.store(false); }
                     } guard{ s_tscInFlight };
 
+                    uint64_t runEpoch = s_tscEpoch.load();
                     std::wstring effectiveRoot = workspaceRoot.empty() ? tsConfigDir : workspaceRoot;
                     std::wstring cmd = L"\"" + tscTool + L"\" --noEmit --pretty false -p \"" +
                                        (fs::path(tsConfigDir) / L"tsconfig.json").wstring() + L"\"";
                     std::wstring out = RunHiddenCliCaptured(cmd, tsConfigDir, 5500);
                     auto tscDiags = ParseTscOutput(out, effectiveRoot);
                     if (tscDiags.size() > 100) tscDiags.resize(100);
-                    {
+                    if (s_tscEpoch.load() == runEpoch) {
                         std::lock_guard<std::mutex> lk(s_tscMutex);
                         s_lastTscRunTick = GetTickCount64();
                         s_lastTscDir = dirKey;

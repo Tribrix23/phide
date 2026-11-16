@@ -68,14 +68,16 @@ enum class ApiRequestTab {
     Auth,
     Headers,
     Body,
-    Settings
+    Settings,
+    Environment
 };
 
 enum class ApiAuthType {
     NoAuth,
     BearerToken,
     ApiKey,
-    BasicAuth
+    BasicAuth,
+    OAuth2
 };
 
 enum class ApiBodyType {
@@ -167,6 +169,15 @@ struct ApiRequestSession {
     bool apiKeyInHeader = true;
     std::wstring basicUser;
     std::wstring basicPass;
+    std::wstring oauthTokenUrl;
+    std::wstring oauthClientId;
+    std::wstring oauthClientSecret;
+    std::wstring oauthScope;
+
+    // WebSocket state
+    bool isWsConnected = false;
+    std::vector<std::wstring> wsMessages;
+    std::wstring collectionFolder;
 
     // Headers
     std::vector<ApiKeyValueItem> headers;
@@ -229,7 +240,31 @@ enum class ApiFocusField {
     ApiKeyValue,
     AuthUser,
     AuthPass,
+    OAuthTokenUrl,
+    OAuthClientId,
+    OAuthClientSecret,
+    OAuthScope,
+    EnvVarKey,
+    EnvVarVal,
+    EnvVarDesc,
     SettingsTimeout
+};
+
+struct ApiEnvEntry {
+    std::wstring name = L"Default";
+    std::vector<ApiKeyValueItem> vars;
+};
+
+struct ApiCookieEntry {
+    std::wstring domain;
+    std::wstring path = L"/";
+    std::wstring name;
+    std::wstring value;
+};
+
+struct ApiCollectionEntry {
+    std::wstring folder = L"Default";
+    ApiRequestSession request;
 };
 
 /**
@@ -239,7 +274,26 @@ enum class ApiFocusField {
 class ApiTesterView {
 public:
     ApiTesterView();
-    ~ApiTesterView() = default;
+    ~ApiTesterView();
+
+    // #42 Environments, Collections, Cookie Jar, OAuth2, OpenAPI / Postman / .http & WebSockets
+    [[nodiscard]] std::wstring ResolveEnvTemplate(const std::wstring& input) const;
+    void SetEnvironments(const std::vector<ApiEnvEntry>& envs, size_t activeIdx);
+    [[nodiscard]] const std::vector<ApiEnvEntry>& GetEnvironments() const noexcept { return m_environments; }
+    [[nodiscard]] size_t GetActiveEnvIndex() const noexcept { return m_activeEnvIdx; }
+    void StoreCookieFromSetCookieHeader(const std::wstring& host, const std::wstring& setCookieHeader);
+    [[nodiscard]] std::wstring BuildCookieHeaderForHost(const std::wstring& host, const std::wstring& path) const;
+    [[nodiscard]] const std::vector<ApiCookieEntry>& GetCookieJar() const noexcept { return m_cookieJar; }
+    void ClearCookieJar();
+    void SaveCurrentRequestToCollection(const std::wstring& folder = L"Default");
+    [[nodiscard]] const std::vector<ApiCollectionEntry>& GetCollections() const noexcept { return m_collections; }
+    [[nodiscard]] static std::vector<ApiRequestSession> ParseDotHttp(const std::wstring& content);
+    [[nodiscard]] static std::wstring ExportDotHttp(const std::vector<ApiRequestSession>& sessions);
+    static bool ImportPostmanCollection(const std::string& jsonUtf8, std::vector<ApiRequestSession>& outSessions);
+    [[nodiscard]] static std::string ExportPostmanCollection(const std::vector<ApiRequestSession>& sessions);
+    static bool ImportOpenApiSpec(const std::string& jsonUtf8, std::vector<ApiRequestSession>& outSessions);
+    bool FetchOAuth2AccessToken(ApiRequestSession& session, std::wstring& outError);
+    void DisconnectWebSocket();
 
     void SetHwnd(HWND hwnd) noexcept { m_hwnd = hwnd; }
     void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
@@ -454,6 +508,50 @@ private:
     std::wstring m_workspaceRoot;
     D2D1_RECT_F m_rcErrorJumpBanner{};
     std::function<void(const std::wstring&, size_t)> m_onJumpToErrorLocation;
+
+    // #42 Environment variables, Collections, Cookie Jar, OAuth2 & WebSockets
+    struct WsSessionState {
+        std::atomic<bool> alive{false};
+        void* hSession = nullptr;
+        void* hConnect = nullptr;
+        void* hRequest = nullptr;
+        void* hWebSocket = nullptr;
+        std::mutex ioMutex;
+        std::thread recvThread;
+    };
+    void SaveEnvsToDisk() const;
+    void LoadEnvsFromDisk();
+    void SaveCollectionsToDisk() const;
+    void LoadCollectionsFromDisk();
+    void SaveCookiesToDisk() const;
+    void LoadCookiesFromDisk();
+    void StartOrSendWebSocket(size_t sessionIdx);
+    void RenderEnvironmentTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float x, float y, float w, float h);
+    void RenderEnvDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
+    void RenderCollectionsDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
+
+    std::vector<ApiEnvEntry> m_environments;
+    size_t m_activeEnvIdx = 0;
+    mutable std::mutex m_cookieMutex;
+    std::vector<ApiCookieEntry> m_cookieJar;
+    std::vector<ApiCollectionEntry> m_collections;
+    std::shared_ptr<WsSessionState> m_wsState = std::make_shared<WsSessionState>();
+    std::shared_ptr<std::atomic<bool>> m_viewAlive = std::make_shared<std::atomic<bool>>(true);
+    bool m_isEnvDropdownOpen = false;
+    bool m_isCollectionsOpen = false;
+    D2D1_RECT_F m_rcEnvBtn{};
+    D2D1_RECT_F m_rcEnvDropdown{};
+    D2D1_RECT_F m_rcSaveCollectionBtn{};
+    D2D1_RECT_F m_rcCollectionsBtn{};
+    D2D1_RECT_F m_rcCollectionsDropdown{};
+    D2D1_RECT_F m_rcImportBtn{};
+    D2D1_RECT_F m_rcExportBtn{};
+    D2D1_RECT_F m_rcClearCookiesBtn{};
+    D2D1_RECT_F m_rcAuthField3{};
+    D2D1_RECT_F m_rcAuthField4{};
+    D2D1_RECT_F m_rcOAuthFetchBtn{};
+    std::vector<D2D1_RECT_F> m_collectionItemRects;
+    std::vector<D2D1_RECT_F> m_envItemRects;
 };
 
 } // namespace phide::ui

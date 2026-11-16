@@ -348,6 +348,12 @@ public:
      */
     void DrawRefreshCw(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth = 1.45f) const;
 
+    /**
+     * @brief Draws an upright flat vector debug action icon
+     *        (1=Continue, 2=Pause, 3=StepOver, 4=StepInto, 5=StepOut, 6=Restart, 7=Stop).
+     */
+    static void DrawDebugActionIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, int actionId, ID2D1Brush* pBrush, float strokeWidth = 1.45f);
+
     [[nodiscard]] ID2D1StrokeStyle* GetStrokeStyle() const noexcept { return m_pStrokeStyle.Get(); }
 
 private:

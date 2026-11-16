@@ -1072,9 +1072,10 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
         OverwriteLineChar(lines[curL], conPtyCursorCol, ch, activeColor, bold);
     }
 
-    // Limit scrollback buffer to 2000 lines
-    if (lines.size() > 2000) {
-        size_t excess = lines.size() - 2000;
+    // Limit scrollback buffer to configured maxScrollbackLines
+    const size_t maxLines = static_cast<size_t>((std::clamp)(maxScrollbackLines, 200, 20000));
+    if (lines.size() > maxLines) {
+        size_t excess = lines.size() - maxLines;
         lines.erase(lines.begin(), lines.begin() + excess);
         conPtyViewportTop = (conPtyViewportTop >= excess) ? (conPtyViewportTop - excess) : 0;
         conPtyCursorLine = (conPtyCursorLine >= excess) ? (conPtyCursorLine - excess) : 0;
@@ -1348,7 +1349,7 @@ void TerminalPanel::Open(const std::wstring& workingDir) {
         m_height = 360.0f; // Tall default size matching Image 1
     }
     if (m_availableProfiles.empty()) {
-        m_availableProfiles = DetectAvailableShells();
+        RebuildAvailableProfiles();
     }
     if (m_tabs.empty()) {
         NewTab(TerminalShellType::PowerShell, workingDir);
@@ -1409,10 +1410,385 @@ void TerminalPanel::SetHeight(float h) noexcept {
     m_height = (std::max)(100.0f, (std::min)(800.0f, h));
 }
 
+void TerminalPanel::SetScrollbackLines(int lines) noexcept {
+    m_scrollbackLines = (std::clamp)(lines, 200, 20000);
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    for (auto& t : m_tabs) {
+        if (!t) continue;
+        t->maxScrollbackLines = m_scrollbackLines;
+        if (t->splitTab) t->splitTab->maxScrollbackLines = m_scrollbackLines;
+    }
+}
+
+void TerminalPanel::RebuildAvailableProfiles() {
+    m_availableProfiles = DetectAvailableShells();
+    for (const auto& cp : m_customProfiles) {
+        m_availableProfiles.push_back(cp);
+    }
+}
+
+void TerminalPanel::AddCustomProfile(const TerminalProfileDef& profile) {
+    if (profile.name.empty() || profile.exePath.empty()) return;
+    for (auto& existing : m_customProfiles) {
+        if (existing.name == profile.name) {
+            existing = profile;
+            RebuildAvailableProfiles();
+            return;
+        }
+    }
+    if (m_customProfiles.size() < 32) {
+        m_customProfiles.push_back(profile);
+    }
+    RebuildAvailableProfiles();
+}
+
+void TerminalPanel::NewTabFromProfileIndex(size_t profileIdx, const std::wstring& workingDir) {
+    if (m_availableProfiles.empty()) {
+        RebuildAvailableProfiles();
+    }
+    if (profileIdx >= m_availableProfiles.size()) return;
+    const auto& prof = m_availableProfiles[profileIdx];
+    if (prof.type != TerminalShellType::Custom) {
+        NewTab(prof.type, workingDir);
+        return;
+    }
+    std::wstring cmd = L"\"" + prof.exePath + L"\"";
+    if (!prof.args.empty()) {
+        cmd += L" " + prof.args;
+    }
+    auto tab = std::make_unique<TerminalTab>();
+    tab->shellType = TerminalShellType::Custom;
+    tab->title = prof.name;
+    tab->customCommand = cmd;
+    tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+    tab->isConPty = m_useConPtyForShells;
+    tab->maxScrollbackLines = m_scrollbackLines;
+    tab->onOutput = m_outputCallback;
+    tab->onExecutionError = m_onExecutionError;
+    tab->onClearRuntimeErrors = m_onClearRuntimeErrors;
+    tab->onProblemMatched = m_onProblemMatched;
+    StartShellProcess(*tab);
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    m_tabs.push_back(std::move(tab));
+    m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
+}
+
+void TerminalPanel::SetFindQuery(const std::wstring& q) {
+    m_findQuery = (q.size() > 256) ? q.substr(0, 256) : q;
+    m_findMatches.clear();
+    m_findMatchIdx = -1;
+    if (m_findQuery.empty()) return;
+
+    TerminalTab* tab = GetActiveTab();
+    if (!tab) return;
+
+    std::wstring needle = m_findQuery;
+    if (!m_findCaseSensitive) {
+        for (wchar_t& ch : needle) ch = static_cast<wchar_t>(towlower(ch));
+    }
+
+    {
+        std::lock_guard<std::mutex> bufLock(tab->bufferMutex);
+        for (size_t li = 0; li < tab->lines.size(); ++li) {
+            std::wstring hay = tab->lines[li].rawText;
+            if (!m_findCaseSensitive) {
+                for (wchar_t& ch : hay) ch = static_cast<wchar_t>(towlower(ch));
+            }
+            size_t pos = 0;
+            while ((pos = hay.find(needle, pos)) != std::wstring::npos) {
+                m_findMatches.push_back({ static_cast<int>(li), pos, needle.size() });
+                if (m_findMatches.size() >= 2000) break;
+                pos += needle.size();
+            }
+            if (m_findMatches.size() >= 2000) break;
+        }
+    }
+
+    if (!m_findMatches.empty()) {
+        m_findMatchIdx = 0;
+        StepFindMatch(0);
+    }
+}
+
+void TerminalPanel::StepFindMatch(int delta) {
+    if (m_findMatches.empty()) {
+        m_findMatchIdx = -1;
+        return;
+    }
+    const int n = static_cast<int>(m_findMatches.size());
+    if (m_findMatchIdx < 0 || m_findMatchIdx >= n) {
+        m_findMatchIdx = 0;
+    } else if (delta != 0) {
+        m_findMatchIdx = ((m_findMatchIdx + delta) % n + n) % n;
+    }
+    TerminalTab* tab = GetActiveTab();
+    if (!tab) return;
+    std::lock_guard<std::mutex> bufLock(tab->bufferMutex);
+    const int totalLines = static_cast<int>(tab->lines.size());
+    const int targetLine = m_findMatches[static_cast<size_t>(m_findMatchIdx)].line;
+    if (totalLines > 0) {
+        // Bring matched line roughly into view by adjusting scrollOffsetLines from bottom
+        int distFromBottom = (totalLines - 1) - targetLine;
+        tab->scrollOffsetLines = (std::max)(0, distFromBottom - 4);
+    }
+}
+
+void TerminalPanel::StartTabRename(int tabIdx) {
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    if (tabIdx < 0 || tabIdx >= static_cast<int>(m_tabs.size()) || !m_tabs[tabIdx]) return;
+    m_renamingTabIdx = tabIdx;
+    m_renameBuffer = m_tabs[tabIdx]->title;
+}
+
+void TerminalPanel::CommitTabRename() {
+    std::lock_guard<std::recursive_mutex> lock(m_tabsMutex);
+    if (m_renamingTabIdx >= 0 && m_renamingTabIdx < static_cast<int>(m_tabs.size()) && m_tabs[m_renamingTabIdx]) {
+        std::wstring trimmed = m_renameBuffer;
+        while (!trimmed.empty() && iswspace(trimmed.front())) trimmed.erase(trimmed.begin());
+        while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
+        if (!trimmed.empty()) {
+            if (trimmed.size() > 48) trimmed.resize(48);
+            m_tabs[m_renamingTabIdx]->title = trimmed;
+            m_tabs[m_renamingTabIdx]->hasCustomTitle = true;
+        }
+    }
+    m_renamingTabIdx = -1;
+    m_renameBuffer.clear();
+}
+
+bool TerminalPanel::ParseArbitraryFileLineCol(const std::wstring& text,
+                                              const std::wstring& workingDir,
+                                              std::wstring& outFile,
+                                              int& outLine1,
+                                              int& outCol1,
+                                              size_t& outStart,
+                                              size_t& outLen) {
+    outFile.clear();
+    outLine1 = 1;
+    outCol1 = 1;
+    outStart = 0;
+    outLen = 0;
+    if (text.size() < 4 || text.size() > 2048) return false;
+
+    auto isPathChar = [](wchar_t c) {
+        return iswalnum(c) || c == L'_' || c == L'-' || c == L'.' || c == L'/' || c == L'\\';
+    };
+
+    // Match path:line[:col] or path(line[,col])
+    for (size_t i = 0; i + 2 < text.size(); ++i) {
+        if (text[i] != L':' && text[i] != L'(') continue;
+        // Skip URL scheme "http://", "https://", "ws://"
+        if (text[i] == L':' && i + 2 < text.size() && text[i + 1] == L'/' && text[i + 2] == L'/') continue;
+        // Skip Windows drive colon "C:\" or "C:/"
+        if (text[i] == L':' && i >= 1 && iswalpha(text[i - 1]) &&
+            (i == 1 || !isPathChar(text[i - 2])) &&
+            i + 1 < text.size() && (text[i + 1] == L'\\' || text[i + 1] == L'/')) {
+            continue;
+        }
+
+        size_t numStart = i + 1;
+        if (numStart >= text.size() || !iswdigit(text[numStart])) continue;
+        size_t numEnd = numStart;
+        while (numEnd < text.size() && iswdigit(text[numEnd])) numEnd++;
+
+        int lineVal = 0;
+        try { lineVal = std::stoi(text.substr(numStart, numEnd - numStart)); } catch (...) { lineVal = 0; }
+        if (lineVal <= 0 || lineVal > 5000000) continue;
+
+        int colVal = 1;
+        size_t linkEnd = numEnd;
+        if (text[i] == L':') {
+            if (numEnd < text.size() && text[numEnd] == L':' &&
+                numEnd + 1 < text.size() && iswdigit(text[numEnd + 1])) {
+                size_t colStart = numEnd + 1;
+                size_t colEnd = colStart;
+                while (colEnd < text.size() && iswdigit(text[colEnd])) colEnd++;
+                try { colVal = (std::max)(1, std::stoi(text.substr(colStart, colEnd - colStart))); } catch (...) {}
+                linkEnd = colEnd;
+            }
+        } else { // '('
+            size_t cur = numEnd;
+            if (cur < text.size() && text[cur] == L',' && cur + 1 < text.size() && iswdigit(text[cur + 1])) {
+                size_t colStart = cur + 1;
+                size_t colEnd = colStart;
+                while (colEnd < text.size() && iswdigit(text[colEnd])) colEnd++;
+                try { colVal = (std::max)(1, std::stoi(text.substr(colStart, colEnd - colStart))); } catch (...) {}
+                cur = colEnd;
+            }
+            if (cur < text.size() && text[cur] == L')') {
+                linkEnd = cur + 1;
+            } else {
+                continue;
+            }
+        }
+
+        // Walk backwards to capture file path token
+        size_t pStart = i;
+        while (pStart > 0) {
+            wchar_t prev = text[pStart - 1];
+            if (isPathChar(prev)) {
+                pStart--;
+            } else if (prev == L':' && pStart >= 2 && iswalpha(text[pStart - 2]) &&
+                       (pStart == 2 || !isPathChar(text[pStart - 3])) &&
+                       (text[pStart] == L'\\' || text[pStart] == L'/')) {
+                pStart -= 2;
+                break;
+            } else {
+                break;
+            }
+        }
+        if (pStart >= i) continue;
+        std::wstring cand = text.substr(pStart, i - pStart);
+        // Must contain a file extension dot or path separator (avoids matching timestamps like 12:34:56)
+        size_t dotPos = cand.rfind(L'.');
+        bool hasSep = (cand.find(L'/') != std::wstring::npos || cand.find(L'\\') != std::wstring::npos);
+        if (dotPos == std::wstring::npos || dotPos == 0 || dotPos + 1 >= cand.size()) continue;
+        // Require extension to be alphabetic/alnum (1..10 chars) and not purely numeric (like v1.2:80)
+        std::wstring ext = cand.substr(dotPos + 1);
+        if (ext.size() > 10) continue;
+        bool hasAlpha = false;
+        for (wchar_t ec : ext) {
+            if (iswalpha(ec)) { hasAlpha = true; break; }
+        }
+        if (!hasAlpha && !hasSep) continue;
+
+        std::filesystem::path fp(cand);
+        if (fp.is_relative() && !workingDir.empty()) {
+            fp = std::filesystem::path(workingDir) / fp;
+        }
+        std::error_code ec;
+        std::wstring resolved = fp.lexically_normal().wstring();
+        if (!resolved.empty() && resolved.rfind(L"file:", 0) != 0) {
+            // If file exists on disk OR looks clearly like a project path with extension, accept it
+            if (std::filesystem::exists(fp, ec) && !std::filesystem::is_directory(fp, ec)) {
+                outFile = resolved;
+                outLine1 = lineVal;
+                outCol1 = colVal;
+                outStart = pStart;
+                outLen = linkEnd - pStart;
+                return true;
+            }
+            if (hasSep && ext.size() >= 1 && ext.size() <= 8) {
+                outFile = resolved;
+                outLine1 = lineVal;
+                outCol1 = colVal;
+                outStart = pStart;
+                outLen = linkEnd - pStart;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::vector<wchar_t> TerminalPanel::BuildTabEnvBlock() const {
+    std::vector<std::pair<std::wstring, std::wstring>> vars;
+    auto setVar = [&vars](const std::wstring& key, const std::wstring& val) {
+        if (key.empty()) return;
+        for (auto& kv : vars) {
+            if (_wcsicmp(kv.first.c_str(), key.c_str()) == 0) {
+                kv.second = val;
+                return;
+            }
+        }
+        vars.emplace_back(key, val);
+    };
+
+    LPWCH rawEnv = GetEnvironmentStringsW();
+    if (rawEnv) {
+        for (LPWCH p = rawEnv; *p != L'\0'; ) {
+            std::wstring entry(p);
+            size_t len = entry.size() + 1;
+            p += len;
+            size_t eq = entry.find(L'=');
+            if (eq == std::wstring::npos || eq == 0) continue;
+            std::wstring k = entry.substr(0, eq);
+            std::wstring v = entry.substr(eq + 1);
+            if (_wcsicmp(k.c_str(), L"NODE_OPTIONS") == 0 ||
+                _wcsicmp(k.c_str(), L"VSCODE_PID") == 0 ||
+                _wcsicmp(k.c_str(), L"ELECTRON_RUN_AS_NODE") == 0) {
+                continue;
+            }
+            vars.emplace_back(std::move(k), std::move(v));
+        }
+        FreeEnvironmentStringsW(rawEnv);
+    }
+
+    setVar(L"TERM", L"xterm-256color");
+    setVar(L"COLORTERM", L"truecolor");
+
+    // Parse workspace .env (capped at 256 KB & 200 entries)
+    if (!m_envWorkspaceDir.empty()) {
+        std::filesystem::path envPath = std::filesystem::path(StripExtendedPathPrefix(m_envWorkspaceDir)) / L".env";
+        std::error_code ec;
+        if (std::filesystem::exists(envPath, ec) && std::filesystem::is_regular_file(envPath, ec)) {
+            uintmax_t sz = std::filesystem::file_size(envPath, ec);
+            if (!ec && sz > 0 && sz <= 262144) {
+                std::ifstream ifs(envPath, std::ios::binary);
+                if (ifs.is_open()) {
+                    std::string line;
+                    int added = 0;
+                    while (std::getline(ifs, line) && added < 200) {
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        size_t s = line.find_first_not_of(" \t");
+                        if (s == std::string::npos || line[s] == '#') continue;
+                        if (line.compare(s, 7, "export ") == 0) {
+                            s += 7;
+                            s = line.find_first_not_of(" \t", s);
+                            if (s == std::string::npos) continue;
+                        }
+                        size_t eq = line.find('=', s);
+                        if (eq == std::string::npos || eq == s) continue;
+                        std::string k = line.substr(s, eq - s);
+                        while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+                        std::string v = line.substr(eq + 1);
+                        size_t vs = v.find_first_not_of(" \t");
+                        v = (vs == std::string::npos) ? "" : v.substr(vs);
+                        while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.pop_back();
+                        if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\''))) {
+                            v = v.substr(1, v.size() - 2);
+                        }
+                        auto toW = [](const std::string& u) -> std::wstring {
+                            if (u.empty()) return L"";
+                            int wn = MultiByteToWideChar(CP_UTF8, 0, u.data(), static_cast<int>(u.size()), nullptr, 0);
+                            if (wn <= 0) return L"";
+                            std::wstring w(wn, L'\0');
+                            MultiByteToWideChar(CP_UTF8, 0, u.data(), static_cast<int>(u.size()), w.data(), wn);
+                            return w;
+                        };
+                        setVar(toW(k), toW(v));
+                        added++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!m_envHttpProxy.empty()) {
+        setVar(L"HTTP_PROXY", m_envHttpProxy);
+        setVar(L"http_proxy", m_envHttpProxy);
+    }
+    if (!m_envHttpsProxy.empty()) {
+        setVar(L"HTTPS_PROXY", m_envHttpsProxy);
+        setVar(L"https_proxy", m_envHttpsProxy);
+    }
+
+    std::vector<wchar_t> block;
+    block.reserve(16384);
+    for (const auto& kv : vars) {
+        std::wstring entry = kv.first + L"=" + kv.second;
+        block.insert(block.end(), entry.begin(), entry.end());
+        block.push_back(L'\0');
+    }
+    block.push_back(L'\0');
+    return block;
+}
+
 void TerminalPanel::NewTab(TerminalShellType shell, const std::wstring& workingDir) {
     auto tab = std::make_unique<TerminalTab>();
     tab->shellType = shell;
     tab->workingDir = workingDir.empty() ? m_defaultWorkingDir : workingDir;
+    tab->maxScrollbackLines = m_scrollbackLines;
 
     size_t shellCount = 0;
     for (const auto& t : m_tabs) {
@@ -1631,6 +2007,7 @@ void TerminalPanel::SplitActiveTab(std::optional<TerminalShellType> shell) {
          splitShell == TerminalShellType::Python)) {
         split->isConPty = true;
     }
+    split->maxScrollbackLines = m_scrollbackLines;
     split->onOutput = m_outputCallback;
     split->onExecutionError = m_onExecutionError;
     split->onClearRuntimeErrors = m_onClearRuntimeErrors;
@@ -1690,6 +2067,20 @@ void TerminalPanel::SetWorkingDir(const std::wstring& dir) {
 }
 
 void TerminalPanel::StartShellProcess(TerminalTab& tab) {
+    if (tab.shellType == TerminalShellType::DebugConsole &&
+        (tab.isIdleDebugConsole || tab.debugBackend == DebugBackend::None)) {
+        tab.isAlive = false;
+        return;
+    }
+    if (tab.shellType == TerminalShellType::LiveServer) {
+        tab.isAlive = true;
+        return;
+    }
+    if (tab.shellType == TerminalShellType::Custom && tab.customCommand.empty()) {
+        tab.isAlive = false;
+        return;
+    }
+
     HANDLE hStdoutRead = NULL, hStdoutWrite = NULL;
     HANDLE hStderrRead = NULL, hStderrWrite = NULL;
     HANDLE hStdinRead = NULL, hStdinWrite = NULL;
@@ -1737,13 +2128,6 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     } else if (tab.shellType == TerminalShellType::Python) {
         cmd = L"python.exe -i";
     } else if (tab.shellType == TerminalShellType::DebugConsole) {
-        if (tab.isIdleDebugConsole || tab.debugBackend == DebugBackend::None) {
-            CloseHandle(hStdoutWrite);
-            CloseHandle(hStderrWrite);
-            CloseHandle(hStdinRead);
-            tab.isAlive = false;
-            return;
-        }
         if (tab.debugBackend == DebugBackend::Pdb) {
             std::wstring pyExe = m_debugPythonExe.empty() ? L"python.exe" : m_debugPythonExe;
             if (pyExe.find(L' ') != std::wstring::npos && pyExe.front() != L'"') {
@@ -1763,21 +2147,8 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
             std::wstring extraFlags = (ext == L".ts") ? L" --experimental-strip-types" : L"";
             cmd = nodeExe + extraFlags + L" inspect --port=0 \"" + m_debugTargetFile + L"\"";
         }
-    } else if (tab.shellType == TerminalShellType::LiveServer) {
-        CloseHandle(hStdoutWrite);
-        CloseHandle(hStderrWrite);
-        CloseHandle(hStdinRead);
-        tab.isAlive = true;
-        return;
     } else if (tab.shellType == TerminalShellType::Custom) {
         cmd = tab.customCommand;
-        if (cmd.empty()) {
-            CloseHandle(hStdoutWrite);
-            CloseHandle(hStderrWrite);
-            CloseHandle(hStdinRead);
-            tab.isAlive = false;
-            return;
-        }
     }
 
     std::wstring rawWorkDir = tab.workingDir.empty() ? m_defaultWorkingDir : tab.workingDir;
@@ -1790,7 +2161,7 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
         validWorkDir.clear();
     }
     LPCWSTR workDir = validWorkDir.empty() ? nullptr : validWorkDir.c_str();
-    std::vector<wchar_t> cleanEnvBlock = BuildCleanTerminalEnvBlock();
+    std::vector<wchar_t> cleanEnvBlock = BuildTabEnvBlock();
 
     // ConPTY interactive console launch for SSH / WSL / Docker sessions (handles password prompts & interactive shells)
     if (tab.isConPty) {
@@ -2668,12 +3039,24 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
                 pRT->FillRoundedRectangle(rrcTab, theme.brushItemHover.Get());
             }
 
-            // Tab Title Text
+            // Tab Title Text (or inline rename input)
             D2D1_RECT_F rcTabText = D2D1::RectF(curX + config.ScaleF(8.0f), tabY, curX + tabW - (tab->canClose ? config.ScaleF(20.0f) : config.ScaleF(8.0f)), tabY + tabH);
-            ID2D1Brush* textBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
-            pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
-                          theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
-                          rcTabText, textBrush);
+            if (static_cast<int>(i) == m_renamingTabIdx) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> renameBg;
+                pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.09f, 0.12f, 1.0f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &renameBg);
+                D2D1_RECT_F rcRename = D2D1::RectF(rcTabText.left - config.ScaleF(2.0f), tabY + config.ScaleF(2.0f), rcTabText.right, tabY + tabH - config.ScaleF(2.0f));
+                if (renameBg) pRT->FillRectangle(rcRename, renameBg.Get());
+                pRT->DrawRectangle(rcRename, theme.brushBrandAccent.Get(), 1.2f);
+                std::wstring disp = m_renameBuffer + L"|";
+                pRT->DrawText(disp.c_str(), static_cast<UINT32>(disp.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcTabText, theme.brushTextWhite.Get());
+            } else {
+                ID2D1Brush* textBrush = isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+                pRT->DrawText(tab->title.c_str(), static_cast<UINT32>(tab->title.length()),
+                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                              rcTabText, textBrush);
+            }
 
             // Close 'x' button on tab (un-Xable if !tab->canClose, e.g. "Git Logs")
             if (tab->canClose) {
@@ -3157,6 +3540,31 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         const auto& line = tab->lines[l];
         curX = bounds.left + padX;
 
+        // Render Find-in-Terminal highlights for line l (#41)
+        if (m_showFindBar && !m_findQuery.empty() && !m_findMatches.empty() && tab == GetActiveTab()) {
+            const int lInt = static_cast<int>(l);
+            for (size_t mi = 0; mi < m_findMatches.size(); ++mi) {
+                const auto& m = m_findMatches[mi];
+                if (m.line != lInt) continue;
+                float mx = bounds.left + padX + static_cast<float>(m.col) * charW;
+                float mw = static_cast<float>(m.len) * charW;
+                D2D1_RECT_F rcM = D2D1::RectF(mx, curY + 1.0f, mx + mw, curY + lineH - 1.0f);
+                bool isCurrent = (static_cast<int>(mi) == m_findMatchIdx);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> findBr;
+                pRT->CreateSolidColorBrush(
+                    isCurrent ? D2D1::ColorF(0.95f, 0.56f, 0.12f, 0.48f)
+                              : D2D1::ColorF(0.95f, 0.80f, 0.25f, 0.24f), &findBr);
+                if (findBr) {
+                    pRT->FillRectangle(rcM, findBr.Get());
+                    if (isCurrent) {
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rimBr;
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.72f, 0.22f, 0.95f), &rimBr);
+                        if (rimBr) pRT->DrawRectangle(rcM, rimBr.Get(), 1.0f);
+                    }
+                }
+            }
+        }
+
         // Render selection highlight background for line l
         if (tab->selection.hasSelection()) {
             TerminalPos selStart = tab->selection.getStart();
@@ -3273,6 +3681,26 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
                                   pmBrush.Get(), 1.3f);
                 }
             }
+        } else if (!line.rawText.empty() && line.rawText.find(L'.') != std::wstring::npos &&
+                   (line.rawText.find(L':') != std::wstring::npos || line.rawText.find(L'(') != std::wstring::npos)) {
+            std::wstring arbFile;
+            int arbLine1 = 1, arbCol1 = 1;
+            size_t arbStart = 0, arbLen = 0;
+            if (ParseArbitraryFileLineCol(line.rawText, tab->workingDir, arbFile, arbLine1, arbCol1, arbStart, arbLen) && arbLen > 0) {
+                float pX = bounds.left + padX + static_cast<float>(arbStart) * charW;
+                float pW = static_cast<float>(arbLen) * charW;
+                D2D1_RECT_F pRc = D2D1::RectF(pX, curY, pX + pW, curY + lineH);
+                m_visibleProblemLinks.push_back({ arbFile, arbLine1, arbCol1, pRc });
+                if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> arbBrush;
+                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.76f, 0.98f, 0.95f), &arbBrush);
+                    if (arbBrush) {
+                        pRT->DrawLine(D2D1::Point2F(pX, curY + lineH - 2.0f),
+                                      D2D1::Point2F(pX + pW, curY + lineH - 2.0f),
+                                      arbBrush.Get(), 1.2f);
+                    }
+                }
+            }
         }
 
         // Render typed command line in real-time
@@ -3378,6 +3806,83 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
         }
     }
 
+    // Floating Find-in-Terminal Bar (Ctrl+F) (#41)
+    if (m_showFindBar && tab == GetActiveTab()) {
+        float barW = (std::min)(config.ScaleF(300.0f), (std::max)(config.ScaleF(180.0f), (bounds.right - bounds.left) - config.ScaleF(16.0f)));
+        float barH = config.ScaleF(28.0f);
+        float barX = bounds.right - barW - config.ScaleF(10.0f);
+        float barY = bounds.top + config.ScaleF(6.0f);
+        m_findBarBounds = D2D1::RectF(barX, barY, barX + barW, barY + barH);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fBg;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.11f, 0.12f, 0.15f, 0.96f)
+                                                      : D2D1::ColorF(0.97f, 0.98f, 1.0f, 0.96f), &fBg);
+        if (fBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_findBarBounds, 4.0f, 4.0f), fBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_findBarBounds, 4.0f, 4.0f),
+                                  m_findFocused ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 1.1f);
+
+        float btnW = config.ScaleF(20.0f);
+        float btnH = config.ScaleF(20.0f);
+        float btnY = barY + config.ScaleF(4.0f);
+        float bx = m_findBarBounds.right - config.ScaleF(4.0f) - btnW;
+        m_findCloseBounds = D2D1::RectF(bx, btnY, bx + btnW, btnY + btnH);
+        bx -= (btnW + config.ScaleF(2.0f));
+        m_findNextBounds = D2D1::RectF(bx, btnY, bx + btnW, btnY + btnH);
+        bx -= (btnW + config.ScaleF(2.0f));
+        m_findPrevBounds = D2D1::RectF(bx, btnY, bx + btnW, btnY + btnH);
+        bx -= (btnW + config.ScaleF(2.0f));
+        m_findCaseBounds = D2D1::RectF(bx, btnY, bx + btnW, btnY + btnH);
+
+        float cntW = config.ScaleF(46.0f);
+        D2D1_RECT_F rcCnt = D2D1::RectF(bx - cntW - config.ScaleF(2.0f), btnY, bx - config.ScaleF(2.0f), btnY + btnH);
+        m_findInputBounds = D2D1::RectF(barX + config.ScaleF(6.0f), btnY, rcCnt.left - config.ScaleF(4.0f), btnY + btnH);
+
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> inBg;
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.07f, 0.08f, 0.10f, 1.0f)
+                                                      : D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &inBg);
+        if (inBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_findInputBounds, 2.5f, 2.5f), inBg.Get());
+
+        IDWriteTextFormat* fSmall = theme.fontHint.Get() ? theme.fontHint.Get() : termFmt;
+        if (m_findQuery.empty()) {
+            pRT->DrawText(L"Find...", 7, fSmall,
+                          D2D1::RectF(m_findInputBounds.left + 4.0f, m_findInputBounds.top + 2.0f,
+                                      m_findInputBounds.right - 2.0f, m_findInputBounds.bottom),
+                          theme.brushTextMuted.Get());
+        } else {
+            pRT->DrawText(m_findQuery.c_str(), static_cast<UINT32>(m_findQuery.length()), fSmall,
+                          D2D1::RectF(m_findInputBounds.left + 4.0f, m_findInputBounds.top + 2.0f,
+                                      m_findInputBounds.right - 2.0f, m_findInputBounds.bottom),
+                          theme.brushTextWhite.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+
+        std::wstring cntTxt = m_findMatches.empty()
+            ? (m_findQuery.empty() ? L"" : L"0/0")
+            : (std::to_wstring(m_findMatchIdx + 1) + L"/" + std::to_wstring(m_findMatches.size()));
+        if (!cntTxt.empty()) {
+            pRT->DrawText(cntTxt.c_str(), static_cast<UINT32>(cntTxt.length()), fSmall, rcCnt, theme.brushTextSecondary.Get());
+        }
+
+        auto drawFindBtn = [&](const D2D1_RECT_F& rc, const wchar_t* lbl, bool active) {
+            if (active) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rc, 2.5f, 2.5f), theme.brushBrandAccent.Get());
+            }
+            pRT->DrawText(lbl, static_cast<UINT32>(wcslen(lbl)), fSmall,
+                          D2D1::RectF(rc.left + 3.0f, rc.top + 2.0f, rc.right, rc.bottom),
+                          active ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+        };
+        drawFindBtn(m_findCaseBounds, L"Aa", m_findCaseSensitive);
+        drawFindBtn(m_findPrevBounds, L"▲", false);
+        drawFindBtn(m_findNextBounds, L"▼", false);
+        drawFindBtn(m_findCloseBounds, L"✕", false);
+    } else if (!m_showFindBar) {
+        m_findBarBounds = {};
+        m_findInputBounds = {};
+        m_findPrevBounds = {};
+        m_findNextBounds = {};
+        m_findCaseBounds = {};
+        m_findCloseBounds = {};
+    }
+
     pRT->PopAxisAlignedClip();
 
     if (showInspector) {
@@ -3391,11 +3896,11 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
 
 void TerminalPanel::RenderShellMenu(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
     if (m_availableProfiles.empty()) {
-        m_availableProfiles = DetectAvailableShells();
+        RebuildAvailableProfiles();
     }
 
     float itemH = config.ScaleF(24.0f);
-    float menuW = config.ScaleF(190.0f);
+    float menuW = config.ScaleF(210.0f);
     float menuH = config.ScaleF(static_cast<float>(m_availableProfiles.size() * 24 + 14));
     float menuX = m_shellDropdownBtnBounds.left;
     float menuY = m_shellDropdownBtnBounds.bottom + config.ScaleF(2.0f);
@@ -4537,7 +5042,7 @@ void TerminalPanel::OpenGitHubLoginTab(const std::wstring& workingDir) {
             std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
             cmdBuf.push_back(L'\0');
 
-            std::vector<wchar_t> cleanEnvBlock = BuildCleanTerminalEnvBlock();
+            std::vector<wchar_t> cleanEnvBlock = BuildTabEnvBlock();
             std::wstring cleanWorkDir = StripExtendedPathPrefix(tab->workingDir);
             std::error_code dirEc;
             if (!cleanWorkDir.empty() && !std::filesystem::exists(cleanWorkDir, dirEc)) {
@@ -4953,7 +5458,7 @@ DebugBackend TerminalPanel::SelectDebugBackendForFile(const std::wstring& filePa
     if (ext == L".py" || ext == L".pyw") {
         return DebugBackend::Pdb;
     }
-    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts") {
+    if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".tsx" || ext == L".jsx") {
         return DebugBackend::Node;
     }
     return DebugBackend::None;
@@ -5388,8 +5893,10 @@ void TerminalPanel::StartDapDebugSession(const phide::dev::LaunchConfig& cfg,
                         tl.spans.push_back({ ln, col, false });
                         rawTab->lines.push_back(std::move(tl));
                     }
-                    if (rawTab->lines.size() > 2000) {
-                        rawTab->lines.erase(rawTab->lines.begin(), rawTab->lines.begin() + 500);
+                    const size_t maxDapLines = static_cast<size_t>((std::clamp)(rawTab->maxScrollbackLines, 200, 20000));
+                    if (rawTab->lines.size() > maxDapLines) {
+                        size_t trimCnt = rawTab->lines.size() - maxDapLines;
+                        rawTab->lines.erase(rawTab->lines.begin(), rawTab->lines.begin() + trimCnt);
                     }
                     break;
                 }
@@ -5470,7 +5977,7 @@ void TerminalPanel::TriggerDebugAction(DebugAction action) {
     }
     if (action == DebugAction::Restart) {
         if (m_onDebugResumed) m_onDebugResumed();
-        if (!m_debugTargetFile.empty() && m_debugBackend != DebugBackend::None) {
+        if (!m_debugTargetFile.empty()) {
             StartDebugSession(m_debugTargetFile, m_debugWorkingDir, m_pendingBreakpoints, m_debugPythonExe);
             return;
         }
@@ -5560,6 +6067,26 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
     auto inRect = [](POINT p, const D2D1_RECT_F& rc) {
         return p.x >= rc.left && p.x <= rc.right && p.y >= rc.top && p.y <= rc.bottom;
     };
+
+    // Check Find-in-Terminal Bar Clicks (#41)
+    if (m_showFindBar && m_findBarBounds.right > m_findBarBounds.left && inRect(pt, m_findBarBounds)) {
+        m_findFocused = inRect(pt, m_findInputBounds);
+        if (inRect(pt, m_findPrevBounds)) {
+            StepFindMatch(-1);
+        } else if (inRect(pt, m_findNextBounds)) {
+            StepFindMatch(1);
+        } else if (inRect(pt, m_findCaseBounds)) {
+            m_findCaseSensitive = !m_findCaseSensitive;
+            SetFindQuery(m_findQuery);
+        } else if (inRect(pt, m_findCloseBounds)) {
+            CloseFindBar();
+        }
+        return true;
+    }
+    if (m_renamingTabIdx >= 0 && m_renamingTabIdx < static_cast<int>(m_tabs.size()) &&
+        m_tabs[m_renamingTabIdx] && !inRect(pt, m_tabs[m_renamingTabIdx]->tabBounds)) {
+        CommitTabRename();
+    }
 
     // Check Ctrl + Click on URL links or Compiler/Linter Problem Matcher links (#30)
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
@@ -5723,7 +6250,7 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
             float itemH = 24.0f;
             int idx = static_cast<int>(relY / itemH);
             if (idx >= 0 && idx < static_cast<int>(m_availableProfiles.size())) {
-                NewTab(m_availableProfiles[idx].type, workingDir);
+                NewTabFromProfileIndex(static_cast<size_t>(idx), workingDir);
             }
             m_showShellMenu = false;
             return true;
@@ -5967,7 +6494,20 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
             return true;
         }
         if (inRect(pt, m_tabs[i]->tabBounds)) {
-            m_activeTabIdx = static_cast<int>(i);
+            ULONGLONG nowTick = GetTickCount64();
+            if (m_lastClickedTabIdx == static_cast<int>(i) &&
+                m_lastTabClickTick != 0 &&
+                (nowTick - m_lastTabClickTick) <= 450 &&
+                m_tabs[i]->canClose) {
+                StartTabRename(static_cast<int>(i));
+                m_lastTabClickTick = 0;
+                m_lastClickedTabIdx = -1;
+            } else {
+                m_activeTabIdx = static_cast<int>(i);
+                m_lastClickedTabIdx = static_cast<int>(i);
+                m_lastTabClickTick = nowTick;
+                if (m_showFindBar) SetFindQuery(m_findQuery);
+            }
             return true;
         }
     }
@@ -6179,8 +6719,15 @@ void TerminalPanel::OnMouseUp(POINT pt) {
     if (m_isSelecting) {
         m_isSelecting = false;
         TerminalTab* tab = GetActiveTab();
-        if (tab && tab->selection.start == tab->selection.end) {
-            tab->selection.clear();
+        if (tab) {
+            if (tab->selection.start == tab->selection.end) {
+                tab->selection.clear();
+            } else if (m_copyOnSelection && tab->selection.hasSelection()) {
+                std::wstring sel = tab->GetSelectedText();
+                if (!sel.empty()) {
+                    CopyTextToClipboardHelper(sel);
+                }
+            }
         }
     }
 }
@@ -6211,6 +6758,34 @@ bool TerminalPanel::OnMouseWheel(POINT pt, short delta) {
 
 bool TerminalPanel::OnChar(wchar_t ch) {
     if (!m_isOpen) return false;
+    if (m_renamingTabIdx >= 0) {
+        if (ch == L'\r' || ch == L'\n') {
+            CommitTabRename();
+        } else if (ch == L'\b') {
+            if (!m_renameBuffer.empty()) m_renameBuffer.pop_back();
+        } else if (ch == 27) {
+            CancelTabRename();
+        } else if (ch >= 32 && m_renameBuffer.size() < 48) {
+            m_renameBuffer.push_back(ch);
+        }
+        return true;
+    }
+    if (m_showFindBar && m_findFocused) {
+        if (ch == L'\r' || ch == L'\n') {
+            StepFindMatch(1);
+        } else if (ch == L'\b') {
+            if (!m_findQuery.empty()) {
+                m_findQuery.pop_back();
+                SetFindQuery(m_findQuery);
+            }
+        } else if (ch == 27) {
+            CloseFindBar();
+        } else if (ch >= 32 && ch != 127 && m_findQuery.size() < 256) {
+            m_findQuery.push_back(ch);
+            SetFindQuery(m_findQuery);
+        }
+        return true;
+    }
     TerminalTab* tab = GetActiveTab();
     if (!tab) return false;
 
@@ -6449,6 +7024,35 @@ bool TerminalPanel::OnChar(wchar_t ch) {
 
 bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     if (!m_isOpen) return false;
+    if (m_renamingTabIdx >= 0) {
+        if (vk == VK_RETURN) {
+            CommitTabRename();
+            return true;
+        }
+        if (vk == VK_ESCAPE) {
+            CancelTabRename();
+            return true;
+        }
+        return true;
+    }
+    if (isCtrl && !isShift && (vk == 'F' || vk == 'f')) {
+        OpenFindBar();
+        if (!m_findQuery.empty()) SetFindQuery(m_findQuery);
+        return true;
+    }
+    if (m_showFindBar) {
+        if (vk == VK_ESCAPE) {
+            CloseFindBar();
+            return true;
+        }
+        if (vk == VK_F3 || (m_findFocused && vk == VK_RETURN)) {
+            StepFindMatch(isShift ? -1 : 1);
+            return true;
+        }
+        if (m_findFocused && vk == VK_BACK) {
+            return true;
+        }
+    }
     if (m_debugWatchInputFocused) {
         if (vk == VK_ESCAPE) {
             m_debugWatchInputFocused = false;
@@ -6589,15 +7193,51 @@ bool TerminalPanel::OnKeyDown(UINT vk, bool isCtrl, bool isShift) {
     if (tab->isConPty && tab->isAlive.load()) {
         if (vk == VK_BACK || vk == VK_RETURN || vk == VK_TAB) return true;
         if (vk == VK_DELETE) { tab->SendInput("\x1b[3~"); return true; }
+        if (vk == VK_INSERT) { tab->SendInput("\x1b[2~"); return true; }
         if (vk == VK_LEFT)   { tab->SendInput("\x1b[D");  return true; }
         if (vk == VK_RIGHT)  { tab->SendInput("\x1b[C");  return true; }
         if (vk == VK_HOME)   { tab->SendInput("\x1b[H");  return true; }
         if (vk == VK_END)    { tab->SendInput("\x1b[F");  return true; }
         if (vk == VK_UP)     { tab->SendInput("\x1b[A");  return true; }
         if (vk == VK_DOWN)   { tab->SendInput("\x1b[B");  return true; }
-        if (isCtrl && !isShift && (vk == 'D' || vk == 'd')) { tab->SendInput("\x04"); return true; }
-        if (isCtrl && !isShift && (vk == 'L' || vk == 'l')) { tab->SendInput("\x0c"); return true; }
-        if (isCtrl) return false;
+        if (vk == VK_PRIOR) {
+            if (isShift) {
+                tab->scrollOffsetLines += 10;
+                return true;
+            }
+            tab->SendInput("\x1b[5~");
+            return true;
+        }
+        if (vk == VK_NEXT) {
+            if (isShift) {
+                tab->scrollOffsetLines = (std::max)(0, tab->scrollOffsetLines - 10);
+                return true;
+            }
+            tab->SendInput("\x1b[6~");
+            return true;
+        }
+        if (vk >= VK_F1 && vk <= VK_F12) {
+            static const char* kFnSeq[12] = {
+                "\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS",
+                "\x1b[15~", "\x1b[17~", "\x1b[18~", "\x1b[19~",
+                "\x1b[20~", "\x1b[21~", "\x1b[23~", "\x1b[24~"
+            };
+            tab->SendInput(kFnSeq[vk - VK_F1]);
+            return true;
+        }
+        if (isCtrl && !isShift) {
+            if (vk == 'A' || vk == 'a') { tab->SendInput("\x01"); return true; }
+            if (vk == 'D' || vk == 'd') { tab->SendInput("\x04"); return true; }
+            if (vk == 'E' || vk == 'e') { tab->SendInput("\x05"); return true; }
+            if (vk == 'K' || vk == 'k') { tab->SendInput("\x0b"); return true; }
+            if (vk == 'L' || vk == 'l') { tab->SendInput("\x0c"); return true; }
+            if (vk == 'R' || vk == 'r') { tab->SendInput("\x12"); return true; }
+            if (vk == 'U' || vk == 'u') { tab->SendInput("\x15"); return true; }
+            if (vk == 'W' || vk == 'w') { tab->SendInput("\x17"); return true; }
+            if (vk == 'Y' || vk == 'y') { tab->SendInput("\x19"); return true; }
+            if (vk == 'Z' || vk == 'z') { tab->SendInput("\x1a"); return true; }
+            return false;
+        }
         return false;
     }
 

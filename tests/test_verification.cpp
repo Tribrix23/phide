@@ -69,6 +69,9 @@
 #include "phide/plugin/PluginManager.hpp"
 #include "phide/dev/DapClient.hpp"
 #include "phide/dev/DevWorkflowEngines.hpp"
+#include "phide/app/LocalTimeline.hpp"
+#include "phide/ui/ApiTesterView.hpp"
+#include "phide/ui/RemoteWindowModal.hpp"
 
 using Microsoft::WRL::ComPtr;
 
@@ -428,6 +431,30 @@ int main(int argc, char* argv[]) {
     }
     if (targetTest == 147) {
         goto run_test_147;
+    }
+    if (targetTest == 148) {
+        goto run_test_148;
+    }
+    if (targetTest == 149) {
+        goto run_test_149;
+    }
+    if (targetTest == 150) {
+        goto run_test_150;
+    }
+    if (targetTest == 151) {
+        goto run_test_151;
+    }
+    if (targetTest == 152) {
+        goto run_test_152;
+    }
+    if (targetTest == 153) {
+        goto run_test_153;
+    }
+    if (targetTest == 154) {
+        goto run_test_154;
+    }
+    if (targetTest == 155) {
+        goto run_test_155;
     }
 
     if (targetTest == 66) {
@@ -23523,6 +23550,418 @@ run_test_147:
         std::cout << "  Passed: All [TEST 147] Advanced Git (#40) checks passed!" << std::endl;
         if (targetTest == 147) {
             std::cout << "Target test 147 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_148:
+    // [TEST 148] Section 6 #41: Terminal Scrollback, CopyOnSelection, Custom Profiles, Find, Arbitrary Links & Env Injection
+    if (targetTest == 0 || targetTest == 148) {
+        std::cout << "\n[TEST 148] Testing #41 Terminal profiles, scrollback, find bar, linkification & .env/proxy injection..." << std::endl;
+
+        phide::ui::TerminalPanel term;
+        assert(term.GetScrollbackLines() == 5000);
+        term.SetScrollbackLines(8000);
+        assert(term.GetScrollbackLines() == 8000);
+        term.SetScrollbackLines(50);
+        assert(term.GetScrollbackLines() == 200);
+        term.SetScrollbackLines(99999);
+        assert(term.GetScrollbackLines() == 20000);
+
+        term.SetCopyOnSelection(true);
+        assert(term.GetCopyOnSelection() == true);
+
+        term.RebuildAvailableProfiles();
+        const size_t baseProfiles = term.GetAvailableProfiles().size();
+        phide::ui::TerminalProfileDef customProf;
+        customProf.name = L"Custom Zsh";
+        customProf.type = phide::ui::TerminalShellType::Custom;
+        customProf.exePath = L"zsh.exe";
+        customProf.args = L"-l";
+        customProf.isAvailable = true;
+        term.AddCustomProfile(customProf);
+        assert(term.GetAvailableProfiles().size() == baseProfiles + 1);
+
+        term.OpenFindBar();
+        assert(term.IsFindBarOpen());
+        term.SetFindQuery(L"panic");
+        term.CloseFindBar();
+        assert(!term.IsFindBarOpen());
+
+        std::wstring arbFile;
+        int arbLine = 0, arbCol = 0;
+        size_t arbStart = 0, arbLen = 0;
+        bool parsedLink = phide::ui::TerminalPanel::ParseArbitraryFileLineCol(
+            L"FAIL at src/app/main.cpp:42:9 while checking", L"", arbFile, arbLine, arbCol, arbStart, arbLen);
+        assert(parsedLink);
+        assert(arbFile == L"src\\app\\main.cpp");
+        assert(arbLine == 42);
+        assert(arbCol == 9);
+        assert(arbLen > 0);
+
+        std::error_code ec148;
+        std::filesystem::path ws148 = std::filesystem::temp_directory_path(ec148) / L"phide_test_148_env";
+        std::filesystem::remove_all(ws148, ec148);
+        std::filesystem::create_directories(ws148, ec148);
+        {
+            std::ofstream envOut(ws148 / L".env", std::ios::trunc);
+            envOut << "PHIDE_TEST_ENV_KEY=alpha_123\n";
+        }
+        term.SetWorkspaceEnvironment(ws148.wstring(), L"http://127.0.0.1:8888", L"https://127.0.0.1:8443");
+        auto block = term.BuildTabEnvBlock();
+        bool foundDotEnv = false;
+        bool foundProxy = false;
+        for (size_t idx = 0; idx < block.size() && block[idx] != L'\0'; ) {
+            std::wstring kv(&block[idx]);
+            if (kv == L"PHIDE_TEST_ENV_KEY=alpha_123") foundDotEnv = true;
+            if (kv == L"HTTP_PROXY=http://127.0.0.1:8888") foundProxy = true;
+            idx += kv.size() + 1;
+        }
+        assert(foundDotEnv);
+        assert(foundProxy);
+        std::filesystem::remove_all(ws148, ec148);
+
+        std::cout << "  Passed: All [TEST 148] Terminal (#41) checks passed!" << std::endl;
+        if (targetTest == 148) {
+            std::cout << "Target test 148 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_149:
+    // [TEST 149] Section 6 #42: API Tester Environments, Collections, .http / OpenAPI / Postman, Cookie Jar
+    if (targetTest == 0 || targetTest == 149) {
+        std::cout << "\n[TEST 149] Testing #42 API Tester Env Vars, Cookie Jar, .http/Postman/OpenAPI..." << std::endl;
+
+        using namespace phide::ui;
+        ApiTesterView api;
+        ApiEnvEntry staging;
+        staging.name = L"Staging";
+        ApiKeyValueItem kvBase;
+        kvBase.enabled = true;
+        kvBase.key = L"baseUrl";
+        kvBase.value = L"https://api.example.com";
+        staging.vars.push_back(kvBase);
+        api.SetEnvironments({ staging }, 0);
+        assert(api.ResolveEnvTemplate(L"{{baseUrl}}/v1/users") == L"https://api.example.com/v1/users");
+
+        api.ClearCookieJar();
+        api.StoreCookieFromSetCookieHeader(L"api.example.com", L"sid=xyz123; Path=/v1; HttpOnly");
+        assert(api.BuildCookieHeaderForHost(L"api.example.com", L"/v1/items").find(L"sid=xyz123") != std::wstring::npos);
+        assert(api.BuildCookieHeaderForHost(L"other.org", L"/v1/items").empty());
+        api.ClearCookieJar();
+        assert(api.GetCookieJar().empty());
+
+        auto dotParsed = ApiTesterView::ParseDotHttp(
+            L"### Get Users\nGET https://example.com/users\nAuthorization: Bearer tok\n");
+        assert(!dotParsed.empty());
+        assert(dotParsed[0].method == HttpMethod::Get);
+        assert(dotParsed[0].url == L"https://example.com/users");
+        std::wstring dotExported = ApiTesterView::ExportDotHttp(dotParsed);
+        assert(dotExported.find(L"GET https://example.com/users") != std::wstring::npos);
+
+        std::string pmJson = ApiTesterView::ExportPostmanCollection(dotParsed);
+        std::vector<ApiRequestSession> pmImported;
+        assert(ApiTesterView::ImportPostmanCollection(pmJson, pmImported));
+        assert(!pmImported.empty());
+        assert(pmImported[0].url == L"https://example.com/users");
+
+        const std::string oaJson =
+            "{\"openapi\":\"3.0.0\",\"servers\":[{\"url\":\"https://api.test\"}],"
+            "\"paths\":{\"/health\":{\"get\":{\"summary\":\"Health check\"}}}}";
+        std::vector<ApiRequestSession> oaImported;
+        assert(ApiTesterView::ImportOpenApiSpec(oaJson, oaImported));
+        assert(!oaImported.empty());
+        assert(oaImported[0].url == L"https://api.test/health");
+
+        api.SaveCurrentRequestToCollection(L"SmokeTests");
+        assert(!api.GetCollections().empty());
+
+        std::cout << "  Passed: All [TEST 149] API Tester (#42) checks passed!" << std::endl;
+        if (targetTest == 149) {
+            std::cout << "Target test 149 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_150:
+    // [TEST 150] Section 6 #43: LiveServer Self-Signed TLS Certificate Generation & Nginx Reverse-Proxy Presets
+    if (targetTest == 0 || targetTest == 150) {
+        std::cout << "\n[TEST 150] Testing #43 LiveServer self-signed TLS certs & Nginx reverse-proxy presets..." << std::endl;
+
+        using namespace phide::server;
+        std::error_code ec150;
+        std::filesystem::path certDir = std::filesystem::temp_directory_path(ec150) / L"phide_test_150_certs";
+        std::filesystem::remove_all(certDir, ec150);
+
+        std::wstring pfxPath, certPemPath, keyPemPath, errMsg;
+        bool okCert = LiveServer::EnsureLocalDevCertificate(certDir.wstring(), pfxPath, certPemPath, keyPemPath, errMsg);
+        assert(okCert);
+        assert(std::filesystem::exists(pfxPath, ec150) && std::filesystem::file_size(pfxPath, ec150) > 0);
+        assert(std::filesystem::exists(certPemPath, ec150) && std::filesystem::file_size(certPemPath, ec150) > 0);
+        assert(std::filesystem::exists(keyPemPath, ec150) && std::filesystem::file_size(keyPemPath, ec150) > 0);
+
+        // Cache hit on second call
+        std::wstring pfx2, crt2, key2, err2;
+        assert(LiveServer::EnsureLocalDevCertificate(certDir.wstring(), pfx2, crt2, key2, err2));
+        assert(pfx2 == pfxPath);
+
+        std::wstring proxyCfg = LiveServer::GenerateNginxVhostPreset(
+            L"HTTPS Reverse Proxy (SSL + proxy_pass)", L"localhost", 443, L"C:\\www\\app", 9000, 3000, certPemPath, keyPemPath);
+        assert(proxyCfg.find(L"proxy_pass http://127.0.0.1:3000") != std::wstring::npos);
+        assert(proxyCfg.find(L"ssl_certificate") != std::wstring::npos);
+
+        std::wstring nextProxy = LiveServer::GenerateNginxVhostPreset(
+            L"Reverse Proxy (Next.js / Vite)", L"app.local", 80, L"C:\\www\\app", 9000, 5173);
+        assert(nextProxy.find(L"proxy_pass http://127.0.0.1:5173") != std::wstring::npos);
+
+        LiveServer srv;
+        srv.SetTlsEnabled(true);
+        assert(srv.IsTlsEnabled() == true);
+
+        std::filesystem::remove_all(certDir, ec150);
+        std::cout << "  Passed: All [TEST 150] LiveServer TLS & Nginx (#43) checks passed!" << std::endl;
+        if (targetTest == 150) {
+            std::cout << "Target test 150 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_151:
+    // [TEST 151] Section 6 #44: SqlEngine Foreign Keys, Server-Side LIMIT/OFFSET Pagination & Safe Inline Update
+    if (targetTest == 0 || targetTest == 151) {
+        std::cout << "\n[TEST 151] Testing #44 SqlEngine FKs, LIMIT/OFFSET paging & inline update guards..." << std::endl;
+
+        using namespace phide::db;
+        SqlConnectionProfile sqliteProf;
+        sqliteProf.dialect = SqlDialect::SQLite;
+        sqliteProf.name = L"mem";
+
+        SqlTableInfo tbl;
+        tbl.name = L"orders";
+        tbl.foreignKeys.push_back({ L"user_id", L"users", L"id" });
+        assert(tbl.foreignKeys.size() == 1 && tbl.foreignKeys[0].refTable == L"users");
+
+        std::wstring pagedSql = SqlEngine::BuildPagedSelectQuery(sqliteProf, tbl, 2, 25);
+        assert(pagedSql.find(L"LIMIT 25 OFFSET 50") != std::wstring::npos);
+
+        SqlConnectionProfile mssqlProf;
+        mssqlProf.dialect = SqlDialect::SQLServer;
+        tbl.schemaName = L"dbo";
+        std::wstring mssqlPaged = SqlEngine::BuildPagedSelectQuery(mssqlProf, tbl, 1, 50);
+        assert(mssqlPaged.find(L"OFFSET 50 ROWS FETCH NEXT 50 ROWS ONLY") != std::wstring::npos);
+
+        // Guard: missing PK fails safely without mutating database
+        auto guardRes = SqlEngine::UpdateTableCell(sqliteProf, L"", L"orders", L"status", L"paid", {});
+        assert(!guardRes.success);
+
+        std::cout << "  Passed: All [TEST 151] SqlEngine (#44) checks passed!" << std::endl;
+        if (targetTest == 151) {
+            std::cout << "Target test 151 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_152:
+    // [TEST 152] Section 6 #45: Monitor PID Kill Guard & Package Manager Outdated/Upgrade Checks
+    if (targetTest == 0 || targetTest == 152) {
+        std::cout << "\n[TEST 152] Testing #45 Package Manager outdated parser/upgrade & Monitor kill guard..." << std::endl;
+
+        using namespace phide::ui;
+        PackageManagerView pm;
+        pm.SetActiveLanguage(RuntimeLanguage::Python);
+        pm.ParseOutdatedOutputJson(
+            RuntimeLanguage::Python,
+            "[{\"name\":\"requests\",\"version\":\"2.28.0\",\"latest_version\":\"2.32.0\"}]");
+
+        bool foundOutdated = false;
+        for (const auto& p : pm.GetActivePackageList()) {
+            if (_wcsicmp(p.name.c_str(), L"requests") == 0) {
+                assert(p.isOutdated);
+                assert(p.installedVersion == L"2.28.0");
+                assert(p.latestVersion == L"2.32.0");
+                foundOutdated = true;
+            }
+        }
+        assert(foundOutdated);
+
+        pm.MarkPackageUpgraded(L"requests");
+        for (const auto& p : pm.GetActivePackageList()) {
+            if (_wcsicmp(p.name.c_str(), L"requests") == 0) {
+                assert(!p.isOutdated);
+                assert(p.installedVersion == L"2.32.0");
+            }
+        }
+
+        // Guard: Monitor kill without valid external selection is safe no-op
+        auto pCanvas = std::make_unique<EditorCanvas>();
+        assert(!pCanvas->KillSelectedDevPortProcess());
+
+        std::cout << "  Passed: All [TEST 152] Monitor & PackageManager (#45) checks passed!" << std::endl;
+        if (targetTest == 152) {
+            std::cout << "Target test 152 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_153:
+    // [TEST 153] Section 6/7 #46-#47: Docker Lifecycle API Guards, Container Directory Guards & LSP Remote URI Mapping
+    if (targetTest == 0 || targetTest == 153) {
+        std::cout << "\n[TEST 153] Testing #46-#47 Docker lifecycle guards & bi-directional LSP remote URI mapping..." << std::endl;
+
+        using namespace phide::lsp;
+        using namespace phide::ui::remote;
+
+        // Guard: empty container ID / missing workspace returns cleanly without hanging
+        DevContainerEntry emptyCont;
+        std::wstring resolvedOut, errOut, statusOut;
+        auto emptyDir = FetchRemoteContainerDirectory(emptyCont, L"/workspace", resolvedOut, errOut);
+        assert(emptyDir.empty());
+        assert(!RunDockerComposeCommand(L"", L"ps", statusOut));
+        assert(!RunDockerContainerAction(L"", L"start", statusOut));
+        assert(FetchDockerContainerLogs(L"", 50).empty());
+
+        DockerImageEntry img{ L"sha256:abc", L"node", L"20-alpine", L"200MB" };
+        DockerVolumeEntry vol{ L"pgdata", L"local", L"/var/lib/docker/volumes/pgdata" };
+        assert(img.repository == L"node" && img.tag == L"20-alpine" && vol.name == L"pgdata");
+
+        // Bi-directional Local <-> Remote LSP URI mapping
+        const std::wstring localRoot = L"C:\\Users\\dev\\.phide\\remote_cache\\c_1234";
+        const std::wstring remoteRoot = L"/workspace";
+        const std::wstring localFile = L"C:\\Users\\dev\\.phide\\remote_cache\\c_1234\\src\\index.ts";
+
+        std::wstring remUri = LspClient::MapLocalPathToRemoteUri(localFile, localRoot, remoteRoot);
+        assert(remUri == L"file:///workspace/src/index.ts");
+
+        std::wstring mappedBack = LspClient::MapRemoteUriToLocalPath(remUri, localRoot, remoteRoot);
+        assert(mappedBack == localFile);
+
+        LspClient client;
+        client.SetRemotePathMapping(localRoot, remoteRoot);
+
+        std::cout << "  Passed: All [TEST 153] Docker & Remote LSP URI (#46-#47) checks passed!" << std::endl;
+        if (targetTest == 153) {
+            std::cout << "Target test 153 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_154:
+    // [TEST 154] Section 7 #48-#49: Hide Dotfiles, Out-of-Workspace LocalTimeline (Dedup/Filter/Caps/LRU) & Zero .phide/history
+    if (targetTest == 0 || targetTest == 154) {
+        std::cout << "\n[TEST 154] Testing #48-#49 Explorer dotfiles hiding & out-of-workspace LocalTimeline..." << std::endl;
+
+        std::error_code ec154;
+        std::filesystem::path base154 = std::filesystem::temp_directory_path(ec154) / L"phide_test_154_ws";
+        std::filesystem::path tlRoot = std::filesystem::temp_directory_path(ec154) / L"phide_test_154_tl";
+        std::filesystem::remove_all(base154, ec154);
+        std::filesystem::remove_all(tlRoot, ec154);
+        std::filesystem::create_directories(base154, ec154);
+        {
+            std::ofstream f1(base154 / L"main.cpp", std::ios::trunc);
+            f1 << "int main() { return 0; }\n";
+            std::ofstream f2(base154 / L".hiddenrc", std::ios::trunc);
+            f2 << "secret=1\n";
+        }
+
+        phide::ui::DrawerPanel drawer;
+        drawer.SetHideDotfiles(true);
+        drawer.OpenFolder(base154.wstring());
+        bool sawHidden = false, sawMain = false;
+        for (const auto& it : drawer.GetTreeItems()) {
+            if (it.label == L".hiddenrc") sawHidden = true;
+            if (it.label == L"main.cpp") sawMain = true;
+        }
+        assert(!sawHidden);
+        assert(sawMain);
+
+        // LocalTimeline security & storage bounds
+        using phide::app::LocalTimeline;
+        assert(LocalTimeline::IsSensitiveOrExcludedPath((base154 / L".env").wstring()));
+        assert(LocalTimeline::IsSensitiveOrExcludedPath((base154 / L".env.production").wstring()));
+        assert(LocalTimeline::IsSensitiveOrExcludedPath((base154 / L"server.pem").wstring()));
+        assert(LocalTimeline::IsSensitiveOrExcludedPath((base154 / L"node_modules" / L"a.js").wstring()));
+        assert(!LocalTimeline::CaptureSnapshot(base154.wstring(), (base154 / L".env").wstring(), "API_KEY=123", tlRoot.wstring()));
+
+        // Binary & >256 KB rejection
+        std::string binPayload("ABC\0DEF", 7);
+        assert(!LocalTimeline::CaptureSnapshot(base154.wstring(), (base154 / L"main.cpp").wstring(), binPayload, tlRoot.wstring()));
+        std::string hugePayload(LocalTimeline::kMaxFileBytes + 128, 'x');
+        assert(!LocalTimeline::CaptureSnapshot(base154.wstring(), (base154 / L"main.cpp").wstring(), hugePayload, tlRoot.wstring()));
+
+        // Dedup & <= 8 per-file cap
+        const std::wstring targetPath = (base154 / L"main.cpp").wstring();
+        assert(LocalTimeline::CaptureSnapshot(base154.wstring(), targetPath, "version-1", tlRoot.wstring()));
+        assert(!LocalTimeline::CaptureSnapshot(base154.wstring(), targetPath, "version-1", tlRoot.wstring())); // Dedup!
+        for (int s = 2; s <= 11; ++s) {
+            Sleep(20);
+            assert(LocalTimeline::CaptureSnapshot(base154.wstring(), targetPath, "version-" + std::to_string(s), tlRoot.wstring()));
+        }
+        auto snaps = LocalTimeline::ListSnapshots(base154.wstring(), targetPath, tlRoot.wstring());
+        assert(snaps.size() == LocalTimeline::kMaxSnapshotsPerFile);
+        std::string restoredUtf8;
+        assert(LocalTimeline::LoadSnapshotContent(snaps.front().snapshotPath, restoredUtf8));
+        assert(restoredUtf8 == "version-11");
+
+        // Zero .phide/history created inside workspace!
+        assert(!std::filesystem::exists(base154 / L".phide" / L"history", ec154));
+
+        // Global LRU budget enforcement
+        std::string bigSnap(600, 'a');
+        assert(LocalTimeline::CaptureSnapshot(base154.wstring(), (base154 / L"other.cpp").wstring(), bigSnap, tlRoot.wstring()));
+        LocalTimeline::EnforceGlobalBudget(tlRoot, 512);
+        uint64_t remainingBytes = 0;
+        for (const auto& de : std::filesystem::recursive_directory_iterator(tlRoot, ec154)) {
+            if (de.is_regular_file(ec154)) remainingBytes += de.file_size(ec154);
+        }
+        assert(remainingBytes <= 512);
+
+        std::filesystem::remove_all(base154, ec154);
+        std::filesystem::remove_all(tlRoot, ec154);
+        std::cout << "  Passed: All [TEST 154] Explorer Dotfiles & Out-of-Workspace LocalTimeline (#48-#49) checks passed!" << std::endl;
+        if (targetTest == 154) {
+            std::cout << "Target test 154 finished successfully." << std::endl;
+            return 0;
+        }
+    }
+
+run_test_155:
+    // [TEST 155] Section 7 #50: Configurable MMap Threshold & Bounded Chunked MMap Search
+    if (targetTest == 0 || targetTest == 155) {
+        std::cout << "\n[TEST 155] Testing #50 configurable mmap threshold & FindMatchesInMappedFile..." << std::endl;
+
+        using phide::editor::Buffer;
+        const uint64_t origThresh = Buffer::GetDefaultMemoryMappedThresholdBytes();
+        Buffer::SetDefaultMemoryMappedThresholdMB(12);
+        assert(Buffer::GetDefaultMemoryMappedThresholdBytes() == 12ULL * 1024ULL * 1024ULL);
+        Buffer::SetDefaultMemoryMappedThresholdMB(static_cast<int>(origThresh / (1024ULL * 1024ULL)));
+
+        std::error_code ec155;
+        std::filesystem::path tmpMmap = std::filesystem::temp_directory_path(ec155) / L"phide_test_155_mmap.txt";
+        {
+            std::ofstream ofs(tmpMmap, std::ios::binary | std::ios::trunc);
+            for (int i = 0; i < 3000; ++i) {
+                if (i % 400 == 100) ofs << "prefix NEEDLE suffix line_" << i << "\n";
+                else ofs << "standard log filler payload line index " << i << " ok\n";
+            }
+        }
+
+        Buffer mmapBuf;
+        assert(mmapBuf.LoadFromFile(tmpMmap.wstring(), 16 * 1024));
+        assert(mmapBuf.IsMemoryMappedReadOnly());
+
+        std::vector<Buffer::MappedSearchHit> hits;
+        assert(mmapBuf.FindMatchesInMappedFile(L"NEEDLE", true, true, false, hits, 5));
+        assert(hits.size() == 5);
+        assert(hits[0].line == 100);
+        assert(hits[0].col == 7);
+        assert(hits[0].length == 6);
+
+        mmapBuf.CloseFileMapping();
+        std::filesystem::remove(tmpMmap, ec155);
+        std::cout << "  Passed: All [TEST 155] Configurable MMap & Chunked Search (#50) checks passed!" << std::endl;
+        if (targetTest == 155) {
+            std::cout << "Target test 155 finished successfully." << std::endl;
             return 0;
         }
     }

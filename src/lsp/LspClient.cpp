@@ -495,6 +495,103 @@ std::wstring LspClient::FileUriToPath(const std::wstring& uri) {
     return w;
 }
 
+std::wstring LspClient::MapLocalPathToRemoteUri(const std::wstring& path,
+                                                const std::wstring& localRoot,
+                                                const std::wstring& remoteRoot) {
+    if (path.empty()) return L"file:///";
+    if (path.rfind(L"file://", 0) == 0) return path;
+    if (remoteRoot.empty()) return PathToFileUri(path);
+
+    auto normSlash = [](std::wstring s, bool lowerWin) {
+        for (wchar_t& c : s) {
+            if (c == L'\\') c = L'/';
+            else if (lowerWin) c = static_cast<wchar_t>(towlower(c));
+        }
+        while (s.size() > 1 && s.back() == L'/') s.pop_back();
+        return s;
+    };
+
+    std::wstring nRemote = remoteRoot;
+    for (wchar_t& c : nRemote) if (c == L'\\') c = L'/';
+    while (nRemote.size() > 1 && nRemote.back() == L'/') nRemote.pop_back();
+
+    std::wstring nPathOrig = normSlash(path, false);
+    if (!localRoot.empty()) {
+        std::wstring nLocal = normSlash(localRoot, true);
+        std::wstring nPathCmp = normSlash(path, true);
+        if (nPathCmp == nLocal) {
+            return PathToFileUri(nRemote);
+        }
+        if (nPathCmp.size() > nLocal.size() &&
+            nPathCmp.compare(0, nLocal.size(), nLocal) == 0 &&
+            nPathCmp[nLocal.size()] == L'/') {
+            std::wstring rel = nPathOrig.substr(nLocal.size());
+            std::wstring mapped = (nRemote == L"/") ? rel : (nRemote + rel);
+            return PathToFileUri(mapped);
+        }
+    }
+    if (nPathOrig.front() == L'/') {
+        return PathToFileUri(nPathOrig);
+    }
+    return PathToFileUri(path);
+}
+
+std::wstring LspClient::MapRemoteUriToLocalPath(const std::wstring& uri,
+                                                const std::wstring& localRoot,
+                                                const std::wstring& remoteRoot) {
+    std::wstring raw = FileUriToPath(uri);
+    if (localRoot.empty() || remoteRoot.empty()) return raw;
+
+    std::wstring rawFwd = raw;
+    for (wchar_t& c : rawFwd) if (c == L'\\') c = L'/';
+    std::wstring nRemote = remoteRoot;
+    for (wchar_t& c : nRemote) if (c == L'\\') c = L'/';
+    while (nRemote.size() > 1 && nRemote.back() == L'/') nRemote.pop_back();
+    std::wstring nLocal = localRoot;
+    for (wchar_t& c : nLocal) if (c == L'/') c = L'\\';
+    while (nLocal.size() > 1 && nLocal.back() == L'\\') nLocal.pop_back();
+
+    if (rawFwd == nRemote) return nLocal;
+    if (rawFwd.size() > nRemote.size() &&
+        rawFwd.compare(0, nRemote.size(), nRemote) == 0 &&
+        rawFwd[nRemote.size()] == L'/') {
+        std::wstring rel = rawFwd.substr(nRemote.size());
+        for (wchar_t& c : rel) if (c == L'/') c = L'\\';
+        return nLocal + rel;
+    }
+    return raw;
+}
+
+void LspClient::SetRemotePathMapping(const std::wstring& localRoot, const std::wstring& remoteRoot) {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_remoteLocalRoot = localRoot;
+    m_remoteWorkDir = remoteRoot;
+}
+
+std::wstring LspClient::ToServerUri(const std::wstring& pathOrUri) const {
+    std::wstring localRoot, remoteRoot;
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        localRoot = m_remoteLocalRoot;
+        remoteRoot = m_remoteWorkDir;
+    }
+    return MapLocalPathToRemoteUri(pathOrUri, localRoot, remoteRoot);
+}
+
+std::wstring LspClient::FromServerUri(const std::wstring& uri) const {
+    std::wstring localRoot, remoteRoot;
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        localRoot = m_remoteLocalRoot;
+        remoteRoot = m_remoteWorkDir;
+    }
+    return MapRemoteUriToLocalPath(uri, localRoot, remoteRoot);
+}
+
+std::string LspClient::EnsureFileUriUtf8(const std::wstring& pathOrUri) const {
+    return WideToUtf8(ToServerUri(pathOrUri));
+}
+
 void LspClient::SetDiagnosticsCallback(DiagnosticsCallback cb) {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     m_diagnosticsCallback = std::move(cb);
@@ -704,7 +801,7 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
     }
 
     std::wstring cmdLine = BuildLaunchCommandLine(foundExe, foundArgs);
-    std::wstring rootUri = workspaceRoot.empty() ? L"" : PathToFileUri(workspaceRoot);
+    std::wstring rootUri = workspaceRoot.empty() ? L"" : ToServerUri(workspaceRoot);
     if (!LaunchProcessAndInitialize(cmdLine, workspaceRoot, rootUri)) {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_currentLanguageId.clear();
@@ -1138,7 +1235,7 @@ void LspClient::HandleIncomingJsonMessage(const std::string& jsonText) {
 
         std::string uriUtf8 = params->GetString("uri");
         if (uriUtf8.empty()) return;
-        std::wstring filePath = FileUriToPath(Utf8ToWide(uriUtf8));
+        std::wstring filePath = FromServerUri(Utf8ToWide(uriUtf8));
 
         std::vector<Diagnostic> diags;
         const JsonValue* diagArr = params->Get("diagnostics");
@@ -1468,10 +1565,12 @@ bool LspClient::RequestDefinitionLocations(const std::wstring& fileUri, size_t l
     outLocations.clear();
     if (!m_isRunning.load()) return false;
     std::string respJson;
-    if (!SendRequestAndWait("textDocument/definition", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+    if (!SendRequestAndWait("textDocument/definition", BuildTextDocPosParams(ToServerUri(fileUri), line, col), respJson, 700)) {
         return false;
     }
-    return ParseLocationsResponse(respJson, outLocations);
+    bool ok = ParseLocationsResponse(respJson, outLocations);
+    for (auto& loc : outLocations) loc.filePath = FromServerUri(loc.filePath);
+    return ok;
 }
 
 bool LspClient::RequestTypeDefinition(const std::wstring& fileUri, size_t line, size_t col,
@@ -1479,10 +1578,12 @@ bool LspClient::RequestTypeDefinition(const std::wstring& fileUri, size_t line, 
     outLocations.clear();
     if (!m_isRunning.load()) return false;
     std::string respJson;
-    if (!SendRequestAndWait("textDocument/typeDefinition", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+    if (!SendRequestAndWait("textDocument/typeDefinition", BuildTextDocPosParams(ToServerUri(fileUri), line, col), respJson, 700)) {
         return false;
     }
-    return ParseLocationsResponse(respJson, outLocations);
+    bool ok = ParseLocationsResponse(respJson, outLocations);
+    for (auto& loc : outLocations) loc.filePath = FromServerUri(loc.filePath);
+    return ok;
 }
 
 bool LspClient::RequestImplementation(const std::wstring& fileUri, size_t line, size_t col,
@@ -1490,10 +1591,12 @@ bool LspClient::RequestImplementation(const std::wstring& fileUri, size_t line, 
     outLocations.clear();
     if (!m_isRunning.load()) return false;
     std::string respJson;
-    if (!SendRequestAndWait("textDocument/implementation", BuildTextDocPosParams(fileUri, line, col), respJson, 700)) {
+    if (!SendRequestAndWait("textDocument/implementation", BuildTextDocPosParams(ToServerUri(fileUri), line, col), respJson, 700)) {
         return false;
     }
-    return ParseLocationsResponse(respJson, outLocations);
+    bool ok = ParseLocationsResponse(respJson, outLocations);
+    for (auto& loc : outLocations) loc.filePath = FromServerUri(loc.filePath);
+    return ok;
 }
 
 bool LspClient::RequestDefinition(const std::wstring& fileUri, size_t line, size_t col, Location& outLocation) {
@@ -1609,7 +1712,9 @@ bool LspClient::RequestReferences(const std::wstring& fileUri, size_t line, size
     if (!SendRequestAndWait("textDocument/references", params.str(), respJson, 900)) {
         return false;
     }
-    return ParseLocationsResponse(respJson, outLocations);
+    bool ok = ParseLocationsResponse(respJson, outLocations);
+    for (auto& loc : outLocations) loc.filePath = FromServerUri(loc.filePath);
+    return ok;
 }
 
 bool LspClient::PrepareRename(const std::wstring& fileUri, size_t line, size_t col,
@@ -1691,11 +1796,15 @@ bool LspClient::RequestRename(const std::wstring& fileUri, size_t line, size_t c
     JsonValue root;
     JsonParser parser(respJson);
     if (!parser.Parse(root)) return false;
-    return ParseWorkspaceEditObject(root.Get("result"), outEdit);
+    bool ok = ParseWorkspaceEditObject(root.Get("result"), outEdit);
+    for (auto& fc : outEdit.fileChanges) {
+        fc.first = FromServerUri(fc.first);
+    }
+    return ok;
 }
 
 static std::string SerializeCallHierarchyItemJson(const CallHierarchyItem& item) {
-    std::string uri = EnsureFileUriUtf8(item.filePath);
+    std::string uri = WideToUtf8(LspClient::PathToFileUri(item.filePath));
     std::ostringstream os;
     os << "{\"name\":" << EscapeJsonString(WideToUtf8(item.name))
        << ",\"kind\":" << item.kind
@@ -2448,6 +2557,21 @@ void LspManager::SetCustomServerPaths(const std::unordered_map<std::wstring, std
     }
 }
 
+void LspManager::SetRemotePathMapping(const std::wstring& localRoot, const std::wstring& remoteRoot) {
+    std::vector<std::shared_ptr<LspClient>> clients;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_remoteLocalRoot = localRoot;
+        m_remoteWorkDir = remoteRoot;
+        for (const auto& kv : m_clients) {
+            clients.push_back(kv.second);
+        }
+    }
+    for (const auto& c : clients) {
+        if (c) c->SetRemotePathMapping(localRoot, remoteRoot);
+    }
+}
+
 void LspManager::SetCustomServerPath(const std::wstring& languageIdOrFamily, const std::wstring& executablePath) {
     std::vector<std::shared_ptr<LspClient>> clients;
     std::wstring fam = NormalizeLanguageFamily(languageIdOrFamily);
@@ -2527,6 +2651,7 @@ std::shared_ptr<LspClient> LspManager::GetOrCreateSlotForTesting(const std::wstr
     auto client = std::make_shared<LspClient>();
     if (m_diagnosticsCallback) client->SetDiagnosticsCallback(m_diagnosticsCallback);
     if (!m_customServerPaths.empty()) client->SetCustomServerPaths(m_customServerPaths);
+    if (!m_remoteWorkDir.empty()) client->SetRemotePathMapping(m_remoteLocalRoot, m_remoteWorkDir);
     m_clients[key] = client;
     m_lastLanguageId = ToLowerW(languageId);
     m_lastWorkspaceRoot = workspaceRoot;

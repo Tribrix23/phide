@@ -909,13 +909,15 @@ std::wstring TestExplorerEngine::BuildRunCommand(
         return cmd;
     }
     case TestFramework::Jest: {
-        std::wstring cmd = L"npx jest --verbose";
+        fs::path localBin = root / L"node_modules" / L".bin" / L"jest.cmd";
+        std::wstring cmd = fs::exists(localBin, ec) ? (L"\"" + localBin.wstring() + L"\" --verbose") : L"npx --no-install jest --verbose";
         if (!filePath.empty()) cmd += L" \"" + filePath + L"\"";
         if (!filterName.empty()) cmd += L" -t \"" + filterName + L"\"";
         return cmd;
     }
     case TestFramework::Vitest: {
-        std::wstring cmd = L"npx vitest run";
+        fs::path localBin = root / L"node_modules" / L".bin" / L"vitest.cmd";
+        std::wstring cmd = fs::exists(localBin, ec) ? (L"\"" + localBin.wstring() + L"\" run") : L"npx --no-install vitest run";
         if (!filePath.empty()) cmd += L" \"" + filePath + L"\"";
         if (!filterName.empty()) cmd += L" -t \"" + filterName + L"\"";
         return cmd;
@@ -1102,7 +1104,14 @@ TestRunSummary TestExplorerEngine::ExecuteTestsSync(
     std::vector<TestItem>& items,
     const std::wstring& filterName,
     const std::wstring& filePath,
-    int timeoutMs) {
+    int timeoutMs,
+    const std::atomic<bool>* cancelFlag) {
+    if (cancelFlag && cancelFlag->load()) {
+        TestRunSummary s;
+        s.exitCode = -1;
+        s.rawOutput = L"Test run cancelled.";
+        return s;
+    }
     std::wstring cmd = BuildRunCommand(workspaceRoot, fw, filterName, filePath);
     if (cmd.empty()) {
         TestRunSummary s;
@@ -1129,23 +1138,46 @@ TestRunSummary TestExplorerEngine::ExecuteTestsSync(
     si.hStdError = hWrite;
     si.hStdInput = nullptr;
 
+    HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
+    if (hJob) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+    }
+
     PROCESS_INFORMATION pi{};
     std::wstring fullCmd = L"cmd.exe /c " + cmd;
     BOOL ok = CreateProcessW(nullptr, fullCmd.data(), nullptr, nullptr, TRUE,
-                             CREATE_NO_WINDOW, nullptr,
+                             CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
                              workspaceRoot.empty() ? nullptr : workspaceRoot.c_str(), &si, &pi);
     CloseHandle(hWrite);
 
+    if (ok) {
+        if (hJob) AssignProcessToJobObject(hJob, pi.hProcess);
+        ResumeThread(pi.hThread);
+    }
+
     std::string rawBytes;
+    bool cancelled = false;
+    constexpr size_t kMaxTestOutputBytes = 4 * 1024 * 1024;
     if (ok) {
         DWORD startTick = GetTickCount();
         char buf[4096];
         for (;;) {
+            if (cancelFlag && cancelFlag->load()) {
+                cancelled = true;
+                if (hJob) TerminateJobObject(hJob, 1);
+                TerminateProcess(pi.hProcess, 1);
+                break;
+            }
             DWORD avail = 0;
             if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
                 DWORD readBytes = 0;
                 if (ReadFile(hRead, buf, sizeof(buf), &readBytes, nullptr) && readBytes > 0) {
-                    rawBytes.append(buf, readBytes);
+                    if (rawBytes.size() < kMaxTestOutputBytes) {
+                        size_t take = (std::min)(static_cast<size_t>(readBytes), kMaxTestOutputBytes - rawBytes.size());
+                        rawBytes.append(buf, take);
+                    }
                 }
             } else {
                 DWORD waitRes = WaitForSingleObject(pi.hProcess, 25);
@@ -1153,12 +1185,16 @@ TestRunSummary TestExplorerEngine::ExecuteTestsSync(
                     while (PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
                         DWORD readBytes = 0;
                         if (ReadFile(hRead, buf, sizeof(buf), &readBytes, nullptr) && readBytes > 0) {
-                            rawBytes.append(buf, readBytes);
+                            if (rawBytes.size() < kMaxTestOutputBytes) {
+                                size_t take = (std::min)(static_cast<size_t>(readBytes), kMaxTestOutputBytes - rawBytes.size());
+                                rawBytes.append(buf, take);
+                            }
                         } else break;
                     }
                     break;
                 }
                 if (static_cast<int>(GetTickCount() - startTick) >= timeoutMs) {
+                    if (hJob) TerminateJobObject(hJob, 1);
                     TerminateProcess(pi.hProcess, 1);
                     break;
                 }
@@ -1172,10 +1208,14 @@ TestRunSummary TestExplorerEngine::ExecuteTestsSync(
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
+    if (hJob) CloseHandle(hJob);
     CloseHandle(hRead);
 
     std::wstring outW = Utf8ToWide(rawBytes);
-    return ParseTestOutput(fw, outW, items, static_cast<int>(exitCode));
+    if (cancelled) {
+        outW += L"\n[Stopped by user]";
+    }
+    return ParseTestOutput(fw, outW, items, cancelled ? -1 : static_cast<int>(exitCode));
 }
 
 void TestExplorerEngine::ExtractExpectedActualDiff(

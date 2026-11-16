@@ -101,10 +101,17 @@ public:
         if (m_phpVersionIndex < m_phpVersions.size()) return m_phpVersions[m_phpVersionIndex].first;
         return L"System Default";
     }
-    void CycleVhostPreset() noexcept { m_vhostPresetIndex = (m_vhostPresetIndex + 1) % 3; }
+    void CycleVhostPreset() noexcept { m_vhostPresetIndex = (m_vhostPresetIndex + 1) % 6; }
     [[nodiscard]] std::wstring GetSelectedVhostPreset() const {
-        static const wchar_t* kPresets[] = { L"Standard", L"Laravel / public", L"SPA History Mode" };
-        return kPresets[m_vhostPresetIndex % 3];
+        static const wchar_t* kPresets[] = {
+            L"Standard",
+            L"Laravel / public",
+            L"SPA History Mode",
+            L"Reverse Proxy (Next.js / Vite)",
+            L"API + Frontend Split Proxy",
+            L"HTTPS Reverse Proxy (SSL + proxy_pass)"
+        };
+        return kPresets[m_vhostPresetIndex % 6];
     }
     void SetLiveReloadEnabled(bool e) noexcept { m_liveReloadEnabled = e; }
     [[nodiscard]] bool IsLiveReloadEnabled() const noexcept { return m_liveReloadEnabled; }

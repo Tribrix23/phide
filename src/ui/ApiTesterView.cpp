@@ -557,7 +557,7 @@ float ApiTesterView::GetResponseMaxScrollY(const ApiRequestSession& s) const {
     } else if (s.activeRespTab == ApiResponseTab::Headers) {
         totalH = static_cast<float>(s.response.headers.size()) * 24.0f + 160.0f;
     } else if (s.activeRespTab == ApiResponseTab::Cookies) {
-        totalH = static_cast<float>(s.response.cookies.size()) * 24.0f + 160.0f;
+        totalH = static_cast<float>(s.response.cookies.size() + m_cookieJar.size() + 2) * 24.0f + 160.0f;
     }
     float viewH = (m_respContentH > 0.0f) ? m_respContentH : 200.0f;
     return (std::max)(0.0f, totalH - viewH);
@@ -680,10 +680,844 @@ void ApiTesterView::DrawScrollbar(ID2D1RenderTarget* pRT, Theme& theme, const D2
 // ApiTesterView Constructor & Setup
 // =============================================================================
 ApiTesterView::ApiTesterView() {
+    m_environments.push_back({ L"Default", { { true, L"baseUrl", L"http://localhost:3000", L"Local API base" } } });
     LoadSessionsFromDisk();
+    LoadEnvsFromDisk();
+    LoadCollectionsFromDisk();
+    LoadCookiesFromDisk();
     if (m_sessions.empty()) {
         AddNewSession();
     }
+}
+
+ApiTesterView::~ApiTesterView() {
+    if (m_viewAlive) m_viewAlive->store(false);
+    DisconnectWebSocket();
+}
+
+static bool WriteUtf8AtomicApiFile(const std::filesystem::path& target, const std::string& content) {
+    std::error_code ec;
+    if (target.has_parent_path()) std::filesystem::create_directories(target.parent_path(), ec);
+    std::filesystem::path tmp = target;
+    tmp += L".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        out.flush();
+        if (!out.good()) return false;
+    }
+    if (!MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+
+static std::wstring GetApiTesterDataDir() {
+    wchar_t szAppData[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"APPDATA", szAppData, MAX_PATH) == 0) return L"";
+    return (std::filesystem::path(szAppData) / L"phide").wstring();
+}
+
+std::wstring ApiTesterView::ResolveEnvTemplate(const std::wstring& input) const {
+    if (input.find(L"{{") == std::wstring::npos) return input;
+    std::wstring out;
+    out.reserve(input.size() + 32);
+    size_t pos = 0;
+    while (pos < input.size()) {
+        size_t open = input.find(L"{{", pos);
+        if (open == std::wstring::npos) {
+            out.append(input.substr(pos));
+            break;
+        }
+        out.append(input.substr(pos, open - pos));
+        size_t close = input.find(L"}}", open + 2);
+        if (close == std::wstring::npos) {
+            out.append(input.substr(open));
+            break;
+        }
+        std::wstring key = input.substr(open + 2, close - (open + 2));
+        while (!key.empty() && iswspace(key.front())) key.erase(key.begin());
+        while (!key.empty() && iswspace(key.back())) key.pop_back();
+
+        bool replaced = false;
+        if (key == L"$timestamp") {
+            auto sec = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            out.append(std::to_wstring(sec));
+            replaced = true;
+        } else if (key == L"$isoTimestamp") {
+            auto now = std::chrono::system_clock::now();
+            std::time_t tt = std::chrono::system_clock::to_time_t(now);
+            std::tm tm{};
+            gmtime_s(&tm, &tt);
+            wchar_t buf[32]{};
+            wcsftime(buf, 32, L"%Y-%m-%dT%H:%M:%SZ", &tm);
+            out.append(buf);
+            replaced = true;
+        } else if (m_activeEnvIdx < m_environments.size()) {
+            for (const auto& kv : m_environments[m_activeEnvIdx].vars) {
+                if (kv.enabled && kv.key == key) {
+                    out.append(kv.value);
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+        if (!replaced) {
+            out.append(input.substr(open, close + 2 - open));
+        }
+        pos = close + 2;
+    }
+    return out;
+}
+
+void ApiTesterView::SetEnvironments(const std::vector<ApiEnvEntry>& envs, size_t activeIdx) {
+    m_environments.clear();
+    for (const auto& e : envs) {
+        if (m_environments.size() >= 16) break;
+        ApiEnvEntry copy = e;
+        if (copy.vars.size() > 64) copy.vars.resize(64);
+        m_environments.push_back(std::move(copy));
+    }
+    if (m_environments.empty()) {
+        m_environments.push_back({ L"Default", {} });
+    }
+    m_activeEnvIdx = (std::min)(activeIdx, m_environments.size() - 1);
+    SaveEnvsToDisk();
+}
+
+void ApiTesterView::SaveEnvsToDisk() const {
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::ostringstream out;
+    out << "{\n  \"activeEnvIdx\": " << m_activeEnvIdx << ",\n  \"environments\": [\n";
+    for (size_t i = 0; i < m_environments.size(); ++i) {
+        out << "    {\"name\":\"" << EscapeJson(m_environments[i].name) << "\",\"vars\":[\n";
+        for (size_t j = 0; j < m_environments[i].vars.size(); ++j) {
+            const auto& kv = m_environments[i].vars[j];
+            out << "      {\"enabled\":" << (kv.enabled ? "true" : "false")
+                << ",\"key\":\"" << EscapeJson(kv.key) << "\",\"val\":\"" << EscapeJson(kv.value) << "\"}";
+            if (j + 1 < m_environments[i].vars.size()) out << ",";
+            out << "\n";
+        }
+        out << "    ]}";
+        if (i + 1 < m_environments.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]\n}\n";
+    WriteUtf8AtomicApiFile(std::filesystem::path(dir) / L"api_tester_env.json", out.str());
+}
+
+void ApiTesterView::LoadEnvsFromDisk() {
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::filesystem::path fp = std::filesystem::path(dir) / L"api_tester_env.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(fp, ec)) return;
+    std::ifstream ifs(fp, std::ios::binary);
+    if (!ifs.is_open()) return;
+    std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (raw.empty()) return;
+
+    auto extractQuoted = [&](size_t from, const std::string& k) -> std::wstring {
+        size_t p = raw.find("\"" + k + "\":\"", from);
+        if (p == std::string::npos) return L"";
+        size_t vs = p + k.size() + 4;
+        std::string esc;
+        for (size_t i = vs; i < raw.size(); ++i) {
+            if (raw[i] == '"' && (i == vs || raw[i - 1] != '\\')) {
+                break;
+            }
+            if (raw[i] == '\\' && i + 1 < raw.size()) {
+                char nx = raw[i + 1];
+                if (nx == 'n') esc.push_back('\n');
+                else if (nx == 'r') esc.push_back('\r');
+                else if (nx == 't') esc.push_back('\t');
+                else esc.push_back(nx);
+                ++i;
+            } else {
+                esc.push_back(raw[i]);
+            }
+        }
+        return Utf8ToWide(esc);
+    };
+
+    std::vector<ApiEnvEntry> loaded;
+    size_t envsPos = raw.find("\"environments\": [");
+    if (envsPos != std::string::npos) {
+        size_t cur = envsPos;
+        while (loaded.size() < 16) {
+            size_t obj = raw.find("{\"name\":\"", cur);
+            if (obj == std::string::npos) break;
+            ApiEnvEntry e;
+            e.name = extractQuoted(obj, "name");
+            size_t vs = raw.find("\"vars\":[", obj);
+            size_t ve = (vs != std::string::npos) ? raw.find("]", vs) : std::string::npos;
+            if (vs != std::string::npos && ve != std::string::npos) {
+                size_t vc = vs;
+                while (vc < ve && e.vars.size() < 64) {
+                    size_t vo = raw.find('{', vc);
+                    if (vo == std::string::npos || vo > ve) break;
+                    ApiKeyValueItem kv;
+                    kv.enabled = (raw.find("\"enabled\":false", vo) != vo + 1);
+                    kv.key = extractQuoted(vo, "key");
+                    kv.value = extractQuoted(vo, "val");
+                    if (!kv.key.empty() || !kv.value.empty()) e.vars.push_back(std::move(kv));
+                    vc = vo + 1;
+                }
+            }
+            if (!e.name.empty()) loaded.push_back(std::move(e));
+            cur = (ve != std::string::npos) ? ve + 1 : obj + 9;
+        }
+    }
+    if (!loaded.empty()) {
+        m_environments = std::move(loaded);
+        size_t ap = raw.find("\"activeEnvIdx\": ");
+        if (ap != std::string::npos) {
+            try {
+                m_activeEnvIdx = static_cast<size_t>(std::stoul(raw.substr(ap + 16)));
+            } catch (...) {}
+        }
+        if (m_activeEnvIdx >= m_environments.size()) m_activeEnvIdx = 0;
+    }
+}
+
+void ApiTesterView::StoreCookieFromSetCookieHeader(const std::wstring& host, const std::wstring& setCookieHeader) {
+    if (host.empty() || setCookieHeader.empty()) return;
+    size_t semi = setCookieHeader.find(L';');
+    std::wstring pair = (semi == std::wstring::npos) ? setCookieHeader : setCookieHeader.substr(0, semi);
+    size_t eq = pair.find(L'=');
+    if (eq == std::wstring::npos || eq == 0) return;
+    std::wstring name = pair.substr(0, eq);
+    std::wstring val = pair.substr(eq + 1);
+    while (!name.empty() && iswspace(name.front())) name.erase(name.begin());
+    while (!name.empty() && iswspace(name.back())) name.pop_back();
+    while (!val.empty() && iswspace(val.front())) val.erase(val.begin());
+    while (!val.empty() && iswspace(val.back())) val.pop_back();
+    if (name.empty()) return;
+
+    std::wstring domain = host;
+    for (wchar_t& c : domain) c = static_cast<wchar_t>(towlower(c));
+    std::wstring path = L"/";
+    size_t dPos = setCookieHeader.find(L"Domain=");
+    if (dPos == std::wstring::npos) dPos = setCookieHeader.find(L"domain=");
+    if (dPos != std::wstring::npos) {
+        size_t e = setCookieHeader.find(L';', dPos + 7);
+        std::wstring d = setCookieHeader.substr(dPos + 7, e == std::wstring::npos ? std::wstring::npos : e - (dPos + 7));
+        while (!d.empty() && (iswspace(d.front()) || d.front() == L'.')) d.erase(d.begin());
+        while (!d.empty() && iswspace(d.back())) d.pop_back();
+        if (!d.empty()) {
+            for (wchar_t& c : d) c = static_cast<wchar_t>(towlower(c));
+            domain = d;
+        }
+    }
+    size_t pPos = setCookieHeader.find(L"Path=");
+    if (pPos == std::wstring::npos) pPos = setCookieHeader.find(L"path=");
+    if (pPos != std::wstring::npos) {
+        size_t e = setCookieHeader.find(L';', pPos + 5);
+        std::wstring p = setCookieHeader.substr(pPos + 5, e == std::wstring::npos ? std::wstring::npos : e - (pPos + 5));
+        while (!p.empty() && iswspace(p.front())) p.erase(p.begin());
+        while (!p.empty() && iswspace(p.back())) p.pop_back();
+        if (!p.empty()) path = p;
+    }
+
+    std::lock_guard<std::mutex> ckLock(m_cookieMutex);
+    for (auto& ck : m_cookieJar) {
+        if (ck.domain == domain && ck.path == path && ck.name == name) {
+            ck.value = val;
+            SaveCookiesToDisk();
+            return;
+        }
+    }
+    if (m_cookieJar.size() >= 200) {
+        m_cookieJar.erase(m_cookieJar.begin());
+    }
+    m_cookieJar.push_back({ domain, path, name, val });
+    SaveCookiesToDisk();
+}
+
+std::wstring ApiTesterView::BuildCookieHeaderForHost(const std::wstring& host, const std::wstring& path) const {
+    std::lock_guard<std::mutex> ckLock(m_cookieMutex);
+    if (host.empty() || m_cookieJar.empty()) return L"";
+    std::wstring hLow = host;
+    for (wchar_t& c : hLow) c = static_cast<wchar_t>(towlower(c));
+    std::wstring reqPath = path.empty() ? L"/" : path;
+    std::wstring out;
+    for (const auto& ck : m_cookieJar) {
+        bool domMatch = (hLow == ck.domain) ||
+                        (hLow.size() > ck.domain.size() && hLow.compare(hLow.size() - ck.domain.size(), ck.domain.size(), ck.domain) == 0 &&
+                         hLow[hLow.size() - ck.domain.size() - 1] == L'.');
+        if (!domMatch) continue;
+        if (!ck.path.empty() && reqPath.rfind(ck.path, 0) != 0) continue;
+        if (!out.empty()) out += L"; ";
+        out += ck.name + L"=" + ck.value;
+    }
+    return out;
+}
+
+void ApiTesterView::ClearCookieJar() {
+    std::lock_guard<std::mutex> ckLock(m_cookieMutex);
+    m_cookieJar.clear();
+    SaveCookiesToDisk();
+}
+
+void ApiTesterView::SaveCookiesToDisk() const {
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::ostringstream out;
+    out << "[\n";
+    for (size_t i = 0; i < m_cookieJar.size(); ++i) {
+        const auto& c = m_cookieJar[i];
+        out << "  {\"domain\":\"" << EscapeJson(c.domain) << "\",\"path\":\"" << EscapeJson(c.path)
+            << "\",\"name\":\"" << EscapeJson(c.name) << "\",\"val\":\"" << EscapeJson(c.value) << "\"}";
+        if (i + 1 < m_cookieJar.size()) out << ",";
+        out << "\n";
+    }
+    out << "]\n";
+    WriteUtf8AtomicApiFile(std::filesystem::path(dir) / L"api_tester_cookies.json", out.str());
+}
+
+void ApiTesterView::LoadCookiesFromDisk() {
+    std::lock_guard<std::mutex> ckLock(m_cookieMutex);
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::filesystem::path fp = std::filesystem::path(dir) / L"api_tester_cookies.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(fp, ec)) return;
+    std::ifstream ifs(fp, std::ios::binary);
+    if (!ifs.is_open()) return;
+    std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    auto getStr = [&](size_t from, const std::string& k) -> std::wstring {
+        size_t p = raw.find("\"" + k + "\":\"", from);
+        if (p == std::string::npos) return L"";
+        size_t s = p + k.size() + 4;
+        size_t e = raw.find('"', s);
+        if (e == std::string::npos) return L"";
+        return Utf8ToWide(raw.substr(s, e - s));
+    };
+    m_cookieJar.clear();
+    size_t cur = 0;
+    while (m_cookieJar.size() < 200) {
+        size_t o = raw.find('{', cur);
+        if (o == std::string::npos) break;
+        ApiCookieEntry c;
+        c.domain = getStr(o, "domain");
+        c.path = getStr(o, "path");
+        c.name = getStr(o, "name");
+        c.value = getStr(o, "val");
+        if (!c.domain.empty() && !c.name.empty()) m_cookieJar.push_back(std::move(c));
+        cur = o + 1;
+    }
+}
+
+void ApiTesterView::SaveCurrentRequestToCollection(const std::wstring& folder) {
+    if (m_activeSessionIdx >= m_sessions.size()) return;
+    ApiRequestSession copy = m_sessions[m_activeSessionIdx];
+    copy.isSending = false;
+    copy.isStreaming = false;
+    copy.isWsConnected = false;
+    copy.response = ApiResponseData{};
+    copy.wsMessages.clear();
+    if (copy.name.empty()) {
+        copy.name = std::wstring(HttpMethodToString(copy.method)) + L" " + (copy.url.empty() ? L"Request" : copy.url);
+    }
+    copy.collectionFolder = folder.empty() ? L"Default" : folder;
+    for (auto& existing : m_collections) {
+        if (existing.folder == copy.collectionFolder && existing.request.name == copy.name) {
+            existing.request = copy;
+            SaveCollectionsToDisk();
+            return;
+        }
+    }
+    if (m_collections.size() >= 100) m_collections.erase(m_collections.begin());
+    m_collections.push_back({ copy.collectionFolder, std::move(copy) });
+    SaveCollectionsToDisk();
+}
+
+void ApiTesterView::SaveCollectionsToDisk() const {
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::vector<ApiRequestSession> list;
+    list.reserve(m_collections.size());
+    for (const auto& c : m_collections) list.push_back(c.request);
+    WriteUtf8AtomicApiFile(std::filesystem::path(dir) / L"api_tester_collections.json", ExportPostmanCollection(list));
+}
+
+void ApiTesterView::LoadCollectionsFromDisk() {
+    std::wstring dir = GetApiTesterDataDir();
+    if (dir.empty()) return;
+    std::filesystem::path fp = std::filesystem::path(dir) / L"api_tester_collections.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(fp, ec)) return;
+    std::ifstream ifs(fp, std::ios::binary);
+    if (!ifs.is_open()) return;
+    std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    std::vector<ApiRequestSession> items;
+    if (ImportPostmanCollection(raw, items)) {
+        m_collections.clear();
+        for (auto& s : items) {
+            if (m_collections.size() >= 100) break;
+            m_collections.push_back({ s.collectionFolder.empty() ? L"Default" : s.collectionFolder, std::move(s) });
+        }
+    }
+}
+
+std::vector<ApiRequestSession> ApiTesterView::ParseDotHttp(const std::wstring& content) {
+    std::vector<ApiRequestSession> out;
+    std::wstringstream ss(content);
+    std::wstring line;
+    std::vector<std::pair<std::wstring, std::wstring>> fileVars;
+    auto applyFileVars = [&](std::wstring s) {
+        for (const auto& kv : fileVars) {
+            std::wstring pat = L"{{" + kv.first + L"}}";
+            size_t p = 0;
+            while ((p = s.find(pat, p)) != std::wstring::npos) {
+                s.replace(p, pat.size(), kv.second);
+                p += kv.second.size();
+            }
+        }
+        return s;
+    };
+    auto trimW = [](std::wstring s) {
+        while (!s.empty() && iswspace(s.front())) s.erase(s.begin());
+        while (!s.empty() && iswspace(s.back())) s.pop_back();
+        return s;
+    };
+    auto parseMethod = [](const std::wstring& m, HttpMethod& outM) -> bool {
+        if (m == L"GET") { outM = HttpMethod::Get; return true; }
+        if (m == L"POST") { outM = HttpMethod::Post; return true; }
+        if (m == L"PUT") { outM = HttpMethod::Put; return true; }
+        if (m == L"PATCH") { outM = HttpMethod::Patch; return true; }
+        if (m == L"DELETE") { outM = HttpMethod::Delete; return true; }
+        if (m == L"HEAD") { outM = HttpMethod::Head; return true; }
+        if (m == L"OPTIONS") { outM = HttpMethod::Options; return true; }
+        return false;
+    };
+
+    ApiRequestSession cur;
+    bool hasCur = false;
+    bool inBody = false;
+    std::wstring pendingName;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        std::wstring t = trimW(line);
+        if (t.rfind(L"###", 0) == 0) {
+            if (hasCur && !cur.url.empty()) {
+                out.push_back(std::move(cur));
+                if (out.size() >= 64) break;
+            }
+            cur = ApiRequestSession{};
+            hasCur = false;
+            inBody = false;
+            pendingName = trimW(t.substr(3));
+            continue;
+        }
+        if (!hasCur && (t.empty() || t.front() == L'#' || t.rfind(L"//", 0) == 0)) continue;
+        if (!hasCur && t.front() == L'@') {
+            size_t eq = t.find(L'=');
+            if (eq != std::wstring::npos && eq > 1) {
+                fileVars.push_back({ trimW(t.substr(1, eq - 1)), trimW(t.substr(eq + 1)) });
+            }
+            continue;
+        }
+        if (!hasCur) {
+            size_t sp = t.find_first_of(L" \t");
+            HttpMethod m = HttpMethod::Get;
+            std::wstring firstTok = (sp == std::wstring::npos) ? L"" : t.substr(0, sp);
+            for (auto& ch : firstTok) ch = static_cast<wchar_t>(towupper(ch));
+            if (sp != std::wstring::npos && parseMethod(firstTok, m)) {
+                cur.method = m;
+                std::wstring rest = trimW(t.substr(sp + 1));
+                size_t httpSp = rest.rfind(L" HTTP/");
+                if (httpSp != std::wstring::npos) rest = trimW(rest.substr(0, httpSp));
+                cur.url = applyFileVars(rest);
+                cur.name = pendingName;
+                pendingName.clear();
+                hasCur = true;
+                inBody = false;
+            }
+            continue;
+        }
+        if (!inBody && t.empty()) {
+            inBody = true;
+            continue;
+        }
+        if (!inBody) {
+            size_t colon = line.find(L':');
+            if (colon != std::wstring::npos) {
+                std::wstring hk = trimW(line.substr(0, colon));
+                std::wstring hv = applyFileVars(trimW(line.substr(colon + 1)));
+                cur.headers.push_back({ true, hk, hv, L"" });
+            }
+        } else {
+            if (!cur.bodyText.empty()) cur.bodyText += L"\n";
+            cur.bodyText += applyFileVars(line);
+            cur.bodyType = ApiBodyType::RawJson;
+        }
+    }
+    if (hasCur && !cur.url.empty() && out.size() < 64) {
+        out.push_back(std::move(cur));
+    }
+    return out;
+}
+
+std::wstring ApiTesterView::ExportDotHttp(const std::vector<ApiRequestSession>& sessions) {
+    std::wostringstream out;
+    for (size_t i = 0; i < sessions.size(); ++i) {
+        const auto& s = sessions[i];
+        out << L"### " << (s.name.empty() ? (L"Request " + std::to_wstring(i + 1)) : s.name) << L"\n";
+        out << HttpMethodToString(s.method) << L" " << s.url << L"\n";
+        for (const auto& h : s.headers) {
+            if (h.enabled && !h.key.empty()) {
+                out << h.key << L": " << h.value << L"\n";
+            }
+        }
+        if (!s.bodyText.empty() && s.method != HttpMethod::Get && s.method != HttpMethod::Head) {
+            out << L"\n" << s.bodyText << L"\n";
+        }
+        out << L"\n";
+    }
+    return out.str();
+}
+
+std::string ApiTesterView::ExportPostmanCollection(const std::vector<ApiRequestSession>& sessions) {
+    std::ostringstream out;
+    out << "{\n  \"info\": {\n"
+        << "    \"name\": \"Phide Exported Collection\",\n"
+        << "    \"schema\": \"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"\n"
+        << "  },\n  \"item\": [\n";
+    for (size_t i = 0; i < sessions.size(); ++i) {
+        const auto& s = sessions[i];
+        std::string title = EscapeJson(s.name.empty() ? s.url : s.name);
+        out << "    {\n"
+            << "      \"name\": \"" << title << "\",\n"
+            << "      \"request\": {\n"
+            << "        \"method\": \"" << WideToUtf8(HttpMethodToString(s.method)) << "\",\n"
+            << "        \"header\": [";
+        bool firstH = true;
+        for (const auto& h : s.headers) {
+            if (h.enabled && !h.key.empty()) {
+                if (!firstH) out << ",";
+                firstH = false;
+                out << "{\"key\":\"" << EscapeJson(h.key) << "\",\"value\":\"" << EscapeJson(h.value) << "\"}";
+            }
+        }
+        out << "],\n"
+            << "        \"body\": {\"mode\":\"raw\",\"raw\":\"" << EscapeJson(s.bodyText) << "\"},\n"
+            << "        \"url\": {\"raw\": \"" << EscapeJson(s.url) << "\"}\n"
+            << "      }\n    }";
+        if (i + 1 < sessions.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]\n}\n";
+    return out.str();
+}
+
+bool ApiTesterView::ImportPostmanCollection(const std::string& jsonUtf8, std::vector<ApiRequestSession>& outSessions) {
+    if (jsonUtf8.find("\"item\"") == std::string::npos && jsonUtf8.find("\"request\"") == std::string::npos) {
+        return false;
+    }
+    auto findJsonStr = [&](size_t start, size_t end, const std::string& key) -> std::wstring {
+        size_t kp = jsonUtf8.find("\"" + key + "\"", start);
+        if (kp == std::string::npos || kp >= end) return L"";
+        size_t colon = jsonUtf8.find(':', kp + key.size() + 2);
+        if (colon == std::string::npos || colon >= end) return L"";
+        size_t q1 = jsonUtf8.find('"', colon + 1);
+        if (q1 == std::string::npos || q1 >= end) return L"";
+        std::string unesc;
+        for (size_t i = q1 + 1; i < jsonUtf8.size(); ++i) {
+            if (jsonUtf8[i] == '"') break;
+            if (jsonUtf8[i] == '\\' && i + 1 < jsonUtf8.size()) {
+                char n = jsonUtf8[i + 1];
+                if (n == 'n') unesc.push_back('\n');
+                else if (n == 'r') unesc.push_back('\r');
+                else if (n == 't') unesc.push_back('\t');
+                else unesc.push_back(n);
+                ++i;
+            } else {
+                unesc.push_back(jsonUtf8[i]);
+            }
+        }
+        return Utf8ToWide(unesc);
+    };
+    size_t pos = 0;
+    while (outSessions.size() < 64) {
+        size_t reqPos = jsonUtf8.find("\"request\"", pos);
+        if (reqPos == std::string::npos) break;
+        size_t objBack = jsonUtf8.rfind('{', reqPos);
+        size_t nextReq = jsonUtf8.find("\"request\"", reqPos + 9);
+        size_t endLimit = (nextReq == std::string::npos) ? jsonUtf8.size() : nextReq;
+
+        ApiRequestSession s;
+        if (objBack != std::string::npos) s.name = findJsonStr(objBack, reqPos, "name");
+        std::wstring m = findJsonStr(reqPos, endLimit, "method");
+        for (wchar_t& ch : m) ch = static_cast<wchar_t>(towupper(ch));
+        if (m == L"POST") s.method = HttpMethod::Post;
+        else if (m == L"PUT") s.method = HttpMethod::Put;
+        else if (m == L"PATCH") s.method = HttpMethod::Patch;
+        else if (m == L"DELETE") s.method = HttpMethod::Delete;
+        else if (m == L"HEAD") s.method = HttpMethod::Head;
+        else if (m == L"OPTIONS") s.method = HttpMethod::Options;
+        else s.method = HttpMethod::Get;
+
+        size_t urlPos = jsonUtf8.find("\"url\"", reqPos);
+        if (urlPos != std::string::npos && urlPos < endLimit) {
+            std::wstring rawUrl = findJsonStr(urlPos, endLimit, "raw");
+            if (rawUrl.empty()) rawUrl = findJsonStr(reqPos, endLimit, "url");
+            s.url = rawUrl;
+        }
+        size_t bodyPos = jsonUtf8.find("\"raw\"", reqPos);
+        if (bodyPos != std::string::npos && bodyPos < urlPos) {
+            s.bodyText = findJsonStr(bodyPos - 1, urlPos, "raw");
+            if (!s.bodyText.empty()) s.bodyType = ApiBodyType::RawJson;
+        }
+        if (!s.url.empty()) outSessions.push_back(std::move(s));
+        pos = reqPos + 9;
+    }
+    return !outSessions.empty();
+}
+
+bool ApiTesterView::ImportOpenApiSpec(const std::string& jsonUtf8, std::vector<ApiRequestSession>& outSessions) {
+    if (jsonUtf8.find("\"openapi\"") == std::string::npos && jsonUtf8.find("\"swagger\"") == std::string::npos) {
+        return false;
+    }
+    std::wstring baseUrl = L"{{baseUrl}}";
+    size_t srvPos = jsonUtf8.find("\"servers\"");
+    if (srvPos != std::string::npos) {
+        size_t uPos = jsonUtf8.find("\"url\"", srvPos);
+        if (uPos != std::string::npos) {
+            size_t q1 = jsonUtf8.find('"', uPos + 5);
+            if (q1 != std::string::npos) {
+                size_t q2 = jsonUtf8.find('"', q1 + 1);
+                if (q2 != std::string::npos) baseUrl = Utf8ToWide(jsonUtf8.substr(q1 + 1, q2 - q1 - 1));
+            }
+        }
+    }
+    if (!baseUrl.empty() && baseUrl.back() == L'/') baseUrl.pop_back();
+
+    size_t pathsPos = jsonUtf8.find("\"paths\"");
+    if (pathsPos == std::string::npos) return false;
+    size_t braceStart = jsonUtf8.find('{', pathsPos + 7);
+    if (braceStart == std::string::npos) return false;
+
+    static const std::pair<const char*, HttpMethod> kMethods[] = {
+        { "get", HttpMethod::Get }, { "post", HttpMethod::Post }, { "put", HttpMethod::Put },
+        { "patch", HttpMethod::Patch }, { "delete", HttpMethod::Delete }, { "options", HttpMethod::Options }
+    };
+
+    size_t i = braceStart + 1;
+    int depth = 1;
+    std::string curPath;
+    int pathDepth = -1;
+    while (i < jsonUtf8.size() && depth > 0 && outSessions.size() < 64) {
+        char c = jsonUtf8[i];
+        if (c == '"') {
+            size_t j = i + 1;
+            while (j < jsonUtf8.size() && !(jsonUtf8[j] == '"' && jsonUtf8[j - 1] != '\\')) ++j;
+            std::string tok = (j < jsonUtf8.size()) ? jsonUtf8.substr(i + 1, j - i - 1) : "";
+            size_t after = j + 1;
+            while (after < jsonUtf8.size() && isspace(static_cast<unsigned char>(jsonUtf8[after]))) ++after;
+            if (after < jsonUtf8.size() && jsonUtf8[after] == ':') {
+                if (depth == 1 && !tok.empty() && tok.front() == '/') {
+                    curPath = tok;
+                    pathDepth = depth;
+                } else if (depth == 2 && !curPath.empty()) {
+                    std::string low = tok;
+                    for (char& lc : low) lc = static_cast<char>(tolower(static_cast<unsigned char>(lc)));
+                    for (const auto& m : kMethods) {
+                        if (low == m.first) {
+                            ApiRequestSession s;
+                            s.method = m.second;
+                            s.url = baseUrl + Utf8ToWide(curPath);
+                            s.name = Utf8ToWide(curPath);
+                            outSessions.push_back(std::move(s));
+                            break;
+                        }
+                    }
+                }
+            }
+            i = j + 1;
+            continue;
+        }
+        if (c == '{') ++depth;
+        else if (c == '}') {
+            --depth;
+            if (depth <= pathDepth) curPath.clear();
+        }
+        ++i;
+    }
+    return !outSessions.empty();
+}
+
+bool ApiTesterView::FetchOAuth2AccessToken(ApiRequestSession& session, std::wstring& outError) {
+    outError.clear();
+    std::wstring tokenUrl = ResolveEnvTemplate(session.oauthTokenUrl);
+    if (tokenUrl.empty()) {
+        outError = L"OAuth2 Token URL is empty.";
+        return false;
+    }
+    ApiRequestSession req;
+    req.method = HttpMethod::Post;
+    req.url = tokenUrl;
+    req.bodyType = ApiBodyType::UrlEncoded;
+    req.urlEncoded = {
+        { true, L"grant_type", L"client_credentials", L"" },
+        { true, L"client_id", ResolveEnvTemplate(session.oauthClientId), L"" },
+        { true, L"client_secret", ResolveEnvTemplate(session.oauthClientSecret), L"" }
+    };
+    if (!session.oauthScope.empty()) {
+        req.urlEncoded.push_back({ true, L"scope", ResolveEnvTemplate(session.oauthScope), L"" });
+    }
+    req.verifySsl = session.verifySsl;
+    ApiResponseData resp = ExecuteNetworkRequest(req);
+    if (resp.isError || resp.statusCode < 200 || resp.statusCode >= 300) {
+        outError = resp.isError ? resp.errorMessage : (L"OAuth2 token request returned HTTP " + std::to_wstring(resp.statusCode));
+        return false;
+    }
+    size_t tp = resp.body.find(L"\"access_token\"");
+    if (tp != std::wstring::npos) {
+        size_t q1 = resp.body.find(L'"', tp + 14);
+        size_t q2 = (q1 != std::wstring::npos) ? resp.body.find(L'"', q1 + 1) : std::wstring::npos;
+        if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
+            session.bearerToken = resp.body.substr(q1 + 1, q2 - q1 - 1);
+            return !session.bearerToken.empty();
+        }
+    }
+    outError = L"OAuth2 response did not contain access_token.";
+    return false;
+}
+
+void ApiTesterView::DisconnectWebSocket() {
+    auto ws = m_wsState;
+    if (!ws) return;
+    ws->alive.store(false);
+    {
+        std::lock_guard<std::mutex> lk(ws->ioMutex);
+        if (ws->hWebSocket) {
+            WinHttpWebSocketClose(static_cast<HINTERNET>(ws->hWebSocket), WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
+            WinHttpCloseHandle(static_cast<HINTERNET>(ws->hWebSocket));
+            ws->hWebSocket = nullptr;
+        }
+        if (ws->hRequest) { WinHttpCloseHandle(static_cast<HINTERNET>(ws->hRequest)); ws->hRequest = nullptr; }
+        if (ws->hConnect) { WinHttpCloseHandle(static_cast<HINTERNET>(ws->hConnect)); ws->hConnect = nullptr; }
+        if (ws->hSession) { WinHttpCloseHandle(static_cast<HINTERNET>(ws->hSession)); ws->hSession = nullptr; }
+    }
+    if (ws->recvThread.joinable()) {
+        if (ws->recvThread.get_id() == std::this_thread::get_id()) {
+            ws->recvThread.detach();
+        } else {
+            ws->recvThread.join();
+        }
+    }
+}
+
+void ApiTesterView::StartOrSendWebSocket(size_t sessionIdx) {
+    if (sessionIdx >= m_sessions.size()) return;
+    auto& s = m_sessions[sessionIdx];
+    auto ws = m_wsState;
+    if (s.isWsConnected && ws && ws->alive.load() && ws->hWebSocket) {
+        std::string msg = WideToUtf8(ResolveEnvTemplate(s.bodyText));
+        if (!msg.empty()) {
+            std::lock_guard<std::mutex> ioLk(ws->ioMutex);
+            WinHttpWebSocketSend(static_cast<HINTERNET>(ws->hWebSocket),
+                                 WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                                 msg.data(), static_cast<DWORD>(msg.size()));
+            if (s.wsMessages.size() >= 300) s.wsMessages.erase(s.wsMessages.begin());
+            s.wsMessages.push_back(L"[SEND] " + Utf8ToWide(msg));
+            s.response.body += L"[SEND] " + Utf8ToWide(msg) + L"\n";
+            s.response.hasResponse = true;
+        }
+        return;
+    }
+
+    DisconnectWebSocket();
+    std::wstring resolvedUrl = ResolveEnvTemplate(s.url);
+    bool isWss = (resolvedUrl.rfind(L"wss://", 0) == 0);
+    std::wstring httpUrl = isWss ? (L"https://" + resolvedUrl.substr(6)) : (L"http://" + resolvedUrl.substr(5));
+
+    URL_COMPONENTSW uc{};
+    uc.dwStructSize = sizeof(uc);
+    wchar_t host[256]{};
+    wchar_t path[2048]{};
+    uc.lpszHostName = host; uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = path; uc.dwUrlPathLength = 2048;
+    if (!WinHttpCrackUrl(httpUrl.c_str(), static_cast<DWORD>(httpUrl.size()), 0, &uc)) {
+        s.response.isError = true;
+        s.response.errorMessage = L"Invalid WebSocket URL: " + resolvedUrl;
+        return;
+    }
+
+    HINTERNET hSess = WinHttpOpen(L"Phide-WS/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
+    HINTERNET hConn = hSess ? WinHttpConnect(hSess, host, uc.nPort, 0) : nullptr;
+    HINTERNET hReq = hConn ? WinHttpOpenRequest(hConn, L"GET", path[0] ? path : L"/", nullptr, nullptr, nullptr,
+                                                isWss ? WINHTTP_FLAG_SECURE : 0) : nullptr;
+    if (hReq && !WinHttpSetOption(hReq, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+        WinHttpCloseHandle(hReq); hReq = nullptr;
+    }
+    if (!hReq || !WinHttpSendRequest(hReq, nullptr, 0, nullptr, 0, 0, 0) || !WinHttpReceiveResponse(hReq, nullptr)) {
+        if (hReq) WinHttpCloseHandle(hReq);
+        if (hConn) WinHttpCloseHandle(hConn);
+        if (hSess) WinHttpCloseHandle(hSess);
+        s.response.isError = true;
+        s.response.errorMessage = L"WebSocket handshake failed: " + resolvedUrl;
+        return;
+    }
+    HINTERNET hWs = WinHttpWebSocketCompleteUpgrade(hReq, 0);
+    WinHttpCloseHandle(hReq);
+    if (!hWs) {
+        if (hConn) WinHttpCloseHandle(hConn);
+        if (hSess) WinHttpCloseHandle(hSess);
+        s.response.isError = true;
+        s.response.errorMessage = L"WebSocket upgrade rejected by server.";
+        return;
+    }
+
+    ws->hSession = hSess;
+    ws->hConnect = hConn;
+    ws->hRequest = nullptr;
+    ws->hWebSocket = hWs;
+    ws->alive.store(true);
+    s.isWsConnected = true;
+    s.response.hasResponse = true;
+    s.response.statusCode = 101;
+    s.response.statusText = L"Switching Protocols";
+    s.response.body = L"[WebSocket Connected] " + resolvedUrl + L"\n";
+
+    HWND hwnd = m_hwnd;
+    ws->recvThread = std::thread([this, ws, sessionIdx, hwnd]() {
+        std::vector<char> buf(65536);
+        while (ws->alive.load()) {
+            DWORD bytesRead = 0;
+            WINHTTP_WEB_SOCKET_BUFFER_TYPE bufType{};
+            DWORD err = WinHttpWebSocketReceive(static_cast<HINTERNET>(ws->hWebSocket),
+                                                buf.data(), static_cast<DWORD>(buf.size()), &bytesRead, &bufType);
+            if (!ws->alive.load() || err != ERROR_SUCCESS || bufType == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) break;
+            if (bytesRead > 0) {
+                std::wstring msg = L"[RECV] " + Utf8ToWide(std::string(buf.data(), bytesRead));
+                std::lock_guard<std::mutex> lk(m_mutex);
+                if (!ws->alive.load()) break;
+                if (sessionIdx < m_sessions.size()) {
+                    auto& sess = m_sessions[sessionIdx];
+                    if (sess.wsMessages.size() >= 300) sess.wsMessages.erase(sess.wsMessages.begin());
+                    sess.wsMessages.push_back(msg);
+                    if (sess.response.body.size() < 262144) {
+                        sess.response.body += msg + L"\n";
+                    }
+                }
+            }
+            if (ws->alive.load() && hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        if (ws->alive.load()) {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            if (ws->alive.load() && sessionIdx < m_sessions.size()) {
+                m_sessions[sessionIdx].isWsConnected = false;
+            }
+        }
+        ws->alive.store(false);
+        if (hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
+    });
 }
 
 void ApiTesterView::DiscardDeviceResources() {
@@ -1225,16 +2059,25 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
     DWORD redirectPolicy = session.followRedirects ? WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
-    // 1. Build Headers String
+    // 1. Build Headers String (with automatic Cookie Jar injection when Cookie header omitted)
     std::wstring allHeaders;
+    bool hasExplicitCookie = false;
     for (const auto& h : session.headers) {
         if (h.enabled && !h.key.empty()) {
+            if (_wcsicmp(h.key.c_str(), L"cookie") == 0) hasExplicitCookie = true;
             allHeaders += h.key + L": " + h.value + L"\r\n";
+        }
+    }
+    if (!hasExplicitCookie) {
+        std::wstring jarCookie = BuildCookieHeaderForHost(szHost, szPath[0] ? szPath : L"/");
+        if (!jarCookie.empty()) {
+            allHeaders += L"Cookie: " + jarCookie + L"\r\n";
         }
     }
 
     // 2. Add Authorization Header
-    if (session.authType == ApiAuthType::BearerToken && !session.bearerToken.empty()) {
+    if ((session.authType == ApiAuthType::BearerToken || session.authType == ApiAuthType::OAuth2) &&
+        !session.bearerToken.empty()) {
         allHeaders += L"Authorization: Bearer " + session.bearerToken + L"\r\n";
     } else if (session.authType == ApiAuthType::BasicAuth && (!session.basicUser.empty() || !session.basicPass.empty())) {
         std::string raw = WideToUtf8(session.basicUser) + ":" + WideToUtf8(session.basicPass);
@@ -1444,6 +2287,13 @@ ApiResponseData ApiTesterView::ExecuteNetworkRequest(const ApiRequestSession& se
 void ApiTesterView::SendCurrentRequest() {
     if (m_activeSessionIdx >= m_sessions.size()) return;
     auto& session = m_sessions[m_activeSessionIdx];
+    std::wstring resolvedUrl = ResolveEnvTemplate(session.url);
+    if (resolvedUrl.rfind(L"ws://", 0) == 0 || resolvedUrl.rfind(L"wss://", 0) == 0) {
+        StartOrSendWebSocket(m_activeSessionIdx);
+        SaveSessionsToDisk();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
     if (session.isSending) return;
 
     session.isSending = true;
@@ -1453,10 +2303,38 @@ void ApiTesterView::SendCurrentRequest() {
     session.respScrollX = 0.0f;
 
     ApiRequestSession sessionCopy = session;
+    sessionCopy.url = resolvedUrl;
+    sessionCopy.bearerToken = ResolveEnvTemplate(session.bearerToken);
+    sessionCopy.apiKeyName = ResolveEnvTemplate(session.apiKeyName);
+    sessionCopy.apiKeyValue = ResolveEnvTemplate(session.apiKeyValue);
+    sessionCopy.basicUser = ResolveEnvTemplate(session.basicUser);
+    sessionCopy.basicPass = ResolveEnvTemplate(session.basicPass);
+    sessionCopy.bodyText = ResolveEnvTemplate(session.bodyText);
+    sessionCopy.graphqlQuery = ResolveEnvTemplate(session.graphqlQuery);
+    sessionCopy.graphqlVariables = ResolveEnvTemplate(session.graphqlVariables);
+    for (auto& h : sessionCopy.headers) { h.key = ResolveEnvTemplate(h.key); h.value = ResolveEnvTemplate(h.value); }
+    for (auto& p : sessionCopy.params) { p.key = ResolveEnvTemplate(p.key); p.value = ResolveEnvTemplate(p.value); }
+    for (auto& f : sessionCopy.formData) { f.key = ResolveEnvTemplate(f.key); f.value = ResolveEnvTemplate(f.value); }
+    for (auto& u : sessionCopy.urlEncoded) { u.key = ResolveEnvTemplate(u.key); u.value = ResolveEnvTemplate(u.value); }
+
+    std::wstring hostForCookies;
+    {
+        std::wstring urlToCrack = sessionCopy.url;
+        if (urlToCrack.find(L"://") == std::wstring::npos) urlToCrack = L"https://" + urlToCrack;
+        URL_COMPONENTSW uc{};
+        uc.dwStructSize = sizeof(uc);
+        wchar_t szH[256]{};
+        uc.lpszHostName = szH;
+        uc.dwHostNameLength = 256;
+        if (WinHttpCrackUrl(urlToCrack.c_str(), static_cast<DWORD>(urlToCrack.size()), 0, &uc)) {
+            hostForCookies = szH;
+        }
+    }
+
     size_t sessionIdx = m_activeSessionIdx;
     HWND hwnd = m_hwnd;
 
-    std::thread([this, sessionIdx, sessionCopy, hwnd]() {
+    std::thread([this, sessionIdx, sessionCopy, hostForCookies, hwnd]() {
         std::string sseBuffer;
         auto onChunk = [this, sessionIdx, hwnd, &sseBuffer](const std::string& chunk, bool isStream) {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -1516,6 +2394,11 @@ void ApiTesterView::SendCurrentRequest() {
         ApiResponseData result = ExecuteNetworkRequest(sessionCopy, onChunk);
         {
             std::lock_guard<std::mutex> lock(m_mutex);
+            if (!hostForCookies.empty()) {
+                for (const auto& ck : result.cookies) {
+                    StoreCookieFromSetCookieHeader(hostForCookies, ck);
+                }
+            }
             if (sessionIdx < m_sessions.size()) {
                 auto& s = m_sessions[sessionIdx];
                 if (result.isStream && !s.response.streamEvents.empty()) {
@@ -1570,6 +2453,28 @@ std::wstring* ApiTesterView::GetActiveCellString(ApiRequestSession& s) {
         case ApiFocusField::ApiKeyValue:return &s.apiKeyValue;
         case ApiFocusField::AuthUser:   return &s.basicUser;
         case ApiFocusField::AuthPass:   return &s.basicPass;
+        case ApiFocusField::OAuthTokenUrl:    return &s.oauthTokenUrl;
+        case ApiFocusField::OAuthClientId:    return &s.oauthClientId;
+        case ApiFocusField::OAuthClientSecret:return &s.oauthClientSecret;
+        case ApiFocusField::OAuthScope:       return &s.oauthScope;
+        case ApiFocusField::EnvVarKey: {
+            if (m_activeEnvIdx < m_environments.size() && m_focusedRowIndex < m_environments[m_activeEnvIdx].vars.size()) {
+                return &m_environments[m_activeEnvIdx].vars[m_focusedRowIndex].key;
+            }
+            return nullptr;
+        }
+        case ApiFocusField::EnvVarVal: {
+            if (m_activeEnvIdx < m_environments.size() && m_focusedRowIndex < m_environments[m_activeEnvIdx].vars.size()) {
+                return &m_environments[m_activeEnvIdx].vars[m_focusedRowIndex].value;
+            }
+            return nullptr;
+        }
+        case ApiFocusField::EnvVarDesc: {
+            if (m_activeEnvIdx < m_environments.size() && m_focusedRowIndex < m_environments[m_activeEnvIdx].vars.size()) {
+                return &m_environments[m_activeEnvIdx].vars[m_focusedRowIndex].description;
+            }
+            return nullptr;
+        }
         case ApiFocusField::SettingsTimeout: return &s.timeoutMsStr;
         default: return nullptr;
     }
@@ -2311,9 +3216,34 @@ void ApiTesterView::PasteFromClipboard() {
     clipText.erase(std::remove(clipText.begin(), clipText.end(), L'\r'), clipText.end());
 
     auto& s = m_sessions[m_activeSessionIdx];
-    if ((m_focusedField == ApiFocusField::Url || m_focusedField == ApiFocusField::None) &&
-        TryImportCurlCommand(clipText, s)) {
-        return;
+    if (m_focusedField == ApiFocusField::Url || m_focusedField == ApiFocusField::None) {
+        if (TryImportCurlCommand(clipText, s)) {
+            return;
+        }
+        std::vector<ApiRequestSession> imported;
+        if (clipText.find(L"###") != std::wstring::npos ||
+            clipText.rfind(L"GET ", 0) == 0 || clipText.rfind(L"POST ", 0) == 0 ||
+            clipText.rfind(L"PUT ", 0) == 0 || clipText.rfind(L"DELETE ", 0) == 0 ||
+            clipText.rfind(L"PATCH ", 0) == 0 || clipText.front() == L'@') {
+            imported = ParseDotHttp(clipText);
+        } else if (!clipText.empty() && clipText.front() == L'{') {
+            std::string clipUtf8 = WideToUtf8(clipText);
+            if (!ImportOpenApiSpec(clipUtf8, imported)) {
+                ImportPostmanCollection(clipUtf8, imported);
+            }
+        }
+        if (!imported.empty()) {
+            s = std::move(imported[0]);
+            EnsureDefaultData(s);
+            for (size_t i = 1; i < imported.size() && m_sessions.size() < 24; ++i) {
+                EnsureDefaultData(imported[i]);
+                m_sessions.push_back(std::move(imported[i]));
+            }
+            SaveSessionsToDisk();
+            m_toastMessage = L"Imported " + std::to_wstring(imported.size()) + L" request(s)";
+            m_toastExpiry = GetTickCount() + 2000;
+            return;
+        }
     }
     if (m_hasSelection) {
         DeleteSelectedRange(s);
@@ -2505,6 +3435,12 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
     if (m_isAuthDropdownOpen) {
         RenderAuthDropdown(pRT, theme, config);
     }
+    if (m_isEnvDropdownOpen) {
+        RenderEnvDropdown(pRT, theme, config);
+    }
+    if (m_isCollectionsOpen) {
+        RenderCollectionsDropdown(pRT, theme, config);
+    }
 
     // 4.5 Timing Waterfall Popup
     if (m_showTimingPopup) {
@@ -2513,8 +3449,20 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
 
     // 5. Toast Notification
     if (!m_toastMessage.empty() && now < m_toastExpiry) {
-        float toastW = config.ScaleF(210.0f);
         float toastH = config.ScaleF(32.0f);
+        float maxToastW = (std::max)(config.ScaleF(200.0f), w - config.ScaleF(24.0f));
+        float toastW = config.ScaleF(210.0f);
+        if (theme.dwriteFactory && theme.fontButtonCenter) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pToastLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_toastMessage.c_str(), static_cast<UINT32>(m_toastMessage.length()),
+                    theme.fontButtonCenter.Get(), 4000.0f, toastH, &pToastLayout))) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pToastLayout->GetMetrics(&tm))) {
+                    toastW = (std::clamp)(tm.width + config.ScaleF(32.0f), config.ScaleF(160.0f), maxToastW);
+                }
+            }
+        }
         float tx = x + (w - toastW) * 0.5f;
         float ty = y + h - toastH - config.ScaleF(24.0f);
         D2D1_RECT_F rcToast = D2D1::RectF(tx, ty, tx + toastW, ty + toastH);
@@ -2523,8 +3471,10 @@ void ApiTesterView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppC
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.13f, 0.96f), &toastBg);
         if (toastBg) pRT->FillRoundedRectangle(rrcToast, toastBg.Get());
         pRT->DrawRoundedRectangle(rrcToast, theme.brushBrandAccent.Get(), 1.2f);
+        D2D1_RECT_F rcToastText = D2D1::RectF(tx + config.ScaleF(10.0f), ty, tx + toastW - config.ScaleF(10.0f), ty + toastH);
         pRT->DrawText(m_toastMessage.c_str(), static_cast<UINT32>(m_toastMessage.length()),
-                      theme.fontButtonCenter.Get(), rcToast, theme.brushTextWhite.Get());
+                      theme.fontButtonCenter.Get(), rcToastText, theme.brushTextWhite.Get(),
+                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 }
 
@@ -2623,6 +3573,33 @@ void ApiTesterView::RenderSessionTabBar(ID2D1RenderTarget* pRT, Theme& theme, co
     pRT->DrawRoundedRectangle(rrcAdd, theme.brushBorderSubtle.Get(), 0.8f);
     pRT->DrawText(L"+", 1, theme.fontTab.Get(), m_rcAddSessionBtn,
                   addHov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+
+    // #42 Right-aligned Env / Collection / Import / Export utility chips
+    auto drawTopPill = [&](float rightEdge, D2D1_RECT_F& outRc, const std::wstring& label, bool active = false) -> float {
+        float pw = static_cast<float>(label.size()) * config.ScaleF(6.5f) + config.ScaleF(16.0f);
+        float px = rightEdge - pw;
+        if (px <= curX + addW + config.ScaleF(8.0f)) {
+            outRc = {};
+            return rightEdge;
+        }
+        outRc = D2D1::RectF(px, y + config.ScaleF(3.0f), rightEdge, y + tabH - config.ScaleF(3.0f));
+        bool hov = PtInRectF(m_mousePt, outRc) || active;
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(outRc, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrc, active ? theme.brushTabActiveBg.Get() : (hov ? theme.brushItemHover.Get() : theme.brushTabBarBg.Get()));
+        pRT->DrawRoundedRectangle(rrc, active ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 0.9f);
+        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.size()), theme.fontKeycap.Get(), outRc,
+                      hov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+        return px - config.ScaleF(6.0f);
+    };
+    float rEdge = x + w;
+    rEdge = drawTopPill(rEdge, m_rcExportBtn, L"Export");
+    rEdge = drawTopPill(rEdge, m_rcImportBtn, L"Import");
+    std::wstring collLbl = L"Saved (" + std::to_wstring(m_collections.size()) + L")";
+    rEdge = drawTopPill(rEdge, m_rcCollectionsBtn, collLbl, m_isCollectionsOpen);
+    rEdge = drawTopPill(rEdge, m_rcSaveCollectionBtn, L"Save");
+    std::wstring envName = (m_activeEnvIdx < m_environments.size()) ? m_environments[m_activeEnvIdx].name : L"Default";
+    rEdge = drawTopPill(rEdge, m_rcEnvBtn, L"Env: " + envName + L" ▼", m_isEnvDropdownOpen);
+    (void)rEdge;
 }
 
 // -----------------------------------------------------------------------------
@@ -2703,6 +3680,8 @@ void ApiTesterView::RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app
     m_rcSendBtn = D2D1::RectF(sendX, y, sendX + sendBtnW, y + barH);
     D2D1_ROUNDED_RECT rrcSend = D2D1::RoundedRect(m_rcSendBtn, 6.0f, 6.0f);
 
+    bool isWsUrl = (s.url.rfind(L"ws://", 0) == 0 || s.url.rfind(L"wss://", 0) == 0);
+    bool isWsLive = isWsUrl && s.isWsConnected && m_wsState && m_wsState->alive.load();
     bool sendHover = PtInRectF(m_mousePt, m_rcSendBtn);
     if (s.isSending) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sendDim;
@@ -2713,12 +3692,17 @@ void ApiTesterView::RenderUrlBar(ID2D1RenderTarget* pRT, Theme& theme, const app
     } else {
         if (sendHover) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sendBrt;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.56f, 0.94f, 1.0f), &sendBrt);
+            pRT->CreateSolidColorBrush(isWsLive ? D2D1::ColorF(0.16f, 0.72f, 0.45f, 1.0f) : D2D1::ColorF(0.08f, 0.56f, 0.94f, 1.0f), &sendBrt);
             if (sendBrt) pRT->FillRoundedRectangle(rrcSend, sendBrt.Get());
+        } else if (isWsLive) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> wsLiveBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.60f, 0.38f, 1.0f), &wsLiveBg);
+            pRT->FillRoundedRectangle(rrcSend, wsLiveBg ? wsLiveBg.Get() : theme.brushBrandAccent.Get());
         } else {
             pRT->FillRoundedRectangle(rrcSend, theme.brushBrandAccent.Get());
         }
-        pRT->DrawText(L"Send", 4, theme.fontButtonCenter.Get(), m_rcSendBtn, theme.brushTextWhite.Get());
+        const wchar_t* szSendLabel = isWsLive ? L"Send WS" : (isWsUrl ? L"Connect" : L"Send");
+        pRT->DrawText(szSendLabel, static_cast<UINT32>(wcslen(szSendLabel)), theme.fontButtonCenter.Get(), m_rcSendBtn, theme.brushTextWhite.Get());
     }
 }
 
@@ -2835,11 +3819,12 @@ void ApiTesterView::RenderSubNavTabs(ID2D1RenderTarget* pRT, Theme& theme, const
     bool bodyActive = (s.bodyType != ApiBodyType::None);
 
     NavInfo navs[] = {
-        { ApiRequestTab::Params,   L"Params",        activeParamsCount > 0,  std::to_wstring(activeParamsCount),  false },
-        { ApiRequestTab::Auth,     L"Authorization", s.authType != ApiAuthType::NoAuth, L"", s.authType != ApiAuthType::NoAuth },
-        { ApiRequestTab::Headers,  L"Headers",       activeHeadersCount > 0, std::to_wstring(activeHeadersCount), false },
-        { ApiRequestTab::Body,     L"Body",          false, L"", bodyActive },
-        { ApiRequestTab::Settings, L"Settings",      false, L"", false }
+        { ApiRequestTab::Params,      L"Params",        activeParamsCount > 0,  std::to_wstring(activeParamsCount),  false },
+        { ApiRequestTab::Auth,        L"Authorization", s.authType != ApiAuthType::NoAuth, L"", s.authType != ApiAuthType::NoAuth },
+        { ApiRequestTab::Headers,     L"Headers",       activeHeadersCount > 0, std::to_wstring(activeHeadersCount), false },
+        { ApiRequestTab::Body,        L"Body",          false, L"", bodyActive },
+        { ApiRequestTab::Settings,    L"Settings",      false, L"", false },
+        { ApiRequestTab::Environment, L"Variables",     false, L"", false }
     };
 
     float curX = x;
@@ -2914,6 +3899,85 @@ void ApiTesterView::RenderSubNavContent(ID2D1RenderTarget* pRT, Theme& theme, co
         case ApiRequestTab::Settings:
             RenderSettingsTab(pRT, theme, config, x, y, w, h);
             break;
+        case ApiRequestTab::Environment:
+            RenderEnvironmentTab(pRT, theme, config, x, y, w, h);
+            break;
+    }
+}
+
+void ApiTesterView::RenderEnvironmentTab(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         float x, float y, float w, float h) {
+    if (m_environments.empty()) {
+        m_environments.push_back({ L"Default", {} });
+        m_activeEnvIdx = 0;
+    }
+    if (m_activeEnvIdx >= m_environments.size()) m_activeEnvIdx = 0;
+    auto& vars = m_environments[m_activeEnvIdx].vars;
+    if (vars.empty()) vars.push_back({ true, L"", L"", L"" });
+    RenderKeyValueTable(pRT, theme, config, x, y, w, h, vars,
+                        ApiFocusField::EnvVarKey, ApiFocusField::EnvVarVal, ApiFocusField::EnvVarDesc,
+                        L"+ Add Env Variable");
+}
+
+void ApiTesterView::RenderEnvDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
+    if (m_environments.empty()) return;
+    float dropW = config.ScaleF(200.0f);
+    float itemH = config.ScaleF(26.0f);
+    float dropH = static_cast<float>(m_environments.size()) * itemH + config.ScaleF(8.0f);
+    float dropX = (std::max)(m_viewX + config.ScaleF(8.0f), m_rcEnvBtn.right - dropW);
+    float dropY = m_rcEnvBtn.bottom + config.ScaleF(4.0f);
+    m_rcEnvDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcEnvDropdown, 6.0f, 6.0f), theme.brushMenuBg.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcEnvDropdown, 6.0f, 6.0f), theme.brushMenuBorder.Get(), 1.0f);
+
+    m_envItemRects.clear();
+    float cy = dropY + config.ScaleF(4.0f);
+    for (size_t i = 0; i < m_environments.size(); ++i) {
+        D2D1_RECT_F rcRow = D2D1::RectF(dropX + config.ScaleF(4.0f), cy, dropX + dropW - config.ScaleF(4.0f), cy + itemH);
+        m_envItemRects.push_back(rcRow);
+        bool sel = (i == m_activeEnvIdx);
+        bool hov = PtInRectF(m_mousePt, rcRow);
+        if (sel || hov) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f),
+                                      hov ? theme.brushItemHover.Get() : theme.brushItemActive.Get());
+        }
+        std::wstring lbl = (sel ? L"✓ " : L"  ") + m_environments[i].name + L" (" + std::to_wstring(m_environments[i].vars.size()) + L")";
+        pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), theme.fontMenuItem.Get(),
+                      D2D1::RectF(rcRow.left + config.ScaleF(6.0f), rcRow.top, rcRow.right - config.ScaleF(6.0f), rcRow.bottom),
+                      theme.brushTextPrimary.Get());
+        cy += itemH;
+    }
+}
+
+void ApiTesterView::RenderCollectionsDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
+    float dropW = config.ScaleF(300.0f);
+    float itemH = config.ScaleF(26.0f);
+    size_t count = (std::min<size_t>)(12, m_collections.size());
+    float dropH = static_cast<float>((std::max<size_t>)(1, count)) * itemH + config.ScaleF(10.0f);
+    float dropX = (std::max)(m_viewX + config.ScaleF(8.0f), m_rcCollectionsBtn.right - dropW);
+    float dropY = m_rcCollectionsBtn.bottom + config.ScaleF(4.0f);
+    m_rcCollectionsDropdown = D2D1::RectF(dropX, dropY, dropX + dropW, dropY + dropH);
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcCollectionsDropdown, 6.0f, 6.0f), theme.brushMenuBg.Get());
+    pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcCollectionsDropdown, 6.0f, 6.0f), theme.brushMenuBorder.Get(), 1.0f);
+
+    m_collectionItemRects.clear();
+    float cy = dropY + config.ScaleF(5.0f);
+    if (m_collections.empty()) {
+        pRT->DrawText(L"(No saved requests yet — click Save)", 37, theme.fontHint.Get(),
+                      D2D1::RectF(dropX + 10.0f, cy, dropX + dropW - 10.0f, cy + itemH), theme.brushTextMuted.Get());
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        D2D1_RECT_F rcRow = D2D1::RectF(dropX + config.ScaleF(4.0f), cy, dropX + dropW - config.ScaleF(4.0f), cy + itemH);
+        m_collectionItemRects.push_back(rcRow);
+        if (PtInRectF(m_mousePt, rcRow)) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f), theme.brushItemHover.Get());
+        }
+        std::wstring lbl = std::wstring(HttpMethodToString(m_collections[i].request.method)) + L"  " + m_collections[i].request.name;
+        pRT->DrawText(lbl.c_str(), static_cast<UINT32>(lbl.size()), theme.fontMenuItem.Get(),
+                      D2D1::RectF(rcRow.left + config.ScaleF(6.0f), rcRow.top, rcRow.right - config.ScaleF(6.0f), rcRow.bottom),
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        cy += itemH;
     }
 }
 
@@ -3146,6 +4210,7 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
     if (s.authType == ApiAuthType::BearerToken) typeStr = L"Bearer Token  ▼";
     else if (s.authType == ApiAuthType::ApiKey) typeStr = L"API Key  ▼";
     else if (s.authType == ApiAuthType::BasicAuth) typeStr = L"Basic Auth  ▼";
+    else if (s.authType == ApiAuthType::OAuth2) typeStr = L"OAuth 2.0  ▼";
 
     pRT->DrawText(typeStr.c_str(), static_cast<UINT32>(typeStr.length()),
                   theme.fontButtonCenter.Get(), m_rcAuthTypeBtn, theme.brushTextPrimary.Get());
@@ -3259,6 +4324,39 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
                       theme.brushTextSecondary.Get());
         m_rcAuthField2 = D2D1::RectF(x + config.ScaleF(100.0f), curY, x + config.ScaleF(380.0f), curY + config.ScaleF(30.0f));
         drawInputBox(m_rcAuthField2, s.basicPass, L"Password", m_focusedField == ApiFocusField::AuthPass, true);
+    } else if (s.authType == ApiAuthType::OAuth2) {
+        pRT->DrawText(L"Token URL:", 10, theme.fontKeycap.Get(),
+                      D2D1::RectF(x, curY, x + config.ScaleF(95.0f), curY + config.ScaleF(28.0f)),
+                      theme.brushTextSecondary.Get());
+        m_rcAuthField1 = D2D1::RectF(x + config.ScaleF(100.0f), curY, x + w - config.ScaleF(130.0f), curY + config.ScaleF(28.0f));
+        drawInputBox(m_rcAuthField1, s.oauthTokenUrl, L"https://auth.example.com/oauth/token", m_focusedField == ApiFocusField::OAuthTokenUrl);
+        m_rcOAuthFetchBtn = D2D1::RectF(m_rcAuthField1.right + config.ScaleF(8.0f), curY, x + w - config.ScaleF(20.0f), curY + config.ScaleF(28.0f));
+        bool fetchHov = PtInRectF(m_mousePt, m_rcOAuthFetchBtn);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcOAuthFetchBtn, 4.0f, 4.0f),
+                                  fetchHov ? theme.brushBrandAccent.Get() : theme.brushTabBarBg.Get());
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcOAuthFetchBtn, 4.0f, 4.0f), theme.brushBrandAccent.Get(), 1.0f);
+        pRT->DrawText(L"Get Token", 9, theme.fontButtonCenter.Get(), m_rcOAuthFetchBtn, theme.brushTextWhite.Get());
+
+        curY += config.ScaleF(34.0f);
+        float halfW = (w - config.ScaleF(220.0f)) * 0.5f;
+        pRT->DrawText(L"Client ID:", 10, theme.fontKeycap.Get(),
+                      D2D1::RectF(x, curY, x + config.ScaleF(95.0f), curY + config.ScaleF(28.0f)),
+                      theme.brushTextSecondary.Get());
+        m_rcAuthField2 = D2D1::RectF(x + config.ScaleF(100.0f), curY, x + config.ScaleF(100.0f) + halfW, curY + config.ScaleF(28.0f));
+        drawInputBox(m_rcAuthField2, s.oauthClientId, L"Client ID", m_focusedField == ApiFocusField::OAuthClientId);
+
+        pRT->DrawText(L"Secret:", 7, theme.fontKeycap.Get(),
+                      D2D1::RectF(m_rcAuthField2.right + config.ScaleF(12.0f), curY, m_rcAuthField2.right + config.ScaleF(82.0f), curY + config.ScaleF(28.0f)),
+                      theme.brushTextSecondary.Get());
+        m_rcAuthField3 = D2D1::RectF(m_rcAuthField2.right + config.ScaleF(84.0f), curY, x + w - config.ScaleF(20.0f), curY + config.ScaleF(28.0f));
+        drawInputBox(m_rcAuthField3, s.oauthClientSecret, L"Client Secret", m_focusedField == ApiFocusField::OAuthClientSecret, true);
+
+        curY += config.ScaleF(34.0f);
+        pRT->DrawText(L"Scope:", 6, theme.fontKeycap.Get(),
+                      D2D1::RectF(x, curY, x + config.ScaleF(95.0f), curY + config.ScaleF(28.0f)),
+                      theme.brushTextSecondary.Get());
+        m_rcAuthField4 = D2D1::RectF(x + config.ScaleF(100.0f), curY, x + w - config.ScaleF(20.0f), curY + config.ScaleF(28.0f));
+        drawInputBox(m_rcAuthField4, s.oauthScope, L"Optional space-separated scopes (Bearer cached in token field)", m_focusedField == ApiFocusField::OAuthScope);
     } else {
         pRT->DrawText(L"This request does not use any authorization.", 44,
                       theme.fontHint.Get(), D2D1::RectF(x, curY, x + w, curY + config.ScaleF(30.0f)),
@@ -3269,7 +4367,7 @@ void ApiTesterView::RenderAuthTab(ID2D1RenderTarget* pRT, Theme& theme, const ap
 void ApiTesterView::RenderAuthDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config) {
     float dropW = config.ScaleF(160.0f);
     float itemH = config.ScaleF(28.0f);
-    float dropH = itemH * 4.0f + config.ScaleF(8.0f);
+    float dropH = itemH * 5.0f + config.ScaleF(8.0f);
     float dropX = m_rcAuthTypeBtn.left;
     float dropY = m_rcAuthTypeBtn.bottom + config.ScaleF(4.0f);
 
@@ -3278,9 +4376,9 @@ void ApiTesterView::RenderAuthDropdown(ID2D1RenderTarget* pRT, Theme& theme, con
     pRT->FillRoundedRectangle(rrc, theme.brushMenuBg.Get());
     pRT->DrawRoundedRectangle(rrc, theme.brushMenuBorder.Get(), 1.0f);
 
-    const wchar_t* types[] = { L"No Auth", L"Bearer Token", L"API Key", L"Basic Auth" };
+    const wchar_t* types[] = { L"No Auth", L"Bearer Token", L"API Key", L"Basic Auth", L"OAuth 2.0" };
     float curY = dropY + config.ScaleF(4.0f);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         D2D1_RECT_F rcRow = D2D1::RectF(dropX + config.ScaleF(4.0f), curY, dropX + dropW - config.ScaleF(4.0f), curY + itemH);
         if (PtInRectF(m_mousePt, rcRow)) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 4.0f, 4.0f), theme.brushItemHover.Get());
@@ -4115,7 +5213,22 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         float rowH = config.ScaleF(24.0f);
         float curY = contentY + config.ScaleF(8.0f) - s.respScrollY;
         float cLeft = x + config.ScaleF(16.0f) - s.respScrollX;
-        if (s.response.cookies.empty()) {
+        m_rcClearCookiesBtn = {};
+        if (!m_cookieJar.empty() && curY + rowH > contentY && curY < contentY + contentH) {
+            std::wstring jarHdr = L"Persistent Cookie Jar (" + std::to_wstring(m_cookieJar.size()) + L" domains/cookies)";
+            pRT->DrawText(jarHdr.c_str(), static_cast<UINT32>(jarHdr.size()),
+                          theme.fontKeycap.Get(), D2D1::RectF(cLeft, curY, x + w - config.ScaleF(110.0f), curY + rowH),
+                          theme.brushBrandAccent.Get());
+            m_rcClearCookiesBtn = D2D1::RectF(x + w - config.ScaleF(96.0f), curY + config.ScaleF(2.0f),
+                                              x + w - config.ScaleF(16.0f), curY + rowH - config.ScaleF(2.0f));
+            bool clrHov = PtInRectF(m_mousePt, m_rcClearCookiesBtn);
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcClearCookiesBtn, 4.0f, 4.0f),
+                                      clrHov ? theme.brushItemHover.Get() : theme.brushTabBarBg.Get());
+            pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcClearCookiesBtn, 4.0f, 4.0f), theme.brushBorderSubtle.Get(), 0.8f);
+            pRT->DrawText(L"Clear Jar", 9, theme.fontKeycap.Get(), m_rcClearCookiesBtn, theme.brushTextSecondary.Get());
+            curY += rowH + config.ScaleF(4.0f);
+        }
+        if (s.response.cookies.empty() && m_cookieJar.empty()) {
             pRT->DrawText(L"No cookies received from the server.", 36,
                           theme.fontHint.Get(), D2D1::RectF(x + 20.0f, contentY + 20.0f, x + w, contentY + 50.0f),
                           theme.brushTextMuted.Get());
@@ -4125,6 +5238,15 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
                     D2D1_RECT_F rcCk = D2D1::RectF(cLeft, curY, cLeft + 3000.0f, curY + rowH);
                     pRT->DrawText(ck.c_str(), static_cast<UINT32>(ck.length()),
                                   theme.fontTab.Get(), rcCk, theme.brushTextPrimary.Get());
+                }
+                curY += rowH;
+            }
+            for (const auto& cj : m_cookieJar) {
+                if (curY + rowH > contentY && curY < contentY + contentH) {
+                    std::wstring line = cj.domain + L" " + cj.path + L"  " + cj.name + L"=" + cj.value;
+                    D2D1_RECT_F rcCj = D2D1::RectF(cLeft, curY, cLeft + 3000.0f, curY + rowH);
+                    pRT->DrawText(line.c_str(), static_cast<UINT32>(line.length()),
+                                  theme.fontKeycap.Get(), rcCj, theme.brushTextSecondary.Get());
                 }
                 curY += rowH;
             }
@@ -4829,15 +5951,127 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
             float itemH = config.ScaleF(28.0f);
             int idx = static_cast<int>((pt.y - m_rcAuthDropdown.top - config.ScaleF(4.0f)) / itemH);
             static const ApiAuthType types[] = {
-                ApiAuthType::NoAuth, ApiAuthType::BearerToken, ApiAuthType::ApiKey, ApiAuthType::BasicAuth
+                ApiAuthType::NoAuth, ApiAuthType::BearerToken, ApiAuthType::ApiKey, ApiAuthType::BasicAuth, ApiAuthType::OAuth2
             };
-            if (idx >= 0 && idx < 4) {
+            if (idx >= 0 && idx < 5) {
                 s.authType = types[idx];
                 m_focusedField = ApiFocusField::None;
                 SaveSessionsToDisk();
             }
         }
         m_isAuthDropdownOpen = false;
+        return true;
+    }
+
+    // 2b. Env Dropdown & Collections Dropdown (#42)
+    if (m_isEnvDropdownOpen) {
+        if (PtInRectF(pt, m_rcEnvDropdown)) {
+            for (size_t i = 0; i < m_envItemRects.size() && i < m_environments.size(); ++i) {
+                if (PtInRectF(pt, m_envItemRects[i])) {
+                    m_activeEnvIdx = i;
+                    SaveEnvsToDisk();
+                    break;
+                }
+            }
+        }
+        m_isEnvDropdownOpen = false;
+        return true;
+    }
+    if (m_isCollectionsOpen) {
+        if (PtInRectF(pt, m_rcCollectionsDropdown)) {
+            for (size_t i = 0; i < m_collectionItemRects.size() && i < m_collections.size(); ++i) {
+                if (PtInRectF(pt, m_collectionItemRects[i])) {
+                    ApiRequestSession opened = m_collections[i].request;
+                    EnsureDefaultData(opened);
+                    if (m_sessions.size() < 24) {
+                        m_sessions.push_back(std::move(opened));
+                        m_activeSessionIdx = m_sessions.size() - 1;
+                    } else {
+                        m_sessions[m_activeSessionIdx] = std::move(opened);
+                    }
+                    SaveSessionsToDisk();
+                    break;
+                }
+            }
+        }
+        m_isCollectionsOpen = false;
+        return true;
+    }
+
+    // 2c. Top Utility Pills: Env, Save, Collections, Import, Export
+    if (PtInRectF(pt, m_rcEnvBtn)) {
+        m_isEnvDropdownOpen = !m_isEnvDropdownOpen;
+        m_isCollectionsOpen = false;
+        m_isMethodDropdownOpen = false;
+        m_isAuthDropdownOpen = false;
+        return true;
+    }
+    if (PtInRectF(pt, m_rcSaveCollectionBtn)) {
+        SaveCurrentRequestToCollection();
+        m_toastMessage = L"Saved to collection";
+        m_toastExpiry = GetTickCount() + 1800;
+        return true;
+    }
+    if (PtInRectF(pt, m_rcCollectionsBtn)) {
+        m_isCollectionsOpen = !m_isCollectionsOpen;
+        m_isEnvDropdownOpen = false;
+        m_isMethodDropdownOpen = false;
+        m_isAuthDropdownOpen = false;
+        return true;
+    }
+    if (PtInRectF(pt, m_rcExportBtn)) {
+        std::wstring httpText = ExportDotHttp(m_sessions);
+        if (!httpText.empty() && OpenClipboard(m_hwnd)) {
+            EmptyClipboard();
+            size_t bytes = (httpText.size() + 1) * sizeof(wchar_t);
+            if (HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+                if (void* p = GlobalLock(hg)) {
+                    memcpy(p, httpText.c_str(), bytes);
+                    GlobalUnlock(hg);
+                    SetClipboardData(CF_UNICODETEXT, hg);
+                } else GlobalFree(hg);
+            }
+            CloseClipboard();
+        }
+        m_toastMessage = L"Exported .http to clipboard";
+        m_toastExpiry = GetTickCount() + 2000;
+        return true;
+    }
+    if (PtInRectF(pt, m_rcImportBtn)) {
+        std::wstring clipText;
+        if (OpenClipboard(m_hwnd)) {
+            if (HANDLE hData = GetClipboardData(CF_UNICODETEXT)) {
+                if (const wchar_t* pStr = static_cast<const wchar_t*>(GlobalLock(hData))) {
+                    clipText = pStr;
+                    GlobalUnlock(hData);
+                }
+            }
+            CloseClipboard();
+        }
+        std::vector<ApiRequestSession> imported;
+        if (!clipText.empty()) {
+            if (TryImportCurlCommand(clipText, s)) {
+                m_toastMessage = L"Imported cURL command";
+                m_toastExpiry = GetTickCount() + 2000;
+                return true;
+            }
+            std::string clipUtf8 = WideToUtf8(clipText);
+            if (!ImportOpenApiSpec(clipUtf8, imported) && !ImportPostmanCollection(clipUtf8, imported)) {
+                imported = ParseDotHttp(clipText);
+            }
+        }
+        if (!imported.empty()) {
+            for (auto& item : imported) {
+                EnsureDefaultData(item);
+                if (m_sessions.size() < 24) m_sessions.push_back(std::move(item));
+            }
+            m_activeSessionIdx = m_sessions.size() - 1;
+            SaveSessionsToDisk();
+            m_toastMessage = L"Imported " + std::to_wstring(imported.size()) + L" request(s)";
+        } else {
+            m_toastMessage = L"Copy cURL / .http / OpenAPI / Postman JSON to clipboard";
+        }
+        m_toastExpiry = GetTickCount() + 2200;
         return true;
     }
 
@@ -4917,6 +6151,15 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
         s.respScrollY = 0.0f;
         m_hasRespSelection = false;
         m_toastMessage = L"Response cleared";
+        m_toastExpiry = GetTickCount() + 1500;
+        return true;
+    }
+
+    // 10a. Clear Cookie Jar Button
+    if (s.activeRespTab == ApiResponseTab::Cookies && PtInRectF(pt, m_rcClearCookiesBtn)) {
+        ClearCookieJar();
+        s.response.cookies.clear();
+        m_toastMessage = L"Cookie jar cleared";
         m_toastExpiry = GetTickCount() + 1500;
         return true;
     }
@@ -5136,6 +6379,79 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
                 return true;
             }
         }
+        if (s.authType == ApiAuthType::OAuth2) {
+            if (PtInRectF(pt, m_rcOAuthFetchBtn)) {
+                ApiRequestSession copy = s;
+                copy.oauthTokenUrl = ResolveEnvTemplate(s.oauthTokenUrl);
+                copy.oauthClientId = ResolveEnvTemplate(s.oauthClientId);
+                copy.oauthClientSecret = ResolveEnvTemplate(s.oauthClientSecret);
+                copy.oauthScope = ResolveEnvTemplate(s.oauthScope);
+                size_t sessionIdx = m_activeSessionIdx;
+                HWND hwnd = m_hwnd;
+                auto alive = m_viewAlive;
+                m_toastMessage = L"Fetching OAuth2 token...";
+                m_toastExpiry = GetTickCount() + 2500;
+                std::thread([this, alive, sessionIdx, copy, hwnd]() mutable {
+                    std::wstring err;
+                    bool ok = FetchOAuth2AccessToken(copy, err);
+                    if (!alive || !alive->load()) return;
+                    {
+                        std::lock_guard<std::mutex> lk(m_mutex);
+                        if (sessionIdx < m_sessions.size()) {
+                            if (ok) {
+                                m_sessions[sessionIdx].bearerToken = copy.bearerToken;
+                                m_toastMessage = L"OAuth2 token acquired";
+                            } else {
+                                m_toastMessage = err.empty() ? L"OAuth2 failed" : err;
+                            }
+                            m_toastExpiry = GetTickCount() + 3000;
+                            SaveSessionsToDisk();
+                        }
+                    }
+                    if (hwnd) {
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        PostMessageW(hwnd, WM_NULL, 0, 0);
+                    }
+                }).detach();
+                return true;
+            }
+            if (PtInRectF(pt, m_rcAuthField1)) {
+                m_focusedField = ApiFocusField::OAuthTokenUrl;
+                ClearSelection();
+                m_hasRespSelection = false;
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField1.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.oauthTokenUrl, relX);
+                m_showCaret = true;
+                return true;
+            }
+            if (PtInRectF(pt, m_rcAuthField2)) {
+                m_focusedField = ApiFocusField::OAuthClientId;
+                ClearSelection();
+                m_hasRespSelection = false;
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField2.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.oauthClientId, relX);
+                m_showCaret = true;
+                return true;
+            }
+            if (PtInRectF(pt, m_rcAuthField3)) {
+                m_focusedField = ApiFocusField::OAuthClientSecret;
+                ClearSelection();
+                m_hasRespSelection = false;
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField3.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.oauthClientSecret, relX);
+                m_showCaret = true;
+                return true;
+            }
+            if (PtInRectF(pt, m_rcAuthField4)) {
+                m_focusedField = ApiFocusField::OAuthScope;
+                ClearSelection();
+                m_hasRespSelection = false;
+                float relX = (std::max)(0.0f, pt.x - (m_rcAuthField4.left + config.ScaleF(10.0f)));
+                s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.oauthScope, relX);
+                m_showCaret = true;
+                return true;
+            }
+        }
     } else if (s.activeReqTab == ApiRequestTab::Body) {
         for (const auto& [bType, rcPill] : m_bodyFormatTabs) {
             if (PtInRectF(pt, rcPill)) {
@@ -5230,6 +6546,13 @@ bool ApiTesterView::HandleLButtonDown(POINT pt, const app::AppConfig& config, Th
             float relX = (std::max)(0.0f, pt.x - (m_rcTimeoutInput.left + config.ScaleF(8.0f)));
             s.cellCaret = HitTestCaretIndex(theme.dwriteFactory.Get(), theme.fontTab.Get(), s.timeoutMsStr, relX);
             m_showCaret = true;
+            return true;
+        }
+    } else if (s.activeReqTab == ApiRequestTab::Environment && m_activeEnvIdx < m_environments.size()) {
+        if (handleTableClicks(m_environments[m_activeEnvIdx].vars,
+                              ApiFocusField::EnvVarKey, ApiFocusField::EnvVarVal, ApiFocusField::EnvVarDesc,
+                              false, false)) {
+            SaveEnvsToDisk();
             return true;
         }
     }
@@ -5545,7 +6868,13 @@ bool ApiTesterView::HandleChar(wchar_t ch) {
             } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
                 UpdateHeaderSuggestions(*pCell);
             }
-            SaveSessionsToDisk();
+            if (m_focusedField == ApiFocusField::EnvVarKey ||
+                m_focusedField == ApiFocusField::EnvVarVal ||
+                m_focusedField == ApiFocusField::EnvVarDesc) {
+                SaveEnvsToDisk();
+            } else {
+                SaveSessionsToDisk();
+            }
             return true;
         }
     }
@@ -5840,6 +7169,15 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
         if (key == VK_HOME)  { ClearSelection(); s.graphqlVarsCaret = 0; return true; }
         if (key == VK_END)   { ClearSelection(); s.graphqlVarsCaret = s.graphqlVariables.length(); return true; }
     } else if (std::wstring* pCell = GetActiveCellString(s)) {
+        auto saveCell = [&]() {
+            if (m_focusedField == ApiFocusField::EnvVarKey ||
+                m_focusedField == ApiFocusField::EnvVarVal ||
+                m_focusedField == ApiFocusField::EnvVarDesc) {
+                SaveEnvsToDisk();
+            } else {
+                SaveSessionsToDisk();
+            }
+        };
         if (key == VK_BACK) {
             if (s.cellCaret > 0 && !pCell->empty()) {
                 pCell->erase(pCell->begin() + s.cellCaret - 1);
@@ -5849,7 +7187,7 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
                     UpdateHeaderSuggestions(*pCell);
                 }
-                SaveSessionsToDisk();
+                saveCell();
             }
             ClearSelection();
             return true;
@@ -5862,7 +7200,7 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
                 } else if (m_focusedField == ApiFocusField::HeaderKey || m_focusedField == ApiFocusField::HeaderVal) {
                     UpdateHeaderSuggestions(*pCell);
                 }
-                SaveSessionsToDisk();
+                saveCell();
             }
             ClearSelection();
             return true;
@@ -5882,6 +7220,8 @@ bool ApiTesterView::HandleKeyDown(WPARAM key) {
             else if (m_focusedField == ApiFocusField::FormVal) m_focusedField = ApiFocusField::FormDesc;
             else if (m_focusedField == ApiFocusField::UrlEncKey) m_focusedField = ApiFocusField::UrlEncVal;
             else if (m_focusedField == ApiFocusField::UrlEncVal) m_focusedField = ApiFocusField::UrlEncDesc;
+            else if (m_focusedField == ApiFocusField::EnvVarKey) m_focusedField = ApiFocusField::EnvVarVal;
+            else if (m_focusedField == ApiFocusField::EnvVarVal) m_focusedField = ApiFocusField::EnvVarDesc;
             if (std::wstring* pNext = GetActiveCellString(s)) {
                 s.cellCaret = pNext->length();
             }
@@ -5913,6 +7253,16 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         return IDC_HAND;
     }
     if (m_isAuthDropdownOpen && PtInRectF(pt, m_rcAuthDropdown)) {
+        return IDC_HAND;
+    }
+    if (m_isEnvDropdownOpen && PtInRectF(pt, m_rcEnvDropdown)) {
+        return IDC_HAND;
+    }
+    if (m_isCollectionsOpen && PtInRectF(pt, m_rcCollectionsDropdown)) {
+        return IDC_HAND;
+    }
+    if (PtInRectF(pt, m_rcEnvBtn) || PtInRectF(pt, m_rcSaveCollectionBtn) ||
+        PtInRectF(pt, m_rcCollectionsBtn) || PtInRectF(pt, m_rcImportBtn) || PtInRectF(pt, m_rcExportBtn)) {
         return IDC_HAND;
     }
 
@@ -5955,6 +7305,9 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
     if (m_activeSessionIdx >= m_sessions.size()) return nullptr;
     const auto& s = m_sessions[m_activeSessionIdx];
 
+    if (s.activeRespTab == ApiResponseTab::Cookies && PtInRectF(pt, m_rcClearCookiesBtn)) {
+        return IDC_HAND;
+    }
     if (s.activeRespTab == ApiResponseTab::Body) {
         if (s.response.isStream && !s.response.streamEvents.empty()) {
             for (const auto& ev : s.response.streamEvents) {
@@ -5979,6 +7332,8 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         if (LPCWSTR c = checkTableCursor(s.params)) return c;
     } else if (s.activeReqTab == ApiRequestTab::Headers) {
         if (LPCWSTR c = checkTableCursor(s.headers)) return c;
+    } else if (s.activeReqTab == ApiRequestTab::Environment && m_activeEnvIdx < m_environments.size()) {
+        if (LPCWSTR c = checkTableCursor(m_environments[m_activeEnvIdx].vars)) return c;
     } else if (s.activeReqTab == ApiRequestTab::Auth) {
         if (PtInRectF(pt, m_rcAuthTypeBtn)) return IDC_HAND;
         if (s.authType == ApiAuthType::BearerToken) {
@@ -5991,6 +7346,11 @@ LPCWSTR ApiTesterView::GetCursorForPoint(POINT pt) const noexcept {
         }
         if (s.authType == ApiAuthType::BasicAuth) {
             if (PtInRectF(pt, m_rcAuthField1) || PtInRectF(pt, m_rcAuthField2)) return IDC_IBEAM;
+        }
+        if (s.authType == ApiAuthType::OAuth2) {
+            if (PtInRectF(pt, m_rcOAuthFetchBtn)) return IDC_HAND;
+            if (PtInRectF(pt, m_rcAuthField1) || PtInRectF(pt, m_rcAuthField2) ||
+                PtInRectF(pt, m_rcAuthField3) || PtInRectF(pt, m_rcAuthField4)) return IDC_IBEAM;
         }
     } else if (s.activeReqTab == ApiRequestTab::Body) {
         for (const auto& [bType, rcPill] : m_bodyFormatTabs) {

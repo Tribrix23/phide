@@ -36,11 +36,18 @@ struct SqlColumnInfo {
     bool isPrimaryKey = false;
 };
 
+struct SqlForeignKeyInfo {
+    std::wstring column;
+    std::wstring refTable;
+    std::wstring refColumn;
+};
+
 struct SqlTableInfo {
     std::wstring schemaName;
     std::wstring name;
     int64_t rowCount = 0;
     std::vector<SqlColumnInfo> columns;
+    std::vector<SqlForeignKeyInfo> foreignKeys;
 };
 
 struct SqlQueryResult {
@@ -101,6 +108,34 @@ public:
      * @brief Executes one or more semicolon-separated SQL statements natively.
      */
     static SqlQueryResult ExecuteQuery(const SqlConnectionProfile& profile, const std::wstring& sqlText);
+
+    /**
+     * @brief Builds a server-side LIMIT/OFFSET paginated SELECT statement for a table.
+     */
+    static std::wstring BuildPagedSelectQuery(const SqlConnectionProfile& profile,
+                                              const SqlTableInfo& table,
+                                              size_t pageIndex,
+                                              size_t pageSize);
+
+    /**
+     * @brief Executes a SELECT query with server-side LIMIT/OFFSET pagination when eligible.
+     */
+    static SqlQueryResult ExecuteQueryWithPagination(const SqlConnectionProfile& profile,
+                                                     const std::wstring& sqlText,
+                                                     size_t pageIndex,
+                                                     size_t pageSize,
+                                                     int64_t& outTotalRows,
+                                                     bool& outUsedServerPaging);
+
+    /**
+     * @brief Commits an inline grid cell edit using primary key matching.
+     */
+    static SqlQueryResult UpdateTableCell(const SqlConnectionProfile& profile,
+                                          const std::wstring& schemaName,
+                                          const std::wstring& tableName,
+                                          const std::wstring& targetCol,
+                                          const std::wstring& newValue,
+                                          const std::vector<std::pair<std::wstring, std::wstring>>& pkColumnsAndValues);
 
     /**
      * @brief Exports query result rows to an RFC 4180 UTF-8 CSV file.

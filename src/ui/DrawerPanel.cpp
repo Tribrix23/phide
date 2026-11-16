@@ -872,6 +872,9 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
         if (name == L".git" || name == L".vs") {
             continue; // Skip internal VCS control metadata
         }
+        if (m_hideDotfiles && name[0] == L'.') {
+            continue;
+        }
 
         bool isDir = entry.is_directory(ec);
         if (isDir) {
@@ -3893,7 +3896,8 @@ void DrawerPanel::LaunchAsyncSearch() {
                     const auto& entry = *it;
                     auto filename = entry.path().filename().wstring();
 
-                    if (!filename.empty() && filename[0] == L'.') {
+                    if (!filename.empty() && filename[0] == L'.' &&
+                        (m_hideDotfiles || filename == L".git" || filename == L".vs")) {
                         if (entry.is_directory(ec)) it.disable_recursion_pending();
                         continue;
                     }
@@ -4217,8 +4221,9 @@ void DrawerPanel::ExecuteSearch(bool async) {
             const auto& entry = *it;
             auto filename = entry.path().filename().wstring();
 
-            // Skip hidden files/directories and common heavy folders
-            if (!filename.empty() && filename[0] == L'.') {
+            // Skip hidden files/directories when dotfiles excluded, plus VCS metadata
+            if (!filename.empty() && filename[0] == L'.' &&
+                (m_hideDotfiles || filename == L".git" || filename == L".vs")) {
                 if (entry.is_directory(ec)) it.disable_recursion_pending();
                 continue;
             }
@@ -6096,6 +6101,27 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                 commits[i].isUnpushed = (i < static_cast<size_t>(unpushedCount));
             }
             m_gitCommits = std::move(commits);
+            if (m_gitCommits.empty()) {
+                m_gitGraphScrollIdx = 0;
+                m_hoveredCommitIdx = -1;
+                m_selectedCommitIdx = -1;
+                m_commitCardHash.clear();
+            } else {
+                if (m_gitGraphScrollIdx >= m_gitCommits.size()) {
+                    m_gitGraphScrollIdx = m_gitCommits.size() - 1;
+                }
+                auto resolveIdxByHash = [&](int idx) -> int {
+                    if (idx < 0) return -1;
+                    if (!m_commitCardHash.empty()) {
+                        for (size_t ci = 0; ci < m_gitCommits.size(); ++ci) {
+                            if (m_gitCommits[ci].hash == m_commitCardHash) return static_cast<int>(ci);
+                        }
+                    }
+                    return (idx < static_cast<int>(m_gitCommits.size())) ? idx : -1;
+                };
+                m_hoveredCommitIdx = resolveIdxByHash(m_hoveredCommitIdx);
+                m_selectedCommitIdx = resolveIdxByHash(m_selectedCommitIdx);
+            }
             m_gitStashes = std::move(stashes);
             m_gitTags = std::move(tags);
             m_gitWorktrees = std::move(worktrees);
@@ -6826,7 +6852,9 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
         if (res.exitCode == 0) {
             std::wstringstream ss(res.output);
             std::wstring line;
+            constexpr size_t kMaxCommitFilesUi = 250;
             while (std::getline(ss, line)) {
+                if (ci.files.size() >= kMaxCommitFilesUi) break;
                 while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n' || line.back() == L' ')) line.pop_back();
                 if (line.empty()) continue;
                 size_t tab = line.find(L'\t');
@@ -7627,6 +7655,57 @@ void DrawerPanel::UnstageFileAsync(const std::wstring& relPath) {
         m_isGitLoading = false;
         std::wstring baseName = std::filesystem::path(relPath).filename().wstring();
         ShowGitNotification(L"✓ Unstaged " + baseName);
+        finish();
+    }).detach();
+}
+
+void DrawerPanel::SetHideDotfiles(bool hide) {
+    if (m_hideDotfiles == hide) return;
+    m_hideDotfiles = hide;
+    RefreshTree();
+}
+
+void DrawerPanel::StageFilesBatchAsync(const std::vector<std::wstring>& relPaths, bool stage) {
+    if (relPaths.empty()) return;
+    for (const auto& p : relPaths) {
+        if (!p.empty()) SetActionPending(p, 3000);
+    }
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) workers->fetch_add(1);
+    std::thread([this, alive, workers, relPaths, stage]() {
+        auto finish = [&]() {
+            if (alive && alive->load()) m_isGitLoading = false;
+            if (workers) workers->fetch_sub(1);
+        };
+        if (!alive || !alive->load()) { finish(); return; }
+        m_isGitLoading = true;
+        std::wstring dir = NormalizeDirForGit(m_openFolderPath);
+        const size_t batchCap = 24;
+        for (size_t i = 0; i < relPaths.size(); i += batchCap) {
+            if (!alive || !alive->load()) { finish(); return; }
+            std::wstring joined;
+            for (size_t j = i; j < (std::min)(relPaths.size(), i + batchCap); ++j) {
+                std::wstring cleanRel = relPaths[j];
+                for (wchar_t& c : cleanRel) if (c == L'\\') c = L'/';
+                if (!cleanRel.empty()) joined += L" \"" + cleanRel + L"\"";
+            }
+            if (!joined.empty()) {
+                if (stage) {
+                    RunGitCmd(L"add --" + joined, dir);
+                } else {
+                    RunGitCmd(L"restore --staged --" + joined, dir);
+                    RunGitCmd(L"reset HEAD --" + joined, dir);
+                }
+            }
+        }
+        if (!alive || !alive->load()) { finish(); return; }
+        for (const auto& p : relPaths) {
+            if (!p.empty()) ClearActionPending(p);
+        }
+        RefreshGitStatusOnly(false);
+        m_isGitLoading = false;
+        ShowGitNotification(std::wstring(stage ? L"✓ Staged " : L"✓ Unstaged ") + std::to_wstring(relPaths.size()) + L" item(s)");
         finish();
     }).detach();
 }
@@ -9135,15 +9214,29 @@ void DrawerPanel::GenerateAiCommitMessage() {
 }
 
 void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash) {
+    static std::atomic<int> s_activeCommitFileLoads{0};
+    if (s_activeCommitFileLoads.load() >= 2) {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash &&
+            m_gitCommits[commitIdx].statSummary == L"Loading...") {
+            m_gitCommits[commitIdx].statSummary.clear();
+        }
+        return;
+    }
     auto alive = m_isAlive;
     auto workers = m_activeWorkers;
     if (workers) workers->fetch_add(1);
+    s_activeCommitFileLoads.fetch_add(1);
     std::thread([this, alive, workers, cHash, commitIdx]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
-            explicit WorkerGuard(std::shared_ptr<std::atomic<int>> p) : w(std::move(p)) {}
-            ~WorkerGuard() { if (w) w->fetch_sub(1); }
-        } guard(workers);
+            std::atomic<int>* activeStat;
+            WorkerGuard(std::shared_ptr<std::atomic<int>> p, std::atomic<int>* s) : w(std::move(p)), activeStat(s) {}
+            ~WorkerGuard() {
+                if (activeStat) activeStat->fetch_sub(1);
+                if (w) w->fetch_sub(1);
+            }
+        } guard(workers, &s_activeCommitFileLoads);
         if (!alive || !alive->load()) return;
 
         GitCommitItem itemCopy;
@@ -9874,6 +9967,7 @@ bool DrawerPanel::HandleGitMouseMove(POINT pt, bool isLButtonDown, Theme* pTheme
         }
     }
 
+    std::lock_guard<std::recursive_mutex> gitLock(m_gitMutex);
     std::wstring oldTip = m_gitTooltipText;
     int oldHoverChange = m_hoveredGitChangeIdx;
     m_hoveredGitChangeIdx = -1;
@@ -13587,8 +13681,8 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
                                 m_gitPromptKind == GitPromptKind::ConfirmCommitAndPush ||
                                 m_gitPromptKind == GitPromptKind::ConfirmCommitAndSync);
 
-    float mw = config.ScaleF(420.0f);
-    float mh = config.ScaleF(isConfirmOnly ? 116.0f : 132.0f);
+    float mw = config.ScaleF(isConfirmOnly ? 460.0f : 420.0f);
+    float mh = config.ScaleF(isConfirmOnly ? 124.0f : 132.0f);
     float left = (clientWidth - mw) * 0.5f;
     float top = config.ScaleF(46.0f);
     m_gitPromptModalBounds = D2D1::RectF(left, top, left + mw, top + mh);
@@ -13617,10 +13711,15 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
             : ((m_gitPromptKind == GitPromptKind::ConfirmPush || m_gitPromptKind == GitPromptKind::ConfirmCommitAndPush)
                    ? L"This will push local commits to the remote repository."
                    : L"This will pull and push commits with the remote tracking branch.");
-        pRT->DrawText(subDesc, static_cast<UINT32>(wcslen(subDesc)),
-                      theme.fontBody.Get(),
-                      D2D1::RectF(left + 14.0f, top + 36.0f, left + mw - 14.0f, top + 66.0f),
-                      theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (theme.fontBody) {
+            DWRITE_WORD_WRAPPING prevWrap = theme.fontBody->GetWordWrapping();
+            theme.fontBody->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            pRT->DrawText(subDesc, static_cast<UINT32>(wcslen(subDesc)),
+                          theme.fontBody.Get(),
+                          D2D1::RectF(left + 14.0f, top + 36.0f, left + mw - 14.0f, top + mh - config.ScaleF(42.0f)),
+                          theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            theme.fontBody->SetWordWrapping(prevWrap);
+        }
     }
 
     float bw = config.ScaleF(82.0f);
@@ -13629,12 +13728,33 @@ void DrawerPanel::RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, con
     m_gitPromptConfirmBounds = D2D1::RectF(left + mw - bw - 14.0f, by, left + mw - 14.0f, by + bh);
     m_gitPromptCancelBounds = D2D1::RectF(m_gitPromptConfirmBounds.left - bw - 8.0f, by, m_gitPromptConfirmBounds.left - 8.0f, by + bh);
 
-    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptCancelBounds, 4.0f, 4.0f), theme.brushHeaderBg.Get());
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptCancelBounds, 4.0f, 4.0f),
+                              m_gitPromptHoveredBtn == 1 && theme.brushItemHover ? theme.brushItemHover.Get() : theme.brushHeaderBg.Get());
     pRT->DrawText(L"Cancel", 6, theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptCancelBounds, theme.brushTextSecondary.Get());
 
     pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptConfirmBounds, 4.0f, 4.0f), theme.brushBrandAccent.Get());
+    if (m_gitPromptHoveredBtn == 2 && theme.brushItemHover) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitPromptConfirmBounds, 4.0f, 4.0f), theme.brushItemHover.Get());
+    }
     const wchar_t* okText = isConfirmOnly ? L"Confirm" : L"Apply";
     pRT->DrawText(okText, static_cast<UINT32>(wcslen(okText)), theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(), m_gitPromptConfirmBounds, theme.brushTextWhite.Get());
+}
+
+bool DrawerPanel::HandleGitPromptMouseMove(POINT pt) {
+    if (!m_isGitPromptModalOpen) return false;
+    auto hit = [&](const D2D1_RECT_F& r) {
+        return r.right > r.left && pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+    };
+    int prev = m_gitPromptHoveredBtn;
+    m_gitPromptHoveredBtn = hit(m_gitPromptConfirmBounds) ? 2 : (hit(m_gitPromptCancelBounds) ? 1 : 0);
+    if (m_gitPromptHoveredBtn != 0) {
+        SetCursor(LoadCursor(nullptr, IDC_HAND));
+    } else if (hit(m_gitPromptInputBounds)) {
+        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+    } else {
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+    }
+    return prev != m_gitPromptHoveredBtn;
 }
 
 bool DrawerPanel::HandleGitPromptMouseDown(POINT pt) {
@@ -13642,10 +13762,11 @@ bool DrawerPanel::HandleGitPromptMouseDown(POINT pt) {
     auto hit = [&](const D2D1_RECT_F& r) {
         return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
     };
-    if (hit(m_gitPromptConfirmBounds)) { ConfirmGitPromptModal(); return true; }
+    if (hit(m_gitPromptConfirmBounds)) { ConfirmGitPromptModal(); m_gitPromptHoveredBtn = 0; return true; }
     if (hit(m_gitPromptCancelBounds) || !hit(m_gitPromptModalBounds)) {
         m_isGitPromptModalOpen = false;
         m_gitPromptKind = GitPromptKind::None;
+        m_gitPromptHoveredBtn = 0;
         return true;
     }
     return true;
@@ -14841,6 +14962,8 @@ void DrawerPanel::RefreshRemoteTargetsAsync() {
 
         std::wstring containerStatus;
         auto containers = remote::ProbeDockerContainers(&containerStatus);
+        auto images = remote::ProbeDockerImages();
+        auto volumes = remote::ProbeDockerVolumes();
         if (!alive || !alive->load()) return;
 
         {
@@ -14849,6 +14972,8 @@ void DrawerPanel::RefreshRemoteTargetsAsync() {
             m_remoteWslDistros = std::move(wsl);
             m_remoteWslStatus = std::move(wslStatus);
             m_remoteContainers = std::move(containers);
+            m_dockerImages = std::move(images);
+            m_dockerVolumes = std::move(volumes);
             m_remoteContainerStatus = std::move(containerStatus);
         }
         m_remoteIsRefreshing.store(false);
@@ -14865,6 +14990,8 @@ void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, con
     {
         std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
         m_remoteSessionActive = true;
+        m_remoteBrowseIsContainer = false;
+        m_remoteActiveContainer = {};
         m_remoteSessionState = RemoteSessionState::Connecting;
         m_remoteActiveHost = host;
         m_remoteCurrentPath = remotePath.empty() ? L"~" : remotePath;
@@ -14916,14 +15043,66 @@ void DrawerPanel::BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, con
     }).detach();
 }
 
+void DrawerPanel::BrowseRemoteContainerPathAsync(const remote::DevContainerEntry& container, const std::wstring& remotePath) {
+    const uint64_t seq = ++m_remoteSessionSeq;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+        m_remoteSessionActive = true;
+        m_remoteBrowseIsContainer = true;
+        m_remoteActiveContainer = container;
+        m_remoteActiveHost = {};
+        m_remoteSessionState = RemoteSessionState::Connecting;
+        m_remoteCurrentPath = remotePath.empty() ? L"/" : remotePath;
+        m_remoteBrowseError.clear();
+        m_remoteFiles.clear();
+        m_remoteContainersExpanded = true;
+        m_remoteBrowseLoading.store(true);
+    }
+    if (m_remoteCallbacks.onRequestRepaint) m_remoteCallbacks.onRequestRepaint();
+
+    auto alive = m_isAlive;
+    auto workers = m_activeWorkers;
+    if (workers) (*workers)++;
+
+    std::thread([this, alive, workers, seq, container, remotePath]() {
+        struct WorkerGuard {
+            std::shared_ptr<std::atomic<int>> w;
+            ~WorkerGuard() { if (w) (*w)--; }
+        } guard{ workers };
+        if (!alive || !alive->load()) return;
+
+        std::wstring resolvedPath;
+        std::wstring err;
+        auto entries = remote::FetchRemoteContainerDirectory(container, remotePath, resolvedPath, err, 0);
+        if (!alive || !alive->load() || seq != m_remoteSessionSeq.load()) return;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+            if (seq != m_remoteSessionSeq.load()) return;
+            if (resolvedPath.empty()) resolvedPath = L"/";
+            m_remoteCurrentPath = resolvedPath;
+            m_remoteBrowseError = std::move(err);
+            m_remoteFiles = std::move(entries);
+            m_remoteSessionState = m_remoteBrowseError.empty() ? RemoteSessionState::Connected : RemoteSessionState::Error;
+        }
+        m_remoteBrowseLoading.store(false);
+        if (alive && alive->load() && m_remoteCallbacks.onRequestRepaint) {
+            m_remoteCallbacks.onRequestRepaint();
+        }
+    }).detach();
+}
+
 void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
     remote::SshHostEntry host{};
+    remote::DevContainerEntry container{};
+    bool useContainer = false;
     remote::RemoteFileEntry clicked{};
     bool wasExpanded = false;
     {
         std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
         if (idx >= m_remoteFiles.size() || !m_remoteFiles[idx].isDir) return;
+        useContainer = m_remoteBrowseIsContainer;
         host = m_remoteActiveHost;
+        container = m_remoteActiveContainer;
         clicked = m_remoteFiles[idx];
         wasExpanded = clicked.isExpanded;
 
@@ -14945,7 +15124,7 @@ void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
     auto workers = m_activeWorkers;
     if (workers) (*workers)++;
 
-    std::thread([this, alive, workers, host, clicked]() {
+    std::thread([this, alive, workers, useContainer, host, container, clicked]() {
         struct WorkerGuard {
             std::shared_ptr<std::atomic<int>> w;
             ~WorkerGuard() { if (w) (*w)--; }
@@ -14954,7 +15133,9 @@ void DrawerPanel::ToggleRemoteSubdir(size_t idx) {
         if (!alive || !alive->load()) return;
         std::wstring dummyResolved;
         std::wstring err;
-        auto children = remote::FetchRemoteSshDirectory(host, clicked.fullPath, dummyResolved, err, clicked.depth + 1);
+        auto children = useContainer
+            ? remote::FetchRemoteContainerDirectory(container, clicked.fullPath, dummyResolved, err, clicked.depth + 1)
+            : remote::FetchRemoteSshDirectory(host, clicked.fullPath, dummyResolved, err, clicked.depth + 1);
         if (!alive || !alive->load()) return;
 
         {
@@ -14990,8 +15171,10 @@ void DrawerPanel::DisconnectRemoteSession() {
     ++m_remoteSessionSeq;
     std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
     m_remoteSessionActive = false;
+    m_remoteBrowseIsContainer = false;
     m_remoteSessionState = RemoteSessionState::Disconnected;
     m_remoteActiveHost = {};
+    m_remoteActiveContainer = {};
     m_remoteCurrentPath.clear();
     m_remoteBrowseError.clear();
     m_remoteFiles.clear();
@@ -15001,6 +15184,9 @@ void DrawerPanel::DisconnectRemoteSession() {
 std::wstring DrawerPanel::GetActiveRemoteBadgeLabel() const {
     std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
     if (!m_remoteSessionActive || m_remoteSessionState != RemoteSessionState::Connected) return L"";
+    if (m_remoteBrowseIsContainer) {
+        return L"Container: " + (!m_remoteActiveContainer.name.empty() ? m_remoteActiveContainer.name : m_remoteActiveContainer.id);
+    }
     return L"SSH: " + m_remoteActiveHost.TargetSpec();
 }
 
@@ -15237,7 +15423,9 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
         float dotY = rcCard.top + config.ScaleF(12.0f);
         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), config.ScaleF(3.5f), config.ScaleF(3.5f)), stateBrush);
 
-        std::wstring titleLine = titlePrefix + m_remoteActiveHost.TargetSpec();
+        std::wstring titleLine = m_remoteBrowseIsContainer
+            ? (titlePrefix + (!m_remoteActiveContainer.name.empty() ? m_remoteActiveContainer.name : m_remoteActiveContainer.id))
+            : (titlePrefix + m_remoteActiveHost.TargetSpec());
         D2D1_RECT_F rcConnTitle = D2D1::RectF(dotX + config.ScaleF(8.0f), rcCard.top + config.ScaleF(4.0f),
                                               rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(20.0f));
         pRT->PushAxisAlignedClip(rcConnTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -15245,8 +15433,8 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
         pRT->PopAxisAlignedClip();
 
         std::wstring subPath = (m_remoteSessionState == RemoteSessionState::Connecting)
-            ? L"Checking SSH host reachability..."
-            : (m_remoteCurrentPath.empty() ? L"~" : m_remoteCurrentPath);
+            ? (m_remoteBrowseIsContainer ? L"Inspecting container filesystem..." : L"Checking SSH host reachability...")
+            : (m_remoteCurrentPath.empty() ? (m_remoteBrowseIsContainer ? L"/" : L"~") : m_remoteCurrentPath);
         D2D1_RECT_F rcSubPath = D2D1::RectF(rcCard.left + config.ScaleF(10.0f), rcCard.top + config.ScaleF(20.0f),
                                             rcCard.right - config.ScaleF(8.0f), rcCard.top + config.ScaleF(36.0f));
         pRT->PushAxisAlignedClip(rcSubPath, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -15259,7 +15447,7 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
         D2D1_RECT_F rcDiscBtn = D2D1::RectF(rcTermBtn.right + config.ScaleF(6.0f), rcTermBtn.top,
                                             rcCard.right - config.ScaleF(8.0f), rcTermBtn.bottom);
         ID2D1Brush* chipB = chipBgBrush ? static_cast<ID2D1Brush*>(chipBgBrush.Get()) : theme.brushItemHover.Get();
-        drawChip(rcTermBtn, L"SSH Terminal", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
+        drawChip(rcTermBtn, m_remoteBrowseIsContainer ? L"Container Shell" : L"SSH Terminal", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
         drawChip(rcDiscBtn, m_remoteSessionState == RemoteSessionState::Error ? L"Dismiss" : L"Disconnect",
                  chipB, theme.brushCommentAlert.Get(), RemoteHitAction::RemoteDisconnect, -1);
         y += cardH + config.ScaleF(10.0f);
@@ -15373,8 +15561,8 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 y += config.ScaleF(28.0f);
             }
 
-            // Live Remote File Browser when actively browsing an SSH host
-            if (m_remoteSessionActive) {
+            auto renderRemoteFilesSection = [&](bool isContainerMode) {
+                if (!m_remoteSessionActive || m_remoteBrowseIsContainer != isContainerMode) return;
                 y += config.ScaleF(4.0f);
                 D2D1_RECT_F rcSubHdr = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(20.0f));
                 std::wstring rfHdr = L"REMOTE FILES  •  " + m_remoteCurrentPath;
@@ -15384,11 +15572,11 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 y += config.ScaleF(22.0f);
 
                 if (m_remoteBrowseLoading.load()) {
-                    drawWrappedMessage(L"Loading remote directory via SSH...", theme.brushTextSecondary.Get());
+                    drawWrappedMessage(isContainerMode ? L"Loading container directory..." : L"Loading remote directory via SSH...", theme.brushTextSecondary.Get());
                 } else if (!m_remoteBrowseError.empty()) {
                     drawWrappedMessage(m_remoteBrowseError, theme.brushCommentAlert.Get());
                     D2D1_RECT_F rcFallback = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
-                    drawChip(rcFallback, L"Open SSH Terminal (Password / Key)", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
+                    drawChip(rcFallback, isContainerMode ? L"Open Container Shell" : L"Open SSH Terminal (Password / Key)", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::RemoteActiveTerminal, -1);
                     y += config.ScaleF(28.0f);
                 } else {
                     if (m_remoteCurrentPath != L"/") {
@@ -15422,12 +15610,15 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                         y += fRowH;
                     }
                 }
-            }
+            };
+
+            // Live Remote File Browser when actively browsing an SSH host
+            renderRemoteFilesSection(false);
             y += config.ScaleF(6.0f);
         }
     }
 
-    // --- Section 2: DEV CONTAINERS ---
+    // --- Section 2: DEV CONTAINERS & DOCKER LIFECYCLE (#46 / #47) ---
     if (m_remoteFilter == remote::RemoteTargetFilter::All || m_remoteFilter == remote::RemoteTargetFilter::DevContainers) {
         D2D1_RECT_F hdr = drawSectionHeader(L"DEV CONTAINERS", m_remoteContainersExpanded, RemoteHitAction::ToggleSectionContainers, config.ScaleF(28.0f));
         float iconSz = config.ScaleF(18.0f);
@@ -15436,14 +15627,40 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         if (m_remoteContainersExpanded) {
             y += config.ScaleF(2.0f);
+
+            // Compose stack bar when docker-compose.yml / compose.yaml exists in workspace
+            if (!m_openFolderPath.empty()) {
+                std::error_code ec;
+                std::filesystem::path ws(m_openFolderPath);
+                bool hasCompose = std::filesystem::exists(ws / L"docker-compose.yml", ec) ||
+                                  std::filesystem::exists(ws / L"docker-compose.yaml", ec) ||
+                                  std::filesystem::exists(ws / L"compose.yml", ec) ||
+                                  std::filesystem::exists(ws / L"compose.yaml", ec);
+                if (hasCompose) {
+                    float compH = config.ScaleF(22.0f);
+                    float wAvail = (rightX - leftX - padX * 2.0f - config.ScaleF(8.0f)) / 3.0f;
+                    D2D1_RECT_F rcUp = D2D1::RectF(leftX + padX, y, leftX + padX + wAvail, y + compH);
+                    D2D1_RECT_F rcDn = D2D1::RectF(rcUp.right + config.ScaleF(4.0f), y, rcUp.right + config.ScaleF(4.0f) + wAvail, y + compH);
+                    D2D1_RECT_F rcLg = D2D1::RectF(rcDn.right + config.ScaleF(4.0f), y, rightX - padX, y + compH);
+                    drawChip(rcUp, L"Compose Up", chipB, theme.brushRunGreen.Get(), RemoteHitAction::ComposeUp, -1);
+                    drawChip(rcDn, L"Compose Down", chipB, theme.brushCommentAlert.Get(), RemoteHitAction::ComposeDown, -1);
+                    drawChip(rcLg, L"Compose Logs", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::ComposeLogs, -1);
+                    y += compH + config.ScaleF(6.0f);
+                }
+            }
+
             if (!m_remoteContainers.empty()) {
                 for (size_t i = 0; i < m_remoteContainers.size(); ++i) {
                     const auto& c = m_remoteContainers[i];
-                    float cRowH = config.ScaleF(26.0f);
+                    float cRowH = config.ScaleF(24.0f);
+                    float actRowH = config.ScaleF(20.0f);
                     D2D1_RECT_F rcRow = D2D1::RectF(leftX + config.ScaleF(6.0f), y, rightX - config.ScaleF(6.0f), y + cRowH);
-                    float attachW = config.ScaleF(52.0f);
-                    D2D1_RECT_F rcAttach = D2D1::RectF(rcRow.right - config.ScaleF(4.0f) - attachW, y + config.ScaleF(3.0f),
-                                                       rcRow.right - config.ScaleF(4.0f), y + cRowH - config.ScaleF(3.0f));
+                    float attachW = config.ScaleF(46.0f);
+                    float filesW = config.ScaleF(40.0f);
+                    D2D1_RECT_F rcAttach = D2D1::RectF(rcRow.right - config.ScaleF(4.0f) - attachW, y + config.ScaleF(2.0f),
+                                                       rcRow.right - config.ScaleF(4.0f), y + cRowH - config.ScaleF(2.0f));
+                    D2D1_RECT_F rcFiles = D2D1::RectF(rcAttach.left - config.ScaleF(4.0f) - filesW, rcAttach.top,
+                                                      rcAttach.left - config.ScaleF(4.0f), rcAttach.bottom);
 
                     float dotX = leftX + padX + config.ScaleF(4.0f);
                     float dotY = y + cRowH * 0.5f;
@@ -15451,14 +15668,36 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                                      c.isRunning ? theme.brushRunGreen.Get() : theme.brushTextMuted.Get());
 
                     std::wstring cText = c.name + L" (" + c.image + L")";
-                    D2D1_RECT_F rcCTxt = D2D1::RectF(dotX + config.ScaleF(8.0f), y, rcAttach.left - config.ScaleF(6.0f), y + cRowH);
+                    D2D1_RECT_F rcCTxt = D2D1::RectF(dotX + config.ScaleF(8.0f), y, rcFiles.left - config.ScaleF(6.0f), y + cRowH);
                     pRT->PushAxisAlignedClip(rcCTxt, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     pRT->DrawText(cText.c_str(), static_cast<UINT32>(cText.size()), fmtBody, rcCTxt, theme.brushTextPrimary.Get());
                     pRT->PopAxisAlignedClip();
 
                     addZone(RemoteHitAction::AttachContainer, static_cast<int>(i), rcRow);
+                    drawChip(rcFiles, L"Files", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::ContainerBrowseFiles, static_cast<int>(i));
                     drawChip(rcAttach, L"Attach", chipB, chipAccentB, RemoteHitAction::AttachContainer, static_cast<int>(i));
                     y += cRowH;
+
+                    // Lifecycle action strip: Start/Stop | Restart | Logs | Rm
+                    float ax = leftX + padX + config.ScaleF(10.0f);
+                    float aGap = config.ScaleF(4.0f);
+                    float bw1 = config.ScaleF(42.0f);
+                    float bw2 = config.ScaleF(52.0f);
+                    float bw3 = config.ScaleF(40.0f);
+                    float bw4 = config.ScaleF(30.0f);
+                    D2D1_RECT_F rcToggle = D2D1::RectF(ax, y, ax + bw1, y + actRowH);
+                    D2D1_RECT_F rcRestart = D2D1::RectF(rcToggle.right + aGap, y, rcToggle.right + aGap + bw2, y + actRowH);
+                    D2D1_RECT_F rcLogs = D2D1::RectF(rcRestart.right + aGap, y, rcRestart.right + aGap + bw3, y + actRowH);
+                    D2D1_RECT_F rcRm = D2D1::RectF(rcLogs.right + aGap, y, rcLogs.right + aGap + bw4, y + actRowH);
+                    if (c.isRunning) {
+                        drawChip(rcToggle, L"Stop", chipB, statusAmberB, RemoteHitAction::ContainerStop, static_cast<int>(i));
+                    } else {
+                        drawChip(rcToggle, L"Start", chipB, theme.brushRunGreen.Get(), RemoteHitAction::ContainerStart, static_cast<int>(i));
+                    }
+                    drawChip(rcRestart, L"Restart", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::ContainerRestart, static_cast<int>(i));
+                    drawChip(rcLogs, L"Logs", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::ContainerLogs, static_cast<int>(i));
+                    drawChip(rcRm, L"Rm", chipB, theme.brushCommentAlert.Get(), RemoteHitAction::ContainerRemove, static_cast<int>(i));
+                    y += actRowH + config.ScaleF(4.0f);
                 }
             } else {
                 drawWrappedMessage(m_remoteContainerStatus.empty()
@@ -15467,6 +15706,79 @@ void DrawerPanel::RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const a
                 D2D1_RECT_F rcDcBtn = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(24.0f));
                 drawChip(rcDcBtn, L"Open / Create .devcontainer", chipB, theme.brushTextPrimary.Get(), RemoteHitAction::CreateDevContainer, -1);
                 y += config.ScaleF(28.0f);
+            }
+
+            // Live Container File Browser when browsing container files
+            if (m_remoteSessionActive && m_remoteBrowseIsContainer) {
+                y += config.ScaleF(4.0f);
+                D2D1_RECT_F rcSubHdr = D2D1::RectF(leftX + padX, y, rightX - padX, y + config.ScaleF(20.0f));
+                std::wstring rfHdr = L"CONTAINER FILES  •  " + m_remoteCurrentPath;
+                pRT->PushAxisAlignedClip(rcSubHdr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(rfHdr.c_str(), static_cast<UINT32>(rfHdr.size()), fmtHdr, rcSubHdr, theme.brushBrandAccent.Get());
+                pRT->PopAxisAlignedClip();
+                y += config.ScaleF(22.0f);
+                if (m_remoteBrowseLoading.load()) {
+                    drawWrappedMessage(L"Loading container directory...", theme.brushTextSecondary.Get());
+                } else if (!m_remoteBrowseError.empty()) {
+                    drawWrappedMessage(m_remoteBrowseError, theme.brushCommentAlert.Get());
+                } else {
+                    if (m_remoteCurrentPath != L"/") {
+                        D2D1_RECT_F rcUp = D2D1::RectF(leftX + config.ScaleF(8.0f), y, rightX - config.ScaleF(8.0f), y + config.ScaleF(22.0f));
+                        pRT->PushAxisAlignedClip(rcUp, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(L"..  (Parent Folder)", 19, fmtBody, rcUp, theme.brushTextSecondary.Get());
+                        pRT->PopAxisAlignedClip();
+                        addZone(RemoteHitAction::RemoteUpDirectory, -1, rcUp);
+                        y += config.ScaleF(22.0f);
+                    }
+                    for (size_t fi = 0; fi < m_remoteFiles.size(); ++fi) {
+                        const auto& rf = m_remoteFiles[fi];
+                        float fRowH = config.ScaleF(22.0f);
+                        float indent = config.ScaleF(10.0f + static_cast<float>(rf.depth) * 12.0f);
+                        D2D1_RECT_F rcFileRow = D2D1::RectF(leftX + indent, y, rightX - config.ScaleF(8.0f), y + fRowH);
+                        auto seti = theme.GetSetiIcon(rf.name, rf.isDir, rf.isExpanded);
+                        D2D1_RECT_F rcIcon = D2D1::RectF(rcFileRow.left, y + config.ScaleF(2.0f), rcFileRow.left + config.ScaleF(18.0f), y + fRowH - config.ScaleF(2.0f));
+                        if (theme.fontSeti) {
+                            wchar_t g[2] = { seti.glyph, L'\0' };
+                            pRT->DrawText(g, 1, theme.fontSeti.Get(), rcIcon, seti.pBrush ? seti.pBrush : theme.brushTextSecondary.Get());
+                        }
+                        D2D1_RECT_F rcName = D2D1::RectF(rcIcon.right + config.ScaleF(4.0f), y, rcFileRow.right, y + fRowH);
+                        pRT->PushAxisAlignedClip(rcName, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(rf.name.c_str(), static_cast<UINT32>(rf.name.size()), fmtBody, rcName, theme.brushTextPrimary.Get());
+                        pRT->PopAxisAlignedClip();
+                        addZone(RemoteHitAction::RemoteFileClick, static_cast<int>(fi), D2D1::RectF(leftX + 4.0f, y, rightX - 4.0f, y + fRowH));
+                        y += fRowH;
+                    }
+                }
+            }
+
+            // Docker Images & Volumes subsections
+            if (!m_dockerImages.empty()) {
+                std::wstring imgHdr = L"DOCKER IMAGES (" + std::to_wstring(m_dockerImages.size()) + L")";
+                drawSectionHeader(imgHdr.c_str(), m_dockerImagesExpanded, RemoteHitAction::ToggleDockerImages, config.ScaleF(8.0f));
+                if (m_dockerImagesExpanded) {
+                    for (const auto& img : m_dockerImages) {
+                        std::wstring line = img.repository + L":" + img.tag + L"  (" + img.size + L")";
+                        D2D1_RECT_F rcImg = D2D1::RectF(leftX + padX + config.ScaleF(6.0f), y, rightX - padX, y + config.ScaleF(20.0f));
+                        pRT->PushAxisAlignedClip(rcImg, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(line.c_str(), static_cast<UINT32>(line.size()), fmtBody, rcImg, theme.brushTextSecondary.Get());
+                        pRT->PopAxisAlignedClip();
+                        y += config.ScaleF(20.0f);
+                    }
+                }
+            }
+            if (!m_dockerVolumes.empty()) {
+                std::wstring volHdr = L"DOCKER VOLUMES (" + std::to_wstring(m_dockerVolumes.size()) + L")";
+                drawSectionHeader(volHdr.c_str(), m_dockerVolumesExpanded, RemoteHitAction::ToggleDockerVolumes, config.ScaleF(8.0f));
+                if (m_dockerVolumesExpanded) {
+                    for (const auto& vol : m_dockerVolumes) {
+                        std::wstring line = vol.name + (vol.driver.empty() ? L"" : (L"  [" + vol.driver + L"]"));
+                        D2D1_RECT_F rcVol = D2D1::RectF(leftX + padX + config.ScaleF(6.0f), y, rightX - padX, y + config.ScaleF(20.0f));
+                        pRT->PushAxisAlignedClip(rcVol, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        pRT->DrawText(line.c_str(), static_cast<UINT32>(line.size()), fmtBody, rcVol, theme.brushTextSecondary.Get());
+                        pRT->PopAxisAlignedClip();
+                        y += config.ScaleF(20.0f);
+                    }
+                }
             }
             y += config.ScaleF(6.0f);
         }
@@ -15676,36 +15988,52 @@ bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*conf
         }
         case RemoteHitAction::RemoteUpDirectory: {
             remote::SshHostEntry host{};
+            remote::DevContainerEntry container{};
+            bool isCont = false;
             std::wstring parent = L"/";
             {
                 std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                isCont = m_remoteBrowseIsContainer;
                 host = m_remoteActiveHost;
+                container = m_remoteActiveContainer;
                 std::wstring cur = m_remoteCurrentPath;
                 while (cur.size() > 1 && cur.back() == L'/') cur.pop_back();
                 size_t slash = cur.rfind(L'/');
                 if (slash != std::wstring::npos && slash > 0) parent = cur.substr(0, slash);
                 else parent = L"/";
             }
-            BrowseRemoteSshPathAsync(host, parent);
+            if (isCont) BrowseRemoteContainerPathAsync(container, parent);
+            else BrowseRemoteSshPathAsync(host, parent);
             return true;
         }
         case RemoteHitAction::RemoteFileClick: {
             remote::SshHostEntry host{};
+            remote::DevContainerEntry container{};
+            bool isCont = false;
             remote::RemoteFileEntry rf{};
             {
                 std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
                 if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteFiles.size())) return true;
+                isCont = m_remoteBrowseIsContainer;
                 host = m_remoteActiveHost;
+                container = m_remoteActiveContainer;
                 rf = m_remoteFiles[hit.index];
             }
             if (rf.isDir) {
                 ToggleRemoteSubdir(static_cast<size_t>(hit.index));
-            } else if (m_remoteCallbacks.onOpenRemoteFile) {
+            } else {
                 wchar_t tmpDir[MAX_PATH]{};
                 GetTempPathW(MAX_PATH, tmpDir);
-                std::wstring cachePath = std::wstring(tmpDir) + L"phide_remote\\" +
-                                         MakeSafeCacheSubdir(host.TargetSpec()) + L"\\" + rf.name;
-                m_remoteCallbacks.onOpenRemoteFile(host, rf.fullPath, cachePath);
+                if (isCont && m_remoteCallbacks.onOpenContainerFile) {
+                    std::wstring cname = container.name.empty() ? container.id : container.name;
+                    std::wstring cachePath = std::wstring(tmpDir) + L"phide_remote\\docker_" +
+                                             MakeSafeCacheSubdir(cname) + L"\\" + rf.name;
+                    m_remoteCallbacks.onOpenContainerFile(container, rf.fullPath, cachePath);
+                } else if (!isCont && m_remoteCallbacks.onOpenRemoteFile) {
+                    std::wstring cachePath = std::wstring(tmpDir) + L"phide_remote\\" +
+                                             MakeSafeCacheSubdir(host.TargetSpec()) + L"\\" + rf.name;
+                    m_remoteCallbacks.onOpenRemoteFile(host, rf.fullPath, cachePath);
+                }
             }
             return true;
         }
@@ -15714,13 +16042,21 @@ bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*conf
             return true;
         case RemoteHitAction::RemoteActiveTerminal: {
             remote::SshHostEntry host{};
+            remote::DevContainerEntry container{};
+            bool isCont = false;
             std::wstring dir;
             {
                 std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                isCont = m_remoteBrowseIsContainer;
                 host = m_remoteActiveHost;
+                container = m_remoteActiveContainer;
                 dir = m_remoteCurrentPath;
             }
-            if (m_remoteCallbacks.onConnectSshTerminal) m_remoteCallbacks.onConnectSshTerminal(host, dir);
+            if (isCont) {
+                if (m_remoteCallbacks.onAttachContainer) m_remoteCallbacks.onAttachContainer(container);
+            } else if (m_remoteCallbacks.onConnectSshTerminal) {
+                m_remoteCallbacks.onConnectSshTerminal(host, dir);
+            }
             return true;
         }
         case RemoteHitAction::AttachContainer: {
@@ -15733,6 +16069,96 @@ bool DrawerPanel::HandleRemoteLButtonDown(POINT pt, const app::AppConfig& /*conf
             if (m_remoteCallbacks.onAttachContainer) m_remoteCallbacks.onAttachContainer(c);
             return true;
         }
+        case RemoteHitAction::ContainerBrowseFiles: {
+            remote::DevContainerEntry c{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteContainers.size())) return true;
+                c = m_remoteContainers[hit.index];
+            }
+            BrowseRemoteContainerPathAsync(c, L"/");
+            return true;
+        }
+        case RemoteHitAction::ContainerStart:
+        case RemoteHitAction::ContainerStop:
+        case RemoteHitAction::ContainerRestart:
+        case RemoteHitAction::ContainerRemove: {
+            remote::DevContainerEntry c{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteContainers.size())) return true;
+                c = m_remoteContainers[hit.index];
+            }
+            std::wstring act = L"restart";
+            if (hit.action == RemoteHitAction::ContainerStart) act = L"start";
+            else if (hit.action == RemoteHitAction::ContainerStop) act = L"stop";
+            else if (hit.action == RemoteHitAction::ContainerRemove) act = L"rm";
+            auto alive = m_isAlive;
+            auto workers = m_activeWorkers;
+            if (workers) (*workers)++;
+            std::thread([this, alive, workers, c, act]() {
+                struct Guard { std::shared_ptr<std::atomic<int>> w; ~Guard() { if (w) (*w)--; } } g{ workers };
+                if (!alive || !alive->load()) return;
+                std::wstring out;
+                (void)remote::RunDockerContainerAction(c.id, act, out);
+                if (alive && alive->load()) {
+                    RefreshRemoteTargetsAsync();
+                }
+            }).detach();
+            return true;
+        }
+        case RemoteHitAction::ContainerLogs: {
+            remote::DevContainerEntry c{};
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_remoteMutex);
+                if (hit.index < 0 || hit.index >= static_cast<int>(m_remoteContainers.size())) return true;
+                c = m_remoteContainers[hit.index];
+            }
+            auto alive = m_isAlive;
+            auto workers = m_activeWorkers;
+            if (workers) (*workers)++;
+            std::thread([this, alive, workers, c]() {
+                struct Guard { std::shared_ptr<std::atomic<int>> w; ~Guard() { if (w) (*w)--; } } g{ workers };
+                if (!alive || !alive->load()) return;
+                std::wstring logs = remote::FetchDockerContainerLogs(c.id, 200);
+                if (alive && alive->load() && m_remoteCallbacks.onOpenDockerLogsTab) {
+                    std::wstring cname = c.name.empty() ? c.id : c.name;
+                    m_remoteCallbacks.onOpenDockerLogsTab(L"Docker Logs: " + cname, logs.empty() ? L"(no logs captured)" : logs);
+                }
+            }).detach();
+            return true;
+        }
+        case RemoteHitAction::ComposeUp:
+        case RemoteHitAction::ComposeDown:
+        case RemoteHitAction::ComposeLogs: {
+            std::wstring ws = m_openFolderPath;
+            std::wstring sub = L"ps";
+            if (hit.action == RemoteHitAction::ComposeUp) sub = L"up -d";
+            else if (hit.action == RemoteHitAction::ComposeDown) sub = L"down";
+            else if (hit.action == RemoteHitAction::ComposeLogs) sub = L"logs --tail=150";
+            auto alive = m_isAlive;
+            auto workers = m_activeWorkers;
+            if (workers) (*workers)++;
+            std::thread([this, alive, workers, ws, sub]() {
+                struct Guard { std::shared_ptr<std::atomic<int>> w; ~Guard() { if (w) (*w)--; } } g{ workers };
+                if (!alive || !alive->load()) return;
+                std::wstring out;
+                (void)remote::RunDockerComposeCommand(ws, sub, out);
+                if (!alive || !alive->load()) return;
+                if (sub.rfind(L"logs", 0) == 0 && m_remoteCallbacks.onOpenDockerLogsTab) {
+                    m_remoteCallbacks.onOpenDockerLogsTab(L"Compose Logs", out.empty() ? L"(no compose logs)" : out);
+                } else {
+                    RefreshRemoteTargetsAsync();
+                }
+            }).detach();
+            return true;
+        }
+        case RemoteHitAction::ToggleDockerImages:
+            m_dockerImagesExpanded = !m_dockerImagesExpanded;
+            return true;
+        case RemoteHitAction::ToggleDockerVolumes:
+            m_dockerVolumesExpanded = !m_dockerVolumesExpanded;
+            return true;
         case RemoteHitAction::CreateDevContainer:
             if (m_remoteCallbacks.onOpenOrCreateDevContainer) m_remoteCallbacks.onOpenOrCreateDevContainer();
             return true;

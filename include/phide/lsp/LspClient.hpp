@@ -334,6 +334,13 @@ public:
 
     [[nodiscard]] static std::wstring PathToFileUri(const std::wstring& path);
     [[nodiscard]] static std::wstring FileUriToPath(const std::wstring& uri);
+    [[nodiscard]] static std::wstring MapLocalPathToRemoteUri(const std::wstring& path,
+                                                                const std::wstring& localRoot,
+                                                                const std::wstring& remoteRoot);
+    [[nodiscard]] static std::wstring MapRemoteUriToLocalPath(const std::wstring& uri,
+                                                                const std::wstring& localRoot,
+                                                                const std::wstring& remoteRoot);
+    void SetRemotePathMapping(const std::wstring& localRoot, const std::wstring& remoteRoot);
 
     /**
      * @brief Checks if the language server is currently running and initialized.
@@ -354,6 +361,9 @@ private:
     };
 
     bool LaunchProcessAndInitialize(const std::wstring& commandLine, const std::wstring& workingDir, const std::wstring& rootUri);
+    [[nodiscard]] std::wstring ToServerUri(const std::wstring& pathOrUri) const;
+    [[nodiscard]] std::wstring FromServerUri(const std::wstring& uri) const;
+    [[nodiscard]] std::string EnsureFileUriUtf8(const std::wstring& pathOrUri) const;
     bool SendJsonRpcFrame(const std::string& jsonBody);
     bool SendRequestAndWait(const std::string& method, const std::string& paramsJson, std::string& outResponseJson, int timeoutMs);
     void SendNotification(const std::string& method, const std::string& paramsJson);
@@ -374,6 +384,8 @@ private:
     std::unordered_map<std::wstring, std::wstring> m_docSyncedTexts;
     std::unordered_map<std::wstring, std::wstring> m_customServerPaths;
     std::unordered_set<std::wstring> m_failedDiscoveryKeys;
+    std::wstring m_remoteLocalRoot;
+    std::wstring m_remoteWorkDir;
     std::vector<std::string> m_semanticTokenTypes;
     DiagnosticsCallback m_diagnosticsCallback;
 
@@ -407,6 +419,7 @@ public:
 
     void SetCustomServerPaths(const std::unordered_map<std::wstring, std::wstring>& customPaths);
     void SetCustomServerPath(const std::wstring& languageIdOrFamily, const std::wstring& executablePath);
+    void SetRemotePathMapping(const std::wstring& localRoot, const std::wstring& remoteRoot);
     void SetDiagnosticsCallback(DiagnosticsCallback cb);
     void ResetDiscoveryCache();
 
@@ -475,6 +488,8 @@ private:
     std::unordered_map<std::wstring, std::wstring> m_customServerPaths;
     std::wstring m_lastLanguageId;
     std::wstring m_lastWorkspaceRoot;
+    std::wstring m_remoteLocalRoot;
+    std::wstring m_remoteWorkDir;
     DiagnosticsCallback m_diagnosticsCallback;
 };
 

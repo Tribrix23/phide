@@ -4,10 +4,81 @@
 #include <sstream>
 #include <vector>
 #include <algorithm>
+#include <wincrypt.h>
+
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "secur32.lib")
 
 namespace phide::server {
 
-LiveServer::LiveServer() {
+struct LiveServer::TlsState {
+    HCERTSTORE hStore = nullptr;
+    PCCERT_CONTEXT pCert = nullptr;
+    CredHandle cred{};
+    bool hasCred = false;
+};
+
+struct LiveServer::TlsSocketSession {
+    CtxtHandle ctxt{};
+    bool hasCtxt = false;
+    SecPkgContext_StreamSizes sizes{};
+    std::mutex ioMutex;
+    ~TlsSocketSession() {
+        if (hasCtxt) {
+            DeleteSecurityContext(&ctxt);
+            hasCtxt = false;
+        }
+    }
+};
+
+namespace {
+
+static std::string Base64EncodeDer(const uint8_t* data, size_t len) {
+    static const char* kTbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string raw;
+    raw.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = static_cast<uint32_t>(data[i]) << 16;
+        if (i + 1 < len) v |= static_cast<uint32_t>(data[i + 1]) << 8;
+        if (i + 2 < len) v |= static_cast<uint32_t>(data[i + 2]);
+        raw.push_back(kTbl[(v >> 18) & 0x3F]);
+        raw.push_back(kTbl[(v >> 12) & 0x3F]);
+        raw.push_back((i + 1 < len) ? kTbl[(v >> 6) & 0x3F] : '=');
+        raw.push_back((i + 2 < len) ? kTbl[v & 0x3F] : '=');
+    }
+    std::string wrapped;
+    wrapped.reserve(raw.size() + raw.size() / 64 + 8);
+    for (size_t i = 0; i < raw.size(); i += 64) {
+        wrapped.append(raw, i, (std::min<size_t>)(64, raw.size() - i));
+        wrapped.push_back('\n');
+    }
+    return wrapped;
+}
+
+static bool ReadWholeFileBytes(const std::filesystem::path& p, std::vector<uint8_t>& out) {
+    std::ifstream ifs(p, std::ios::binary);
+    if (!ifs.is_open()) return false;
+    ifs.seekg(0, std::ios::end);
+    std::streamoff sz = ifs.tellg();
+    if (sz <= 0 || sz > 1024 * 1024) return false;
+    ifs.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(sz));
+    return static_cast<bool>(ifs.read(reinterpret_cast<char*>(out.data()), sz));
+}
+
+static bool SendAllSocketBytes(SOCKET s, const char* data, int len) {
+    int off = 0;
+    while (off < len) {
+        int n = send(s, data + off, len - off, 0);
+        if (n <= 0) return false;
+        off += n;
+    }
+    return true;
+}
+
+} // namespace
+
+LiveServer::LiveServer() : m_tlsState(std::make_unique<TlsState>()) {
     WSADATA wsaData{};
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0) {
         m_wsaInitialized = true;
@@ -17,6 +88,7 @@ LiveServer::LiveServer() {
 
 LiveServer::~LiveServer() {
     Stop();
+    CleanupTlsCredentials();
     if (m_wsaInitialized) {
         WSACleanup();
         m_wsaInitialized = false;
@@ -53,7 +125,8 @@ void LiveServer::DiscoverNetworkIp() {
 
 std::wstring LiveServer::GetLocalUrl(const std::wstring& relPath) const {
     std::wstring path = relPath.empty() ? m_defaultFile : relPath;
-    std::wstring url = L"http://localhost:" + std::to_wstring(m_port);
+    const wchar_t* scheme = m_tlsActive.load() ? L"https://localhost:" : L"http://localhost:";
+    std::wstring url = scheme + std::to_wstring(m_port);
     if (!path.empty()) {
         if (path.front() != L'/') url += L"/";
         url += path;
@@ -63,7 +136,8 @@ std::wstring LiveServer::GetLocalUrl(const std::wstring& relPath) const {
 
 std::wstring LiveServer::GetNetworkUrl(const std::wstring& relPath) const {
     std::wstring path = relPath.empty() ? m_defaultFile : relPath;
-    std::wstring url = L"http://" + m_localIp + L":" + std::to_wstring(m_port);
+    const wchar_t* scheme = m_tlsActive.load() ? L"https://" : L"http://";
+    std::wstring url = scheme + m_localIp + L":" + std::to_wstring(m_port);
     if (!path.empty()) {
         if (path.front() != L'/') url += L"/";
         url += path;
@@ -71,8 +145,305 @@ std::wstring LiveServer::GetNetworkUrl(const std::wstring& relPath) const {
     return url;
 }
 
+bool LiveServer::EnsureLocalDevCertificate(
+    const std::wstring& certDir,
+    std::wstring& outPfxPath,
+    std::wstring& outCertPemPath,
+    std::wstring& outKeyPemPath,
+    std::wstring& outError) {
+    outPfxPath.clear();
+    outCertPemPath.clear();
+    outKeyPemPath.clear();
+    outError.clear();
+    if (certDir.empty()) {
+        outError = L"Empty certificate directory.";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::path dir(certDir);
+    std::filesystem::create_directories(dir, ec);
+    std::filesystem::path pfxPath = dir / L"phide-dev-localhost.pfx";
+    std::filesystem::path crtPath = dir / L"phide-dev-localhost.crt";
+    std::filesystem::path keyPath = dir / L"phide-dev-localhost.key";
+
+    if (std::filesystem::exists(pfxPath, ec) && std::filesystem::file_size(pfxPath, ec) > 0 &&
+        std::filesystem::exists(crtPath, ec) && std::filesystem::exists(keyPath, ec)) {
+        outPfxPath = pfxPath.wstring();
+        outCertPemPath = crtPath.wstring();
+        outKeyPemPath = keyPath.wstring();
+        return true;
+    }
+
+    wchar_t containerName[96]{};
+    swprintf_s(containerName, L"PhideLocalDevTls_%lu_%llu",
+               GetCurrentProcessId(),
+               static_cast<unsigned long long>(GetTickCount64()));
+    {
+        HCRYPTPROV hDel = 0;
+        CryptAcquireContextW(&hDel, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET | CRYPT_SILENT);
+    }
+
+    DWORD keysetFlag = 0;
+    HCRYPTPROV hProv = 0;
+    if (!CryptAcquireContextW(&hProv, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_NEWKEYSET | CRYPT_SILENT)) {
+        keysetFlag = CRYPT_MACHINE_KEYSET;
+        HCRYPTPROV hDelM = 0;
+        CryptAcquireContextW(&hDelM, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET | CRYPT_MACHINE_KEYSET | CRYPT_SILENT);
+        if (!CryptAcquireContextW(&hProv, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_NEWKEYSET | CRYPT_MACHINE_KEYSET | CRYPT_SILENT)) {
+            outError = L"CryptAcquireContextW failed (" + std::to_wstring(GetLastError()) + L").";
+            return false;
+        }
+    }
+
+    HCRYPTKEY hKey = 0;
+    if (!CryptGenKey(hProv, AT_KEYEXCHANGE, (2048U << 16) | CRYPT_EXPORTABLE, &hKey)) {
+        CryptReleaseContext(hProv, 0);
+        HCRYPTPROV hDel = 0;
+        CryptAcquireContextW(&hDel, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET | keysetFlag | CRYPT_SILENT);
+        outError = L"CryptGenKey failed (" + std::to_wstring(GetLastError()) + L").";
+        return false;
+    }
+
+    BYTE subjBuf[256] = {};
+    DWORD subjLen = sizeof(subjBuf);
+    CERT_NAME_BLOB subjBlob{};
+    if (!CertStrToNameW(X509_ASN_ENCODING, L"CN=localhost", CERT_X500_NAME_STR, nullptr, subjBuf, &subjLen, nullptr)) {
+        CryptDestroyKey(hKey);
+        CryptReleaseContext(hProv, 0);
+        outError = L"CertStrToNameW failed.";
+        return false;
+    }
+    subjBlob.cbData = subjLen;
+    subjBlob.pbData = subjBuf;
+
+    // Subject Alternative Name extension: DNS:localhost + IP:127.0.0.1
+    uint8_t ip4Bytes[4] = { 127, 0, 0, 1 };
+    CERT_ALT_NAME_ENTRY sanEntries[2]{};
+    sanEntries[0].dwAltNameChoice = CERT_ALT_NAME_DNS_NAME;
+    sanEntries[0].pwszDNSName = const_cast<LPWSTR>(L"localhost");
+    sanEntries[1].dwAltNameChoice = CERT_ALT_NAME_IP_ADDRESS;
+    sanEntries[1].IPAddress.cbData = 4;
+    sanEntries[1].IPAddress.pbData = ip4Bytes;
+    CERT_ALT_NAME_INFO sanInfo{ 2, sanEntries };
+
+    BYTE sanEncoded[512] = {};
+    DWORD sanEncodedLen = sizeof(sanEncoded);
+    CERT_EXTENSION sanExt{};
+    CERT_EXTENSIONS exts{};
+    if (CryptEncodeObjectEx(X509_ASN_ENCODING, szOID_SUBJECT_ALT_NAME2, &sanInfo, 0, nullptr, sanEncoded, &sanEncodedLen)) {
+        sanExt.pszObjId = const_cast<LPSTR>(szOID_SUBJECT_ALT_NAME2);
+        sanExt.fCritical = FALSE;
+        sanExt.Value.cbData = sanEncodedLen;
+        sanExt.Value.pbData = sanEncoded;
+        exts.cExtension = 1;
+        exts.rgExtension = &sanExt;
+    }
+
+    CRYPT_KEY_PROV_INFO kpi{};
+    kpi.pwszContainerName = containerName;
+    kpi.pwszProvName = const_cast<LPWSTR>(MS_ENH_RSA_AES_PROV_W);
+    kpi.dwProvType = PROV_RSA_AES;
+    kpi.dwFlags = keysetFlag;
+    kpi.dwKeySpec = AT_KEYEXCHANGE;
+
+    SYSTEMTIME stStart{}, stEnd{};
+    GetSystemTime(&stStart);
+    stEnd = stStart;
+    stEnd.wYear += 2;
+
+    PCCERT_CONTEXT pCert = CertCreateSelfSignCertificate(
+        hProv, &subjBlob, 0, &kpi, nullptr, &stStart, &stEnd, exts.cExtension ? &exts : nullptr);
+    if (!pCert) {
+        DWORD errCode = GetLastError();
+        CryptDestroyKey(hKey);
+        CryptReleaseContext(hProv, 0);
+        HCRYPTPROV hDel = 0;
+        CryptAcquireContextW(&hDel, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET | keysetFlag | CRYPT_SILENT);
+        outError = L"CertCreateSelfSignCertificate failed (" + std::to_wstring(errCode) + L").";
+        return false;
+    }
+
+    // Export PEM certificate
+    {
+        std::string pem = "-----BEGIN CERTIFICATE-----\n" +
+                          Base64EncodeDer(pCert->pbCertEncoded, pCert->cbCertEncoded) +
+                          "-----END CERTIFICATE-----\n";
+        std::ofstream ofs(crtPath, std::ios::binary | std::ios::trunc);
+        ofs.write(pem.data(), static_cast<std::streamsize>(pem.size()));
+    }
+
+    // Export RSA PKCS#1 private key PEM for Nginx
+    {
+        DWORD blobLen = 0;
+        if (CryptExportKey(hKey, 0, PRIVATEKEYBLOB, 0, nullptr, &blobLen) && blobLen > 0) {
+            std::vector<uint8_t> privBlob(blobLen);
+            if (CryptExportKey(hKey, 0, PRIVATEKEYBLOB, 0, privBlob.data(), &blobLen)) {
+                DWORD derLen = 0;
+                if (CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY, privBlob.data(), 0, nullptr, nullptr, &derLen) && derLen > 0) {
+                    std::vector<uint8_t> der(derLen);
+                    if (CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY, privBlob.data(), 0, nullptr, der.data(), &derLen)) {
+                        std::string keyPem = "-----BEGIN RSA PRIVATE KEY-----\n" +
+                                             Base64EncodeDer(der.data(), derLen) +
+                                             "-----END RSA PRIVATE KEY-----\n";
+                        std::ofstream ofs(keyPath, std::ios::binary | std::ios::trunc);
+                        ofs.write(keyPem.data(), static_cast<std::streamsize>(keyPem.size()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Export PFX into cached store file
+    HCERTSTORE hMemStore = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, nullptr);
+    bool pfxOk = false;
+    if (hMemStore) {
+        if (CertAddCertificateContextToStore(hMemStore, pCert, CERT_STORE_ADD_REPLACE_EXISTING, nullptr)) {
+            CRYPT_DATA_BLOB pfxBlob{};
+            if (PFXExportCertStoreEx(hMemStore, &pfxBlob, L"phide", nullptr, EXPORT_PRIVATE_KEYS) && pfxBlob.cbData > 0) {
+                std::vector<uint8_t> buf(pfxBlob.cbData);
+                pfxBlob.pbData = buf.data();
+                if (PFXExportCertStoreEx(hMemStore, &pfxBlob, L"phide", nullptr, EXPORT_PRIVATE_KEYS)) {
+                    std::ofstream ofs(pfxPath, std::ios::binary | std::ios::trunc);
+                    ofs.write(reinterpret_cast<const char*>(pfxBlob.pbData), pfxBlob.cbData);
+                    pfxOk = ofs.good();
+                }
+            }
+        }
+        CertCloseStore(hMemStore, 0);
+    }
+
+    CertFreeCertificateContext(pCert);
+    CryptDestroyKey(hKey);
+    CryptReleaseContext(hProv, 0);
+    {
+        HCRYPTPROV hDel = 0;
+        CryptAcquireContextW(&hDel, containerName, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_DELETEKEYSET | keysetFlag | CRYPT_SILENT);
+    }
+
+    if (!pfxOk) {
+        outError = L"PFXExportCertStoreEx failed.";
+        return false;
+    }
+
+    outPfxPath = pfxPath.wstring();
+    outCertPemPath = crtPath.wstring();
+    outKeyPemPath = keyPath.wstring();
+    return true;
+}
+
+void LiveServer::CleanupTlsCredentials() {
+    m_tlsActive.store(false);
+    if (!m_tlsState) return;
+    if (m_tlsState->hasCred) {
+        FreeCredentialsHandle(&m_tlsState->cred);
+        m_tlsState->hasCred = false;
+    }
+    if (m_tlsState->pCert) {
+        CertFreeCertificateContext(m_tlsState->pCert);
+        m_tlsState->pCert = nullptr;
+    }
+    if (m_tlsState->hStore) {
+        CertCloseStore(m_tlsState->hStore, 0);
+        m_tlsState->hStore = nullptr;
+    }
+}
+
+void LiveServer::InitTlsCredentials() {
+    CleanupTlsCredentials();
+    if (!m_tlsEnabled.load() || !m_tlsState) return;
+
+    wchar_t* pLocal = nullptr;
+    size_t nLocal = 0;
+    std::wstring certDir;
+    if (_wdupenv_s(&pLocal, &nLocal, L"LOCALAPPDATA") == 0 && pLocal) {
+        certDir = (std::filesystem::path(pLocal) / L"phide" / L"certs").wstring();
+        free(pLocal);
+    } else {
+        certDir = (std::filesystem::temp_directory_path() / L"phide_certs").wstring();
+    }
+
+    std::wstring pfxPath, crtPath, keyPath, err;
+    if (!EnsureLocalDevCertificate(certDir, pfxPath, crtPath, keyPath, err)) {
+        return;
+    }
+
+    std::vector<uint8_t> pfxBytes;
+    if (!ReadWholeFileBytes(pfxPath, pfxBytes)) return;
+
+    CRYPT_DATA_BLOB blob{ static_cast<DWORD>(pfxBytes.size()), pfxBytes.data() };
+    HCERTSTORE hStore = PFXImportCertStore(&blob, L"phide", CRYPT_EXPORTABLE);
+    if (!hStore) return;
+
+    PCCERT_CONTEXT pCert = CertEnumCertificatesInStore(hStore, nullptr);
+    if (!pCert) {
+        CertCloseStore(hStore, 0);
+        return;
+    }
+
+    SCHANNEL_CRED scCred{};
+    scCred.dwVersion = SCHANNEL_CRED_VERSION;
+    scCred.cCreds = 1;
+    scCred.paCred = &pCert;
+    scCred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_NO_SYSTEM_MAPPER;
+
+    TimeStamp expiry{};
+    SECURITY_STATUS ss = AcquireCredentialsHandleW(
+        nullptr, const_cast<LPWSTR>(UNISP_NAME_W), SECPKG_CRED_INBOUND,
+        nullptr, &scCred, nullptr, nullptr, &m_tlsState->cred, &expiry);
+    if (ss != SEC_E_OK) {
+        CertFreeCertificateContext(pCert);
+        CertCloseStore(hStore, 0);
+        return;
+    }
+
+    m_tlsState->hStore = hStore;
+    m_tlsState->pCert = pCert;
+    m_tlsState->hasCred = true;
+    m_tlsActive.store(true);
+}
+
+bool LiveServer::SendClientRawOrTls(SOCKET clientSock, TlsSocketSession* tlsSession, const char* data, int len) const {
+    if (clientSock == INVALID_SOCKET || !data || len <= 0) return false;
+    if (!tlsSession || !tlsSession->hasCtxt) {
+        return SendAllSocketBytes(clientSock, data, len);
+    }
+
+    std::lock_guard<std::mutex> ioLk(tlsSession->ioMutex);
+    const size_t maxChunk = tlsSession->sizes.cbMaximumMessage > 0 ? tlsSession->sizes.cbMaximumMessage : 16384;
+    size_t offset = 0;
+    while (offset < static_cast<size_t>(len)) {
+        size_t chunk = (std::min)(maxChunk, static_cast<size_t>(len) - offset);
+        std::vector<uint8_t> packet(tlsSession->sizes.cbHeader + chunk + tlsSession->sizes.cbTrailer);
+        memcpy(packet.data() + tlsSession->sizes.cbHeader, data + offset, chunk);
+
+        SecBuffer bufs[4]{};
+        bufs[0].BufferType = SECBUFFER_STREAM_HEADER;
+        bufs[0].cbBuffer = tlsSession->sizes.cbHeader;
+        bufs[0].pvBuffer = packet.data();
+        bufs[1].BufferType = SECBUFFER_DATA;
+        bufs[1].cbBuffer = static_cast<DWORD>(chunk);
+        bufs[1].pvBuffer = packet.data() + tlsSession->sizes.cbHeader;
+        bufs[2].BufferType = SECBUFFER_STREAM_TRAILER;
+        bufs[2].cbBuffer = tlsSession->sizes.cbTrailer;
+        bufs[2].pvBuffer = packet.data() + tlsSession->sizes.cbHeader + chunk;
+        bufs[3].BufferType = SECBUFFER_EMPTY;
+
+        SecBufferDesc desc{ SECBUFFER_VERSION, 4, bufs };
+        if (EncryptMessage(&tlsSession->ctxt, 0, &desc, 0) != SEC_E_OK) {
+            return false;
+        }
+        int totalSend = static_cast<int>(bufs[0].cbBuffer + bufs[1].cbBuffer + bufs[2].cbBuffer);
+        if (!SendAllSocketBytes(clientSock, reinterpret_cast<const char*>(packet.data()), totalSend)) {
+            return false;
+        }
+        offset += chunk;
+    }
+    return true;
+}
+
 bool LiveServer::Start(const std::wstring& rootDir, const std::wstring& defaultHtmlFile, int preferredPort) {
     Stop();
+    InitTlsCredentials();
 
     std::error_code ec;
     std::filesystem::path root(rootDir);
@@ -84,6 +455,7 @@ bool LiveServer::Start(const std::wstring& rootDir, const std::wstring& defaultH
 
     m_listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (m_listenSock == INVALID_SOCKET) {
+        CleanupTlsCredentials();
         return false;
     }
 
@@ -110,6 +482,7 @@ bool LiveServer::Start(const std::wstring& rootDir, const std::wstring& defaultH
     if (!bound || listen(m_listenSock, SOMAXCONN) != 0) {
         closesocket(m_listenSock);
         m_listenSock = INVALID_SOCKET;
+        CleanupTlsCredentials();
         return false;
     }
 
@@ -136,6 +509,7 @@ void LiveServer::Stop() {
             CloseHandle(m_watchStopEvent);
             m_watchStopEvent = nullptr;
         }
+        CleanupTlsCredentials();
         return;
     }
 
@@ -159,6 +533,7 @@ void LiveServer::Stop() {
             }
         }
         m_wsClients.clear();
+        m_clientTlsMap.clear();
     }
 
     SOCKET sock = m_listenSock;
@@ -173,10 +548,14 @@ void LiveServer::Stop() {
     if (m_watcherThread.joinable()) {
         m_watcherThread.join();
     }
+    for (int waitIdx = 0; waitIdx < 100 && m_activeClients.load() > 0; ++waitIdx) {
+        Sleep(10);
+    }
     if (m_watchStopEvent) {
         CloseHandle(m_watchStopEvent);
         m_watchStopEvent = nullptr;
     }
+    CleanupTlsCredentials();
 }
 
 void LiveServer::ServerWorker() {
@@ -207,7 +586,12 @@ void LiveServer::ServerWorker() {
             continue;
         }
 
+        m_activeClients.fetch_add(1);
         std::thread([this, clientSock]() {
+            struct ActiveGuard {
+                std::atomic<int>& c;
+                ~ActiveGuard() { c.fetch_sub(1); }
+            } g{ m_activeClients };
             HandleClient(clientSock);
         }).detach();
     }
@@ -259,21 +643,146 @@ std::string LiveServer::GetMimeType(const std::filesystem::path& path) const {
 }
 
 void LiveServer::HandleClient(SOCKET clientSock) {
-    char reqBuf[4096] = {0};
-    int bytesRecv = recv(clientSock, reqBuf, sizeof(reqBuf) - 1, 0);
-    if (bytesRecv <= 0) {
+    std::shared_ptr<TlsSocketSession> tlsSession;
+    std::string req;
+
+    if (m_tlsActive.load() && m_tlsState && m_tlsState->hasCred) {
+        tlsSession = std::make_shared<TlsSocketSession>();
+        std::vector<uint8_t> inBuf;
+        inBuf.reserve(8192);
+        bool handshakeOk = false;
+        bool needMore = true;
+        CtxtHandle* pCtx = nullptr;
+        TimeStamp tsExpiry{};
+
+        for (int iter = 0; iter < 64 && m_isRunning.load(); ++iter) {
+            if (needMore) {
+                if (inBuf.size() >= 65536) break;
+                char tmp[4096];
+                int n = recv(clientSock, tmp, sizeof(tmp), 0);
+                if (n <= 0) break;
+                inBuf.insert(inBuf.end(), tmp, tmp + n);
+            }
+
+            SecBuffer inBufs[2]{};
+            inBufs[0].BufferType = SECBUFFER_TOKEN;
+            inBufs[0].cbBuffer = static_cast<DWORD>(inBuf.size());
+            inBufs[0].pvBuffer = inBuf.data();
+            inBufs[1].BufferType = SECBUFFER_EMPTY;
+            SecBufferDesc inDesc{ SECBUFFER_VERSION, 2, inBufs };
+
+            SecBuffer outBufs[1]{};
+            outBufs[0].BufferType = SECBUFFER_TOKEN;
+            SecBufferDesc outDesc{ SECBUFFER_VERSION, 1, outBufs };
+
+            DWORD ctxAttr = 0;
+            SECURITY_STATUS ss = AcceptSecurityContext(
+                &m_tlsState->cred,
+                pCtx,
+                &inDesc,
+                ASC_REQ_STREAM | ASC_REQ_ALLOCATE_MEMORY,
+                0,
+                &tlsSession->ctxt,
+                &outDesc,
+                &ctxAttr,
+                &tsExpiry);
+            pCtx = &tlsSession->ctxt;
+            tlsSession->hasCtxt = true;
+
+            if (outBufs[0].pvBuffer && outBufs[0].cbBuffer > 0) {
+                SendAllSocketBytes(clientSock, reinterpret_cast<const char*>(outBufs[0].pvBuffer), static_cast<int>(outBufs[0].cbBuffer));
+                FreeContextBuffer(outBufs[0].pvBuffer);
+            }
+
+            if (ss == SEC_E_INCOMPLETE_MESSAGE) {
+                needMore = true;
+                continue;
+            }
+            if (ss == SEC_I_CONTINUE_NEEDED || ss == SEC_E_OK) {
+                if (inBufs[1].BufferType == SECBUFFER_EXTRA && inBufs[1].cbBuffer > 0) {
+                    size_t extra = inBufs[1].cbBuffer;
+                    memmove(inBuf.data(), inBuf.data() + (inBuf.size() - extra), extra);
+                    inBuf.resize(extra);
+                    needMore = false;
+                } else {
+                    inBuf.clear();
+                    needMore = true;
+                }
+                if (ss == SEC_E_OK) {
+                    if (QueryContextAttributesW(&tlsSession->ctxt, SECPKG_ATTR_STREAM_SIZES, &tlsSession->sizes) == SEC_E_OK) {
+                        handshakeOk = true;
+                    }
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+
+        if (!handshakeOk) {
+            closesocket(clientSock);
+            return;
+        }
+
+        // Read & decrypt initial HTTP request
+        for (int iter = 0; iter < 32 && req.find("\r\n\r\n") == std::string::npos; ++iter) {
+            if (!inBuf.empty()) {
+                SecBuffer dBufs[4]{};
+                dBufs[0].BufferType = SECBUFFER_DATA;
+                dBufs[0].cbBuffer = static_cast<DWORD>(inBuf.size());
+                dBufs[0].pvBuffer = inBuf.data();
+                dBufs[1].BufferType = SECBUFFER_EMPTY;
+                dBufs[2].BufferType = SECBUFFER_EMPTY;
+                dBufs[3].BufferType = SECBUFFER_EMPTY;
+                SecBufferDesc dDesc{ SECBUFFER_VERSION, 4, dBufs };
+                SECURITY_STATUS dss = DecryptMessage(&tlsSession->ctxt, &dDesc, 0, nullptr);
+                if (dss == SEC_E_OK) {
+                    for (int k = 0; k < 4; ++k) {
+                        if (dBufs[k].BufferType == SECBUFFER_DATA && dBufs[k].pvBuffer && dBufs[k].cbBuffer > 0) {
+                            req.append(reinterpret_cast<const char*>(dBufs[k].pvBuffer), dBufs[k].cbBuffer);
+                        }
+                    }
+                    inBuf.clear();
+                    if (req.find("\r\n\r\n") != std::string::npos || req.size() >= 16384) break;
+                } else if (dss != SEC_E_INCOMPLETE_MESSAGE) {
+                    break;
+                }
+            }
+            if (inBuf.size() >= 65536) break;
+            char tmp[4096];
+            int n = recv(clientSock, tmp, sizeof(tmp), 0);
+            if (n <= 0) break;
+            inBuf.insert(inBuf.end(), tmp, tmp + n);
+        }
+    } else {
+        char reqBuf[4096] = {0};
+        int bytesRecv = recv(clientSock, reqBuf, sizeof(reqBuf) - 1, 0);
+        if (bytesRecv <= 0) {
+            closesocket(clientSock);
+            return;
+        }
+        req.assign(reqBuf, bytesRecv);
+    }
+
+    if (req.empty()) {
         closesocket(clientSock);
         return;
     }
 
-    std::string req(reqBuf, bytesRecv);
+    TlsSocketSession* pTls = tlsSession.get();
+    auto sendPayload = [&](const char* d, int l) {
+        SendClientRawOrTls(clientSock, pTls, d, l);
+    };
+    auto sendStr = [&](const std::string& s) {
+        sendPayload(s.data(), static_cast<int>(s.size()));
+    };
+
     std::istringstream reqStream(req);
     std::string method, rawUri, proto;
     reqStream >> method >> rawUri >> proto;
 
     if (method != "GET" && method != "HEAD") {
-        std::string res = "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        send(clientSock, res.data(), static_cast<int>(res.size()), 0);
+        sendStr("HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         closesocket(clientSock);
         return;
     }
@@ -309,10 +818,10 @@ void LiveServer::HandleClient(SOCKET clientSock) {
                << "Upgrade: websocket\r\n"
                << "Connection: Upgrade\r\n"
                << "Sec-WebSocket-Accept: " << acceptKey << "\r\n\r\n";
-            std::string hsStr = hs.str();
-            send(clientSock, hsStr.data(), static_cast<int>(hsStr.size()), 0);
+            sendStr(hs.str());
             std::lock_guard<std::mutex> cl(m_clientsMutex);
             m_wsClients.push_back(clientSock);
+            if (tlsSession) m_clientTlsMap[clientSock] = std::move(tlsSession);
             return;
         }
     }
@@ -326,10 +835,10 @@ void LiveServer::HandleClient(SOCKET clientSock) {
             << "Connection: keep-alive\r\n"
             << "Access-Control-Allow-Origin: *\r\n\r\n"
             << "retry: 500\nevent: hello\ndata: {\"revision\":" << m_reloadRevision.load() << "}\n\n";
-        std::string sseStr = sse.str();
-        send(clientSock, sseStr.data(), static_cast<int>(sseStr.size()), 0);
+        sendStr(sse.str());
         std::lock_guard<std::mutex> cl(m_clientsMutex);
         m_sseClients.push_back(clientSock);
+        if (tlsSession) m_clientTlsMap[clientSock] = std::move(tlsSession);
         return;
     }
 
@@ -338,7 +847,7 @@ void LiveServer::HandleClient(SOCKET clientSock) {
         std::string body = "{\"revision\":" + std::to_string(m_reloadRevision.load()) + "}";
         std::string res = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-cache\r\nContent-Length: " +
                           std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
-        send(clientSock, res.data(), static_cast<int>(res.size()), 0);
+        sendStr(res);
         closesocket(clientSock);
         return;
     }
@@ -382,15 +891,14 @@ void LiveServer::HandleClient(SOCKET clientSock) {
     if (canonStr.find(rootStr) != 0 || !std::filesystem::exists(canonical, ec) || std::filesystem::is_directory(canonical, ec)) {
         std::string body = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Phide Live Server could not find the requested resource.</p></body></html>";
         std::string res = "HTTP/1.1 404 Not Found\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + std::to_string(body.length()) + "\r\nConnection: close\r\n\r\n" + body;
-        send(clientSock, res.data(), static_cast<int>(res.size()), 0);
+        sendStr(res);
         closesocket(clientSock);
         return;
     }
 
     std::ifstream file(canonical, std::ios::binary);
     if (!file.is_open()) {
-        std::string res = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        send(clientSock, res.data(), static_cast<int>(res.size()), 0);
+        sendStr("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         closesocket(clientSock);
         return;
     }
@@ -418,11 +926,10 @@ void LiveServer::HandleClient(SOCKET clientSock) {
            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
            << "Connection: close\r\n\r\n";
 
-    std::string headerStr = header.str();
-    send(clientSock, headerStr.data(), static_cast<int>(headerStr.size()), 0);
+    sendStr(header.str());
 
     if (method == "GET" && !fileBytes.empty()) {
-        send(clientSock, fileBytes.data(), static_cast<int>(fileBytes.size()), 0);
+        sendPayload(fileBytes.data(), static_cast<int>(fileBytes.size()));
     }
 
     closesocket(clientSock);
@@ -598,8 +1105,11 @@ void LiveServer::BroadcastReload(const std::wstring& changedRelPath) {
 
     std::lock_guard<std::mutex> cl(m_clientsMutex);
     for (auto it = m_sseClients.begin(); it != m_sseClients.end();) {
-        int sent = send(*it, sseMsg.data(), static_cast<int>(sseMsg.size()), 0);
-        if (sent <= 0) {
+        TlsSocketSession* tls = nullptr;
+        if (auto tf = m_clientTlsMap.find(*it); tf != m_clientTlsMap.end()) tls = tf->second.get();
+        bool sentOk = SendClientRawOrTls(*it, tls, sseMsg.data(), static_cast<int>(sseMsg.size()));
+        if (!sentOk) {
+            m_clientTlsMap.erase(*it);
             closesocket(*it);
             it = m_sseClients.erase(it);
         } else {
@@ -607,8 +1117,11 @@ void LiveServer::BroadcastReload(const std::wstring& changedRelPath) {
         }
     }
     for (auto it = m_wsClients.begin(); it != m_wsClients.end();) {
-        int sent = send(*it, reinterpret_cast<const char*>(wsFrame.data()), static_cast<int>(wsFrame.size()), 0);
-        if (sent <= 0) {
+        TlsSocketSession* tls = nullptr;
+        if (auto tf = m_clientTlsMap.find(*it); tf != m_clientTlsMap.end()) tls = tf->second.get();
+        bool sentOk = SendClientRawOrTls(*it, tls, reinterpret_cast<const char*>(wsFrame.data()), static_cast<int>(wsFrame.size()));
+        if (!sentOk) {
+            m_clientTlsMap.erase(*it);
             closesocket(*it);
             it = m_wsClients.erase(it);
         } else {
@@ -726,16 +1239,45 @@ std::wstring LiveServer::GenerateNginxVhostPreset(
     const std::wstring& serverName,
     int port,
     const std::wstring& docRoot,
-    int phpFpmPort) {
+    int phpFpmPort,
+    int upstreamPort,
+    const std::wstring& sslCertPath,
+    const std::wstring& sslKeyPath) {
     std::wstring rootFwd = docRoot;
     for (auto& c : rootFwd) if (c == L'\\') c = L'/';
+    std::wstring certFwd = sslCertPath;
+    for (auto& c : certFwd) if (c == L'\\') c = L'/';
+    std::wstring keyFwd = sslKeyPath;
+    for (auto& c : keyFwd) if (c == L'\\') c = L'/';
     std::wstring host = serverName.empty() ? L"localhost" : serverName;
     if (port <= 0 || port > 65535) port = 80;
+    if (upstreamPort <= 0 || upstreamPort > 65535) upstreamPort = 3000;
 
     std::wostringstream out;
     out << L"# Phide Preset: " << presetName << L"\n"
-        << L"server {\n"
-        << L"    listen " << port << L";\n"
+        << L"server {\n";
+
+    if (presetName == L"HTTPS Reverse Proxy (SSL + proxy_pass)") {
+        const int httpsPort = (port == 80) ? 443 : port;
+        out << L"    listen " << httpsPort << L" ssl;\n"
+            << L"    server_name " << host << L";\n"
+            << L"    ssl_certificate     \"" << (certFwd.empty() ? L"conf/localhost.crt" : certFwd) << L"\";\n"
+            << L"    ssl_certificate_key \"" << (keyFwd.empty() ? L"conf/localhost.key" : keyFwd) << L"\";\n"
+            << L"    ssl_protocols       TLSv1.2 TLSv1.3;\n\n"
+            << L"    location / {\n"
+            << L"        proxy_pass http://127.0.0.1:" << upstreamPort << L";\n"
+            << L"        proxy_http_version 1.1;\n"
+            << L"        proxy_set_header Upgrade $http_upgrade;\n"
+            << L"        proxy_set_header Connection \"upgrade\";\n"
+            << L"        proxy_set_header Host $host;\n"
+            << L"        proxy_set_header X-Forwarded-Proto https;\n"
+            << L"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            << L"    }\n"
+            << L"}\n";
+        return out.str();
+    }
+
+    out << L"    listen " << port << L";\n"
         << L"    server_name " << host << L";\n";
 
     if (presetName == L"Laravel / public") {
@@ -750,6 +1292,29 @@ std::wstring LiveServer::GenerateNginxVhostPreset(
             << L"    location / {\n"
             << L"        try_files $uri $uri/ /index.html;\n"
             << L"    }\n";
+    } else if (presetName == L"Reverse Proxy (Next.js / Vite)") {
+        out << L"\n    location / {\n"
+            << L"        proxy_pass http://127.0.0.1:" << upstreamPort << L";\n"
+            << L"        proxy_http_version 1.1;\n"
+            << L"        proxy_set_header Upgrade $http_upgrade;\n"
+            << L"        proxy_set_header Connection \"upgrade\";\n"
+            << L"        proxy_set_header Host $host;\n"
+            << L"        proxy_set_header X-Real-IP $remote_addr;\n"
+            << L"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            << L"    }\n";
+    } else if (presetName == L"API + Frontend Split Proxy") {
+        out << L"    root \"" << rootFwd << L"\";\n"
+            << L"    index index.php index.html;\n\n"
+            << L"    location /api/ {\n"
+            << L"        try_files $uri $uri/ /index.php?$query_string;\n"
+            << L"    }\n\n"
+            << L"    location / {\n"
+            << L"        proxy_pass http://127.0.0.1:" << upstreamPort << L";\n"
+            << L"        proxy_http_version 1.1;\n"
+            << L"        proxy_set_header Upgrade $http_upgrade;\n"
+            << L"        proxy_set_header Connection \"upgrade\";\n"
+            << L"        proxy_set_header Host $host;\n"
+            << L"    }\n";
     } else {
         out << L"    root \"" << rootFwd << L"\";\n"
             << L"    index index.php index.html index.htm;\n\n"
@@ -758,7 +1323,7 @@ std::wstring LiveServer::GenerateNginxVhostPreset(
             << L"    }\n";
     }
 
-    if (presetName != L"SPA History Mode") {
+    if (presetName != L"SPA History Mode" && presetName != L"Reverse Proxy (Next.js / Vite)") {
         out << L"\n    location ~ \\.php$ {\n"
             << L"        fastcgi_pass 127.0.0.1:" << phpFpmPort << L";\n"
             << L"        fastcgi_index index.php;\n"

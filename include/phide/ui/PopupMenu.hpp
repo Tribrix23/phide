@@ -154,6 +154,8 @@ enum class MenuActionId {
     CtxCopyRelativePath,
     CtxRename,
     CtxDelete,
+    CtxGitStage,
+    CtxGitUnstage,
     CtxNewFile,
     CtxNewFolder,
     CtxFindInFolder,
@@ -552,7 +554,12 @@ private:
     void LayoutMenu(std::vector<PopupMenuItem>& items, float startX, float startY, float width,
                     const app::AppConfig& config, D2D1_RECT_F& outBounds,
                     float clientW = 0.0f, float clientH = 0.0f);
+    void LayoutCascadingPanel(std::vector<PopupMenuItem>& subItems, const D2D1_RECT_F& parentBounds,
+                              const D2D1_RECT_F& parentItemBounds, float minW,
+                              const app::AppConfig& config, D2D1_RECT_F& outBounds,
+                              float clientW, float clientH);
     void LayoutSubmenu(int parentItemIdx, const app::AppConfig& config, float clientW, float clientH);
+    void LayoutSubmenu2(int subItemIdx, const app::AppConfig& config, float clientW, float clientH);
 
     void RenderMenuPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                          const std::vector<PopupMenuItem>& items, const D2D1_RECT_F& menuBounds,
@@ -564,11 +571,14 @@ private:
     bool m_isOpen = false;
     D2D1_RECT_F m_mainMenuBounds{};
     D2D1_RECT_F m_submenuBounds{};
+    D2D1_RECT_F m_submenu2Bounds{};
 
     std::vector<PopupMenuItem> m_items;
     int m_hoveredMainIdx = -1;
     int m_activeSubmenuIdx = -1;
     int m_hoveredSubmenuIdx = -1;
+    int m_activeSubmenu2Idx = -1;
+    int m_hoveredSubmenu2Idx = -1;
 };
 
 } // namespace phide::ui

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include "phide/app/AppConfig.hpp"
+#include "phide/app/LocalTimeline.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
 #include "phide/editor/Buffer.hpp"
@@ -771,6 +772,11 @@ public:
         m_sqlPageSize = (std::max<size_t>)(10, (std::min<size_t>)(500, pageSize));
         m_sqlPage = 0;
     }
+    [[nodiscard]] const std::vector<std::wstring>& GetSqlQueryHistory() const noexcept { return m_sqlQueryHistory; }
+    [[nodiscard]] const std::vector<std::pair<std::wstring, std::wstring>>& GetSqlSavedSnippets() const noexcept { return m_sqlSavedSnippets; }
+    void SaveCurrentSqlAsSnippet(const std::wstring& name = L"");
+    void SaveSqlConsoleState() const;
+    void LoadSqlConsoleState();
     [[nodiscard]] std::wstring GetActiveSqlServerActionLabel() const;
     [[nodiscard]] const D2D1_RECT_F& GetSqlServerToggleButtonBounds() const noexcept { return m_rcSqlStartMysqlBtn; }
     [[nodiscard]] const std::wstring& GetSqlStatusBanner() const noexcept { return m_sqlStatusBanner; }
@@ -802,12 +808,14 @@ public:
     bool HandleSnippetEditorKeyDown(WPARAM wParam);
 
     std::function<void()> onTestRunAll;
+    std::function<void()> onTestStop;
     std::function<void()> onTestRerunFailed;
     std::function<void()> onTestRefresh;
     std::function<void()> onToggleCoverageGutter;
     std::function<void()> onRefreshCoverage;
     std::function<void(const phide::dev::TestItem&)> onTestRunSingle;
     std::function<void(const std::wstring& filePath, size_t line0)> onTestOpenLocation;
+    [[nodiscard]] bool IsPointInTestExplorerInteractive(POINT pt) const noexcept;
 
     void SetWorkspaceCoverage(phide::dev::WorkspaceCoverageSummary cov);
     [[nodiscard]] const phide::dev::WorkspaceCoverageSummary& GetWorkspaceCoverage() const noexcept { return m_workspaceCoverage; }
@@ -839,6 +847,8 @@ public:
     bool HandleFileHistoryMouseWheel(short delta) noexcept;
     std::function<void()> onFileHistoryRefresh;
     std::function<void(const std::wstring& commitHash, const std::wstring& relPath)> onFileHistoryOpenCommitDiff;
+    std::function<void(const std::wstring& snapshotPath, const std::wstring& displayTime, const std::wstring& targetPath)> onFileHistoryOpenTimelineDiff;
+    std::function<void(const std::wstring& snapshotPath, const std::wstring& targetPath)> onFileHistoryRestoreTimeline;
     float m_lastExtSubTabY = 0.0f;
     float m_lastExtSubTabH = 0.0f;
     float m_lastExtTab0X = 0.0f;
@@ -948,8 +958,10 @@ public:
     double MeasureCurrentProcessCpu();
 
     D2D1_RECT_F m_rcMonitorRefreshBtn{};
+    D2D1_RECT_F m_rcMonitorKillBtn{};
     D2D1_RECT_F m_rcMonitorPrevPage{};
     D2D1_RECT_F m_rcMonitorNextPage{};
+    bool KillSelectedDevPortProcess();
     float m_monitorScrollY = 0.0f;
     float m_monitorMaxScrollY = 0.0f;
     bool m_isDraggingMonitorScrollbar = false;
@@ -1399,6 +1411,9 @@ private:
         std::wstring schemaError;
         bool hasQueryUpdate = false;
         phide::db::SqlQueryResult queryResult;
+        int64_t queryServerTotalRows = -1;
+        bool queryUsedServerPaging = false;
+        size_t queryRequestedPage = 0;
         bool refreshSchemaAfterQuery = false;
         bool hasDiscoverUpdate = false;
         std::vector<phide::db::SqlConnectionProfile> discoveredProfiles;
@@ -1464,6 +1479,32 @@ private:
     std::vector<SqlDbHit> m_sqlDbHits;
     std::vector<SqlTableHit> m_sqlTableHits;
     std::vector<SqlColHeaderHit> m_sqlColHeaderHits;
+    struct SqlCellHit {
+        D2D1_RECT_F bounds{};
+        size_t row = 0;
+        size_t col = 0;
+    };
+    struct SqlHistoryHit {
+        D2D1_RECT_F bounds{};
+        std::wstring sql;
+    };
+    std::vector<SqlCellHit> m_sqlCellHits;
+    std::vector<SqlHistoryHit> m_sqlHistoryHits;
+    bool m_sqlServerPagedMode = false;
+    int64_t m_sqlServerTotalRows = -1;
+    std::wstring m_sqlPagedBaseQuery;
+    std::wstring m_sqlActiveTableSchema;
+    std::wstring m_sqlActiveTableName;
+    bool m_sqlCellEditActive = false;
+    size_t m_sqlEditRow = 0;
+    size_t m_sqlEditCol = 0;
+    std::wstring m_sqlCellEditText;
+    std::vector<std::wstring> m_sqlQueryHistory;
+    std::vector<std::pair<std::wstring, std::wstring>> m_sqlSavedSnippets;
+    bool m_sqlHistoryMenuOpen = false;
+    D2D1_RECT_F m_rcSqlSaveSnipBtn{};
+    D2D1_RECT_F m_rcSqlHistoryBtn{};
+    D2D1_RECT_F m_rcSqlHistoryPopup{};
 
     // #49 GUI Snippet Editor state
     struct SnipListHit {
@@ -1534,6 +1575,16 @@ private:
     float m_fileHistoryScrollY = 0.0f;
     float m_fileHistoryMaxScrollY = 0.0f;
     D2D1_RECT_F m_rcFileHistoryRefreshBtn{};
+
+    // #49 Out-of-workspace Local Timeline snapshots (<= 8 entries/file)
+    struct TimelineRowHit {
+        size_t idx = 0;
+        D2D1_RECT_F rowBounds{};
+        D2D1_RECT_F diffBtnBounds{};
+        D2D1_RECT_F restoreBtnBounds{};
+    };
+    std::vector<phide::app::TimelineSnapshotEntry> m_timelineEntries;
+    std::vector<TimelineRowHit> m_timelineRowHits;
 
     void RenderInlineDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,

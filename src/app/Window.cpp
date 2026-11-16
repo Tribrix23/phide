@@ -8,6 +8,7 @@
  */
 
 #include "phide/app/Window.hpp"
+#include "phide/app/LocalTimeline.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
 #include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/FormatEngine.hpp"
@@ -743,6 +744,7 @@ constexpr BoolSettingBinding kBoolSettingBindings[] = {
     { L"debug.showSubSessionsInToolBar",        L"debugFloatingToolbar",           &app::AppConfig::debugFloatingToolbar,           true  },
     { L"database.autoDiscoverServers",          L"dbAutoDiscoverServers",          &app::AppConfig::dbAutoDiscoverServers,          true  },
     { L"liveServer.autoOpenBrowser",            L"liveServerAutoOpenBrowser",      &app::AppConfig::liveServerAutoOpenBrowser,      true  },
+    { L"liveServer.https",                      L"liveServerHttps",                &app::AppConfig::liveServerHttps,                true  },
 };
 
 constexpr StringSettingBinding kStringSettingBindings[] = {
@@ -934,9 +936,16 @@ void Window::ApplyWorkspaceSettingsToConfig(const workspace::WorkspaceSettingsOv
         }
     }
     m_editor.SetSqlPageSize(static_cast<size_t>(m_config.sqlPageSize));
+    m_drawer.SetHideDotfiles(m_config.explorerHideDotfiles);
+    editor::Buffer::SetDefaultMemoryMappedThresholdMB(m_config.largeFileMmapThresholdMB);
     m_terminal.SetDockPosition(m_config.terminalDockPosition);
     m_terminal.SetHeight(m_config.terminalHeight);
     m_terminal.SetRightWidth(m_config.terminalRightWidth);
+    m_terminal.SetScrollbackLines(m_config.terminalScrollbackLines);
+    m_terminal.SetCopyOnSelection(m_config.terminalCopyOnSelection);
+    if (m_drawer.HasOpenFolder()) {
+        m_terminal.SetWorkspaceEnvironment(m_drawer.GetOpenFolderPath());
+    }
 }
 
 void Window::LoadAndApplyWorkspaceSettings(const std::wstring& workspaceRoot) {
@@ -1205,8 +1214,10 @@ void Window::SaveSessionState() {
     std::wstring filePath = GetSessionFilePath();
     if (filePath.empty()) return;
 
-    std::wofstream out(filePath, std::ios::trunc);
-    if (!out.is_open()) return;
+    std::wstring tmpPath = filePath + L".tmp";
+    {
+        std::wofstream out(tmpPath, std::ios::trunc);
+        if (!out.is_open()) return;
 
     out << L"{\n";
     out << L"  \"isSidebarOpen\": " << (m_config.isDrawerOpen ? L"true" : L"false") << L",\n";
@@ -1348,9 +1359,21 @@ void Window::SaveSessionState() {
     for (size_t pi = 0; pi < pinnedEntries.size(); ++pi) {
         out << L"    \"" << EscapeJson(pinnedEntries[pi]) << L"\"" << (pi + 1 < pinnedEntries.size() ? L"," : L"") << L"\n";
     }
-    out << L"  ]\n";
-    out << L"}\n";
-    out.flush();
+        out << L"  ]\n";
+        out << L"}\n";
+        out.flush();
+        if (!out.good()) {
+            out.close();
+            std::error_code ec;
+            std::filesystem::remove(tmpPath, ec);
+            SaveDirtyBuffersRecovery();
+            return;
+        }
+    }
+    if (!MoveFileExW(tmpPath.c_str(), filePath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
+    }
     SaveDirtyBuffersRecovery();
 }
 
@@ -1427,6 +1450,13 @@ void Window::SaveDirtyBuffersRecovery() {
     }
 
     static bool s_hasRecoveryFilesOnDisk = true;
+    if (m_config.hotExit == L"off") {
+        if (s_hasRecoveryFilesOnDisk) {
+            ClearDirtyBuffersRecovery();
+            s_hasRecoveryFilesOnDisk = false;
+        }
+        return;
+    }
     if (items.empty()) {
         if (s_hasRecoveryFilesOnDisk) {
             ClearDirtyBuffersRecovery();
@@ -1440,14 +1470,23 @@ void Window::SaveDirtyBuffersRecovery() {
     std::unordered_set<std::wstring> keepNames;
     keepNames.insert(L"manifest.txt");
 
+    auto writeAtomicUtf8 = [](const std::filesystem::path& dest, const std::string& payload) {
+        std::filesystem::path tmp = dest;
+        tmp += L".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) return;
+            if (!payload.empty()) out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+            out.flush();
+            if (!out.good()) return;
+        }
+        MoveFileExW(tmp.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    };
+
     std::wstring manifestText;
     for (const auto& it : items) {
         keepNames.insert(it.bakFileName);
-        std::ofstream bakOut(recDir / it.bakFileName, std::ios::binary | std::ios::trunc);
-        if (bakOut.is_open()) {
-            bakOut.write(it.utf8Content.data(), static_cast<std::streamsize>(it.utf8Content.size()));
-            bakOut.flush();
-        }
+        writeAtomicUtf8(recDir / it.bakFileName, it.utf8Content);
         manifestText += std::to_wstring(it.groupIdx) + L"\t"
                       + std::to_wstring(it.cursorLine) + L"\t"
                       + std::to_wstring(it.cursorCol) + L"\t"
@@ -1459,11 +1498,7 @@ void Window::SaveDirtyBuffersRecovery() {
     }
 
     std::string manifestUtf8 = WideToUtf8Str(manifestText);
-    std::ofstream manOut(recDir / L"manifest.txt", std::ios::binary | std::ios::trunc);
-    if (manOut.is_open()) {
-        manOut.write(manifestUtf8.data(), static_cast<std::streamsize>(manifestUtf8.size()));
-        manOut.flush();
-    }
+    writeAtomicUtf8(recDir / L"manifest.txt", manifestUtf8);
 
     // Prune stale recovery files
     for (const auto& entry : std::filesystem::directory_iterator(recDir, ec)) {
@@ -1952,6 +1987,8 @@ void Window::LoadSessionState() {
     // Synchronize editor typography with restored font preferences
     m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
     m_editor.ResetCharWidth();
+    m_drawer.SetHideDotfiles(m_config.explorerHideDotfiles);
+    editor::Buffer::SetDefaultMemoryMappedThresholdMB(m_config.largeFileMmapThresholdMB);
     PushCustomLspServerPaths();
 
     // Check if launched as a freshly clean new window (--new-window) or detached editor window (--detach <path>)
@@ -2276,8 +2313,8 @@ void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanv
     outCanvasLeft = rawCanvasLeft;
     outCanvasWidth = availableW;
 
-    if (m_config.centeredLayout || m_config.zenMode) {
-        float targetW = (std::min)(availableW * 0.75f, m_config.ScaleF(840.0f));
+    if (m_config.centeredLayout) {
+        float targetW = (std::min)(availableW * 0.85f, m_config.ScaleF(1240.0f));
         if (availableW > m_config.ScaleF(400.0f) && targetW < availableW) {
             const float margin = (availableW - targetW) * 0.5f;
             outCanvasLeft = rawCanvasLeft + margin;
@@ -6981,6 +7018,8 @@ void Window::FlushPendingAutoSaves() {
                         OnDocumentDiskSaved(doc);
                         anySaved = true;
                         SyncRemoteDocumentIfNeeded(doc);
+                        ClearStaleExternalLinterProblemsForFile(doc.filePath);
+                        ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters, true);
                     }
                 }
                 SyncDocumentBuffers(&doc);
@@ -7948,13 +7987,19 @@ void Window::UpdateExecutionButtonStates() {
     std::wstring ext = p.extension().wstring();
     for (auto& c : ext) c = towlower(c);
 
+    std::wstring wsRootDbg = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+    bool hasLaunchCfgs = !wsRootDbg.empty() && !phide::dev::LoadWorkspaceLaunchConfigs(wsRootDbg, pDoc->filePath).empty();
+    bool canDebugDoc = (ui::TerminalPanel::SelectDebugBackendForFile(pDoc->filePath) != ui::DebugBackend::None) ||
+                       (phide::dev::DapClient::DetectAdapterForFile(pDoc->filePath) != phide::dev::DapAdapterType::None) ||
+                       (ext == L".tsx" || ext == L".jsx") || hasLaunchCfgs;
+
     // 1. PHP Application: Fully enabled for single file or project dev server execution
     if (ext == L".php" || ext == L".phtml" || ext == L".php8") {
         bool isRunning = m_isProjectRunning ||
                          (m_header.GetServerState() == ui::ServerState::Running) ||
                          (m_header.GetDatabaseState() == ui::DatabaseState::Running);
         m_header.SetRunEnabled(true);
-        m_header.SetDebugEnabled(false);
+        m_header.SetDebugEnabled(canDebugDoc);
         m_header.SetLiveServerRunning(isRunning);
         return;
     }
@@ -7975,13 +8020,13 @@ void Window::UpdateExecutionButtonStates() {
     if ((m_isProjectRunning || serverIsAlive) && !m_runningProjectRoot.empty()) {
         if (IsFileInDirectory(pDoc->filePath, m_runningProjectRoot) || pDoc->filePath.empty()) {
             m_header.SetRunEnabled(true);
-            m_header.SetDebugEnabled(false);
+            m_header.SetDebugEnabled(canDebugDoc);
             m_header.SetLiveServerRunning(true); // Red Square (STOP)!
             return;
         }
     } else if (serverIsAlive) {
         m_header.SetRunEnabled(true);
-        m_header.SetDebugEnabled(false);
+        m_header.SetDebugEnabled(canDebugDoc);
         m_header.SetLiveServerRunning(true); // Red Square (STOP)!
         return;
     }
@@ -7990,7 +8035,7 @@ void Window::UpdateExecutionButtonStates() {
     if (ext == L".html" || ext == L".htm") {
         auto* srv = FindLiveServer(pDoc->filePath);
         m_header.SetRunEnabled(true);
-        m_header.SetDebugEnabled(false);
+        m_header.SetDebugEnabled(hasLaunchCfgs);
         m_header.SetLiveServerRunning(srv != nullptr);
         return;
     }
@@ -7998,10 +8043,9 @@ void Window::UpdateExecutionButtonStates() {
     // 5. Executable file types for Run: .js, .mjs, .cjs, .ts, .jsx, .tsx, etc.
     bool isJsTs = (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" || ext == L".json" || ext == L".yaml" || ext == L".yml");
     bool canRun = isJsTs;
-    bool canDebug = (ui::TerminalPanel::SelectDebugBackendForFile(pDoc->filePath) != ui::DebugBackend::None);
 
     m_header.SetRunEnabled(canRun);
-    m_header.SetDebugEnabled(canDebug);
+    m_header.SetDebugEnabled(canDebugDoc);
     m_header.SetLiveServerRunning(false);
 }
 
@@ -10263,7 +10307,9 @@ struct DiscardRestoreTaskResult {
 };
 
 struct RemoteFileOpenResult {
+    bool isContainer = false;
     ui::remote::SshHostEntry host;
+    ui::remote::DevContainerEntry container;
     std::wstring remotePath;
     std::wstring localCachePath;
     bool success = false;
@@ -10783,6 +10829,8 @@ void Window::DoRunActiveDocument() {
             int port = GetNextAvailableLiveServerPort();
             auto startLiveOnPort = [this, folder, filePath, fileName](int targetPort) {
                 auto serverInst = std::make_unique<server::LiveServer>();
+                serverInst->SetTlsEnabled(m_config.liveServerHttps);
+                serverInst->SetLiveReloadEnabled(m_config.liveServerHotReload);
                 if (serverInst->Start(folder, fileName, targetPort)) {
                     int actualPort = serverInst->GetPort();
                     std::wstring localUrl = serverInst->GetLocalUrl(fileName);
@@ -10894,12 +10942,21 @@ void Window::DoDebugActiveDocument() {
     m_terminal.Open(folder);
     AnimateTerminalOpen();
 
-    // #26/#27 Check .vscode/launch.json first, else build launch configuration for active file
+    // #26/#27 Check .vscode/launch.json first (preferring configs compatible with the active file), else build for active file
     phide::dev::LaunchConfig chosenCfg;
     bool matchedLaunch = false;
+    auto expectedAdapter = phide::dev::DapClient::DetectAdapterForFile(pDoc->filePath);
     if (!wsRoot.empty()) {
         auto cfgs = phide::dev::LoadWorkspaceLaunchConfigs(wsRoot, pDoc->filePath);
-        if (!cfgs.empty()) {
+        for (const auto& c : cfgs) {
+            auto cfgAdapter = phide::dev::DapClient::AdapterFromTypeString(c.type);
+            if (expectedAdapter != phide::dev::DapAdapterType::None && cfgAdapter == expectedAdapter) {
+                chosenCfg = c;
+                matchedLaunch = true;
+                break;
+            }
+        }
+        if (!matchedLaunch && !cfgs.empty() && expectedAdapter == phide::dev::DapAdapterType::None) {
             chosenCfg = cfgs.front();
             matchedLaunch = true;
         }
@@ -10911,9 +10968,13 @@ void Window::DoDebugActiveDocument() {
         chosenCfg.program = pDoc->filePath;
         chosenCfg.cwd = folder;
         if (ext == L".py" || ext == L".pyw") chosenCfg.type = L"python";
-        else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts") chosenCfg.type = L"node";
+        else if (ext == L".js" || ext == L".mjs" || ext == L".cjs" || ext == L".ts" || ext == L".tsx" || ext == L".jsx") chosenCfg.type = L"node";
         else if (ext == L".php") chosenCfg.type = L"php";
         else if (ext == L".cpp" || ext == L".c" || ext == L".cc" || ext == L".cxx" || ext == L".exe") chosenCfg.type = L"cppdbg";
+    }
+
+    if (chosenCfg.type.empty() && chosenCfg.adapterCommand.empty()) {
+        return;
     }
 
     LaunchDebugWithConfig(chosenCfg);
@@ -11893,7 +11954,10 @@ void Window::SaveFileToPath(const std::wstring& path) {
             SyncDocumentBuffers(pDoc);
             UpdateDrawerDirtyFiles();
             m_drawer.RefreshGitStatusOnly(true); // Immediate 0ms refresh on Save!
+            ClearStaleExternalLinterProblemsForFile(path);
+            RebuildProblemsCache();
             UpdateDrawerErrorFiles();
+            ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters, true);
             SaveSessionState();
             NotifyGraphViewFilesystemChanged();
             // Instant WebSocket/SSE live-reload broadcast on Save (#41)
@@ -12402,6 +12466,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_editor.onTestRunAll = [this]() {
             RunWorkspaceTestsAsync();
         };
+        m_editor.onTestStop = [this]() {
+            StopWorkspaceTests();
+        };
         m_editor.onTestRerunFailed = [this]() {
             RunFailedWorkspaceTestsAsync();
         };
@@ -12647,6 +12714,45 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     };
     m_editor.onFileHistoryOpenCommitDiff = [this](const std::wstring& commitHash, const std::wstring& relPath) {
         OpenCommitDiffDocument(commitHash, relPath);
+    };
+    m_editor.onFileHistoryOpenTimelineDiff = [this](const std::wstring& snapshotPath, const std::wstring& displayTime, const std::wstring& targetPath) {
+        std::string snapUtf8;
+        if (!phide::app::LocalTimeline::LoadSnapshotContent(snapshotPath, snapUtf8)) return;
+        std::wstring fName = targetPath.empty() ? L"file" : std::filesystem::path(targetPath).filename().wstring();
+        editor::OpenDocument diffDoc;
+        diffDoc.filePath = targetPath;
+        diffDoc.fileName = fName + L" (Snapshot " + displayTime + L")";
+        diffDoc.isDirty = false;
+        diffDoc.isPreview = false;
+        diffDoc.isSpecialView = false;
+        diffDoc.isDiffView = true;
+        diffDoc.isDiffLeftReadOnly = true;
+        diffDoc.isDiffRightReadOnly = false;
+        diffDoc.diffActivePane = 1;
+        diffDoc.diffOriginalTitle = L"Timeline (" + displayTime + L")";
+        diffDoc.diffWorkingTitle = fName + L" (Current Disk)";
+        diffDoc.diffOriginalBuffer.SetText(Utf8ToWideStr(snapUtf8));
+        if (!targetPath.empty()) diffDoc.buffer.LoadFromFile(targetPath);
+        ComputeDiffHunks(diffDoc);
+        auto& group = GetActiveGroup();
+        group.docs.push_back(std::move(diffDoc));
+        group.activeDocIdx = static_cast<int>(group.docs.size()) - 1;
+        RefreshActiveDocOutlineAndBreadcrumbs();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    m_editor.onFileHistoryRestoreTimeline = [this](const std::wstring& snapshotPath, const std::wstring& targetPath) {
+        if (targetPath.empty()) return;
+        std::string snapUtf8;
+        if (!phide::app::LocalTimeline::LoadSnapshotContent(snapshotPath, snapUtf8)) return;
+        OpenFileDocument(targetPath, false);
+        if (auto* pDoc = GetActiveDoc()) {
+            if (!pDoc->isSpecialView && !pDoc->isDiffView) {
+                pDoc->buffer.PushUndo();
+                pDoc->buffer.SetText(Utf8ToWideStr(snapUtf8));
+                MarkDocumentModified(pDoc);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
     };
 
     // Initialize user snippets engine and adaptive learning engine
@@ -12981,6 +13087,12 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 if (isUninstall) {
                     m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully uninstalled " + pkgName);
                     m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
+                } else if (cmd.find(L"--upgrade") != std::wstring::npos ||
+                           cmd.find(L"@latest") != std::wstring::npos ||
+                           cmd.find(L"composer update") != std::wstring::npos) {
+                    m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully upgraded " + pkgName);
+                    m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName, scope);
+                    m_editor.GetPackageManagerView().MarkPackageUpgraded(pkgName);
                 } else {
                     m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully installed " + pkgName);
                     m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName, scope);
@@ -13409,6 +13521,7 @@ void Window::OnPaint() {
     float terminalLeft = static_cast<float>(effectiveRailW);
 
     if (editorH > headerH + 2.0f) {
+        m_editor.SetFloatingDebugState(m_terminal.IsDebugActive(), m_terminal.IsDebugPaused());
         m_editor.SetSplitState(m_splitState);
         D2D1_RECT_F editorClip = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, editorH);
         m_pRenderTarget->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -15462,6 +15575,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         return;
     }
 
+    if (m_drawer.IsGitPromptModalOpen()) {
+        if (m_drawer.HandleGitPromptMouseMove(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
     if (m_dbSettingsModal.IsOpen()) {
         m_dbSettingsModal.OnMouseMove(clientPt);
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -17235,6 +17355,24 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         }
                         break;
                     }
+                    case ui::MenuActionId::CtxGitStage:
+                    case ui::MenuActionId::CtxGitUnstage: {
+                        const bool doStage = (action == ui::MenuActionId::CtxGitStage);
+                        if (m_drawer.IsGitRepo() && m_drawer.HasOpenFolder()) {
+                            auto targets = GetActiveExplorerTargetPaths(m_contextTargetPath);
+                            const std::wstring root = m_drawer.GetOpenFolderPath();
+                            std::vector<std::wstring> relPaths;
+                            relPaths.reserve(targets.size());
+                            for (const auto& t : targets) {
+                                std::wstring rel = GetRelativePath(t, root);
+                                if (!rel.empty()) relPaths.push_back(std::move(rel));
+                            }
+                            if (!relPaths.empty()) {
+                                m_drawer.StageFilesBatchAsync(relPaths, doStage);
+                            }
+                        }
+                        break;
+                    }
                     case ui::MenuActionId::CtxNewFile: {
                         std::wstring parentDir = m_contextTargetIsFolder ? m_contextTargetPath
                             : (m_contextTargetPath.empty() ? (m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".")
@@ -18148,11 +18286,29 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 int ngxPort = 80;
                 try { ngxPort = std::stoi(m_dbSettingsModal.GetNginxPort()); } catch (...) {}
                 std::wstring docRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L".";
+                std::wstring presetName = m_dbSettingsModal.GetSelectedVhostPreset();
+                std::wstring sslCertPath, sslKeyPath, sslPfxPath, sslErr;
+                if (presetName.find(L"HTTPS") != std::wstring::npos || presetName.find(L"SSL") != std::wstring::npos) {
+                    wchar_t* pLocal = nullptr;
+                    size_t nLocal = 0;
+                    std::wstring certDir;
+                    if (_wdupenv_s(&pLocal, &nLocal, L"LOCALAPPDATA") == 0 && pLocal) {
+                        certDir = (std::filesystem::path(pLocal) / L"phide" / L"certs").wstring();
+                        free(pLocal);
+                    } else {
+                        certDir = (GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx" / L"conf" / L"certs").wstring();
+                    }
+                    server::LiveServer::EnsureLocalDevCertificate(certDir, sslPfxPath, sslCertPath, sslKeyPath, sslErr);
+                }
                 std::wstring vhostConf = server::LiveServer::GenerateNginxVhostPreset(
-                    m_dbSettingsModal.GetSelectedVhostPreset(),
+                    presetName,
                     m_dbSettingsModal.GetNginxHost(),
                     ngxPort,
-                    docRoot);
+                    docRoot,
+                    9000,
+                    3000,
+                    sslCertPath,
+                    sslKeyPath);
                 std::filesystem::path targetDir = m_drawer.HasOpenFolder()
                     ? (std::filesystem::path(docRoot) / L".phide")
                     : (GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx" / L"conf");
@@ -19233,8 +19389,18 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 m_terminal.SetHeight(m_config.terminalHeight);
                             } else if (modifiedId == L"terminal.integrated.rightWidth") {
                                 m_terminal.SetRightWidth(m_config.terminalRightWidth);
+                            } else if (modifiedId == L"terminal.integrated.scrollback") {
+                                m_terminal.SetScrollbackLines(m_config.terminalScrollbackLines);
+                            } else if (modifiedId == L"terminal.integrated.copyOnSelection") {
+                                m_terminal.SetCopyOnSelection(m_config.terminalCopyOnSelection);
                             } else if (modifiedId == L"database.sqlPageSize") {
                                 m_editor.SetSqlPageSize(static_cast<size_t>(m_config.sqlPageSize));
+                            } else if (modifiedId == L"files.excludeDotfiles") {
+                                m_drawer.SetHideDotfiles(m_config.explorerHideDotfiles);
+                            } else if (modifiedId == L"files.largeFileMmapThresholdMB") {
+                                editor::Buffer::SetDefaultMemoryMappedThresholdMB(m_config.largeFileMmapThresholdMB);
+                            } else if (modifiedId == L"files.hotExit") {
+                                SaveDirtyBuffersRecovery();
                             } else if (modifiedId == L"workbench.zenMode") {
                                 m_config.zenMode = !m_config.zenMode;
                                 ToggleZenMode();
@@ -19702,6 +19868,19 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                     UpdateDrawerDirtyFiles();
                                     UpdateDrawerErrorFiles();
                                     m_drawer.RefreshGitStatusOnly(true);
+                                }
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return;
+                            }
+                            if (inConflictBtn(doc.conflictDismissBtnBounds)) {
+                                doc.hasExternalDiskConflict = false;
+                                if (!doc.filePath.empty()) {
+                                    std::error_code ecTime;
+                                    auto wt = std::filesystem::last_write_time(doc.filePath, ecTime);
+                                    if (!ecTime) {
+                                        doc.lastDiskWriteTime = wt;
+                                        doc.hasLastDiskWriteTime = true;
+                                    }
                                 }
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return;
@@ -22001,7 +22180,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         };
                         if (inCurBtn(pHoverPaneDoc->conflictReloadBtnBounds) ||
                             inCurBtn(pHoverPaneDoc->conflictDiffBtnBounds) ||
-                            inCurBtn(pHoverPaneDoc->conflictOverwriteBtnBounds)) {
+                            inCurBtn(pHoverPaneDoc->conflictOverwriteBtnBounds) ||
+                            inCurBtn(pHoverPaneDoc->conflictDismissBtnBounds)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
@@ -22130,6 +22310,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     LPCWSTR cur = m_editor.GetSqlConsoleCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // Test Explorer button/row pointer cursor
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"test_explorer") {
+                    if (m_editor.IsPointInTestExplorerInteractive(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                 }
@@ -23535,6 +23723,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                      (IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0);
             if (m_terminal.IsOpen() && m_isTerminalFocused && !isTermKeyInactive) {
                 if (wParam == VK_ESCAPE) {
+                    if (m_terminal.IsRenamingTab()) {
+                        m_terminal.CancelTabRename();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (m_terminal.IsFindBarOpen()) {
+                        m_terminal.CloseFindBar();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     if (m_terminal.GetDockPosition() == 1) {
                         CloseTerminalEditorTab();
                     } else {
@@ -23549,12 +23747,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
                 // When terminal has focus, swallow all editing & navigation keys so editor buffer is untouched
-                // Do NOT let Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+A, Ctrl+Z, Ctrl+Y, Tab, Enter, Backspace leak into editor!
                 bool isCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 if (!isCtrl || wParam == 'C' || wParam == 'c' || wParam == 'V' || wParam == 'v' ||
                     wParam == 'X' || wParam == 'x' || wParam == 'A' || wParam == 'a' ||
                     wParam == 'Z' || wParam == 'z' || wParam == 'Y' || wParam == 'y' ||
-                    wParam == VK_BACK || wParam == VK_DELETE || wParam == VK_TAB || wParam == VK_RETURN) {
+                    wParam == 'E' || wParam == 'e' || wParam == 'R' || wParam == 'r' ||
+                    wParam == 'D' || wParam == 'd' || wParam == 'L' || wParam == 'l' ||
+                    wParam == 'K' || wParam == 'k' || wParam == 'U' || wParam == 'u' ||
+                    wParam == 'W' || wParam == 'w' || wParam == 'F' || wParam == 'f' ||
+                    wParam == VK_BACK || wParam == VK_DELETE || wParam == VK_TAB || wParam == VK_RETURN ||
+                    wParam == VK_PRIOR || wParam == VK_NEXT || (wParam >= VK_F1 && wParam <= VK_F12)) {
                     return 0;
                 }
             }
@@ -25182,6 +25384,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 OnDocumentDiskSaved(*pDoc);
                                 SyncDocumentBuffers(pDoc);
                                 SyncRemoteDocumentIfNeeded(*pDoc);
+                                ClearStaleExternalLinterProblemsForFile(pDoc->filePath);
+                                ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters, true);
                                 TriggerDebouncedGitRefresh(300);
                             }
                         } else {
@@ -25541,10 +25745,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     for (auto& grp : m_editorGroups) {
                         for (auto& doc : grp.docs) {
                             if (doc.filePath == res->localCachePath) {
-                                doc.isRemoteFile = true;
-                                doc.remoteSshTarget = res->host.TargetSpec();
-                                doc.remoteSshPort = res->host.port;
-                                doc.remoteSshIdentity = res->host.identityFile;
+                                doc.isRemoteFile = !res->isContainer;
+                                doc.isRemoteContainerFile = res->isContainer;
+                                if (res->isContainer) {
+                                    doc.remoteContainerId = res->container.id;
+                                } else {
+                                    doc.remoteSshTarget = res->host.TargetSpec();
+                                    doc.remoteSshPort = res->host.port;
+                                    doc.remoteSshIdentity = res->host.identityFile;
+                                }
                                 doc.remoteFilePath = res->remotePath;
                                 auto slashPos = res->remotePath.find_last_of(L'/');
                                 if (slashPos != std::wstring::npos && slashPos + 1 < res->remotePath.length()) {
@@ -25555,11 +25764,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 } else {
-                    std::wstring msg = L"Could not download remote file '" + res->remotePath + L"' from " + res->host.TargetSpec() + L".";
+                    std::wstring srcLabel = res->isContainer
+                        ? (!res->container.name.empty() ? res->container.name : res->container.id)
+                        : res->host.TargetSpec();
+                    std::wstring msg = L"Could not download remote file '" + res->remotePath + L"' from " + srcLabel + L".";
                     if (!res->errorMsg.empty()) {
                         msg += L"\n\n" + res->errorMsg;
                     }
-                    MessageBoxW(m_hwnd, msg.c_str(), L"Remote SSH", MB_OK | MB_ICONERROR);
+                    MessageBoxW(m_hwnd, msg.c_str(), res->isContainer ? L"Dev Container" : L"Remote SSH", MB_OK | MB_ICONERROR);
                 }
             }
             return 0;
@@ -25576,6 +25788,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 209: {
+            if (wParam == 1) {
+                std::unique_ptr<std::pair<std::wstring, std::wstring>> vt(
+                    reinterpret_cast<std::pair<std::wstring, std::wstring>*>(lParam));
+                if (vt) OpenVirtualTextTab(vt->first, vt->second);
+                return 0;
+            }
             std::unique_ptr<std::wstring> errMsg(reinterpret_cast<std::wstring*>(lParam));
             if (errMsg && !errMsg->empty()) {
                 MessageBoxW(m_hwnd, errMsg->c_str(), L"Remote SSH Sync Error", MB_OK | MB_ICONWARNING);
@@ -25980,6 +26198,42 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_CLOSE: {
             if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
+            }
+            if (m_config.hotExit == L"off") {
+                bool hasUnsaved = false;
+                for (const auto& grp : m_editorGroups) {
+                    for (const auto& doc : grp.docs) {
+                        if (!doc.isSpecialView && !doc.isFolderView && !doc.isImageView && !doc.isUnsupportedBinary &&
+                            !doc.isDiffView && doc.isDirty) {
+                            hasUnsaved = true;
+                            break;
+                        }
+                    }
+                    if (hasUnsaved) break;
+                }
+                if (hasUnsaved) {
+                    int res = MessageBoxW(
+                        m_hwnd,
+                        L"You have unsaved changes and Hot Exit is turned off.\nSave all modified files before closing?",
+                        L"phide",
+                        MB_YESNOCANCEL | MB_ICONWARNING
+                    );
+                    if (res == IDCANCEL) return 0;
+                    if (res == IDYES) {
+                        DoSaveAll();
+                        for (auto& grp : m_editorGroups) {
+                            for (size_t di = 0; di < grp.docs.size(); ++di) {
+                                auto& doc = grp.docs[di];
+                                if (!doc.isSpecialView && !doc.isFolderView && !doc.isImageView && !doc.isUnsupportedBinary &&
+                                    !doc.isDiffView && doc.isDirty && doc.filePath.empty()) {
+                                    grp.activeDocIdx = static_cast<int>(di);
+                                    DoSaveFileAs();
+                                }
+                            }
+                        }
+                    }
+                }
+                ClearDirtyBuffersRecovery();
             }
             s_pendingModifiedKeys.clear();
             s_editDebouncePending = false;
@@ -26827,6 +27081,16 @@ void Window::SetupRemoteCallbacks() {
     drawerCbs.onAttachContainer = [this](const ui::remote::DevContainerEntry& container) {
         AttachDevContainer(container);
     };
+    drawerCbs.onOpenContainerFile = [this](const ui::remote::DevContainerEntry& container, const std::wstring& remoteFilePath, const std::wstring& localCachePath) {
+        OpenRemoteContainerFile(container, remoteFilePath, localCachePath);
+    };
+    drawerCbs.onOpenDockerLogsTab = [this](const std::wstring& title, const std::wstring& content) {
+        if (!m_hwnd) return;
+        auto* payload = new std::pair<std::wstring, std::wstring>(title, content);
+        if (!PostMessageW(m_hwnd, WM_USER + 209, 1, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
+        }
+    };
     drawerCbs.onOpenOrCreateDevContainer = [this]() {
         OpenOrCreateDevContainerConfig();
     };
@@ -27098,6 +27362,7 @@ void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::
     HWND hwnd = m_hwnd;
     std::thread([host, remotePath, resolvedCache, hwnd]() {
         auto* pRes = new RemoteFileOpenResult();
+        pRes->isContainer = false;
         pRes->host = host;
         pRes->remotePath = remotePath;
         pRes->localCachePath = resolvedCache;
@@ -27108,6 +27373,52 @@ void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::
             delete pRes;
         }
     }).detach();
+}
+
+void Window::OpenRemoteContainerFile(const ui::remote::DevContainerEntry& container, const std::wstring& remotePath, const std::wstring& localCachePath) {
+    if (!m_hwnd || container.id.empty()) return;
+    std::wstring resolvedCache = localCachePath;
+    if (resolvedCache.empty()) {
+        ui::remote::RemoteWorkspaceSession tmpSess;
+        tmpSess.kind = ui::remote::RemoteKind::DevContainer;
+        tmpSess.container = container;
+        resolvedCache = ui::remote::ResolveRemoteVfsCachePath(tmpSess, remotePath);
+    }
+    HWND hwnd = m_hwnd;
+    std::thread([container, remotePath, resolvedCache, hwnd]() {
+        auto* pRes = new RemoteFileOpenResult();
+        pRes->isContainer = true;
+        pRes->container = container;
+        pRes->remotePath = remotePath;
+        pRes->localCachePath = resolvedCache;
+        std::wstring err;
+        pRes->success = ui::remote::DownloadRemoteContainerFile(container, remotePath, resolvedCache, err);
+        pRes->errorMsg = std::move(err);
+        if (!PostMessageW(hwnd, WM_USER + 207, 0, reinterpret_cast<LPARAM>(pRes))) {
+            delete pRes;
+        }
+    }).detach();
+}
+
+void Window::OpenVirtualTextTab(const std::wstring& title, const std::wstring& content) {
+    auto& grp = GetActiveGroup();
+    for (size_t i = 0; i < grp.docs.size(); ++i) {
+        if (!grp.docs[i].isSpecialView && grp.docs[i].filePath.empty() && grp.docs[i].fileName == title) {
+            grp.docs[i].buffer.SetText(content);
+            grp.docs[i].isDirty = false;
+            grp.activeDocIdx = static_cast<int>(i);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+    editor::OpenDocument doc;
+    doc.fileName = title.empty() ? L"Output" : title;
+    doc.isDirty = false;
+    doc.isPreview = false;
+    doc.buffer.SetText(content);
+    grp.docs.push_back(std::move(doc));
+    grp.activeDocIdx = static_cast<int>(grp.docs.size()) - 1;
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc) {
@@ -27433,6 +27744,14 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
         }
         if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
             m_editor.GetActivityHeatmapView().RecordSave();
+            if (!doc.isRemoteFile && !doc.isRemoteContainerFile) {
+                std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+                if (wsRoot.empty()) {
+                    wsRoot = std::filesystem::path(doc.filePath).parent_path().wstring();
+                }
+                phide::app::LocalTimeline::CaptureSnapshot(
+                    wsRoot, doc.filePath, WideToUtf8Str(doc.originalDiskText));
+            }
             ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
         }
     }
@@ -28405,12 +28724,33 @@ void Window::PushCustomLspServerPaths() {
         }
     }
     if (m_activeRemoteSession.IsRemote()) {
+        // Also wrap default auto-discovered LSP server commands inside the remote target when not overridden
+        static const std::pair<const wchar_t*, const wchar_t*> kRemoteDefaults[] = {
+            { L"typescript", L"typescript-language-server --stdio" },
+            { L"javascript", L"typescript-language-server --stdio" },
+            { L"python",     L"pyright-langserver --stdio" },
+            { L"php",        L"intelephense --stdio" },
+            { L"cpp",        L"clangd --background-index" },
+            { L"c",          L"clangd --background-index" },
+            { L"html",       L"vscode-html-language-server --stdio" },
+            { L"css",        L"vscode-css-language-server --stdio" },
+            { L"json",       L"vscode-json-language-server --stdio" }
+        };
+        for (const auto& def : kRemoteDefaults) {
+            if (paths.find(def.first) == paths.end()) {
+                paths[def.first] = def.second;
+            }
+        }
         for (auto& [langKey, cmdStr] : paths) {
             if (!cmdStr.empty()) {
                 cmdStr = ui::remote::WrapCommandForRemote(m_activeRemoteSession, cmdStr, m_activeRemoteSession.remoteWorkDir);
             }
         }
+        std::wstring localWs = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        m_lsp.SetRemotePathMapping(localWs, m_activeRemoteSession.remoteWorkDir);
         m_lsp.ResetDiscoveryCache();
+    } else {
+        m_lsp.SetRemotePathMapping(L"", L"");
     }
     m_lsp.SetCustomServerPaths(paths);
 }
@@ -28722,7 +29062,35 @@ void Window::ApplyCodeActionItem(editor::OpenDocument* pDoc, lsp::CodeActionItem
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters) {
+void Window::ClearStaleExternalLinterProblemsForFile(const std::wstring& filePath) {
+    if (filePath.empty()) return;
+    std::wstring key = NormalizeRecentPath(filePath);
+    for (auto& ch : key) ch = static_cast<wchar_t>(towlower(ch));
+    std::wstring extLow;
+    if (auto dot = filePath.find_last_of(L'.'); dot != std::wstring::npos) {
+        extLow = filePath.substr(dot);
+        for (auto& ch : extLow) ch = static_cast<wchar_t>(towlower(ch));
+    }
+    const bool isJsTs = (extLow == L".ts" || extLow == L".tsx" || extLow == L".js" || extLow == L".jsx" ||
+                         extLow == L".mts" || extLow == L".cts" || extLow == L".mjs" || extLow == L".cjs");
+    for (auto it = m_externalLinterProblems.begin(); it != m_externalLinterProblems.end();) {
+        if (it->first == key) {
+            it = m_externalLinterProblems.erase(it);
+            continue;
+        }
+        std::erase_if(it->second, [&](const editor::ProblemEntry& pe) {
+            if (isJsTs && pe.source == L"tsc") return true;
+            return !pe.filePath.empty() && AreRecentPathsEqual(pe.filePath, filePath);
+        });
+        if (it->second.empty()) {
+            it = m_externalLinterProblems.erase(it);
+            continue;
+        }
+        ++it;
+    }
+}
+
+void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters, bool forceFreshLinters) {
     if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView || m_isDestroying.load()) return;
     if (pDoc->buffer.GetLineCount() == 0 || pDoc->buffer.GetText().size() > 1536 * 1024) return;
 
@@ -28754,7 +29122,7 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
     }
 
     std::thread([this, gen, docVersion, filePath, wsRoot, lines = std::move(lines), peerTexts = std::move(peerTexts),
-                 enableHints, runExternalLinters, hasLsp, needSemanticTokens]() {
+                 enableHints, runExternalLinters, forceFreshLinters, hasLsp, needSemanticTokens]() {
         BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
         if (m_isDestroying.load() || m_langIntelGen.load() != gen) return;
 
@@ -28847,7 +29215,7 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
 
         if (runExternalLinters && !m_isDestroying.load() && !filePath.empty()) {
             payload->hasLinterResults = true;
-            payload->linterProblems = editor::ExternalLinterEngine::RunLintersForFile(filePath, wsRoot);
+            payload->linterProblems = editor::ExternalLinterEngine::RunLintersForFile(filePath, wsRoot, forceFreshLinters);
         }
 
         if (m_isDestroying.load() || !m_hwnd) {
@@ -29338,7 +29706,10 @@ bool Window::HandleProblemsPanelMouseDown(POINT pt) {
     }
     if (PtInRectF(pt, m_rcProblemsRefreshBtn)) {
         if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
-            ScheduleLangIntelAndLintersAsync(pDoc, true);
+            ClearStaleExternalLinterProblemsForFile(pDoc->filePath);
+            RebuildProblemsCache();
+            UpdateDrawerErrorFiles();
+            ScheduleLangIntelAndLintersAsync(pDoc, true, true);
         }
         return true;
     }
@@ -29693,6 +30064,11 @@ void Window::JumpToDebugFileLine(const std::wstring& filePath, int line1Based) {
     std::wstring normPath = filePath;
     for (auto& c : normPath) { if (c == L'/') c = L'\\'; }
     std::filesystem::path pTarget(normPath);
+    {
+        std::wstring fnameLow = pTarget.filename().wstring();
+        for (auto& c : fnameLow) c = static_cast<wchar_t>(towlower(c));
+        if (fnameLow.rfind(L"phide_bdb_", 0) == 0) return;
+    }
 
     auto findOpenDoc = [&]() -> std::pair<int, int> {
         for (size_t gi = 0; gi < m_editorGroups.size(); ++gi) {
@@ -29873,8 +30249,9 @@ void Window::LaunchDebugWithConfig(const phide::dev::LaunchConfig& cfg) {
     }
     AnimateTerminalOpen();
     m_terminal.StartDapDebugSession(cfg, bps, pythonExe);
-    m_editor.SetFloatingDebugState(true, false);
+    m_editor.SetFloatingDebugState(m_terminal.IsDebugActive(), m_terminal.IsDebugPaused());
     m_isTerminalFocused = true;
+    UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -29926,12 +30303,20 @@ void Window::RefreshWorkspaceTestsAsync() {
     }).detach();
 }
 
+void Window::StopWorkspaceTests() {
+    m_testCancelRequested.store(true);
+    m_testsRunningAsync.store(false);
+    m_editor.SetTestIsRunning(false);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
 void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
                                     phide::dev::TestFramework fw,
                                     const std::wstring& filePath) {
     if (m_testsRunningAsync.exchange(true) || m_isDestroying.load()) {
         return;
     }
+    m_testCancelRequested.store(false);
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
     if (wsRoot.empty()) {
         m_testsRunningAsync.store(false);
@@ -29948,24 +30333,44 @@ void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
     std::thread([this, wsRoot, filterName, fw, filePath]() {
         std::vector<phide::dev::TestItem> items = phide::dev::TestExplorerEngine::DiscoverTests(wsRoot);
         phide::dev::TestFramework runFw = fw;
+        bool hasRunner = !items.empty();
         if (runFw == phide::dev::TestFramework::Unknown) {
             if (!items.empty()) {
                 runFw = items.front().framework;
             } else {
                 std::error_code ec;
-                if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"phpunit.xml", ec) ||
-                    std::filesystem::exists(std::filesystem::path(wsRoot) / L"phpunit.xml.dist", ec)) {
+                std::filesystem::path rootP(wsRoot);
+                if (std::filesystem::exists(rootP / L"phpunit.xml", ec) ||
+                    std::filesystem::exists(rootP / L"phpunit.xml.dist", ec)) {
                     runFw = phide::dev::TestFramework::PhpUnit;
-                } else if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"package.json", ec)) {
+                    hasRunner = true;
+                } else if (std::filesystem::exists(rootP / L"node_modules" / L".bin" / L"vitest.cmd", ec)) {
+                    runFw = phide::dev::TestFramework::Vitest;
+                    hasRunner = true;
+                } else if (std::filesystem::exists(rootP / L"node_modules" / L".bin" / L"jest.cmd", ec)) {
                     runFw = phide::dev::TestFramework::Jest;
-                } else if (std::filesystem::exists(std::filesystem::path(wsRoot) / L"CMakeLists.txt", ec)) {
+                    hasRunner = true;
+                } else if (std::filesystem::exists(rootP / L"CTestTestfile.cmake", ec) ||
+                           std::filesystem::exists(rootP / L"build" / L"CTestTestfile.cmake", ec)) {
                     runFw = phide::dev::TestFramework::CTest;
-                } else {
+                    hasRunner = true;
+                } else if (std::filesystem::exists(rootP / L"pytest.ini", ec) ||
+                           std::filesystem::exists(rootP / L"conftest.py", ec)) {
                     runFw = phide::dev::TestFramework::Pytest;
+                    hasRunner = true;
                 }
             }
+        } else {
+            hasRunner = true;
         }
-        auto summary = phide::dev::TestExplorerEngine::ExecuteTestsSync(wsRoot, runFw, items, filterName, filePath, 45000);
+        phide::dev::TestRunSummary summary;
+        if (hasRunner) {
+            summary = phide::dev::TestExplorerEngine::ExecuteTestsSync(
+                wsRoot, runFw, items, filterName, filePath, 45000, &m_testCancelRequested);
+        } else {
+            summary.exitCode = 0;
+            summary.rawOutput = L"No tests or test runner configured in workspace.";
+        }
         if (!m_isDestroying.load()) {
             {
                 std::lock_guard<std::mutex> lk(m_testsMutex);
@@ -29985,6 +30390,7 @@ void Window::RunFailedWorkspaceTestsAsync() {
     if (m_testsRunningAsync.exchange(true) || m_isDestroying.load()) {
         return;
     }
+    m_testCancelRequested.store(false);
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
     if (wsRoot.empty()) {
         m_testsRunningAsync.store(false);
@@ -30019,10 +30425,10 @@ void Window::RunFailedWorkspaceTestsAsync() {
     std::thread([this, wsRoot, currentSnapshot = std::move(currentSnapshot), failedSubset = std::move(failedSubset)]() mutable {
         int worstExit = 0;
         for (const auto& fItem : failedSubset) {
-            if (m_isDestroying.load()) break;
+            if (m_isDestroying.load() || m_testCancelRequested.load()) break;
             std::vector<phide::dev::TestItem> oneVec = { fItem };
             auto s = phide::dev::TestExplorerEngine::ExecuteTestsSync(
-                wsRoot, fItem.framework, oneVec, fItem.name, fItem.filePath, 30000);
+                wsRoot, fItem.framework, oneVec, fItem.name, fItem.filePath, 30000, &m_testCancelRequested);
             if (s.exitCode != 0) worstExit = s.exitCode;
             for (auto& orig : currentSnapshot) {
                 if (orig.id == fItem.id || (orig.name == fItem.name && orig.filePath == fItem.filePath)) {

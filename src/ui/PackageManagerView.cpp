@@ -28,7 +28,9 @@ PackageManagerView::PackageManagerView() {
     InitializeCatalog();
 }
 
-PackageManagerView::~PackageManagerView() = default;
+PackageManagerView::~PackageManagerView() {
+    if (m_viewAlive) m_viewAlive->store(false);
+}
 
 void PackageManagerView::DiscardDeviceResources() {
     m_bmpPython.Reset();
@@ -695,13 +697,12 @@ void PackageManagerView::ApplyFilter() {
     std::lock_guard<std::mutex> lock(m_packageMutex);
     m_filteredIndices.clear();
 
-    // User requirement: "the output is initial none and when use type it would load first what seeable in screen"
-    if (m_searchQuery.empty()) {
+    auto& activeList = GetActivePackageList();
+
+    if (m_searchQuery.empty() && !m_showOutdatedOnly) {
         m_selectedIndex = -1;
         return;
     }
-
-    auto& activeList = GetActivePackageList();
 
     struct ScoredItem {
         size_t index;
@@ -710,7 +711,8 @@ void PackageManagerView::ApplyFilter() {
     std::vector<ScoredItem> scored;
 
     for (size_t i = 0; i < activeList.size(); ++i) {
-        int score = ComputeRelevance(activeList[i].name, m_searchQuery);
+        if (m_showOutdatedOnly && !activeList[i].isOutdated) continue;
+        int score = m_searchQuery.empty() ? 100 : ComputeRelevance(activeList[i].name, m_searchQuery);
         if (score > 0) {
             activeList[i].searchScore = score;
             scored.push_back({ i, score });
@@ -757,6 +759,8 @@ void PackageManagerView::SetActiveLanguage(RuntimeLanguage lang) {
     m_searchQuery.clear();
     m_searchCaretPos = 0;
     m_activeDropdownPkgIdx = -1;
+    m_showOutdatedOnly = false;
+    m_outdatedStatusText.clear();
     ApplyFilter();
 }
 
@@ -873,9 +877,13 @@ LPCWSTR PackageManagerView::GetCursorForPoint(POINT clientPt) const noexcept {
         }
     }
 
-    // 2. Back Button
-    if (mx >= m_rcBackBtn.left && mx <= m_rcBackBtn.right &&
-        my >= m_rcBackBtn.top && my <= m_rcBackBtn.bottom) {
+    // 2. Back & Outdated Filter Buttons
+    if ((mx >= m_rcBackBtn.left && mx <= m_rcBackBtn.right &&
+         my >= m_rcBackBtn.top && my <= m_rcBackBtn.bottom) ||
+        (mx >= m_rcCheckOutdatedBtn.left && mx <= m_rcCheckOutdatedBtn.right &&
+         my >= m_rcCheckOutdatedBtn.top && my <= m_rcCheckOutdatedBtn.bottom) ||
+        (mx >= m_rcOutdatedFilterBtn.left && mx <= m_rcOutdatedFilterBtn.right &&
+         my >= m_rcOutdatedFilterBtn.top && my <= m_rcOutdatedFilterBtn.bottom)) {
         return IDC_HAND;
     }
 
@@ -904,7 +912,12 @@ LPCWSTR PackageManagerView::GetCursorForPoint(POINT clientPt) const noexcept {
         if (pkgIdx >= activeList.size()) continue;
         const auto& pkg = activeList[pkgIdx];
 
-        // Install button or split dropdown arrow -> POINTER (IDC_HAND)
+        // Install, Upgrade, or split dropdown arrow -> POINTER (IDC_HAND)
+        if (pkg.rcUpgradeBtn.right > pkg.rcUpgradeBtn.left &&
+            mx >= pkg.rcUpgradeBtn.left && mx <= pkg.rcUpgradeBtn.right &&
+            my >= pkg.rcUpgradeBtn.top && my <= pkg.rcUpgradeBtn.bottom) {
+            return IDC_HAND;
+        }
         if (mx >= pkg.rcInstallBtn.left && mx <= pkg.rcInstallBtn.right &&
             my >= pkg.rcInstallBtn.top && my <= pkg.rcInstallBtn.bottom) {
             return IDC_HAND;
@@ -978,8 +991,233 @@ void PackageManagerView::MarkPackageUninstalled(const std::wstring& pkgName, Pkg
     }
 }
 
+static std::wstring PkgUtf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int sz = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (sz <= 0) return {};
+    std::wstring out(static_cast<size_t>(sz), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), sz);
+    return out;
+}
+
+static std::string RunHiddenPkgCapture(const std::wstring& cmdLine, const std::wstring& workDir) {
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE hRead = nullptr, hWrite = nullptr;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return {};
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> buf(cmdLine.begin(), cmdLine.end());
+    buf.push_back(0);
+    const wchar_t* cwd = (!workDir.empty() && std::filesystem::exists(workDir)) ? workDir.c_str() : nullptr;
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd, &si, &pi)) {
+        CloseHandle(hRead);
+        CloseHandle(hWrite);
+        return {};
+    }
+    CloseHandle(hWrite);
+    std::string result;
+    char tmp[4096];
+    DWORD bytesRead = 0;
+    while (ReadFile(hRead, tmp, sizeof(tmp), &bytesRead, nullptr) && bytesRead > 0) {
+        if (result.size() + bytesRead <= 512 * 1024) {
+            result.append(tmp, bytesRead);
+        } else {
+            break;
+        }
+    }
+    WaitForSingleObject(pi.hProcess, 10000);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hRead);
+    return result;
+}
+
+static std::string PkgExtractJsonStringField(const std::string& obj, const std::string& key) {
+    std::string pat = "\"" + key + "\"";
+    size_t p = obj.find(pat);
+    if (p == std::string::npos) return {};
+    size_t colon = obj.find(':', p + pat.size());
+    if (colon == std::string::npos) return {};
+    size_t q1 = obj.find('"', colon + 1);
+    if (q1 == std::string::npos) return {};
+    size_t q2 = q1 + 1;
+    while (q2 < obj.size()) {
+        if (obj[q2] == '"' && obj[q2 - 1] != '\\') break;
+        ++q2;
+    }
+    if (q2 >= obj.size()) return {};
+    return obj.substr(q1 + 1, q2 - q1 - 1);
+}
+
+void PackageManagerView::ParseOutdatedOutputJson(RuntimeLanguage lang, const std::string& jsonUtf8) {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    auto& targetList = (lang == RuntimeLanguage::Php) ? m_phpPackages
+                     : ((lang == RuntimeLanguage::Node) ? m_nodePackages : m_packages);
+    for (auto& p : targetList) {
+        p.isOutdated = false;
+        p.installedVersion.clear();
+        p.latestVersion.clear();
+    }
+    auto applyOutdated = [&](const std::string& nameUtf8, const std::string& curVer, const std::string& latestVer) {
+        if (nameUtf8.empty() || latestVer.empty()) return;
+        std::wstring wName = PkgUtf8ToWide(nameUtf8);
+        std::wstring wCur = PkgUtf8ToWide(curVer);
+        std::wstring wLat = PkgUtf8ToWide(latestVer);
+        for (auto& pkg : targetList) {
+            if (_wcsicmp(pkg.name.c_str(), wName.c_str()) == 0) {
+                pkg.isOutdated = true;
+                pkg.isInstalled = true;
+                pkg.isInstalledProject = true;
+                pkg.installedVersion = wCur;
+                pkg.latestVersion = wLat;
+                return;
+            }
+        }
+        if (targetList.size() < 4000) {
+            PackageEntry ne;
+            ne.name = wName;
+            ne.isInstalled = true;
+            ne.isInstalledProject = true;
+            ne.isOutdated = true;
+            ne.installedVersion = wCur;
+            ne.latestVersion = wLat;
+            targetList.push_back(std::move(ne));
+        }
+    };
+
+    if (lang == RuntimeLanguage::Python) {
+        // pip list --outdated --format=json -> [{"name":...,"version":...,"latest_version":...}]
+        size_t pos = 0;
+        while (pos < jsonUtf8.size()) {
+            size_t o = jsonUtf8.find('{', pos);
+            size_t c = (o != std::string::npos) ? jsonUtf8.find('}', o) : std::string::npos;
+            if (o == std::string::npos || c == std::string::npos) break;
+            std::string obj = jsonUtf8.substr(o, c - o + 1);
+            applyOutdated(PkgExtractJsonStringField(obj, "name"),
+                          PkgExtractJsonStringField(obj, "version"),
+                          PkgExtractJsonStringField(obj, "latest_version"));
+            pos = c + 1;
+        }
+    } else if (lang == RuntimeLanguage::Php) {
+        // composer outdated --format=json -> {"installed":[{"name":...,"version":...,"latest":...}]}
+        size_t pos = jsonUtf8.find("\"installed\"");
+        if (pos == std::string::npos) pos = 0;
+        while (pos < jsonUtf8.size()) {
+            size_t o = jsonUtf8.find('{', pos);
+            size_t c = (o != std::string::npos) ? jsonUtf8.find('}', o) : std::string::npos;
+            if (o == std::string::npos || c == std::string::npos) break;
+            std::string obj = jsonUtf8.substr(o, c - o + 1);
+            std::string lat = PkgExtractJsonStringField(obj, "latest");
+            if (!lat.empty()) {
+                applyOutdated(PkgExtractJsonStringField(obj, "name"),
+                              PkgExtractJsonStringField(obj, "version"),
+                              lat);
+            }
+            pos = c + 1;
+        }
+    } else {
+        // npm outdated --json -> {"pkgName":{"current":...,"latest":...}, ...}
+        size_t pos = 0;
+        while (pos < jsonUtf8.size()) {
+            size_t q1 = jsonUtf8.find('"', pos);
+            if (q1 == std::string::npos) break;
+            size_t q2 = jsonUtf8.find('"', q1 + 1);
+            if (q2 == std::string::npos) break;
+            std::string key = jsonUtf8.substr(q1 + 1, q2 - q1 - 1);
+            size_t after = q2 + 1;
+            while (after < jsonUtf8.size() && (jsonUtf8[after] == ' ' || jsonUtf8[after] == '\t' || jsonUtf8[after] == ':')) ++after;
+            while (after < jsonUtf8.size() && (jsonUtf8[after] == ' ' || jsonUtf8[after] == '\t' || jsonUtf8[after] == '\r' || jsonUtf8[after] == '\n')) ++after;
+            if (after < jsonUtf8.size() && jsonUtf8[after] == '{') {
+                size_t closeBrace = jsonUtf8.find('}', after);
+                if (closeBrace != std::string::npos) {
+                    std::string obj = jsonUtf8.substr(after, closeBrace - after + 1);
+                    std::string cur = PkgExtractJsonStringField(obj, "current");
+                    std::string lat = PkgExtractJsonStringField(obj, "latest");
+                    if (!lat.empty() && cur != lat) {
+                        applyOutdated(key, cur, lat);
+                    }
+                    pos = closeBrace + 1;
+                    continue;
+                }
+            }
+            pos = q2 + 1;
+        }
+    }
+}
+
+void PackageManagerView::CheckOutdatedPackagesAsync(const std::wstring& wsFolder) {
+    if (m_isCheckingOutdated.exchange(true)) return;
+    if (!wsFolder.empty()) m_workspaceFolder = wsFolder;
+    RuntimeLanguage lang = m_activeLanguage;
+    std::wstring dir = !wsFolder.empty() ? wsFolder : m_workspaceFolder;
+    std::wstring pyExe;
+    for (const auto& card : m_languageCards) {
+        if (card.lang == lang && !card.executable.empty()) {
+            pyExe = card.executable;
+            break;
+        }
+    }
+    auto alive = m_viewAlive;
+    HWND hwnd = m_hwnd;
+    m_outdatedStatusText = L"Checking outdated...";
+    std::thread([this, alive, lang, dir, pyExe, hwnd]() {
+        std::wstring cmd;
+        if (lang == RuntimeLanguage::Python) {
+            std::wstring exe = pyExe.empty() ? L"python.exe" : pyExe;
+            if (!dir.empty()) {
+                std::filesystem::path venvPy = std::filesystem::path(dir) / L".venv" / L"Scripts" / L"python.exe";
+                std::error_code ec;
+                if (std::filesystem::exists(venvPy, ec)) exe = venvPy.wstring();
+            }
+            cmd = L"\"" + exe + L"\" -m pip list --outdated --format=json";
+        } else if (lang == RuntimeLanguage::Php) {
+            cmd = L"cmd.exe /d /c composer outdated --format=json";
+        } else {
+            cmd = L"cmd.exe /d /c npm outdated --json";
+        }
+        std::string out = RunHiddenPkgCapture(cmd, dir);
+        if (!alive || !alive->load()) return;
+        ParseOutdatedOutputJson(lang, out);
+        {
+            std::lock_guard<std::mutex> lock(m_packageMutex);
+            size_t cnt = 0;
+            const auto& list = GetActivePackageList();
+            for (const auto& p : list) if (p.isOutdated) ++cnt;
+            m_outdatedStatusText = cnt == 0 ? L"All packages up to date" : (std::to_wstring(cnt) + L" outdated");
+        }
+        m_isCheckingOutdated.store(false);
+        ApplyFilter();
+        if (hwnd) { InvalidateRect(hwnd, nullptr, FALSE); PostMessageW(hwnd, WM_NULL, 0, 0); }
+    }).detach();
+}
+
+void PackageManagerView::MarkPackageUpgraded(const std::wstring& pkgName) {
+    std::lock_guard<std::mutex> lock(m_packageMutex);
+    auto clearOutdated = [&](std::vector<PackageEntry>& list) {
+        for (auto& pkg : list) {
+            if (_wcsicmp(pkg.name.c_str(), pkgName.c_str()) == 0) {
+                pkg.isInstalling = false;
+                pkg.isOutdated = false;
+                if (!pkg.latestVersion.empty()) pkg.installedVersion = pkg.latestVersion;
+                pkg.isInstalled = true;
+            }
+        }
+    };
+    clearOutdated(m_packages);
+    clearOutdated(m_phpPackages);
+    clearOutdated(m_nodePackages);
+}
+
 void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
     std::lock_guard<std::mutex> lock(m_packageMutex);
+    if (!wsFolder.empty()) m_workspaceFolder = wsFolder;
     std::unordered_set<std::wstring> projectInstalled;
     std::unordered_set<std::wstring> globalInstalled;
     std::error_code ec;
@@ -1186,10 +1424,21 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
     // =========================================================================
     // 2. PackageSearch Screen Interaction
     // =========================================================================
-    // A. Back Button
+    // A. Back Button & Outdated Controls
     if (mx >= m_rcBackBtn.left && mx <= m_rcBackBtn.right &&
         my >= m_rcBackBtn.top && my <= m_rcBackBtn.bottom) {
         NavigateBackToLanguages();
+        return true;
+    }
+    if (mx >= m_rcCheckOutdatedBtn.left && mx <= m_rcCheckOutdatedBtn.right &&
+        my >= m_rcCheckOutdatedBtn.top && my <= m_rcCheckOutdatedBtn.bottom) {
+        CheckOutdatedPackagesAsync(m_workspaceFolder);
+        return true;
+    }
+    if (mx >= m_rcOutdatedFilterBtn.left && mx <= m_rcOutdatedFilterBtn.right &&
+        my >= m_rcOutdatedFilterBtn.top && my <= m_rcOutdatedFilterBtn.bottom) {
+        m_showOutdatedOnly = !m_showOutdatedOnly;
+        ApplyFilter();
         return true;
     }
 
@@ -1252,6 +1501,25 @@ bool PackageManagerView::HandleLButtonDown(POINT clientPt) {
         if (!pkg.isInstalling && mx >= pkg.rcSplitArrowBtn.left && mx <= pkg.rcSplitArrowBtn.right &&
             my >= pkg.rcSplitArrowBtn.top && my <= pkg.rcSplitArrowBtn.bottom) {
             m_activeDropdownPkgIdx = (m_activeDropdownPkgIdx == static_cast<int>(pkgIdx)) ? -1 : static_cast<int>(pkgIdx);
+            return true;
+        }
+
+        // 1b. Per-card Upgrade button (#45)
+        if (!pkg.isInstalling && pkg.rcUpgradeBtn.right > pkg.rcUpgradeBtn.left &&
+            mx >= pkg.rcUpgradeBtn.left && mx <= pkg.rcUpgradeBtn.right &&
+            my >= pkg.rcUpgradeBtn.top && my <= pkg.rcUpgradeBtn.bottom) {
+            std::wstring upgCmd;
+            if (m_activeLanguage == RuntimeLanguage::Php) {
+                upgCmd = L"composer update " + pkg.name;
+            } else if (m_activeLanguage == RuntimeLanguage::Node) {
+                upgCmd = L"npm install " + pkg.name + L"@latest";
+            } else {
+                upgCmd = L"pip install --upgrade " + pkg.name;
+            }
+            pkg.isInstalling = true;
+            if (m_onInstallCallback) {
+                m_onInstallCallback(pkg.name, upgCmd, pkg.scope);
+            }
             return true;
         }
 
@@ -1586,6 +1854,37 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
                   theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBadge.Get(),
                   rcEnvPill, theme.brushBrandAccent.Get());
 
+    // #45 Check Outdated & Outdated Filter Pills
+    {
+        float checkW = config.ScaleF(112.0f);
+        m_rcCheckOutdatedBtn = D2D1::RectF(rcEnvPill.right + config.ScaleF(10.0f), curY,
+                                            rcEnvPill.right + config.ScaleF(10.0f) + checkW, curY + config.ScaleF(26.0f));
+        bool chkBusy = m_isCheckingOutdated.load();
+        D2D1_ROUNDED_RECT rrcChk = D2D1::RoundedRect(m_rcCheckOutdatedBtn, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcChk, chkBusy ? theme.brushTabBarBg.Get() : theme.brushDrawerBg.Get());
+        pRT->DrawRoundedRectangle(rrcChk, theme.brushBorderSubtle.Get(), 1.0f);
+        const wchar_t* chkLbl = chkBusy ? L"Checking..." : L"Check Outdated";
+        pRT->DrawText(chkLbl, static_cast<UINT32>(wcslen(chkLbl)),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                      m_rcCheckOutdatedBtn, theme.brushTextPrimary.Get());
+
+        size_t outdatedCnt = 0;
+        {
+            const auto& curList = GetActivePackageList();
+            for (const auto& p : curList) if (p.isOutdated) ++outdatedCnt;
+        }
+        std::wstring outLbl = L"Outdated (" + std::to_wstring(outdatedCnt) + L")";
+        float outW = config.ScaleF(104.0f);
+        m_rcOutdatedFilterBtn = D2D1::RectF(m_rcCheckOutdatedBtn.right + config.ScaleF(8.0f), curY,
+                                             m_rcCheckOutdatedBtn.right + config.ScaleF(8.0f) + outW, curY + config.ScaleF(26.0f));
+        D2D1_ROUNDED_RECT rrcOut = D2D1::RoundedRect(m_rcOutdatedFilterBtn, 4.0f, 4.0f);
+        pRT->FillRoundedRectangle(rrcOut, m_showOutdatedOnly ? theme.brushBrandAccent.Get() : theme.brushDrawerBg.Get());
+        pRT->DrawRoundedRectangle(rrcOut, m_showOutdatedOnly ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 1.0f);
+        pRT->DrawText(outLbl.c_str(), static_cast<UINT32>(outLbl.size()),
+                      theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                      m_rcOutdatedFilterBtn, m_showOutdatedOnly ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+    }
+
     curY += config.ScaleF(32.0f);
 
     // USER REQUIREMENT: responsive compact sidebar width for output list
@@ -1694,7 +1993,7 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
     }
 
     // Initial Output is NONE (User requirement: remove placeholder text when search is empty)
-    if (m_searchQuery.empty()) {
+    if (m_searchQuery.empty() && !m_showOutdatedOnly) {
         // Clean empty state - placeholder text removed per user request
     } else {
         // Render Output List with virtualized chunk size
@@ -1746,9 +2045,22 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             float btnX = pkg.bounds.right - btnW - config.ScaleF(6.0f);
             float btnY = pkg.bounds.top + (itemH - btnH) / 2.0f;
 
+            const bool showUpgradeBtn = (pkg.isInstalled && pkg.isOutdated && !pkg.isInstalling);
+            const float upgW = config.ScaleF(60.0f);
+            const float upgGap = config.ScaleF(5.0f);
+            if (showUpgradeBtn) {
+                pkg.rcUpgradeBtn = D2D1::RectF(btnX - upgGap - upgW, btnY, btnX - upgGap, btnY + btnH);
+            } else {
+                pkg.rcUpgradeBtn = {};
+            }
+
             // Package Name: LEFT-ALIGNED (LEADING), vertically centered, strictly clipped with ellipsis trimming
             float nameLeft = pkg.bounds.left + config.ScaleF(12.0f);
-            float nameRight = btnX - config.ScaleF(8.0f);
+            float nameRight = (showUpgradeBtn ? pkg.rcUpgradeBtn.left : btnX) - config.ScaleF(8.0f);
+            std::wstring displayLabel = pkg.name;
+            if (pkg.isOutdated && !pkg.latestVersion.empty()) {
+                displayLabel += L"  " + (pkg.installedVersion.empty() ? L"" : pkg.installedVersion + L"→") + pkg.latestVersion;
+            }
             float availNameW = (std::max)(10.0f, nameRight - nameLeft);
             D2D1_RECT_F rcItemName = D2D1::RectF(nameLeft, pkg.bounds.top, nameRight, pkg.bounds.bottom);
 
@@ -1759,8 +2071,8 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             if (theme.dwriteFactory && pFmt) {
                 Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
                 HRESULT hr = theme.dwriteFactory->CreateTextLayout(
-                    pkg.name.c_str(),
-                    static_cast<UINT32>(pkg.name.length()),
+                    displayLabel.c_str(),
+                    static_cast<UINT32>(displayLabel.length()),
                     pFmt,
                     availNameW,
                     itemH,
@@ -1777,10 +2089,20 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
                 }
             }
             if (!drawn && pFmt) {
-                pRT->DrawText(pkg.name.c_str(), static_cast<UINT32>(pkg.name.length()), pFmt, rcItemName, theme.brushTextPrimary.Get());
+                pRT->DrawText(displayLabel.c_str(), static_cast<UINT32>(displayLabel.length()), pFmt, rcItemName, theme.brushTextPrimary.Get());
             }
 
             pRT->PopAxisAlignedClip();
+
+            if (showUpgradeBtn) {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> upgBrush;
+                pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.62f, 0.34f, 1.0f), &upgBrush);
+                D2D1_ROUNDED_RECT rrcUpg = D2D1::RoundedRect(pkg.rcUpgradeBtn, 3.5f, 3.5f);
+                pRT->FillRoundedRectangle(rrcUpg, upgBrush ? upgBrush.Get() : theme.brushBrandAccent.Get());
+                pRT->DrawText(L"Upgrade", 7,
+                              theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
+                              pkg.rcUpgradeBtn, theme.brushTextWhite.Get());
+            }
 
             bool isInstalledForScope = (pkg.scope == PkgInstallScope::Project) ? pkg.isInstalledProject : pkg.isInstalledGlobal;
             pkg.isInstalled = isInstalledForScope;

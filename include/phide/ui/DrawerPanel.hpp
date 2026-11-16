@@ -282,6 +282,9 @@ public:
     bool DiscardAllChanges();
     void StageFileAsync(const std::wstring& relPath);
     void UnstageFileAsync(const std::wstring& relPath);
+    void StageFilesBatchAsync(const std::vector<std::wstring>& relPaths, bool stage);
+    void SetHideDotfiles(bool hide);
+    [[nodiscard]] bool GetHideDotfiles() const noexcept { return m_hideDotfiles; }
     void DiscardFileAsync(const std::wstring& relPath);
     bool DiscardFile(const std::wstring& relPath);
     void CommitChangesAsync(const std::wstring& message, bool bypassGuard = false, int postCommitAction = 0);
@@ -592,9 +595,23 @@ public:
     [[nodiscard]] bool IsGitPromptModalOpen() const noexcept { return m_isGitPromptModalOpen; }
     void CloseGitPromptModal() noexcept { m_isGitPromptModalOpen = false; }
     void RenderGitPromptModal(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientWidth, float clientHeight);
+    bool HandleGitPromptMouseMove(POINT pt);
     bool HandleGitPromptMouseDown(POINT pt);
     bool HandleGitPromptKeyDown(WPARAM wParam);
     bool HandleGitPromptChar(wchar_t ch);
+    [[nodiscard]] bool HitTestGitPromptModalButtons(POINT pt) const noexcept {
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        auto inR = [&](const D2D1_RECT_F& r) { return r.right > r.left && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; };
+        return inR(m_gitPromptConfirmBounds) || inR(m_gitPromptCancelBounds);
+    }
+    [[nodiscard]] bool HitTestGitPromptModalInput(POINT pt) const noexcept {
+        if (m_gitPromptInputBounds.right <= m_gitPromptInputBounds.left) return false;
+        float x = static_cast<float>(pt.x);
+        float y = static_cast<float>(pt.y);
+        return x >= m_gitPromptInputBounds.left && x <= m_gitPromptInputBounds.right &&
+               y >= m_gitPromptInputBounds.top && y <= m_gitPromptInputBounds.bottom;
+    }
     void ConfirmPublishRepo(int visibilityChoice, bool bypassGuard = false); // 0 = Private, 1 = Public
     [[nodiscard]] int GetPublishRepoSelectedChoice() const noexcept { return m_publishRepoSelectedChoice; }
     [[nodiscard]] const std::wstring& GetPublishRepoName() const noexcept { return m_publishRepoName; }
@@ -848,6 +865,8 @@ public:
         std::function<void(const std::wstring& distroName, bool openFolder)> onConnectWsl;
         std::function<void()> onInstallWsl;
         std::function<void(const remote::DevContainerEntry& container)> onAttachContainer;
+        std::function<void(const remote::DevContainerEntry& container, const std::wstring& remoteFilePath, const std::wstring& localCachePath)> onOpenContainerFile;
+        std::function<void(const std::wstring& title, const std::wstring& content)> onOpenDockerLogsTab;
         std::function<void()> onOpenOrCreateDevContainer;
         std::function<void()> onRemoteTargetsChanged;
         std::function<void()> onRequestRepaint;
@@ -872,6 +891,17 @@ public:
         RemoteDisconnect,
         RemoteActiveTerminal,
         AttachContainer,
+        ContainerBrowseFiles,
+        ContainerStart,
+        ContainerStop,
+        ContainerRestart,
+        ContainerLogs,
+        ContainerRemove,
+        ComposeUp,
+        ComposeDown,
+        ComposeLogs,
+        ToggleDockerImages,
+        ToggleDockerVolumes,
         CreateDevContainer,
         ConnectWslShell,
         OpenWslFolder,
@@ -887,6 +917,7 @@ public:
     void OpenRemoteExplorer();
     void RefreshRemoteTargetsAsync();
     void BrowseRemoteSshPathAsync(const remote::SshHostEntry& host, const std::wstring& remotePath);
+    void BrowseRemoteContainerPathAsync(const remote::DevContainerEntry& container, const std::wstring& remotePath);
     void DisconnectRemoteSession();
     void SetRemoteCallbacks(RemoteCallbacks cb) { m_remoteCallbacks = std::move(cb); }
     bool HandleRemoteMouseMove(POINT pt);
@@ -1469,6 +1500,7 @@ private:
     D2D1_RECT_F m_gitPromptInputBounds{};
     D2D1_RECT_F m_gitPromptConfirmBounds{};
     D2D1_RECT_F m_gitPromptCancelBounds{};
+    int m_gitPromptHoveredBtn = 0; // 0 = none, 1 = Cancel, 2 = Confirm
     void OpenGitPromptModal(GitPromptKind kind, const std::wstring& title, const std::wstring& initial = L"");
     void ConfirmGitPromptModal();
     void ConfirmOrRunSyncAction(GitPromptKind kind);
@@ -1599,6 +1631,7 @@ private:
     bool m_hasPythonFiles = false;
     bool m_hasPhpFiles = false;
     bool m_hasNodeFiles = false;
+    bool m_hideDotfiles = false;
 
     // Course Explorer Mode State
     bool m_isCourseExplorerMode = false;
@@ -1776,6 +1809,8 @@ private:
     std::vector<remote::WslDistroEntry> m_remoteWslDistros;
     std::wstring m_remoteWslStatus;
     std::vector<remote::DevContainerEntry> m_remoteContainers;
+    std::vector<remote::DockerImageEntry> m_dockerImages;
+    std::vector<remote::DockerVolumeEntry> m_dockerVolumes;
     std::wstring m_remoteContainerStatus;
     std::atomic<bool> m_remoteIsRefreshing{false};
     bool m_remoteInitialized = false;
@@ -1784,6 +1819,8 @@ private:
     bool m_remoteFilterDropdownOpen = false;
     bool m_remoteSshExpanded = true;
     bool m_remoteContainersExpanded = true;
+    bool m_dockerImagesExpanded = false;
+    bool m_dockerVolumesExpanded = false;
     bool m_remoteWslExpanded = true;
 
     enum class RemoteSessionState {
@@ -1795,9 +1832,11 @@ private:
     };
 
     bool m_remoteSessionActive = false;
+    bool m_remoteBrowseIsContainer = false;
     RemoteSessionState m_remoteSessionState = RemoteSessionState::Disconnected;
     std::atomic<uint64_t> m_remoteSessionSeq{0};
     remote::SshHostEntry m_remoteActiveHost{};
+    remote::DevContainerEntry m_remoteActiveContainer{};
     std::wstring m_remoteCurrentPath;
     std::atomic<bool> m_remoteBrowseLoading{false};
     std::wstring m_remoteBrowseError;
