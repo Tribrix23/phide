@@ -428,6 +428,16 @@ std::wstring FormatEngine::FormatJavaScript(const std::wstring& src, int tabSize
 std::wstring FormatEngine::FormatPhp(const std::wstring& src, int tabSize) {
     if (src.empty()) return L"";
 
+    // Pure HTML inside a .php file: delegate directly to Prettier HTML formatter
+    if (src.find(L"<?") == std::wstring::npos) {
+        return FormatHtml(src, tabSize);
+    }
+
+    static const std::unordered_set<std::wstring> htmlVoidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img", L"input",
+        L"link", L"meta", L"param", L"source", L"track", L"wbr"
+    };
+
     std::wstring out;
     out.reserve(src.length() * 2);
     int indentLevel = 0;
@@ -556,37 +566,76 @@ std::wstring FormatEngine::FormatPhp(const std::wstring& src, int tabSize) {
 
         // 4. Compute indent delta for subsequent lines
         int delta = 0;
-        bool inStringLiteral = false;
-        wchar_t strDelim = 0;
-
-        for (size_t k = 0; k < trimmed.length(); ++k) {
-            wchar_t c = trimmed[k];
-            if (inStringLiteral) {
-                if (c == L'\\' && k + 1 < trimmed.length()) { k++; continue; }
-                if (c == strDelim) inStringLiteral = false;
-                continue;
+        if (!inPhpTag && trimmed.find(L"<?") == std::wstring::npos) {
+            // HTML tag nesting outside <?php ... ?>
+            size_t pos = 0;
+            bool startedWithClosingTag = StartsWith(trimmed, L"</");
+            while (pos < trimmed.length()) {
+                size_t lt = trimmed.find(L'<', pos);
+                if (lt == std::wstring::npos) break;
+                if (lt + 1 >= trimmed.length()) break;
+                if (trimmed[lt + 1] == L'!' || trimmed[lt + 1] == L'?') {
+                    size_t gt = trimmed.find(L'>', lt + 2);
+                    pos = (gt != std::wstring::npos) ? (gt + 1) : trimmed.length();
+                    continue;
+                }
+                if (trimmed[lt + 1] == L'/') {
+                    // Closing tag: if it wasn't already counted by lineDedent at start of line, decrement
+                    if (!(lt == 0 && startedWithClosingTag)) {
+                        delta--;
+                    }
+                    size_t gt = trimmed.find(L'>', lt + 2);
+                    pos = (gt != std::wstring::npos) ? (gt + 1) : trimmed.length();
+                } else {
+                    size_t s = lt + 1;
+                    size_t e = s;
+                    while (e < trimmed.length() && (iswalnum(trimmed[e]) || trimmed[e] == L'-' || trimmed[e] == L':')) e++;
+                    std::wstring tagName = trimmed.substr(s, e - s);
+                    for (auto& c : tagName) c = static_cast<wchar_t>(towlower(c));
+                    size_t gt = trimmed.find(L'>', e);
+                    bool selfClosing = (gt != std::wstring::npos && gt > 0 && trimmed[gt - 1] == L'/');
+                    if (!tagName.empty() && htmlVoidTags.count(tagName) == 0 && !selfClosing) {
+                        delta++;
+                    }
+                    pos = (gt != std::wstring::npos) ? (gt + 1) : trimmed.length();
+                }
             }
-            if (c == L'\'' || c == L'"') {
-                inStringLiteral = true;
-                strDelim = c;
-                continue;
+            if (startedWithClosingTag) {
+                delta--;
             }
-            if ((c == L'/' && k + 1 < trimmed.length() && trimmed[k + 1] == L'/') || c == L'#') {
-                break;
+        } else {
+            bool inStringLiteral = false;
+            wchar_t strDelim = 0;
+
+            for (size_t k = 0; k < trimmed.length(); ++k) {
+                wchar_t c = trimmed[k];
+                if (inStringLiteral) {
+                    if (c == L'\\' && k + 1 < trimmed.length()) { k++; continue; }
+                    if (c == strDelim) inStringLiteral = false;
+                    continue;
+                }
+                if (c == L'\'' || c == L'"') {
+                    inStringLiteral = true;
+                    strDelim = c;
+                    continue;
+                }
+                if ((c == L'/' && k + 1 < trimmed.length() && trimmed[k + 1] == L'/') || c == L'#') {
+                    break;
+                }
+
+                if (c == L'{' || c == L'[' || c == L'(') delta++;
+                else if (c == L'}' || c == L']' || c == L')') delta--;
             }
 
-            if (c == L'{' || c == L'[' || c == L'(') delta++;
-            else if (c == L'}' || c == L']' || c == L')') delta--;
-        }
-
-        // Alternative control structure colon: "if (...):" or "foreach (...):"
-        if (trimmed.back() == L':') {
-            std::wstring lower = trimmed;
-            for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
-            if (lower.find(L"if") != std::wstring::npos || lower.find(L"foreach") != std::wstring::npos ||
-                lower.find(L"while") != std::wstring::npos || lower.find(L"for") != std::wstring::npos ||
-                lower.find(L"else") != std::wstring::npos || lower.find(L"switch") != std::wstring::npos) {
-                delta++;
+            // Alternative control structure colon: "if (...):" or "foreach (...):"
+            if (trimmed.back() == L':') {
+                std::wstring lower = trimmed;
+                for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+                if (lower.find(L"if") != std::wstring::npos || lower.find(L"foreach") != std::wstring::npos ||
+                    lower.find(L"while") != std::wstring::npos || lower.find(L"for") != std::wstring::npos ||
+                    lower.find(L"else") != std::wstring::npos || lower.find(L"switch") != std::wstring::npos) {
+                    delta++;
+                }
             }
         }
 

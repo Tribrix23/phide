@@ -2682,7 +2682,7 @@ void Window::ExecuteRenameAndUpdateImports(const std::wstring& oldPath, const st
     m_drawer.CancelInlineRename();
     m_drawer.RefreshTree();
     NotifyGraphViewFilesystemChanged();
-    RunManualGarbageCollection();
+    RunManualGarbageCollection(false);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -2796,7 +2796,7 @@ void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
 
     UpdateEditorGroupBounds();
     UpdateExecutionButtonStates();
-    RunManualGarbageCollection();
+    RunManualGarbageCollection(false);
     SaveSessionState();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -4681,7 +4681,7 @@ void Window::CloseDocument(int groupIdx, int docIdx, bool forceClosePinned) {
     UpdateDrawerDirtyFiles();
     UpdateDrawerErrorFiles();
     SaveSessionState();
-    RunManualGarbageCollection();
+    RunManualGarbageCollection(false);
 
     // If we closed a markdown source document, also close any matching markdown_preview tab
     if (wasMarkdownSource) {
@@ -5248,10 +5248,12 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (!m_config.isDrawerOpen) {
         ToggleSidebar();
     }
+    m_lastLaunchCheckTick = 0;
+    m_lastGitStatCheckTick = 0;
     UpdateDrawerErrorFiles();
     RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
-    RunManualGarbageCollection();
+    RunManualGarbageCollection(false);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -6646,10 +6648,12 @@ void Window::DoCloseFolder() {
     m_currentStatusBarRuntimeId = L"";
     m_drawer.RefreshGitState(true);
     m_editor.GetPackageManagerView().ScanInstalledPackages(L"");
+    m_lastLaunchCheckTick = 0;
+    m_lastGitStatCheckTick = 0;
     UpdateDrawerErrorFiles();
     UpdateExecutionButtonStates();
     SaveSessionState();
-    RunManualGarbageCollection();
+    RunManualGarbageCollection(false);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -6945,7 +6949,13 @@ void Window::CommitAutocompleteSelection() {
 
         const auto* pSnip = m_snippetManager.FindSnippetByPrefix(item->label, ext);
         if (pSnip) {
-            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, prefix.length(), fn);
+            size_t replaceLen = prefix.length();
+            size_t pStart = (pos.col >= prefix.length()) ? (pos.col - prefix.length()) : 0;
+            if (!pSnip->body.empty() && pSnip->body[0].rfind(L"<?", 0) == 0 &&
+                pStart >= 2 && lineText[pStart - 2] == L'<' && lineText[pStart - 1] == L'?') {
+                replaceLen += 2;
+            }
+            m_snippetManager.ExpandSnippet(*pSnip, pDoc->buffer, replaceLen, fn);
             EnsureAutoImportAndUseClient(pDoc, item->label);
             MarkDocumentModified(pDoc);
             m_editor.DismissAutocomplete();
@@ -7172,6 +7182,8 @@ void Window::ApplySaveHooks(editor::OpenDocument& doc, const std::wstring& targe
             if (!formatted.empty() && formatted != rawText) {
                 doc.buffer.PushUndo();
                 doc.buffer.SetText(formatted);
+                doc.semanticTokensData.clear();
+                doc.semanticTokensVersion++;
                 size_t newLineCount = doc.buffer.GetLineCount();
                 size_t clampedLine = (std::min)(origPos.line, newLineCount > 0 ? newLineCount - 1 : 0);
                 size_t lineLen = doc.buffer.GetLine(clampedLine).length();
@@ -7724,13 +7736,13 @@ void Window::DoOpenDatabaseSettings(ui::DatabaseModalTab initialTab) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::RunManualGarbageCollection() {
+void Window::RunManualGarbageCollection(bool aggressive) {
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
-            doc.buffer.RunGarbageCollection();
-            doc.diffOriginalBuffer.RunGarbageCollection();
-            doc.mergeCurrentBuffer.RunGarbageCollection();
-            doc.mergeIncomingBuffer.RunGarbageCollection();
+            doc.buffer.RunGarbageCollection(aggressive);
+            doc.diffOriginalBuffer.RunGarbageCollection(aggressive);
+            doc.mergeCurrentBuffer.RunGarbageCollection(aggressive);
+            doc.mergeIncomingBuffer.RunGarbageCollection(aggressive);
             doc.diagnostics.shrink_to_fit();
             doc.inlayHints.shrink_to_fit();
             doc.breakpoints.shrink_to_fit();
@@ -7752,8 +7764,8 @@ void Window::RunManualGarbageCollection() {
                 doc.notebookDoc->RunGarbageCollection();
             }
             for (auto& mf : doc.multiFileDiffs) {
-                mf.originalBuffer.RunGarbageCollection();
-                mf.workingBuffer.RunGarbageCollection();
+                mf.originalBuffer.RunGarbageCollection(aggressive);
+                mf.workingBuffer.RunGarbageCollection(aggressive);
                 mf.hunks.shrink_to_fit();
             }
             doc.multiFileDiffs.shrink_to_fit();
@@ -7764,16 +7776,22 @@ void Window::RunManualGarbageCollection() {
     m_cachedLspCompletions.items.shrink_to_fit();
     m_cachedFilteredProblems.shrink_to_fit();
     m_problemsRowBounds.shrink_to_fit();
-    ClearWindowStaticCaches();
-    m_editor.RunGarbageCollection();
-    m_drawer.ClearSearchResults();
+    if (aggressive) {
+        ClearWindowStaticCaches();
+    }
+    m_editor.RunGarbageCollection(aggressive);
+    if (aggressive) {
+        m_drawer.ClearSearchResults();
+    }
     m_drawer.RunGarbageCollection();
     m_terminal.RunGarbageCollection();
     m_extensionsPanel.RunGarbageCollection();
-    CoFreeUnusedLibraries();
-    _heapmin();
-    EmptyWorkingSet(GetCurrentProcess());
-    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+    if (aggressive) {
+        CoFreeUnusedLibraries();
+        _heapmin();
+        EmptyWorkingSet(GetCurrentProcess());
+        SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+    }
 }
 
 void Window::DoOpenServerSettings() {
@@ -8187,7 +8205,18 @@ void Window::UpdateExecutionButtonStates() {
     for (auto& c : ext) c = towlower(c);
 
     std::wstring wsRootDbg = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
-    bool hasLaunchCfgs = !wsRootDbg.empty() && !phide::dev::LoadWorkspaceLaunchConfigs(wsRootDbg, pDoc->filePath).empty();
+    bool hasLaunchCfgs = false;
+    if (!wsRootDbg.empty()) {
+        const ULONGLONG nowTick = GetTickCount64();
+        if (m_cachedLaunchRoot == wsRootDbg && m_lastLaunchCheckTick != 0 && (nowTick - m_lastLaunchCheckTick) < 2000ULL) {
+            hasLaunchCfgs = m_cachedHasLaunchCfgs;
+        } else {
+            hasLaunchCfgs = !phide::dev::LoadWorkspaceLaunchConfigs(wsRootDbg, L"").empty();
+            m_cachedLaunchRoot = wsRootDbg;
+            m_lastLaunchCheckTick = nowTick;
+            m_cachedHasLaunchCfgs = hasLaunchCfgs;
+        }
+    }
     bool canDebugDoc = (ui::TerminalPanel::SelectDebugBackendForFile(pDoc->filePath) != ui::DebugBackend::None) ||
                        (phide::dev::DapClient::DetectAdapterForFile(pDoc->filePath) != phide::dev::DapAdapterType::None) ||
                        (ext == L".tsx" || ext == L".jsx") || hasLaunchCfgs;
@@ -13589,7 +13618,7 @@ HRESULT Window::CreateDeviceResources() {
     );
 
     D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
-        m_hwnd, size, D2D1_PRESENT_OPTIONS_NONE
+        m_hwnd, size, D2D1_PRESENT_OPTIONS_IMMEDIATELY
     );
 
     HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
@@ -14542,6 +14571,13 @@ void Window::UpdateCachedGitInfo() {
     }
 
     std::wstring openDir = m_drawer.GetOpenFolderPath();
+    const ULONGLONG nowTick = GetTickCount64();
+    if (m_isGitCached && m_cachedGitOpenDir == openDir && m_lastGitStatCheckTick != 0 &&
+        (nowTick - m_lastGitStatCheckTick) < 1500ULL) {
+        return;
+    }
+    m_cachedGitOpenDir = openDir;
+    m_lastGitStatCheckTick = nowTick;
 
     std::error_code ec;
     std::filesystem::path gitPath;
@@ -15752,21 +15788,22 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
 
-    const int border = m_config.Scale(6);
-
-    // Window Resize Borders (6px perimeter)
-    if (clientPt.y < border) {
-        if (clientPt.x < border) return HTTOPLEFT;
-        if (clientPt.x >= w - border) return HTTOPRIGHT;
-        return HTTOP;
+    // Window Resize Borders (6px perimeter, disabled when maximized)
+    if (!IsZoomed(m_hwnd)) {
+        const int border = m_config.Scale(6);
+        if (clientPt.y < border) {
+            if (clientPt.x < border) return HTTOPLEFT;
+            if (clientPt.x >= w - border) return HTTOPRIGHT;
+            return HTTOP;
+        }
+        if (clientPt.y >= h - border) {
+            if (clientPt.x < border) return HTBOTTOMLEFT;
+            if (clientPt.x >= w - border) return HTBOTTOMRIGHT;
+            return HTBOTTOM;
+        }
+        if (clientPt.x < border) return HTLEFT;
+        if (clientPt.x >= w - border) return HTRIGHT;
     }
-    if (clientPt.y >= h - border) {
-        if (clientPt.x < border) return HTBOTTOMLEFT;
-        if (clientPt.x >= w - border) return HTBOTTOMRIGHT;
-        return HTBOTTOM;
-    }
-    if (clientPt.x < border) return HTLEFT;
-    if (clientPt.x >= w - border) return HTRIGHT;
 
     // Header region hit testing (hidden when Zen Mode collapses top bar)
     const int headerH = m_config.zenMode ? 0 : m_config.Scale(m_config.headerHeight);
@@ -16223,35 +16260,36 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                     float midCanvasY = headerH + (editorH - headerH) * m_splitState.splitY1;
                     float rightCanvasX = canvasLeft + canvasWidth;
 
-                    if (canvasRelX < 0.22f && canvasRelY < 0.28f) {
+                    bool canSplitLR = (pW >= m_config.ScaleF(360.0f));
+                    bool canSplitTB = (pH >= m_config.ScaleF(260.0f));
+
+                    if (canvasRelX < 0.14f && canvasRelY < 0.18f && m_editorGroups.size() < 2) {
                         m_tabSnapZone = editor::TabSnapZone::TopLeft;
                         m_tabSnapPreviewRect = D2D1::RectF(canvasLeft, headerH, midCanvasX, midCanvasY);
-                    } else if (canvasRelX < 0.22f && canvasRelY > 0.72f) {
+                    } else if (canvasRelX < 0.14f && canvasRelY > 0.82f && m_editorGroups.size() < 2) {
                         m_tabSnapZone = editor::TabSnapZone::BottomLeft;
                         m_tabSnapPreviewRect = D2D1::RectF(canvasLeft, midCanvasY, midCanvasX, editorH);
-                    } else if (canvasRelX > 0.78f && canvasRelY < 0.28f) {
+                    } else if (canvasRelX > 0.86f && canvasRelY < 0.18f && m_editorGroups.size() < 2) {
                         m_tabSnapZone = editor::TabSnapZone::TopRight;
                         m_tabSnapPreviewRect = D2D1::RectF(midCanvasX, headerH, rightCanvasX, midCanvasY);
-                    } else if (canvasRelX > 0.78f && canvasRelY > 0.72f) {
+                    } else if (canvasRelX > 0.86f && canvasRelY > 0.82f && m_editorGroups.size() < 2) {
                         m_tabSnapZone = editor::TabSnapZone::BottomRight;
                         m_tabSnapPreviewRect = D2D1::RectF(midCanvasX, midCanvasY, rightCanvasX, editorH);
-                    } else if (paneRelX < 0.22f) {
+                    } else if (canSplitLR && paneRelX < 0.12f) {
                         m_tabSnapZone = editor::TabSnapZone::Left;
                         m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top, paneBounds.left + pW * 0.5f, paneBounds.bottom);
-                    } else if (paneRelX > 0.78f) {
+                    } else if (canSplitLR && paneRelX > 0.88f) {
                         m_tabSnapZone = editor::TabSnapZone::Right;
                         m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left + pW * 0.5f, paneBounds.top, paneBounds.right, paneBounds.bottom);
-                    } else if (paneRelY < 0.24f) {
+                    } else if (canSplitTB && paneRelY < 0.14f) {
                         m_tabSnapZone = editor::TabSnapZone::Top;
                         m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top, paneBounds.right, paneBounds.top + (paneBounds.bottom - paneBounds.top) * 0.5f);
-                    } else if (paneRelY > 0.76f) {
+                    } else if (canSplitTB && paneRelY > 0.86f) {
                         m_tabSnapZone = editor::TabSnapZone::Bottom;
                         m_tabSnapPreviewRect = D2D1::RectF(paneBounds.left, paneBounds.top + (paneBounds.bottom - paneBounds.top) * 0.5f, paneBounds.right, paneBounds.bottom);
                     } else {
                         m_tabSnapZone = editor::TabSnapZone::Center;
-                        if (hoverGroup != m_dragTabGroup) {
-                            m_tabSnapPreviewRect = paneBounds;
-                        }
+                        m_tabSnapPreviewRect = (hoverGroup != m_dragTabGroup) ? paneBounds : D2D1_RECT_F{};
                     }
                 }
                 m_tabDropTargetIdx = targetIdx;
@@ -17958,7 +17996,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::HelpAbout:
                         MessageBoxW(m_hwnd,
-                            L"Phide - Web Development IDE\nVersion 1.0.0 (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"Phide - Web Development IDE\nVersion 2026.e-b (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
@@ -18387,8 +18425,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                     }
                     if (!relUtf8.empty()) {
-                        std::wstring unstageCmd = L"git -C \"" + wsRoot + L"\" reset HEAD -- \"" + f.relPath + L"\"";
-                        RunCmdCapture(unstageCmd);
+                        ui::RunGitCmd(L"reset HEAD -- \"" + f.relPath + L"\"", wsRoot);
                     }
                 }
                 if (!toAppend.empty()) {
@@ -21863,6 +21900,21 @@ void Window::HandleRButtonDown(POINT clientPt) {
 
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            HMONITOR hMon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{ sizeof(MONITORINFO) };
+            if (GetMonitorInfo(hMon, &mi)) {
+                mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+            }
+            mmi->ptMinTrackSize.x = m_config.Scale(640);
+            mmi->ptMinTrackSize.y = m_config.Scale(400);
+            return 0;
+        }
+
         case WM_NCCALCSIZE: {
             if (wParam == TRUE) {
                 // When maximized, compensate for window borders extending off-screen
@@ -22648,6 +22700,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_LBUTTONDOWN: {
+            m_lastUserInputTick = GetTickCount64();
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             HandleLButtonDown(pt);
             return 0;
@@ -22733,6 +22786,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEWHEEL: {
+            m_lastUserInputTick = GetTickCount64();
             short delta = GET_WHEEL_DELTA_WPARAM(wParam);
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ScreenToClient(m_hwnd, &pt);
@@ -22980,14 +23034,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
-                    int linesToScroll = 3;
-                    if (delta > 0) {
-                        if (pDoc->scrollLine >= static_cast<size_t>(linesToScroll)) {
+                    int totalWheelDelta = delta;
+                    MSG nextWheel{};
+                    for (int coalesce = 0; coalesce < 8 && PeekMessageW(&nextWheel, m_hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE); ++coalesce) {
+                        if (LOWORD(nextWheel.wParam) != LOWORD(wParam)) break;
+                        POINT nextPt = { GET_X_LPARAM(nextWheel.lParam), GET_Y_LPARAM(nextWheel.lParam) };
+                        ScreenToClient(m_hwnd, &nextPt);
+                        if (FindEditorGroupAtPoint(nextPt) != FindEditorGroupAtPoint(pt)) break;
+                        PeekMessageW(&nextWheel, m_hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE);
+                        totalWheelDelta += GET_WHEEL_DELTA_WPARAM(nextWheel.wParam);
+                    }
+                    int absNotches = (std::max)(1, (std::abs(totalWheelDelta) + WHEEL_DELTA / 2) / WHEEL_DELTA);
+                    size_t linesToScroll = static_cast<size_t>(absNotches) * 3;
+                    if (totalWheelDelta > 0) {
+                        if (pDoc->scrollLine >= linesToScroll) {
                             pDoc->scrollLine -= linesToScroll;
                         } else {
                             pDoc->scrollLine = 0;
                         }
-                    } else {
+                    } else if (totalWheelDelta < 0) {
                         pDoc->scrollLine += linesToScroll;
                     }
                     if (IsMarkdownFile(pDoc->filePath)) {
@@ -23001,6 +23066,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEHWHEEL: {
+            m_lastUserInputTick = GetTickCount64();
             short delta = GET_WHEEL_DELTA_WPARAM(wParam);
             auto* pDoc = GetActiveDoc();
             if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"api") {
@@ -23314,7 +23380,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             std::wstring prefixText = (pos.col <= lineText.length()) ? lineText.substr(0, pos.col) : lineText;
 
                             size_t openBracket = prefixText.rfind(L'<');
-                            if (openBracket != std::wstring::npos) {
+                            if (openBracket != std::wstring::npos && prefixText.find(L'>', openBracket) == std::wstring::npos) {
                                 bool isClosing = (openBracket + 1 < prefixText.length() && prefixText[openBracket + 1] == L'/');
                                 bool isSelfClosing = (!prefixText.empty() && prefixText.back() == L'/');
                                 bool isCommentOrDoctype = (prefixText.substr(openBracket).rfind(L"<!--", 0) == 0 ||
@@ -23605,7 +23671,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
             }
-            RunManualGarbageCollection();
+            RunManualGarbageCollection(false);
             return 0;
         }
 
@@ -23657,6 +23723,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_KEYDOWN: {
+            m_lastUserInputTick = GetTickCount64();
             bool winDown = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
             if (wParam == VK_SNAPSHOT || winDown) {
                 return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
@@ -26016,7 +26083,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             } else if (wParam == m_gcTimerId) {
-                RunManualGarbageCollection();
+                ULONGLONG nowTick = GetTickCount64();
+                if (m_lastUserInputTick == 0 || (nowTick - m_lastUserInputTick) >= 15000ULL) {
+                    RunManualGarbageCollection(false);
+                }
                 if (m_config.gitAutoFetch && m_drawer.HasOpenFolder() && m_drawer.IsGitRepo() &&
                     !m_drawer.IsSyncing() && !m_drawer.IsGitLoading()) {
                     ULONGLONG nowTick = GetTickCount64();
@@ -26043,7 +26113,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             UINT width = LOWORD(lParam);
             UINT height = HIWORD(lParam);
             OnResize(width, height);
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+            if (width > 0 && height > 0) {
+                RedrawWindow(m_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            }
             return 0;
         }
 
@@ -26066,6 +26138,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 202: {
+            m_lastLaunchCheckTick = 0;
+            m_lastGitStatCheckTick = 0;
             if (wParam == 1) {
                 TriggerDebouncedGitRefresh(300);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -26749,7 +26823,7 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
         return { line.substr(start, p - start), p };
     };
 
-    // Case 1: Cursor is inside an opening tag name: <tag_name...
+    // Case 1: Cursor is inside an opening tag name: <tag_name...>
     size_t lastOpen = curLine.rfind(L'<', curPos.col > 0 ? curPos.col : 0);
     if (lastOpen != std::wstring::npos && lastOpen + 1 < curLine.length() &&
         curLine[lastOpen + 1] != L'/' && curLine[lastOpen + 1] != L'!' && curLine[lastOpen + 1] != L'?') {
@@ -26759,14 +26833,21 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
         if (lastOpen + 1 < oldLineText.length()) {
             oldTagName = extractTagName(oldLineText, lastOpen + 1).first;
         }
-        if (curPos.col >= lastOpen && curPos.col <= tagEnd + 1 && !newTagName.empty() && newTagName != oldTagName) {
+        size_t openTagClose = curLine.find(L'>', tagEnd);
+        size_t nextOpenAfterTag = curLine.find(L'<', tagEnd);
+        bool hasClosedOpenTag = (openTagClose != std::wstring::npos) &&
+                                (nextOpenAfterTag == std::wstring::npos || openTagClose < nextOpenAfterTag);
+        bool isSelfClosingOpen = (hasClosedOpenTag && openTagClose > 0 && curLine[openTagClose - 1] == L'/');
+
+        if (curPos.col > lastOpen && curPos.col <= tagEnd + 1 &&
+            !oldTagName.empty() && !newTagName.empty() && newTagName != oldTagName &&
+            hasClosedOpenTag && !isSelfClosingOpen) {
             std::wstring lowerNew = newTagName;
             for (auto& c : lowerNew) c = towlower(c);
             if (voidTags.count(lowerNew) > 0) return false;
 
             // Find matching closing tag by traversing forward with tag depth
-            size_t openTagClose = curLine.find(L'>', tagEnd);
-            size_t startScanCol = (openTagClose != std::wstring::npos) ? (openTagClose + 1) : tagEnd;
+            size_t startScanCol = openTagClose + 1;
 
             int depth = 0;
             for (size_t l = editLine; l < pDoc->buffer.GetLineCount(); ++l) {
@@ -26793,6 +26874,9 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
                     if (scanLine[tagPos + 1] == L'/') {
                         auto [cName, cEnd] = extractTagName(scanLine, tagPos + 2);
                         if (depth == 0) {
+                            if (_wcsicmp(cName.c_str(), oldTagName.c_str()) != 0) {
+                                return false;
+                            }
                             if (cName != newTagName) {
                                 std::wstring updated = scanLine.substr(0, tagPos + 2) + newTagName + scanLine.substr(cEnd);
                                 pDoc->buffer.SetLine(l, updated);
@@ -26830,7 +26914,13 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
         if (lastClose + 2 < oldLineText.length()) {
             oldTagName = extractTagName(oldLineText, lastClose + 2).first;
         }
-        if (curPos.col >= lastClose && curPos.col <= tagEnd + 1 && !newTagName.empty() && newTagName != oldTagName) {
+        size_t closeTagClose = curLine.find(L'>', tagEnd);
+        size_t nextOpenAfterClose = curLine.find(L'<', tagEnd);
+        bool hasClosedCloseTag = (closeTagClose != std::wstring::npos) &&
+                                 (nextOpenAfterClose == std::wstring::npos || closeTagClose < nextOpenAfterClose);
+        if (curPos.col > lastClose + 1 && curPos.col <= tagEnd + 1 &&
+            !oldTagName.empty() && !newTagName.empty() && newTagName != oldTagName &&
+            hasClosedCloseTag) {
             int depth = 0;
             for (int l = static_cast<int>(editLine); l >= 0; --l) {
                 const auto& scanLine = pDoc->buffer.GetLine(static_cast<size_t>(l));
@@ -26871,6 +26961,9 @@ bool Window::TryAutoRenameMatchingTag(editor::OpenDocument* pDoc, size_t editLin
                         depth++;
                     } else if (!tok.isSelfClosing && !tok.isVoid && !tok.name.empty()) {
                         if (depth == 0) {
+                            if (_wcsicmp(tok.name.c_str(), oldTagName.c_str()) != 0) {
+                                return false;
+                            }
                             std::wstring updated = scanLine.substr(0, tok.pos + 1) + newTagName + scanLine.substr(tok.nameEnd);
                             pDoc->buffer.SetLine(static_cast<size_t>(l), updated);
                             return true;
@@ -29011,7 +29104,7 @@ std::vector<Window::PreCommitFinding> Window::CollectPreCommitFindings(
     const std::wstring& wsRoot, const std::wstring& commitMsg, bool isPublish) const {
     (void)commitMsg;
     if (wsRoot.empty()) return {};
-    std::wstring statusOut = RunCmdCapture(L"git --no-optional-locks -C \"" + wsRoot + L"\" status --porcelain -uall");
+    std::wstring statusOut = ui::RunGitCmd(L"status --porcelain -uall", wsRoot).output;
     if (statusOut.empty()) return {};
 
     std::vector<std::wstring> candidateRelPaths;

@@ -3547,7 +3547,7 @@ void ApiTesterView::RenderSessionTabBar(ID2D1RenderTarget* pRT, Theme& theme, co
                                           rcClose.left - config.ScaleF(2.0f), y + tabH - config.ScaleF(4.0f));
         pRT->DrawText(title.c_str(), static_cast<UINT32>(title.length()),
                       theme.fontKeycap.Get(), rcTitle,
-                      isActive ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+                      isActive ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
 
         // Close button '✕'
         if (isActive || isHov) {
@@ -3572,7 +3572,7 @@ void ApiTesterView::RenderSessionTabBar(ID2D1RenderTarget* pRT, Theme& theme, co
     }
     pRT->DrawRoundedRectangle(rrcAdd, theme.brushBorderSubtle.Get(), 0.8f);
     pRT->DrawText(L"+", 1, theme.fontTab.Get(), m_rcAddSessionBtn,
-                  addHov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+                  addHov ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
 
     // #42 Right-aligned Env / Collection / Import / Export utility chips
     auto drawTopPill = [&](float rightEdge, D2D1_RECT_F& outRc, const std::wstring& label, bool active = false) -> float {
@@ -3588,7 +3588,7 @@ void ApiTesterView::RenderSessionTabBar(ID2D1RenderTarget* pRT, Theme& theme, co
         pRT->FillRoundedRectangle(rrc, active ? theme.brushTabActiveBg.Get() : (hov ? theme.brushItemHover.Get() : theme.brushTabBarBg.Get()));
         pRT->DrawRoundedRectangle(rrc, active ? theme.brushBrandAccent.Get() : theme.brushBorderSubtle.Get(), 0.9f);
         pRT->DrawText(label.c_str(), static_cast<UINT32>(label.size()), theme.fontKeycap.Get(), outRc,
-                      hov ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+                      hov ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
         return px - config.ScaleF(6.0f);
     };
     float rEdge = x + w;
@@ -3843,7 +3843,7 @@ void ApiTesterView::RenderSubNavTabs(ID2D1RenderTarget* pRT, Theme& theme, const
         D2D1_RECT_F rcText = D2D1::RectF(curX, y, curX + textW + config.ScaleF(16.0f), y + tabH);
         pRT->DrawText(n.label.c_str(), static_cast<UINT32>(n.label.length()),
                       theme.fontTab.Get(), rcText,
-                      (isActive || isHov) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+                      (isActive || isHov) ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
 
         if (n.hasBadge && !n.badgeText.empty()) {
             float badgeX = curX + textW + config.ScaleF(16.0f);
@@ -4998,7 +4998,7 @@ void ApiTesterView::RenderResponseSection(ID2D1RenderTarget* pRT, Theme& theme, 
         bool isHov = PtInRectF(m_mousePt, rc);
         pRT->DrawText(rt.name.c_str(), static_cast<UINT32>(rt.name.length()),
                       theme.fontTab.Get(), rc,
-                      (isAct || isHov) ? theme.brushTextWhite.Get() : theme.brushTextMuted.Get());
+                      (isAct || isHov) ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get());
 
         if (isAct) {
             pRT->DrawLine(D2D1::Point2F(rx, navY + config.ScaleF(24.0f) - 1.0f),

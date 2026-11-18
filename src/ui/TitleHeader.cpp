@@ -971,8 +971,8 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         ID2D1Brush* pWhiteBrush = theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
         ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextPrimary.Get();
         float chkS = config.ScaleF(14.0f);
-        float setS = config.ScaleF(16.0f);
-        float setX = dropX + dropW - setS - config.ScaleF(10.0f);
+        float setS = config.ScaleF(26.0f);
+        float setX = dropX + dropW - setS - config.ScaleF(6.0f);
 
         // Item 1: phpMyAdmin
         bool pmaChecked = m_serverDbConfig.phpMyAdminEnabled && !m_serverDbConfig.dontRunDatabase;
@@ -1007,13 +1007,13 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawText(L"phpMyAdmin", 10, pFmt, rcLbl1, pWhiteBrush);
 
         // Settings gear button on the right edge of phpMyAdmin
-        float setY1 = dropY + config.ScaleF(11.0f);
-        m_rcDbSettingsBtn = D2D1::RectF(setX - config.ScaleF(4.0f), setY1 - config.ScaleF(3.0f), setX + setS + config.ScaleF(4.0f), setY1 + setS + config.ScaleF(3.0f));
+        float setY1 = dropY + config.ScaleF(6.0f);
+        m_rcDbSettingsBtn = D2D1::RectF(setX, setY1, setX + setS, setY1 + setS);
         if (m_hoveredDbSettings && theme.brushMenuHover) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbSettingsBtn, 3.5f, 3.5f), theme.brushMenuHover.Get());
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcDbSettingsBtn, 4.0f, 4.0f), theme.brushMenuHover.Get());
         }
         D2D1_RECT_F rcIcoSet1 = D2D1::RectF(setX, setY1, setX + setS, setY1 + setS);
-        m_icons.DrawSettings(pRT, rcIcoSet1, m_hoveredDbSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.2f);
+        m_icons.DrawSettings(pRT, rcIcoSet1, m_hoveredDbSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.4f);
 
         // Separator 1
         float sep1Y = dropY + config.ScaleF(36.0f);
@@ -1099,15 +1099,15 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->DrawText(L"nginx", 5, pFmt, rcLbl1, pWhiteBrush);
 
         // Settings gear button on the right edge of nginx
-        float setS = config.ScaleF(16.0f);
-        float setX = dropX + dropW - setS - config.ScaleF(10.0f);
-        float setY = dropY + config.ScaleF(11.0f);
-        m_rcServerSettingsBtn = D2D1::RectF(setX - config.ScaleF(4.0f), setY - config.ScaleF(3.0f), setX + setS + config.ScaleF(4.0f), setY + setS + config.ScaleF(3.0f));
+        float setS = config.ScaleF(26.0f);
+        float setX = dropX + dropW - setS - config.ScaleF(6.0f);
+        float setY = dropY + config.ScaleF(6.0f);
+        m_rcServerSettingsBtn = D2D1::RectF(setX, setY, setX + setS, setY + setS);
         if (m_hoveredServerSettings && theme.brushMenuHover) {
-            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcServerSettingsBtn, 3.5f, 3.5f), theme.brushMenuHover.Get());
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcServerSettingsBtn, 4.0f, 4.0f), theme.brushMenuHover.Get());
         }
         D2D1_RECT_F rcIcoSet = D2D1::RectF(setX, setY, setX + setS, setY + setS);
-        m_icons.DrawSettings(pRT, rcIcoSet, m_hoveredServerSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.2f);
+        m_icons.DrawSettings(pRT, rcIcoSet, m_hoveredServerSettings ? pWhiteBrush : (theme.brushMenuText ? theme.brushMenuText.Get() : pWhiteBrush), 1.4f);
 
         // Separator matching PopupMenu
         float sepY = dropY + config.ScaleF(37.0f);

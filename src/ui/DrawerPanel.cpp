@@ -1121,12 +1121,14 @@ void DrawerPanel::RenderExplorerOutline(
 
         float indent = config.ScaleF(static_cast<float>((std::min)(sym.depth, 4) * 12 + 12));
         std::wstring kindTag = phide::editor::GetSymbolKindTag(sym.kind);
-        D2D1_RECT_F rcTag = D2D1::RectF(railW + indent, curY, railW + indent + config.ScaleF(24.0f), curY + rowH);
-        pRT->DrawText(kindTag.c_str(), static_cast<UINT32>(kindTag.length()), theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(), rcTag, theme.brushBrandAccent.Get());
+        const float tagW = config.ScaleF(28.0f);
+        D2D1_RECT_F rcTag = D2D1::RectF(railW + indent, curY, railW + indent + tagW, curY + rowH);
+        IDWriteTextFormat* pTagFmt = theme.fontBadge ? theme.fontBadge.Get() : (theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get());
+        pRT->DrawText(kindTag.c_str(), static_cast<UINT32>(kindTag.length()), pTagFmt, rcTag, theme.brushBrandAccent.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
         std::wstring label = sym.name + L" :" + std::to_wstring(sym.line + 1);
-        D2D1_RECT_F rcSym = D2D1::RectF(railW + indent + config.ScaleF(24.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + rowH);
-        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()), theme.fontBody.Get(), rcSym, theme.brushTextPrimary.Get());
+        D2D1_RECT_F rcSym = D2D1::RectF(railW + indent + tagW + config.ScaleF(6.0f), curY, railW + fullDrawerW - config.ScaleF(8.0f), curY + rowH);
+        pRT->DrawText(label.c_str(), static_cast<UINT32>(label.length()), theme.fontBody.Get(), rcSym, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         curY += rowH;
     }
     pRT->PopAxisAlignedClip();
@@ -1273,9 +1275,12 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                                           theme.brushTextWhite.Get(), 1.4f);
                         }
                     } else {
-                        // Hollow box: outline only, color white!
-                        if (theme.brushTextWhite) {
-                            pRT->DrawRoundedRectangle(rrcBox, theme.brushTextWhite.Get(), 1.4f);
+                        // Hollow box: outline only
+                        ID2D1Brush* boxOutlineBrush = theme.IsDarkMode()
+                            ? theme.brushTextWhite.Get()
+                            : (theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
+                        if (boxOutlineBrush) {
+                            pRT->DrawRoundedRectangle(rrcBox, boxOutlineBrush, 1.4f);
                         }
                     }
 
@@ -4898,15 +4903,29 @@ static std::wstring ResolveExecutablePath(const std::wstring& exeName, const std
     return L"";
 }
 
+static std::wstring GetPhideExeDirForGit() {
+    wchar_t exePath[MAX_PATH] = {0};
+    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) return L"";
+    std::filesystem::path p(exePath);
+    return p.has_parent_path() ? p.parent_path().wstring() : L"";
+}
+
 static std::wstring ResolveGhExePath() {
-    std::vector<std::wstring> candidates = {
-        L"C:\\Program Files\\GitHub CLI\\gh.exe",
-        L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe",
-        L"C:\\ProgramData\\chocolatey\\bin\\gh.exe"
-    };
+    std::vector<std::wstring> candidates;
+    std::wstring exeDir = GetPhideExeDirForGit();
+    if (!exeDir.empty()) {
+        candidates.push_back(exeDir + L"\\runtimes\\gh\\bin\\gh.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\gh\\gh.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\gh\\bin\\gh.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\gh\\gh.exe");
+    }
+    candidates.push_back(L"C:\\Program Files\\GitHub CLI\\gh.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe");
+    candidates.push_back(L"C:\\ProgramData\\chocolatey\\bin\\gh.exe");
     wchar_t buf[MAX_PATH] = {0};
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
         candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\gh.exe");
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\bin\\gh.exe");
     }
     if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
         candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\gh.exe");
@@ -4915,20 +4934,91 @@ static std::wstring ResolveGhExePath() {
 }
 
 static std::wstring ResolveGitExePath() {
-    std::vector<std::wstring> candidates = {
-        L"C:\\Program Files\\Git\\cmd\\git.exe",
-        L"C:\\Program Files\\Git\\bin\\git.exe",
-        L"C:\\Program Files (x86)\\Git\\cmd\\git.exe"
-    };
+    std::vector<std::wstring> candidates;
+    std::wstring exeDir = GetPhideExeDirForGit();
+    if (!exeDir.empty()) {
+        candidates.push_back(exeDir + L"\\runtimes\\git\\cmd\\git.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\git\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\git\\mingw64\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\cmd\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\mingw64\\bin\\git.exe");
+    }
+    candidates.push_back(L"C:\\Program Files\\Git\\cmd\\git.exe");
+    candidates.push_back(L"C:\\Program Files\\Git\\bin\\git.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\Git\\cmd\\git.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\Git\\bin\\git.exe");
     wchar_t buf[MAX_PATH] = {0};
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
         candidates.push_back(std::wstring(buf) + L"\\Programs\\Git\\cmd\\git.exe");
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\Git\\bin\\git.exe");
     }
     if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
         candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\git.exe");
     }
     std::wstring resolved = ResolveExecutablePath(L"git.exe", candidates);
     return resolved.empty() ? L"git.exe" : resolved;
+}
+
+/**
+ * @brief Builds a child PATH string ensuring resolved git.exe and gh.exe parent directories are present.
+ *        Needed because tools like gh.exe invoke git.exe via PATH even when Phide resolved gh.exe directly.
+ */
+static std::wstring BuildChildPathWithToolDirs() {
+    DWORD needed = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    std::wstring curPath;
+    if (needed > 0) {
+        curPath.resize(needed);
+        DWORD actual = GetEnvironmentVariableW(L"PATH", &curPath[0], needed);
+        if (actual > 0 && actual < needed) {
+            curPath.resize(actual);
+        } else {
+            curPath.clear();
+        }
+    }
+
+    auto prependDirIfMissing = [&](const std::wstring& exePath) {
+        if (exePath.empty()) return;
+        std::filesystem::path p(exePath);
+        if (!p.is_absolute() || !p.has_parent_path()) return;
+        std::wstring dir = p.parent_path().wstring();
+        while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+        if (dir.empty()) return;
+
+        bool found = false;
+        size_t start = 0;
+        while (start <= curPath.size()) {
+            size_t semi = curPath.find(L';', start);
+            std::wstring seg = (semi == std::wstring::npos) ? curPath.substr(start) : curPath.substr(start, semi - start);
+            while (!seg.empty() && (seg.back() == L'\\' || seg.back() == L'/')) seg.pop_back();
+            if (!seg.empty() && _wcsicmp(seg.c_str(), dir.c_str()) == 0) {
+                found = true;
+                break;
+            }
+            if (semi == std::wstring::npos) break;
+            start = semi + 1;
+        }
+        if (!found) {
+            curPath = curPath.empty() ? dir : (dir + L";" + curPath);
+        }
+    };
+
+    prependDirIfMissing(ResolveGitExePath());
+    prependDirIfMissing(ResolveGhExePath());
+    return curPath;
+}
+
+static std::vector<std::pair<std::wstring, std::wstring>> BuildCliEnvOverrides() {
+    std::vector<std::pair<std::wstring, std::wstring>> env = {
+        {L"GH_PROMPT_DISABLED", L"1"},
+        {L"GIT_TERMINAL_PROMPT", L"0"},
+        {L"GCM_INTERACTIVE", L"never"}
+    };
+    std::wstring childPath = BuildChildPathWithToolDirs();
+    if (!childPath.empty()) {
+        env.emplace_back(L"PATH", std::move(childPath));
+    }
+    return env;
 }
 
 static std::vector<wchar_t> BuildScopedChildEnvBlock(const std::vector<std::pair<std::wstring, std::wstring>>& overrides) {
@@ -5288,7 +5378,7 @@ static bool CheckGitHubCliAuthStatus() {
         fullCmd,
         L"",
         2500,
-        { {L"GH_PROMPT_DISABLED", L"1"}, {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
+        BuildCliEnvOverrides(),
         exitCode,
         pipeOut,
         durationMs
@@ -5517,7 +5607,7 @@ GitCmdResult RunCliCmd(const std::wstring& fullCmd, const std::wstring& workDir,
             resolvedCmd,
             workDir,
             timeoutMs,
-            { {L"GH_PROMPT_DISABLED", L"1"}, {L"GIT_TERMINAL_PROMPT", L"0"}, {L"GCM_INTERACTIVE", L"never"} },
+            BuildCliEnvOverrides(),
             exitCode,
             rawOut,
             durationMs)) {
@@ -5528,6 +5618,7 @@ GitCmdResult RunCliCmd(const std::wstring& fullCmd, const std::wstring& workDir,
 
     res.exitCode = static_cast<int>(exitCode);
     res.output = GitUtf8ToWide(rawOut);
+    GitLogManager::Instance().LogCommand(fullCmd, res.exitCode, res.output, durationMs);
     return res;
 }
 
@@ -14709,9 +14800,10 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         std::wstring shortH = ci.hash.substr(0, (ci.hash.length() < 7) ? ci.hash.length() : 7);
         std::wstring repoBase = GetGitHubRepoUrl();
+        const bool showGitHubLink = !repoBase.empty() && !ci.isUnpushed;
         const float btnH = config.ScaleF(24.0f);
         const float hashW = (std::max)(config.ScaleF(64.0f), measureCardTextW(shortH, config.ScaleF(7.5f)) + config.ScaleF(16.0f));
-        const float ghW = repoBase.empty() ? 0.0f : (config.ScaleF(13.0f) + config.ScaleF(6.0f) + measureCardTextW(L"Open on GitHub", config.ScaleF(7.2f)) + config.ScaleF(16.0f));
+        const float ghW = !showGitHubLink ? 0.0f : (config.ScaleF(13.0f) + config.ScaleF(6.0f) + measureCardTextW(L"Open on GitHub", config.ScaleF(7.2f)) + config.ScaleF(16.0f));
         const float coW = (std::max)(config.ScaleF(74.0f), measureCardTextW(L"Checkout", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
         const float cpW = (std::max)(config.ScaleF(94.0f), measureCardTextW(L"Cherry-Pick", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
         const float chW = (std::max)(config.ScaleF(108.0f), measureCardTextW(L"Open Changes", config.ScaleF(7.2f)) + config.ScaleF(18.0f));
@@ -14734,10 +14826,11 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
 
         // Card shadow & background
         D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(m_commitCardBounds, 6.0f, 6.0f);
+        const bool isDarkCard = theme.IsDarkMode();
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &brushCardBg);
+        pRT->CreateSolidColorBrush(isDarkCard ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(1.00f, 1.00f, 1.00f, 0.99f), &brushCardBg);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBorder;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &brushCardBorder);
+        pRT->CreateSolidColorBrush(isDarkCard ? D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f) : D2D1::ColorF(0.769f, 0.800f, 0.851f, 1.0f), &brushCardBorder);
 
         pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
         pRT->DrawRoundedRectangle(rrcCard, brushCardBorder.Get(), 1.0f);
@@ -14867,8 +14960,8 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
         pRT->DrawRoundedRectangle(rrcHash, brushCardBorder.Get(), 1.0f);
         drawCenteredCardText(shortH, rrcHash.rect, theme.brushBrandAccent.Get());
 
-        // Open on GitHub link (upright vector ExternalLink icon)
-        if (!repoBase.empty()) {
+        // Open on GitHub link (upright vector ExternalLink icon; omitted for unpushed local commits)
+        if (showGitHubLink) {
             float ghLeft = rrcHash.rect.right + config.ScaleF(8.0f);
             m_commitCardGitHubBounds = D2D1::RectF(ghLeft, curCardY, ghLeft + ghW, curCardY + btnH);
             if (m_hoveredGitButton == L"cardGitHub") {
@@ -16232,11 +16325,11 @@ void DrawerPanel::EnsureDebugPaneBrushes(ID2D1RenderTarget* pRT, const Theme& th
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.135f, 0.145f, 0.165f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &m_pDbgCardBrush);
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.19f, 0.22f, 1.0f) : D2D1::ColorF(0.87f, 0.89f, 0.93f, 1.0f), &m_pDbgBtnBrush);
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.24f, 0.26f, 0.30f, 1.0f) : D2D1::ColorF(0.80f, 0.84f, 0.90f, 1.0f), &m_pDbgBtnHoverBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.20f), &m_pDbgAccentSubtleBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &m_pDbgGreenBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &m_pDbgRedBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &m_pDbgAmberBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &m_pDbgCyanBrush);
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, isDark ? 0.20f : 0.14f), &m_pDbgAccentSubtleBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f) : D2D1::ColorF(0.08f, 0.52f, 0.25f, 1.0f), &m_pDbgGreenBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f) : D2D1::ColorF(0.75f, 0.15f, 0.15f, 1.0f), &m_pDbgRedBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f) : D2D1::ColorF(0.72f, 0.42f, 0.02f, 1.0f), &m_pDbgAmberBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f) : D2D1::ColorF(0.02f, 0.42f, 0.68f, 1.0f), &m_pDbgCyanBrush);
 }
 
 void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -16274,7 +16367,7 @@ void DrawerPanel::RenderDebugPane(ID2D1RenderTarget* pRT, Theme& theme, const ap
     IDWriteTextFormat* fmtHdr = m_fmtRemoteHeader ? m_fmtRemoteHeader.Get() : theme.fontBody.Get();
     IDWriteTextFormat* fmtBody = m_fmtRemoteBody ? m_fmtRemoteBody.Get() : theme.fontBody.Get();
     IDWriteTextFormat* fmtSmall = m_fmtRemoteSmall ? m_fmtRemoteSmall.Get() : fmtBody;
-    ID2D1Brush* textPrimary = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* textPrimary = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
     ID2D1Brush* textMuted = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrimary;
 
     auto isHovered = [&](DebugHitKind k, int i = -1, const std::wstring& s = L"") -> bool {

@@ -1832,10 +1832,10 @@
         "prefix": "php",
         "body": [
             "<?php",
-            "",
-            "$0"
+            "$0",
+            "?>"
         ],
-        "description": "PHP opening tag skeleton",
+        "description": "PHP opening and closing tag block",
         "scope": "php"
     },
 

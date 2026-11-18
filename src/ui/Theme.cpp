@@ -678,39 +678,39 @@ void Theme::SetThemeMode(ThemeMode mode) {
     }
 
     if (!m_isDarkActive) {
-        // Light Theme Colors (Modern, high-contrast, cohesive light IDE palette)
-        colors.windowBg        = D2D1::ColorF(0.948f, 0.952f, 0.962f, 1.0f); // #F2F3F6 Seamless with headerBg
-        colors.canvasBg        = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF Crisp white editor
-        colors.headerBg        = D2D1::ColorF(0.948f, 0.952f, 0.962f, 1.0f); // #F2F3F6 Refined title bar
-        colors.railBg          = D2D1::ColorF(0.925f, 0.932f, 0.945f, 1.0f); // #ECEEF1 Sleek activity rail
-        colors.drawerBg        = D2D1::ColorF(0.970f, 0.973f, 0.982f, 1.0f); // #F7F8FA Crisp file explorer drawer
-        colors.borderSubtle    = D2D1::ColorF(0.855f, 0.870f, 0.895f, 1.0f); // #DADEE5
-        colors.borderHover     = D2D1::ColorF(0.720f, 0.745f, 0.785f, 1.0f); // #B8BEC8
-        colors.textPrimary     = D2D1::ColorF(0.120f, 0.135f, 0.165f, 1.0f); // #1F222A Deep charcoal black
-        colors.textSecondary   = D2D1::ColorF(0.320f, 0.350f, 0.410f, 1.0f); // #525969 Medium charcoal
-        colors.textMuted       = D2D1::ColorF(0.480f, 0.515f, 0.575f, 1.0f); // #7A8393 High-contrast muted
-        colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);        // Pure white
-        colors.itemHover       = D2D1::ColorF(0.895f, 0.910f, 0.935f, 1.0f); // #E4E8EE
-        colors.itemActive      = D2D1::ColorF(0.835f, 0.860f, 0.900f, 1.0f); // #D5DBE5
+        // Light Theme Colors (Modern, high-contrast, cohesive light IDE palette with clear surface hierarchy)
+        colors.windowBg        = D2D1::ColorF(0.863f, 0.882f, 0.918f, 1.0f); // #DCE1EA Cool slate frame
+        colors.canvasBg        = D2D1::ColorF(1.000f, 1.000f, 1.000f, 1.0f); // #FFFFFF Crisp editor canvas
+        colors.headerBg        = D2D1::ColorF(0.878f, 0.898f, 0.933f, 1.0f); // #E0E5EE Distinct title bar
+        colors.railBg          = D2D1::ColorF(0.847f, 0.871f, 0.914f, 1.0f); // #D8DEE9 Distinct activity rail
+        colors.drawerBg        = D2D1::ColorF(0.922f, 0.933f, 0.957f, 1.0f); // #EBEEF4 Distinct explorer drawer
+        colors.borderSubtle    = D2D1::ColorF(0.737f, 0.769f, 0.831f, 1.0f); // #BCC4D4 Crisp visible borders
+        colors.borderHover     = D2D1::ColorF(0.533f, 0.580f, 0.667f, 1.0f); // #8894AA
+        colors.textPrimary     = D2D1::ColorF(0.094f, 0.110f, 0.141f, 1.0f); // #181C24 Deep charcoal black
+        colors.textSecondary   = D2D1::ColorF(0.278f, 0.314f, 0.380f, 1.0f); // #475061 Medium charcoal
+        colors.textMuted       = D2D1::ColorF(0.408f, 0.451f, 0.522f, 1.0f); // #687385 High-contrast muted
+        colors.textWhite       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);        // Pure white (only for dark/accent fills)
+        colors.itemHover       = D2D1::ColorF(0.847f, 0.875f, 0.925f, 1.0f); // #D8DFEC
+        colors.itemActive      = D2D1::ColorF(0.773f, 0.816f, 0.890f, 1.0f); // #C5D0E3
         colors.treeSelected    = D2D1::ColorF(0.000f, 0.400f, 0.800f, 0.18f); // #0066CC (Soft translucent selection blue)
-        colors.captionHover    = D2D1::ColorF(0.880f, 0.890f, 0.910f, 1.0f);
-        colors.headerIcon      = D2D1::ColorF(0.120f, 0.135f, 0.165f, 1.0f); // #1F222A Deep charcoal
+        colors.captionHover    = D2D1::ColorF(0.800f, 0.828f, 0.880f, 1.0f);
+        colors.headerIcon      = D2D1::ColorF(0.094f, 0.110f, 0.141f, 1.0f); // #181C24 Deep charcoal
         colors.brandAccent     = D2D1::ColorF(0.000f, 0.400f, 0.850f, 1.0f); // #0066D9 Royal IDE Blue
-        colors.homeBadgeBg     = D2D1::ColorF(0.840f, 0.875f, 0.930f, 1.0f); // #D6DFED
+        colors.homeBadgeBg     = D2D1::ColorF(0.800f, 0.842f, 0.914f, 1.0f); // #CCD7E9
         colors.tooltipBg       = D2D1::ColorF(0.120f, 0.125f, 0.140f, 0.98f);
         colors.tooltipBorder   = D2D1::ColorF(0.300f, 0.300f, 0.340f, 1.0f);
         colors.tooltipText     = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
-        colors.menuBg          = D2D1::ColorF(0.980f, 0.985f, 0.990f, 1.0f);
-        colors.menuBorder      = D2D1::ColorF(0.820f, 0.850f, 0.890f, 1.0f);
-        colors.menuSeparator   = D2D1::ColorF(0.880f, 0.900f, 0.930f, 1.0f);
+        colors.menuBg          = D2D1::ColorF(1.000f, 1.000f, 1.000f, 1.0f);
+        colors.menuBorder      = D2D1::ColorF(0.737f, 0.769f, 0.831f, 1.0f); // #BCC4D4
+        colors.menuSeparator   = D2D1::ColorF(0.863f, 0.882f, 0.918f, 1.0f); // #DCE1EA
         colors.menuHover       = D2D1::ColorF(0.000f, 0.471f, 0.831f, 1.0f);
-        colors.menuText        = D2D1::ColorF(0.120f, 0.140f, 0.180f, 1.0f);
-        colors.menuShortcut    = D2D1::ColorF(0.440f, 0.470f, 0.530f, 1.0f);
-        colors.tabBarBg        = D2D1::ColorF(0.925f, 0.932f, 0.945f, 1.0f); // #ECEEF1
-        colors.tabActiveBg     = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);       // #FFFFFF
-        colors.tabBorder       = D2D1::ColorF(0.855f, 0.870f, 0.895f, 1.0f); // #DADEE5
-        colors.currentLineBg   = D2D1::ColorF(0.960f, 0.968f, 0.982f, 1.0f); // #F5F7FA
-        colors.lineNumber      = D2D1::ColorF(0.460f, 0.490f, 0.550f, 1.0f); // #757D8C
+        colors.menuText        = D2D1::ColorF(0.094f, 0.110f, 0.141f, 1.0f);
+        colors.menuShortcut    = D2D1::ColorF(0.408f, 0.451f, 0.522f, 1.0f);
+        colors.tabBarBg        = D2D1::ColorF(0.886f, 0.902f, 0.937f, 1.0f); // #E2E6EF
+        colors.tabActiveBg     = D2D1::ColorF(1.000f, 1.000f, 1.000f, 1.0f); // #FFFFFF
+        colors.tabBorder       = D2D1::ColorF(0.737f, 0.769f, 0.831f, 1.0f); // #BCC4D4
+        colors.currentLineBg   = D2D1::ColorF(0.929f, 0.949f, 0.980f, 1.0f); // #EDF2FA
+        colors.lineNumber      = D2D1::ColorF(0.420f, 0.455f, 0.522f, 1.0f); // #6B7485
         colors.syntaxKeyword   = D2D1::ColorF(0.000f, 0.000f, 1.000f, 1.0f); // #0000FF Pure blue keyword
         colors.syntaxType      = D2D1::ColorF(0.150f, 0.500f, 0.600f, 1.0f); // #267F99 Teal/Cyan
         colors.syntaxString    = D2D1::ColorF(0.639f, 0.082f, 0.082f, 1.0f); // #A31515 Deep brick red

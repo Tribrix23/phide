@@ -80,6 +80,7 @@ public:
      * @return Vector of SyntaxToken descriptors.
      */
     [[nodiscard]] std::vector<SyntaxToken> GetTokensForLine(size_t lineIdx, const std::wstring& ext = L"") const;
+    [[nodiscard]] const std::vector<SyntaxToken>& GetTokensForLineRef(size_t lineIdx, const std::wstring& ext = L"") const;
 
     /**
      * @brief Gets the active cursor position.
@@ -246,14 +247,24 @@ public:
 
     [[nodiscard]] uint64_t GetVersion() const noexcept { return m_version; }
     void IncrementVersion() noexcept { ++m_version; }
+    [[nodiscard]] uint64_t GetInstanceId() const noexcept { return m_identity.id; }
 
     /** @brief Transforms string casing cleanly (UPPER, lower, Title, camelCase, snake_case, kebab-case). */
     [[nodiscard]] static std::wstring TransformTextCase(const std::wstring& text, CaseTransform mode);
 
     /** @brief Manual Garbage Collector: compacts pending undo, reclaims vector capacities and trims memory. */
-    void RunGarbageCollection();
+    void RunGarbageCollection(bool clearTokenCache = true);
 
 private:
+    struct BufferIdentity {
+        uint64_t id = 0;
+        BufferIdentity();
+        BufferIdentity(const BufferIdentity&);
+        BufferIdentity& operator=(const BufferIdentity&);
+        BufferIdentity(BufferIdentity&& other) noexcept;
+        BufferIdentity& operator=(BufferIdentity&& other) noexcept;
+    };
+    BufferIdentity m_identity;
     std::vector<std::wstring> m_lines;
     struct MappedFileState;
     std::shared_ptr<MappedFileState> m_mappedState;
@@ -278,6 +289,7 @@ private:
     mutable std::wstring m_cachedTokenExt;
     mutable std::vector<uint8_t> m_lineEntryStates; // 0 = normal, 1 = blockComment, 2 = doubleQuote, 3 = singleQuote
     mutable std::unordered_map<size_t, std::vector<SyntaxToken>> m_tokenCache;
+    mutable std::vector<SyntaxToken> m_mmapTokenScratch;
 
     struct UndoHunk {
         size_t startLine = 0;

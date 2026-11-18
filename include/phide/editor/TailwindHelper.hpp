@@ -10,6 +10,8 @@
 #include <fstream>
 #include <chrono>
 #include <mutex>
+#include <thread>
+#include <atomic>
 
 namespace phide::editor {
 
@@ -321,18 +323,40 @@ public:
             }
         }
 
-        // 3. Workspace root check with caching (valid for 2 seconds)
+        // 3. Workspace root check with caching (initial sync check per root, async refresh after 30s)
         if (!workspaceRoot.empty()) {
             auto now = std::chrono::steady_clock::now();
+            bool haveCached = false;
+            bool cachedVal = false;
+            bool needAsyncRefresh = false;
             {
                 std::lock_guard<std::mutex> lock(s_cacheMutex);
-                if (s_cachedRoot == workspaceRoot && (now - s_lastCheck) < std::chrono::seconds(2)) {
-                    return s_cachedResult;
+                if (s_cachedRoot == workspaceRoot) {
+                    haveCached = true;
+                    cachedVal = s_cachedResult;
+                    if ((now - s_lastCheck) >= std::chrono::seconds(30) && !s_refreshing.exchange(true)) {
+                        needAsyncRefresh = true;
+                    }
                 }
+            }
+            if (haveCached) {
+                if (needAsyncRefresh) {
+                    std::wstring rootCopy = workspaceRoot;
+                    std::thread([rootCopy]() {
+                        bool detected = CheckWorkspaceForTailwind(rootCopy);
+                        auto doneTime = std::chrono::steady_clock::now();
+                        std::lock_guard<std::mutex> lock(s_cacheMutex);
+                        if (s_cachedRoot == rootCopy) {
+                            s_cachedResult = detected;
+                            s_lastCheck = doneTime;
+                        }
+                        s_refreshing.store(false);
+                    }).detach();
+                }
+                return cachedVal;
             }
 
             bool detected = CheckWorkspaceForTailwind(workspaceRoot);
-
             {
                 std::lock_guard<std::mutex> lock(s_cacheMutex);
                 s_cachedRoot = workspaceRoot;
@@ -350,6 +374,7 @@ private:
     inline static std::wstring s_cachedRoot;
     inline static std::chrono::steady_clock::time_point s_lastCheck{};
     inline static bool s_cachedResult = false;
+    inline static std::atomic<bool> s_refreshing{ false };
 
     static bool CheckWorkspaceForTailwind(const std::wstring& workspaceRoot) {
         std::error_code ec;

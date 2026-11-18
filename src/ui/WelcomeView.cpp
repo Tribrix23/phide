@@ -211,14 +211,15 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadgeBg;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushLineGutterBg;
 
+    const bool isDark = theme.IsDarkMode();
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 1.0f), &brushAccent);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.54f, 0.88f, 1.0f), &brushAccentHover);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.035f), &brushCardBg);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.478f, 0.800f, 0.16f), &brushCardSelected);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &brushBorderSubtle);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f), &brushTextMuted);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f), &brushBadgeBg);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.85f), &brushLineGutterBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.035f) : D2D1::ColorF(0.945f, 0.955f, 0.975f, 1.0f), &brushCardBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.0f, 0.478f, 0.800f, 0.16f) : D2D1::ColorF(0.0f, 0.400f, 0.850f, 0.12f), &brushCardSelected);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f) : D2D1::ColorF(0.796f, 0.824f, 0.871f, 1.0f), &brushBorderSubtle);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f) : D2D1::ColorF(0.408f, 0.451f, 0.522f, 1.0f), &brushTextMuted);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f) : D2D1::ColorF(0.880f, 0.902f, 0.935f, 1.0f), &brushBadgeBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.85f) : D2D1::ColorF(0.945f, 0.955f, 0.973f, 1.0f), &brushLineGutterBg);
 
     // DirectWrite Text Formats - Dedicated to WelcomeView to strictly prevent text leaking or centering bugs
     IDWriteFactory* pDWriteFactory = theme.dwriteFactory.Get();
@@ -363,7 +364,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     // Title: "Get started with Phide"
     const wchar_t* titleStr = L"Get started with Phide";
     D2D1_RECT_F rcTitle = D2D1::RectF(startX, curY, startX + contentW, curY + config.ScaleF(32.0f));
-    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), fmtHeader.Get(), rcTitle, theme.brushTextWhite.Get());
+    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), fmtHeader.Get(), rcTitle, theme.brushTextPrimary.Get());
     curY += config.ScaleF(34.0f);
 
     // Subtitle: "Customize your editor, learn the basics, and start coding"
@@ -455,7 +456,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 rcBox.top + config.ScaleF(29.0f)
             );
             pRT->DrawText(stepTitles[stepIdx], static_cast<UINT32>(wcslen(stepTitles[stepIdx])),
-                          fmtStepTitle.Get(), rcStepTitle, theme.brushTextWhite.Get());
+                          fmtStepTitle.Get(), rcStepTitle, theme.brushTextPrimary.Get());
 
             // --- STEP-SPECIFIC BODY ---
             if (stepIdx == 0) {
@@ -505,14 +506,14 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 D2D1_RECT_F rcK1 = D2D1::RectF(k1X, tipY - config.ScaleF(1.0f), k1X + config.ScaleF(48.0f), tipY + config.ScaleF(17.0f));
                 pRT->FillRoundedRectangle(D2D1::RoundedRect(rcK1, 3.0f, 3.0f), brushBadgeBg.Get());
                 pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcK1, 3.0f, 3.0f), brushBorderSubtle.Get(), 1.0f);
-                pRT->DrawText(L"Ctrl+K", 6, fmtBtn.Get(), rcK1, theme.brushTextWhite.Get());
+                pRT->DrawText(L"Ctrl+K", 6, fmtBtn.Get(), rcK1, theme.brushTextPrimary.Get());
 
                 // Keycap [Ctrl+T]
                 float k2X = rcK1.right + config.ScaleF(6.0f);
                 D2D1_RECT_F rcK2 = D2D1::RectF(k2X, tipY - config.ScaleF(1.0f), k2X + config.ScaleF(48.0f), tipY + config.ScaleF(17.0f));
                 pRT->FillRoundedRectangle(D2D1::RoundedRect(rcK2, 3.0f, 3.0f), brushBadgeBg.Get());
                 pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcK2, 3.0f, 3.0f), brushBorderSubtle.Get(), 1.0f);
-                pRT->DrawText(L"Ctrl+T", 6, fmtBtn.Get(), rcK2, theme.brushTextWhite.Get());
+                pRT->DrawText(L"Ctrl+T", 6, fmtBtn.Get(), rcK2, theme.brushTextPrimary.Get());
 
                 // Next Section link at bottom right
                 const wchar_t* nextStr = L"Next Section \u2192";
@@ -588,7 +589,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                     );
                     pRT->DrawText(s_fontDisplayNames[f], static_cast<UINT32>(wcslen(s_fontDisplayNames[f])),
                                   fmtFontItem.Get(), rcFontName,
-                                  isCurrent ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+                                  isCurrent ? (isDark ? theme.brushTextWhite.Get() : theme.brushBrandAccent.Get()) : theme.brushTextPrimary.Get());
 
                     rowY += rowH + rowSpacing;
                 }
@@ -669,7 +670,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             );
             pRT->DrawText(stepTitles[stepIdx], static_cast<UINT32>(wcslen(stepTitles[stepIdx])),
                           fmtStepTitle.Get(), rcTitle,
-                          isHeaderHovered ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get());
+                          isHeaderHovered ? theme.brushTextPrimary.Get() : theme.brushTextSecondary.Get());
 
             leftY += rowH + config.ScaleF(6.0f);
         }
@@ -750,7 +751,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             );
             pRT->DrawText(s_themeCardNames[i], static_cast<UINT32>(wcslen(s_themeCardNames[i])),
                           fmtFontItem.Get(), rcThemeName,
-                          isSelected ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+                          isSelected ? (isDark ? theme.brushTextWhite.Get() : theme.brushBrandAccent.Get()) : theme.brushTextPrimary.Get());
 
             // Card Border
             D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 5.0f, 5.0f);
@@ -827,7 +828,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         const wchar_t* tabTitle = L"TypographyPreview.ts";
         D2D1_RECT_F rcTab = D2D1::RectF(rcWindow.left + config.ScaleF(56.0f), rcWindow.top + config.ScaleF(6.0f),
                                        rcWindow.left + config.ScaleF(200.0f), rcWindow.top + winHeaderH - config.ScaleF(6.0f));
-        pRT->DrawText(tabTitle, static_cast<UINT32>(wcslen(tabTitle)), fmtFontItem.Get(), rcTab, theme.brushTextWhite.Get());
+        pRT->DrawText(tabTitle, static_cast<UINT32>(wcslen(tabTitle)), fmtFontItem.Get(), rcTab, theme.brushTextPrimary.Get());
 
         // Font Badge Pill on the Right (Measured dynamically to never overflow)
         std::wstring fontPill = L"Font: " + config.fontFamily + L" \u2022 15px";
@@ -887,12 +888,12 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             D2D1_RECT_F rcNum = D2D1::RectF(rcWindow.left, lineY, rcWindow.left + gutterW, lineY + lineH);
             pRT->DrawText(cl.num, static_cast<UINT32>(wcslen(cl.num)),
                           fmtGutterNum ? fmtGutterNum.Get() : fmtCode.Get(), rcNum,
-                          cl.isCurrent ? theme.brushTextWhite.Get() : theme.brushLineNumber.Get());
+                          cl.isCurrent ? theme.brushTextPrimary.Get() : theme.brushLineNumber.Get());
 
             // Code Line
             D2D1_RECT_F rcText = D2D1::RectF(rcWindow.left + gutterW + config.ScaleF(8.0f), lineY, rcWindow.right - config.ScaleF(8.0f), lineY + lineH);
             pRT->DrawText(cl.code, static_cast<UINT32>(wcslen(cl.code)), fmtCode.Get(), rcText,
-                          cl.isCurrent ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get());
+                          theme.brushTextPrimary.Get());
 
             lineY += lineH;
         }
@@ -941,7 +942,7 @@ void WelcomeView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
             // Title (Left-aligned)
             D2D1_RECT_F rcHTitle = D2D1::RectF(rcCardItem.left + config.ScaleF(14.0f), rcCardItem.top + config.ScaleF(7.0f),
                                               rcCardItem.right - config.ScaleF(10.0f), rcCardItem.top + config.ScaleF(25.0f));
-            pRT->DrawText(highlights[h].title, static_cast<UINT32>(wcslen(highlights[h].title)), fmtStepTitle.Get(), rcHTitle, theme.brushTextWhite.Get());
+            pRT->DrawText(highlights[h].title, static_cast<UINT32>(wcslen(highlights[h].title)), fmtStepTitle.Get(), rcHTitle, theme.brushTextPrimary.Get());
 
             // Multi-line Description (Strictly wrapped inside card, no leaking)
             D2D1_RECT_F rcHDesc = D2D1::RectF(rcCardItem.left + config.ScaleF(14.0f), rcCardItem.top + config.ScaleF(27.0f),

@@ -860,7 +860,9 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             pRT->FillRoundedRectangle(rrcK, theme.brushItemHover.Get());
         }
         pRT->DrawRoundedRectangle(rrcK, theme.brushBorderSubtle.Get(), 1.0f);
-        std::wstring kShort = FormatKernelShortLabel(nb ? nb->selectedPythonExe : L"");
+        std::wstring kShort = (nb && nb->selectedPythonExe.empty() && nb->discoveredPythonExes.empty())
+            ? L"No Python"
+            : FormatKernelShortLabel(nb ? nb->selectedPythonExe : L"");
         if (kShort.size() > 14) kShort = kShort.substr(0, 12) + L"..";
         std::wstring kLbl = kShort + L" \x25BE";
         ID2D1Brush* kBrush = (m_hoveredToolbarBtn == 5 || m_kernelDropdownOpen)
@@ -1836,10 +1838,12 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     // 6. Floating Kernel Dropdown Menu (if open)
     m_kernelDropdownItemBounds.clear();
     m_kernelDropdownBounds = {};
-    if (m_kernelDropdownOpen && nb && !nb->discoveredPythonExes.empty()) {
+    if (m_kernelDropdownOpen && nb) {
         const float dropW = config.ScaleF(360.0f);
         const float itemH = config.ScaleF(26.0f);
-        const size_t maxVis = (std::min)(nb->discoveredPythonExes.size(), static_cast<size_t>(10));
+        const size_t maxVis = nb->discoveredPythonExes.empty()
+            ? 1u
+            : (std::min)(nb->discoveredPythonExes.size(), static_cast<size_t>(10));
         const float dropH = static_cast<float>(maxVis) * itemH + config.ScaleF(8.0f);
         float dropX = m_btnKernelPicker.left;
         if (dropX + dropW > left + width - config.ScaleF(8.0f)) {
@@ -1851,28 +1855,40 @@ void NotebookView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         if (m_brushNbPopupBg) pRT->FillRoundedRectangle(rrcDrop, m_brushNbPopupBg.Get());
         if (theme.brushBorderSubtle) pRT->DrawRoundedRectangle(rrcDrop, theme.brushBorderSubtle.Get(), 1.0f);
 
-        for (size_t ki = 0; ki < maxVis; ++ki) {
-            const auto& pyPath = nb->discoveredPythonExes[ki];
-            D2D1_RECT_F rcItem = D2D1::RectF(dropX + config.ScaleF(4.0f),
-                                              dropY + config.ScaleF(4.0f) + static_cast<float>(ki) * itemH,
-                                              dropX + dropW - config.ScaleF(4.0f),
-                                              dropY + config.ScaleF(4.0f) + static_cast<float>(ki + 1) * itemH);
-            m_kernelDropdownItemBounds.push_back(rcItem);
-            bool isSel = (!nb->selectedPythonExe.empty() && _wcsicmp(nb->selectedPythonExe.c_str(), pyPath.c_str()) == 0);
-            if (isSel || m_hoveredKernelDropdownIdx == static_cast<int>(ki)) {
-                ID2D1Brush* bgB = isSel && theme.brushBrandAccent ? theme.brushBrandAccent.Get() : m_brushNbRowHover.Get();
-                if (bgB) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, 4.0f, 4.0f), bgB);
+        if (nb->discoveredPythonExes.empty()) {
+            D2D1_RECT_F rcTxt = D2D1::RectF(dropX + config.ScaleF(12.0f), dropY + config.ScaleF(7.0f),
+                                             dropX + dropW - config.ScaleF(10.0f), dropY + itemH + config.ScaleF(4.0f));
+            ID2D1Brush* errBrush = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get();
+            if (errBrush) {
+                const wchar_t* msg = L"No Python detected \x2014 please install Python";
+                pRT->DrawText(msg, static_cast<UINT32>(wcslen(msg)),
+                              theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                              rcTxt, errBrush);
             }
-            std::wstring prefix = isSel ? L"\x2713 " : L"   ";
-            std::wstring disp = prefix + pyPath;
-            if (disp.size() > 48) {
-                disp = prefix + L"..." + pyPath.substr(pyPath.size() - 42);
+        } else {
+            for (size_t ki = 0; ki < maxVis; ++ki) {
+                const auto& pyPath = nb->discoveredPythonExes[ki];
+                D2D1_RECT_F rcItem = D2D1::RectF(dropX + config.ScaleF(4.0f),
+                                                  dropY + config.ScaleF(4.0f) + static_cast<float>(ki) * itemH,
+                                                  dropX + dropW - config.ScaleF(4.0f),
+                                                  dropY + config.ScaleF(4.0f) + static_cast<float>(ki + 1) * itemH);
+                m_kernelDropdownItemBounds.push_back(rcItem);
+                bool isSel = (!nb->selectedPythonExe.empty() && _wcsicmp(nb->selectedPythonExe.c_str(), pyPath.c_str()) == 0);
+                if (isSel || m_hoveredKernelDropdownIdx == static_cast<int>(ki)) {
+                    ID2D1Brush* bgB = isSel && theme.brushBrandAccent ? theme.brushBrandAccent.Get() : m_brushNbRowHover.Get();
+                    if (bgB) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, 4.0f, 4.0f), bgB);
+                }
+                std::wstring prefix = isSel ? L"\x2713 " : L"   ";
+                std::wstring disp = prefix + pyPath;
+                if (disp.size() > 48) {
+                    disp = prefix + L"..." + pyPath.substr(pyPath.size() - 42);
+                }
+                D2D1_RECT_F rcTxt = D2D1::RectF(rcItem.left + config.ScaleF(8.0f), rcItem.top + config.ScaleF(3.0f),
+                                                 rcItem.right - config.ScaleF(6.0f), rcItem.bottom);
+                pRT->DrawText(disp.c_str(), static_cast<UINT32>(disp.length()),
+                              theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
+                              rcTxt, theme.brushTextPrimary.Get());
             }
-            D2D1_RECT_F rcTxt = D2D1::RectF(rcItem.left + config.ScaleF(8.0f), rcItem.top + config.ScaleF(3.0f),
-                                             rcItem.right - config.ScaleF(6.0f), rcItem.bottom);
-            pRT->DrawText(disp.c_str(), static_cast<UINT32>(disp.length()),
-                          theme.fontBadge ? theme.fontBadge.Get() : theme.fontCode.Get(),
-                          rcTxt, theme.brushTextPrimary.Get());
         }
     }
 
@@ -3194,7 +3210,7 @@ std::wstring NotebookView::FindPythonExecutable(const std::wstring& targetFilePa
         }
     }
 
-    return L"python";
+    return L"";
 }
 
 void NotebookView::RunCell(int cellIdx, editor::OpenDocument& doc, HWND hwnd) {
@@ -3472,7 +3488,15 @@ void NotebookView::ExecuteScriptAsync(int cellIdx, const std::wstring& script, c
         }
     };
 
-    auto kernelResult = m_kernel.Execute(script, pyExe, workingDir, onChunk);
+    editor::KernelExecutionResult kernelResult;
+    if (pyExe.empty()) {
+        kernelResult.exitCode = 1;
+        kernelResult.hasError = true;
+        kernelResult.elapsedMs = 0;
+        kernelResult.output = L"Python is not detected on this system. Please install Python and select a Python interpreter to run notebook cells.\n";
+    } else {
+        kernelResult = m_kernel.Execute(script, pyExe, workingDir, onChunk);
+    }
 
     bool hasErr = kernelResult.hasError;
     std::wstring capturedOutput = kernelResult.output;

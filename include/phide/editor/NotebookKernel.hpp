@@ -148,10 +148,17 @@ public:
             return res;
         }
 
+        if (pythonExe.empty()) {
+            res.exitCode = 1;
+            res.hasError = true;
+            res.output = L"Python is not detected. Please install Python and select a Python interpreter to run notebook cells.\n";
+            return res;
+        }
+
         if (!EnsureStarted(pythonExe, workingDir)) {
             res.exitCode = 1;
             res.hasError = true;
-            res.output = L"Error: Failed to launch Python kernel process.\n";
+            res.output = L"Error: Failed to launch Python kernel process. Please ensure Python is installed.\n";
             return res;
         }
 
@@ -317,6 +324,11 @@ public:
             rawOutput += "\n";
         }
         res.output = Utf8ToWide(rawOutput);
+        if (res.hasError && res.output.empty()) {
+            res.output = L"Error: Python kernel process exited unexpectedly (exit code " +
+                         std::to_wstring(res.exitCode) +
+                         L"). Please ensure Python is installed and working properly.\n";
+        }
 
         m_isBusy.store(false);
         return res;

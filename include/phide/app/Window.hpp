@@ -879,7 +879,7 @@ private:
     int m_mysqlPort = 3306;
     bool m_isPmaRunning = false;
     void UpdateDatabaseModalRuntimeStatus();
-    void RunManualGarbageCollection();
+    void RunManualGarbageCollection(bool aggressive = true);
     void StartPhpServer(const std::wstring& rootDir, int port = 8080);
     void StopPhpServer();
     void StartNginxServer();
@@ -1221,6 +1221,7 @@ private:
     UINT_PTR m_animTimerId     = 1002;
     UINT_PTR m_throttleTimerId = 1003; ///< 50ms timer for throttled code search queries
     UINT_PTR m_gcTimerId       = 1004; ///< 60s periodic idle garbage collection timer
+    ULONGLONG m_lastUserInputTick = 0; ///< Last timestamp of user scroll/key/click input
     ULONGLONG m_lastGitAutoFetchTick = 0; ///< Last timestamp of background git.autofetch
 
     float m_drawerAnimProgress   = 0.0f;
@@ -1299,6 +1300,8 @@ private:
 
     // Status Bar Git & GitHub Cache and Interactive State
     std::wstring m_cachedGitDir;
+    std::wstring m_cachedGitOpenDir;
+    ULONGLONG m_lastGitStatCheckTick = 0;
     std::filesystem::file_time_type m_cachedHeadTime{};
     std::filesystem::file_time_type m_cachedConfigTime{};
     std::wstring m_cachedGitBranch;
@@ -1306,6 +1309,9 @@ private:
     std::wstring m_cachedGitHubRepo;
     std::wstring m_cachedGitUserName;
     bool m_isGitCached = false;
+    std::wstring m_cachedLaunchRoot;
+    ULONGLONG m_lastLaunchCheckTick = 0;
+    bool m_cachedHasLaunchCfgs = false;
     void UpdateCachedGitInfo();
 
     D2D1_RECT_F m_rcStatusBarGitBranch{};

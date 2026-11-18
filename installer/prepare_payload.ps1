@@ -98,8 +98,33 @@ if (Test-Path $mysqlSource) {
     Write-Warning "MySQL source not found at $mysqlSource"
 }
 
-# 7. Stage VC++ CRT DLLs for maximum compatibility
-Write-Host "[6/6] Staging VC++ runtime DLLs..."
+# 7. Stage bundled Git and GitHub CLI (gh) runtimes for PCs without git/gh installed
+Write-Host "[6/7] Staging bundled Git and GitHub CLI (gh) runtimes..."
+$gitSource = "C:\Program Files\Git"
+if (Test-Path $gitSource) {
+    New-Item -ItemType Directory -Path "$payload\runtimes\git\mingw64\libexec", "$payload\runtimes\git\usr" -Force | Out-Null
+    foreach ($gitSub in @("cmd", "bin", "etc", "mingw64\bin", "mingw64\etc", "mingw64\libexec\git-core", "usr\bin", "usr\ssl")) {
+        if (Test-Path "$gitSource\$gitSub") {
+            Copy-Item "$gitSource\$gitSub" "$payload\runtimes\git\$gitSub" -Recurse -Force
+        }
+    }
+} else {
+    Write-Warning "Git source not found at $gitSource"
+}
+
+$ghSource = "C:\Program Files\GitHub CLI"
+if (Test-Path $ghSource) {
+    New-Item -ItemType Directory -Path "$payload\runtimes\gh\bin" -Force | Out-Null
+    Copy-Item "$ghSource\*" "$payload\runtimes\gh\" -Recurse -Force
+    if ((Test-Path "$ghSource\gh.exe") -and !(Test-Path "$payload\runtimes\gh\bin\gh.exe")) {
+        Copy-Item "$ghSource\gh.exe" "$payload\runtimes\gh\bin\gh.exe" -Force
+    }
+} else {
+    Write-Warning "GitHub CLI source not found at $ghSource"
+}
+
+# 8. Stage VC++ CRT DLLs for maximum compatibility
+Write-Host "[7/7] Staging VC++ runtime DLLs..."
 $crtFiles = @("concrt140.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "ucrtbase.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 foreach ($crt in $crtFiles) {
     $src = "$mysqlSource\bin\$crt"

@@ -1632,8 +1632,34 @@ struct OpenDocument {
     mutable std::wstring activeOccurrenceWord;
     mutable bool occurrenceWholeWord = true;
     mutable size_t occurrenceMatchCount = 0;
+    mutable uint64_t occurrenceCacheInstanceId = 0;
     mutable uint64_t occurrenceCacheVersion = UINT64_MAX;
     mutable std::wstring occurrenceCacheKey;
+    mutable std::vector<size_t> occurrenceMatchLines;
+
+    // Cached base visual lines (buffer lines after folding + CodeLens/merge-conflict headers; excludes ephemeral prediction virtual lines)
+    struct CachedVisualLine {
+        size_t bufferLine = 0;
+        size_t foldEndLine = 0;
+        bool isFoldHeader = false;
+        bool isFolded = false;
+        bool isCodeLens = false;
+    };
+    struct VisualLineCache {
+        bool valid = false;
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        size_t lineCount = 0;
+        bool isMmap = false;
+        bool supportsCodeLens = false;
+        std::wstring docExt;
+        std::set<size_t> foldedLines;
+        uint64_t lspCodeLensSig = 0;
+        uint64_t lspFoldSig = 0;
+        uint64_t mergeConflictSig = 0;
+        std::vector<CachedVisualLine> lines;
+    };
+    mutable VisualLineCache visualLineCache;
 
     // Advanced LSP Metadata (#22) - bounded vectors cleared on close/GC
     std::vector<uint32_t> semanticTokensData;
@@ -1652,10 +1678,15 @@ struct OpenDocument {
         semanticTokensVersion = UINT64_MAX;
         std::vector<lsp::LspFoldRange>().swap(lspFoldingRanges);
         std::vector<lsp::LspCodeLens>().swap(lspCodeLenses);
+        occurrenceCacheInstanceId = 0;
         occurrenceCacheVersion = UINT64_MAX;
         occurrenceCacheKey.clear();
         activeOccurrenceWord.clear();
         occurrenceMatchCount = 0;
+        std::vector<size_t>().swap(occurrenceMatchLines);
+        visualLineCache.valid = false;
+        std::vector<CachedVisualLine>().swap(visualLineCache.lines);
+        std::set<size_t>().swap(visualLineCache.foldedLines);
         structuredView.reset();
         pImageBitmap.Reset();
         buffer.RunGarbageCollection();

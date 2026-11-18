@@ -15,6 +15,8 @@
 #include <mutex>
 #include <atomic>
 #include <cstdint>
+#include <list>
+#include <unordered_map>
 #include "phide/app/AppConfig.hpp"
 #include "phide/app/LocalTimeline.hpp"
 #include "phide/ui/Theme.hpp"
@@ -359,7 +361,7 @@ public:
      * @brief Releases device-dependent Direct2D resources (e.g. path geometries, watermark bitmaps).
      */
     void DiscardDeviceResources();
-    void ResetCharWidth() const noexcept { m_charWidth = 0.0f; }
+    void ResetCharWidth() const noexcept { m_charWidth = 0.0f; m_lineLayoutMap.clear(); m_lineLayoutLru.clear(); m_lineLayoutEnvSig = 0; }
     [[nodiscard]] float GetCharWidth() const noexcept { return m_charWidth; }
 
     void RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -1002,7 +1004,15 @@ public:
     ULONGLONG m_lastCpuUserTime = 0;
     int m_numProcessors = 0;
 
-    void RunGarbageCollection() {
+    void RunGarbageCollection(bool clearRenderCaches = true) {
+        if (clearRenderCaches) {
+            m_minimapBitmapCache.clear();
+            m_minimapSearchCache.clear();
+            m_lineLayoutMap.clear();
+            m_lineLayoutLru.clear();
+            m_lineLayoutEnvSig = 0;
+            m_codeLensWidthCache.clear();
+        }
         m_foldChevrons.shrink_to_fit();
         m_visibleColorSwatches.shrink_to_fit();
         m_scratchTabWidths.shrink_to_fit();
@@ -1532,6 +1542,7 @@ private:
 
     // Cached render-target brushes for EditorCanvas (recreated only on theme switch / device reset)
     void EnsureCachedEditorBrushes(ID2D1RenderTarget* pRT, const Theme& theme);
+    ID2D1RenderTarget* m_cachedEditorBrushRT = nullptr;
     bool m_cachedEditorBrushDark = true;
     bool m_hasCachedEditorBrushes = false;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pOccWordFillBrush;
@@ -1548,7 +1559,103 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugGutterGreenBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugFloatBgBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pInlineBlameBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pScopeGuideBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSelBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pGutterBlueBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pGutterGreenBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pGutterRedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pScrollbarThumbBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pScrollbarThumbDragBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pClNormalBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pClHoverBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pBreadcrumbBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pErrBadgeBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pErrBadgeBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapSelBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapCursorBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapTargetBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapWordTickBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapHlTickBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapOccBandBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapSliderBgBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapSliderBgDragBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapSliderBorderBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pMinimapSliderBorderDragBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pHScrollThumbBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pHScrollThumbDragBrush;
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_pPausedArrowGeo;
+
+    struct CodeLineLayoutKey {
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        size_t bufferLine = 0;
+        size_t sliceStart = 0;
+        size_t sliceEnd = 0;
+        uint64_t semanticVer = UINT64_MAX;
+        std::wstring docExt;
+
+        bool operator==(const CodeLineLayoutKey& o) const noexcept {
+            return bufferInstanceId == o.bufferInstanceId &&
+                   bufferVersion == o.bufferVersion &&
+                   bufferLine == o.bufferLine &&
+                   sliceStart == o.sliceStart &&
+                   sliceEnd == o.sliceEnd &&
+                   semanticVer == o.semanticVer &&
+                   docExt == o.docExt;
+        }
+    };
+    struct CodeLineLayoutKeyHash {
+        size_t operator()(const CodeLineLayoutKey& k) const noexcept {
+            uint64_t h = 14695981039346656037ULL;
+            auto mix = [&](uint64_t v) {
+                h ^= v;
+                h *= 1099511628211ULL;
+            };
+            mix(k.bufferInstanceId);
+            mix(k.bufferVersion);
+            mix(k.bufferLine);
+            mix(k.sliceStart);
+            mix(k.sliceEnd);
+            mix(k.semanticVer);
+            for (wchar_t c : k.docExt) mix(static_cast<uint64_t>(c));
+            return static_cast<size_t>(h);
+        }
+    };
+    struct CodeLineLayoutEntry {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        std::list<CodeLineLayoutKey>::iterator lruIt;
+    };
+    mutable uint64_t m_lineLayoutEnvSig = 0;
+    mutable std::list<CodeLineLayoutKey> m_lineLayoutLru;
+    mutable std::unordered_map<CodeLineLayoutKey, CodeLineLayoutEntry, CodeLineLayoutKeyHash> m_lineLayoutMap;
+
+    mutable IDWriteTextFormat* m_cachedClFmt = nullptr;
+    mutable float m_cachedClDpi = 0.0f;
+    mutable std::unordered_map<std::wstring, float> m_codeLensWidthCache;
+
+    struct MinimapBitmapCacheEntry {
+        ID2D1RenderTarget* pRT = nullptr;
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        size_t lineCount = 0;
+        std::wstring docExt;
+        float minimapW = 0.0f;
+        float miniH = 0.0f;
+        float dpiScale = 1.0f;
+        uint64_t themeSig = 0;
+        Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+    };
+    std::vector<MinimapBitmapCacheEntry> m_minimapBitmapCache;
+
+    struct MinimapSearchMatchCacheEntry {
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        std::wstring query;
+        bool matchCase = false;
+        std::vector<size_t> matchLines;
+    };
+    std::vector<MinimapSearchMatchCacheEntry> m_minimapSearchCache;
     StructuredViewRenderer m_structuredRenderer;
 
     // #35 Cached inline unified diff rows (avoids 60fps re-diff allocations, bounded to 50000 rows)

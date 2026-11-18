@@ -52,10 +52,114 @@ static std::wstring EscapeBashSingleQuoted(const std::wstring& s) {
     return out;
 }
 
+static std::wstring GetPhideExeDirForTerminal() {
+    wchar_t exePath[MAX_PATH] = {0};
+    if (GetModuleFileNameW(NULL, exePath, MAX_PATH) == 0) return L"";
+    std::filesystem::path p(exePath);
+    return p.has_parent_path() ? p.parent_path().wstring() : L"";
+}
+
+static std::wstring ResolveGhExeForTerminal() {
+    wchar_t found[MAX_PATH] = {0};
+    if (SearchPathW(NULL, L"gh.exe", NULL, MAX_PATH, found, NULL) > 0) {
+        return found;
+    }
+
+    std::vector<std::wstring> candidates;
+    std::wstring exeDir = GetPhideExeDirForTerminal();
+    if (!exeDir.empty()) {
+        candidates.push_back(exeDir + L"\\runtimes\\gh\\bin\\gh.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\gh\\gh.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\gh\\bin\\gh.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\gh\\gh.exe");
+    }
+    candidates.push_back(L"C:\\Program Files\\GitHub CLI\\gh.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe");
+    candidates.push_back(L"C:\\ProgramData\\chocolatey\\bin\\gh.exe");
+    wchar_t buf[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\gh.exe");
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\bin\\gh.exe");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\gh.exe");
+    }
+    for (const auto& candidate : candidates) {
+        DWORD attrs = GetFileAttributesW(candidate.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            return candidate;
+        }
+    }
+    return L"";
+}
+
+static std::wstring ResolveGitExeForTerminal() {
+    wchar_t found[MAX_PATH] = {0};
+    if (SearchPathW(NULL, L"git.exe", NULL, MAX_PATH, found, NULL) > 0) {
+        return found;
+    }
+
+    std::vector<std::wstring> candidates;
+    std::wstring exeDir = GetPhideExeDirForTerminal();
+    if (!exeDir.empty()) {
+        candidates.push_back(exeDir + L"\\runtimes\\git\\cmd\\git.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\git\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\runtimes\\git\\mingw64\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\cmd\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\bin\\git.exe");
+        candidates.push_back(exeDir + L"\\..\\runtimes\\git\\mingw64\\bin\\git.exe");
+    }
+    candidates.push_back(L"C:\\Program Files\\Git\\cmd\\git.exe");
+    candidates.push_back(L"C:\\Program Files\\Git\\bin\\git.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\Git\\cmd\\git.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\Git\\bin\\git.exe");
+    wchar_t buf[MAX_PATH] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\Git\\cmd\\git.exe");
+        candidates.push_back(std::wstring(buf) + L"\\Programs\\Git\\bin\\git.exe");
+    }
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\git.exe");
+    }
+    for (const auto& candidate : candidates) {
+        DWORD attrs = GetFileAttributesW(candidate.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            return candidate;
+        }
+    }
+    return L"";
+}
+
+static void AppendDirToPathSafely(std::wstring& pathVal, const std::wstring& rawDir) {
+    if (rawDir.empty()) return;
+    std::error_code ec;
+    std::filesystem::path normPath = std::filesystem::weakly_canonical(std::filesystem::path(rawDir), ec);
+    std::wstring dir = ec ? rawDir : normPath.wstring();
+    while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    if (dir.empty()) return;
+    DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return;
+
+    size_t start = 0;
+    while (start <= pathVal.size()) {
+        size_t semi = pathVal.find(L';', start);
+        std::wstring seg = (semi == std::wstring::npos) ? pathVal.substr(start) : pathVal.substr(start, semi - start);
+        while (!seg.empty() && (seg.back() == L'\\' || seg.back() == L'/')) seg.pop_back();
+        if (!seg.empty() && _wcsicmp(seg.c_str(), dir.c_str()) == 0) {
+            return; // already in PATH
+        }
+        if (semi == std::wstring::npos) break;
+        start = semi + 1;
+    }
+    if (!pathVal.empty() && pathVal.back() != L';') pathVal.push_back(L';');
+    pathVal += dir;
+}
+
 static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
     std::vector<std::pair<std::wstring, std::wstring>> vars;
     bool hasTerm = false;
     bool hasColorTerm = false;
+    int pathIdx = -1;
     LPWCH rawEnv = GetEnvironmentStringsW();
     if (rawEnv) {
         const wchar_t* cur = rawEnv;
@@ -74,9 +178,43 @@ static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
             }
             if (_wcsicmp(key.c_str(), L"TERM") == 0) hasTerm = true;
             if (_wcsicmp(key.c_str(), L"COLORTERM") == 0) hasColorTerm = true;
+            if (_wcsicmp(key.c_str(), L"PATH") == 0) pathIdx = static_cast<int>(vars.size());
             vars.emplace_back(std::move(key), entry.substr(eqPos + 1));
         }
         FreeEnvironmentStringsW(rawEnv);
+    }
+
+    if (pathIdx < 0) {
+        pathIdx = static_cast<int>(vars.size());
+        vars.emplace_back(L"PATH", L"");
+    }
+    {
+        std::wstring& pathVal = vars[pathIdx].second;
+        std::wstring exeDir = GetPhideExeDirForTerminal();
+        if (!exeDir.empty()) {
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\git\\cmd");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\git\\bin");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\gh\\bin");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\gh");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\php");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\runtimes\\mysql\\bin");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\git\\cmd");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\git\\bin");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\gh\\bin");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\gh");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\php");
+            AppendDirToPathSafely(pathVal, exeDir + L"\\..\\runtimes\\mysql\\bin");
+        }
+        std::wstring gitExe = ResolveGitExeForTerminal();
+        if (!gitExe.empty()) {
+            std::filesystem::path gp(gitExe);
+            if (gp.has_parent_path()) AppendDirToPathSafely(pathVal, gp.parent_path().wstring());
+        }
+        std::wstring ghExe = ResolveGhExeForTerminal();
+        if (!ghExe.empty()) {
+            std::filesystem::path ghp(ghExe);
+            if (ghp.has_parent_path()) AppendDirToPathSafely(pathVal, ghp.parent_path().wstring());
+        }
     }
 
     if (!hasTerm) {
@@ -101,33 +239,6 @@ static std::vector<wchar_t> BuildCleanTerminalEnvBlock() {
     }
     block.push_back(L'\0');
     return block;
-}
-
-static std::wstring ResolveGhExeForTerminal() {
-    wchar_t found[MAX_PATH] = {0};
-    if (SearchPathW(NULL, L"gh.exe", NULL, MAX_PATH, found, NULL) > 0) {
-        return found;
-    }
-
-    std::vector<std::wstring> candidates = {
-        L"C:\\Program Files\\GitHub CLI\\gh.exe",
-        L"C:\\Program Files (x86)\\GitHub CLI\\gh.exe",
-        L"C:\\ProgramData\\chocolatey\\bin\\gh.exe"
-    };
-    wchar_t buf[MAX_PATH] = {0};
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf))) {
-        candidates.push_back(std::wstring(buf) + L"\\Programs\\GitHub CLI\\gh.exe");
-    }
-    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
-        candidates.push_back(std::wstring(buf) + L"\\scoop\\shims\\gh.exe");
-    }
-    for (const auto& candidate : candidates) {
-        DWORD attrs = GetFileAttributesW(candidate.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-            return candidate;
-        }
-    }
-    return L"";
 }
 
 static std::wstring ReadGitHubUserFromHostsYml() {
@@ -1327,11 +1438,11 @@ void TerminalPanel::EnsureDebugBrushes(ID2D1RenderTarget* pRT, const Theme& them
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.45f, 0.47f, 0.52f, 0.55f) : D2D1::ColorF(0.55f, 0.57f, 0.62f, 0.55f), &m_pDbgDimBrush);
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.085f, 0.095f, 0.120f, 1.0f) : D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f), &m_pDbgBgBrush);
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.125f, 0.140f, 0.175f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f), &m_pDbgSecBgBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 0.98f, 1.0f), &m_pDbgAccentBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f), &m_pDbgGreenBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f), &m_pDbgRedBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f), &m_pDbgAmberBrush);
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f), &m_pDbgCyanBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.24f, 0.66f, 0.98f, 1.0f) : D2D1::ColorF(0.00f, 0.40f, 0.85f, 1.0f), &m_pDbgAccentBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.20f, 0.82f, 0.50f, 1.0f) : D2D1::ColorF(0.08f, 0.52f, 0.25f, 1.0f), &m_pDbgGreenBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.92f, 0.34f, 0.34f, 1.0f) : D2D1::ColorF(0.75f, 0.15f, 0.15f, 1.0f), &m_pDbgRedBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.95f, 0.74f, 0.22f, 1.0f) : D2D1::ColorF(0.72f, 0.42f, 0.02f, 1.0f), &m_pDbgAmberBrush);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.45f, 0.82f, 0.96f, 1.0f) : D2D1::ColorF(0.02f, 0.42f, 0.68f, 1.0f), &m_pDbgCyanBrush);
     pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.20f, 0.25f, 1.0f) : D2D1::ColorF(0.84f, 0.87f, 0.92f, 1.0f), &m_pDbgBtnBrush);
 }
 
@@ -2110,7 +2221,14 @@ void TerminalPanel::StartShellProcess(TerminalTab& tab) {
     } else if (tab.shellType == TerminalShellType::Cmd) {
         cmd = L"cmd.exe /K";
     } else if (tab.shellType == TerminalShellType::GitBash) {
-        if (std::filesystem::exists(L"C:\\Program Files\\Git\\bin\\bash.exe")) {
+        std::wstring exeDir = GetPhideExeDirForTerminal();
+        std::wstring bundledBash1 = exeDir.empty() ? L"" : (exeDir + L"\\runtimes\\git\\bin\\bash.exe");
+        std::wstring bundledBash2 = exeDir.empty() ? L"" : (exeDir + L"\\..\\runtimes\\git\\bin\\bash.exe");
+        if (!bundledBash1.empty() && std::filesystem::exists(bundledBash1)) {
+            cmd = L"\"" + bundledBash1 + L"\" --login -i";
+        } else if (!bundledBash2.empty() && std::filesystem::exists(bundledBash2)) {
+            cmd = L"\"" + bundledBash2 + L"\" --login -i";
+        } else if (std::filesystem::exists(L"C:\\Program Files\\Git\\bin\\bash.exe")) {
             cmd = L"\"C:\\Program Files\\Git\\bin\\bash.exe\" --login -i";
         } else if (std::filesystem::exists(L"C:\\Program Files (x86)\\Git\\bin\\bash.exe")) {
             cmd = L"\"C:\\Program Files (x86)\\Git\\bin\\bash.exe\" --login -i";
@@ -3393,7 +3511,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     if (isDebugConsole) {
         D2D1_RECT_F rcToolbar = D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.top + debugBarH);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> barBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.11f, 0.14f, 0.95f), &barBg);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.10f, 0.11f, 0.14f, 0.95f) : D2D1::ColorF(0.92f, 0.94f, 0.96f, 0.98f), &barBg);
         pRT->FillRectangle(rcToolbar, barBg.Get());
         pRT->DrawLine(D2D1::Point2F(bounds.left, bounds.top + debugBarH),
                       D2D1::Point2F(bounds.right, bounds.top + debugBarH),
@@ -3540,6 +3658,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             std::wstring waitMsg = L"Connecting remote session (" + tab->title + L")...";
             D2D1_RECT_F rcWait = D2D1::RectF(bounds.left + padX, curY, bounds.right - padX, curY + lineH);
             pRT->DrawText(waitMsg.c_str(), static_cast<UINT32>(waitMsg.size()), termFmt, rcWait, theme.brushTextSecondary.Get());
+            pRT->PopAxisAlignedClip();
             return;
         }
     }
@@ -3782,13 +3901,13 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
     if (isDebugConsole) {
         D2D1_RECT_F rcEval = D2D1::RectF(bounds.left, bounds.bottom - debugEvalH, bounds.right, bounds.bottom);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> evalBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.12f, 0.98f), &evalBg);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.09f, 0.12f, 0.98f) : D2D1::ColorF(0.94f, 0.955f, 0.975f, 0.98f), &evalBg);
         pRT->FillRectangle(rcEval, evalBg.Get());
         pRT->DrawLine(D2D1::Point2F(bounds.left, rcEval.top), D2D1::Point2F(bounds.right, rcEval.top), theme.brushBorderSubtle.Get(), 0.8f);
 
         // Prompt glyph "❯"
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> promptBrush;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.82f, 0.98f), &promptBrush);
+        pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.35f, 0.82f, 0.98f) : D2D1::ColorF(0.00f, 0.40f, 0.85f), &promptBrush);
         pRT->DrawText(L"❯", 1, termFmt,
                       D2D1::RectF(rcEval.left + config.ScaleF(10.0f), rcEval.top + config.ScaleF(4.0f),
                                  rcEval.left + config.ScaleF(24.0f), rcEval.bottom),
@@ -3805,7 +3924,7 @@ void TerminalPanel::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const
             pRT->DrawText(tab->currentInputLine.c_str(), static_cast<UINT32>(tab->currentInputLine.length()),
                           termFmt,
                           D2D1::RectF(textStartX, rcEval.top + config.ScaleF(4.0f), rcEval.right - config.ScaleF(10.0f), rcEval.bottom),
-                          theme.brushTextWhite.Get());
+                          theme.brushTextPrimary.Get());
 
             // Blinking caret
             int safeCursorCol = (std::max)(0, (std::min)(tab->inputCursorCol, static_cast<int>(tab->currentInputLine.length())));
@@ -4321,7 +4440,7 @@ void TerminalPanel::RenderDebugInspector(ID2D1RenderTarget* pRT, Theme& theme, c
     const auto& brCyan = m_pDbgCyanBrush;
     const auto& brBtn = m_pDbgBtnBrush;
 
-    ID2D1Brush* textPrimary = theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get();
+    ID2D1Brush* textPrimary = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
     ID2D1Brush* textMuted = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrimary;
     IDWriteTextFormat* fHdr = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontCode.Get();
     IDWriteTextFormat* fSmall = theme.fontHint ? theme.fontHint.Get() : (theme.fontTerminal ? theme.fontTerminal.Get() : theme.fontCode.Get());

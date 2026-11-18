@@ -1880,10 +1880,10 @@ void SnippetManager::LoadDefaults() {
         L"php",
         {
             L"<?php",
-            L"",
-            L"$0"
+            L"$0",
+            L"?>"
         },
-        L"PHP opening tag skeleton",
+        L"PHP opening and closing tag block",
         L"php"
     });
 
@@ -2616,6 +2616,12 @@ bool SnippetManager::TryExpand(Buffer& buffer, const std::wstring& fileExt, cons
     std::wstring prefix = line.substr(startCol, cursor.col - startCol);
     const Snippet* pMatch = FindSnippetByPrefix(prefix, fileExt);
     if (!pMatch) return false;
+
+    // Do not re-expand an open-tag snippet like "php" -> "<?php...?>" when the user already typed "<?php"
+    if (!pMatch->body.empty() && pMatch->body[0].rfind(L"<?", 0) == 0 &&
+        startCol >= 2 && line[startCol - 2] == L'<' && line[startCol - 1] == L'?') {
+        return false;
+    }
 
     return ExpandSnippet(*pMatch, buffer, prefix.length(), filename);
 }

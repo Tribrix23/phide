@@ -2987,6 +2987,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
     std::unordered_set<std::wstring> importedSymbols;
     std::unordered_set<std::wstring> definedSymbols;
+    bool hasReactImport = false;
 
     for (size_t l = 0; l < lineCount; ++l) {
         const std::wstring& rawLine = buffer.GetLine(l);
@@ -2994,6 +2995,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         while (s < rawLine.length() && iswspace(rawLine[s])) s++;
         if (s >= rawLine.length()) continue;
         std::wstring line = rawLine.substr(s);
+
+        if ((line.starts_with(L"import ") || line.starts_with(L"import{") || line.find(L"require(") != std::wstring::npos) &&
+            (line.find(L"'react'") != std::wstring::npos || line.find(L"\"react\"") != std::wstring::npos)) {
+            hasReactImport = true;
+        }
 
         if (line.starts_with(L"import ") || line.starts_with(L"import{")) {
             size_t bOpen = line.find(L'{');
@@ -3092,6 +3098,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         extractDecl(L"function ");
     }
 
+    const bool checkReactComponents = isJsx || hasReactImport;
     int conditionDepth = 0;
     int loopDepth = 0;
     std::vector<int> controlStack; // 1 = condition (if/else/switch), 2 = loop (for/while)
@@ -3219,24 +3226,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         };
 
         // 0. Component Declaration Detection: accurate identification of function Comp() or const Comp = ...
-        size_t fnPos = cleanCode.find(L"function ");
-        if (fnPos != std::wstring::npos) {
-            size_t nameStart = fnPos + 9;
-            while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
-            size_t nameEnd = nameStart;
-            while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
-            if (nameEnd > nameStart) {
-                std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
-                if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
-                    componentStack.push_back({ compName, l, 0, 0, false, false, false });
-                }
-            }
-        } else if ((cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) &&
-                   cleanCode.find(L"=>") != std::wstring::npos) {
-            size_t varPos = cleanCode.find(L"const ");
-            if (varPos == std::wstring::npos) varPos = cleanCode.find(L"let ");
-            if (varPos != std::wstring::npos) {
-                size_t nameStart = varPos + (cleanCode.substr(varPos, 4) == L"let " ? 4 : 6);
+        if (checkReactComponents) {
+            size_t fnPos = cleanCode.find(L"function ");
+            if (fnPos != std::wstring::npos) {
+                size_t nameStart = fnPos + 9;
                 while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
                 size_t nameEnd = nameStart;
                 while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
@@ -3244,6 +3237,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
                     if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
                         componentStack.push_back({ compName, l, 0, 0, false, false, false });
+                    }
+                }
+            } else if ((cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) &&
+                       cleanCode.find(L"=>") != std::wstring::npos) {
+                size_t varPos = cleanCode.find(L"const ");
+                if (varPos == std::wstring::npos) varPos = cleanCode.find(L"let ");
+                if (varPos != std::wstring::npos) {
+                    size_t nameStart = varPos + (cleanCode.substr(varPos, 4) == L"let " ? 4 : 6);
+                    while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
+                    size_t nameEnd = nameStart;
+                    while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
+                    if (nameEnd > nameStart) {
+                        std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
+                        if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
+                            componentStack.push_back({ compName, l, 0, 0, false, false, false });
+                        }
                     }
                 }
             }
@@ -3357,14 +3366,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                         componentStack.back().hasReturnedValue = true;
                     }
                 } else {
-                    std::wstring compName = componentStack.empty() ? L"Component" : componentStack.back().name;
-                    lsp::Diagnostic diag;
-                    diag.line = l;
-                    diag.col = retPos;
-                    diag.length = 6;
-                    diag.message = L"Component '" + compName + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
-                    diag.severity = 1; // Error
-                    diagnostics.push_back(std::move(diag));
+                    if (checkReactComponents && !componentStack.empty()) {
+                        lsp::Diagnostic diag;
+                        diag.line = l;
+                        diag.col = retPos;
+                        diag.length = 6;
+                        diag.message = L"Component '" + componentStack.back().name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                        diag.severity = 1; // Error
+                        diagnostics.push_back(std::move(diag));
+                    }
 
                     if (!hasSemi) {
                         lsp::Diagnostic semiDiag;

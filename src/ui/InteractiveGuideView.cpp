@@ -165,10 +165,11 @@ void InteractiveGuideView::DrawKeycapBadge(ID2D1RenderTarget* pRT, Theme& theme,
 
     // Dark neutral badge (NEVER purple!)
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcBadge, 3.5f, 3.5f);
+    const bool isDark = theme.IsDarkMode();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.20f, 1.0f), &pBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.18f, 0.18f, 0.20f, 1.0f) : D2D1::ColorF(0.90f, 0.92f, 0.95f, 1.0f), &pBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBorder;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f), &pBorder);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.28f, 0.28f, 0.32f, 1.0f) : D2D1::ColorF(0.75f, 0.79f, 0.85f, 1.0f), &pBorder);
 
     if (pBg) pRT->FillRoundedRectangle(rrc, pBg.Get());
     if (pBorder) pRT->DrawRoundedRectangle(rrc, pBorder.Get(), 1.0f);
@@ -219,10 +220,11 @@ void InteractiveGuideView::DrawCalloutBox(ID2D1RenderTarget* pRT, Theme& theme, 
     D2D1_ROUNDED_RECT rrcBox = D2D1::RoundedRect(rcBox, 4.0f, 4.0f);
 
     // Dark neutral callout background (NEVER purple!)
+    const bool isDark = theme.IsDarkMode();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCardBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &pCardBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(0.945f, 0.955f, 0.975f, 1.0f), &pCardBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCardBorder;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.25f, 1.0f), &pCardBorder);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.22f, 0.22f, 0.25f, 1.0f) : D2D1::ColorF(0.796f, 0.824f, 0.871f, 1.0f), &pCardBorder);
 
     if (pCardBg) pRT->FillRoundedRectangle(rrcBox, pCardBg.Get());
     if (pCardBorder) pRT->DrawRoundedRectangle(rrcBox, pCardBorder.Get(), 1.0f);
@@ -270,12 +272,13 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
     ed.codeAreaBounds = D2D1::RectF(x + gutterW + config.ScaleF(12.0f), y + padY, x + width - config.ScaleF(12.0f), y + totalEditorH - padY);
 
     // 1. Editor Container Background (Authentic dark neutral editor charcoal, NEVER purple!)
+    const bool isDark = theme.IsDarkMode();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pEditorBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pEditorBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f) : D2D1::ColorF(0.988f, 0.992f, 0.996f, 1.0f), &pEditorBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pGutterBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.07f, 0.07f, 0.08f, 1.0f), &pGutterBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.07f, 0.07f, 0.08f, 1.0f) : D2D1::ColorF(0.945f, 0.955f, 0.973f, 1.0f), &pGutterBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pBorderNorm;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f), &pBorderNorm);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f) : D2D1::ColorF(0.796f, 0.824f, 0.871f, 1.0f), &pBorderNorm);
 
     D2D1_ROUNDED_RECT rrcEditor = D2D1::RoundedRect(ed.bounds, 4.0f, 4.0f);
     if (pEditorBg) pRT->FillRoundedRectangle(rrcEditor, pEditorBg.Get());
@@ -301,7 +304,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
         if (ed.isFocused && l == ed.doc.buffer.GetCursor().line) {
             D2D1_RECT_F rcActiveLine = D2D1::RectF(x + gutterW + 1.0f, ly, x + width - 1.0f, ly + lineH);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pActiveBg;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.16f, 0.8f), &pActiveBg);
+            pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.14f, 0.14f, 0.16f, 0.8f) : D2D1::ColorF(0.92f, 0.945f, 0.985f, 0.9f), &pActiveBg);
             if (pActiveBg) pRT->FillRectangle(rcActiveLine, pActiveBg.Get());
         }
 
@@ -393,7 +396,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                 // Cover brackets text with clean widget only if inline
                 if (!isMarginCheckbox && coverChars > 0) {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pCoverBrush;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pCoverBrush);
+                    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f) : D2D1::ColorF(0.988f, 0.992f, 0.996f, 1.0f), &pCoverBrush);
                     D2D1_RECT_F rcCover = D2D1::RectF(cbX - 1.0f, ly, cbX + coverChars * charW + 1.0f, ly + lineH);
                     if (pCoverBrush) pRT->FillRectangle(rcCover, pCoverBrush.Get());
                 }
@@ -442,7 +445,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
                 pRT->CreateSolidColorBrush(sw.color, &pSwBrush);
                 if (pSwBrush) {
                     pRT->FillRoundedRectangle(rrcSw, pSwBrush.Get());
-                    pRT->DrawRoundedRectangle(rrcSw, theme.brushTextWhite.Get(), 0.8f);
+                    pRT->DrawRoundedRectangle(rrcSw, isDark ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get(), 0.8f);
                 }
             }
         }
@@ -507,7 +510,7 @@ void InteractiveGuideView::RenderEditorBlock(ID2D1RenderTarget* pRT, Theme& them
 
         // Elevated dark card background (NEVER purple!)
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pPopBg;
-        pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f), &pPopBg);
+        pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.98f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &pPopBg);
         if (pPopBg) pRT->FillRoundedRectangle(rrcPopup, pPopBg.Get());
         pRT->DrawRoundedRectangle(rrcPopup, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : pBorderNorm.Get(), 1.2f);
 
@@ -617,7 +620,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcTitle = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(38.0f));
     const wchar_t* titleStr = L"Interactive Guide";
     pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
-                  pTitleFmt, rcTitle, theme.brushTextWhite.Get());
+                  pTitleFmt, rcTitle, theme.brushTextPrimary.Get());
     curY += config.ScaleF(40.0f);
 
     const wchar_t* subStr = L"Explore and try out the powerful core features of Phide directly inside this interactive walkthrough. "
@@ -658,10 +661,11 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     const float cardW = (contentW - cardGap) / 2.0f;
     const float cardH = config.ScaleF(60.0f);
 
+    const bool isDark = theme.IsDarkMode();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pFeatCardBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &pFeatCardBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f) : D2D1::ColorF(0.945f, 0.955f, 0.975f, 1.0f), &pFeatCardBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pFeatCardBorder;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.23f, 1.0f), &pFeatCardBorder);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.20f, 0.20f, 0.23f, 1.0f) : D2D1::ColorF(0.796f, 0.824f, 0.871f, 1.0f), &pFeatCardBorder);
 
     for (size_t i = 0; i < 8; ++i) {
         float cx = contentLeft + (i % 2) * (cardW + cardGap);
@@ -692,7 +696,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec1Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec1Title = L"Multi-Cursor Editing";
     pRT->DrawText(sec1Title, static_cast<UINT32>(wcslen(sec1Title)),
-                  pHeadingFmt, rcSec1Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec1Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec1Desc = L"Using multiple cursors allows you to edit multiple parts of the document at once, greatly improving your productivity. Try the following actions in the live editor below:";
@@ -735,7 +739,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec2Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec2Title = L"IntelliSense";
     pRT->DrawText(sec2Title, static_cast<UINT32>(wcslen(sec2Title)),
-                  pHeadingFmt, rcSec2Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec2Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec2Desc = L"Phide comes with powerful IntelliSense for JavaScript, TypeScript, PHP, Python, and Web APIs pre-installed. In the live editor below, position the text cursor right after the dot and press Ctrl+Space to invoke working IntelliSense. Suggestions filter live as you type!";
@@ -763,7 +767,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec3Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec3Title = L"Predictive Autocomplete & Adaptive Learning";
     pRT->DrawText(sec3Title, static_cast<UINT32>(wcslen(sec3Title)),
-                  pHeadingFmt, rcSec3Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec3Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec3Desc = L"Phide features an adaptive predictive engine that continuously learns from your coding context and project patterns. Subtly rendered ghost text appears ahead of your cursor to autocomplete entire expressions, methods, or statements.";
@@ -791,7 +795,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec4Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec4Title = L"Interactive Task Checkboxes";
     pRT->DrawText(sec4Title, static_cast<UINT32>(wcslen(sec4Title)),
-                  pHeadingFmt, rcSec4Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec4Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec4Desc = L"In Phide, project tasks are written directly in code comments starting with `// [ ] TASK` or `// [x] TASK` or `// TASK`. In the live editor below, click on any checkbox to toggle its completed state, or type `// TASK ...` to create new interactive checkboxes live:";
@@ -819,7 +823,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec5Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec5Title = L"Built-in API Tester";
     pRT->DrawText(sec5Title, static_cast<UINT32>(wcslen(sec5Title)),
-                  pHeadingFmt, rcSec5Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec5Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec5Desc = L"Test REST, SSE streaming, and GraphQL APIs directly inside Phide without switching to external tools. Inspect live responses, response timing breakdowns (DNS, TCP, SSL, TTFB), and copy payloads with a single click.";
@@ -833,9 +837,9 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcApiCard = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + apiCardH);
     D2D1_ROUNDED_RECT rrcApiCard = D2D1::RoundedRect(rcApiCard, 4.0f, 4.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pApiCardBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f), &pApiCardBg);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.09f, 0.09f, 0.10f, 1.0f) : D2D1::ColorF(0.945f, 0.955f, 0.975f, 1.0f), &pApiCardBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pApiCardBorder;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f), &pApiCardBorder);
+    pRT->CreateSolidColorBrush(isDark ? D2D1::ColorF(0.20f, 0.20f, 0.22f, 1.0f) : D2D1::ColorF(0.796f, 0.824f, 0.871f, 1.0f), &pApiCardBorder);
 
     if (pApiCardBg) pRT->FillRoundedRectangle(rrcApiCard, pApiCardBg.Get());
     if (pApiCardBorder) pRT->DrawRoundedRectangle(rrcApiCard, pApiCardBorder.Get(), 1.0f);
@@ -885,7 +889,7 @@ void InteractiveGuideView::Render(ID2D1RenderTarget* pRT, Theme& theme, const ap
     D2D1_RECT_F rcSec6Title = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + config.ScaleF(28.0f));
     const wchar_t* sec6Title = L"Zen Mode & Extensibility";
     pRT->DrawText(sec6Title, static_cast<UINT32>(wcslen(sec6Title)),
-                  pHeadingFmt, rcSec6Title, theme.brushTextWhite.Get());
+                  pHeadingFmt, rcSec6Title, theme.brushTextPrimary.Get());
     curY += config.ScaleF(32.0f);
 
     const wchar_t* sec6Desc = L"Maximize your screen real estate and eliminate distractions with Zen Mode [Ctrl+K Z] and Centered Layout. Phide also features a comprehensive extension and plugin architecture for themes, formatters, and language servers.";

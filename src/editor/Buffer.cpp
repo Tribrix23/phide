@@ -21,6 +21,31 @@ namespace phide::editor {
 
 namespace {
 std::atomic<uint64_t> g_defaultMmapThresholdBytes{ Buffer::kMemoryMappedThresholdBytes };
+std::atomic<uint64_t> g_nextBufferInstanceId{ 1 };
+}
+
+Buffer::BufferIdentity::BufferIdentity()
+    : id(g_nextBufferInstanceId.fetch_add(1, std::memory_order_relaxed)) {}
+
+Buffer::BufferIdentity::BufferIdentity(const BufferIdentity&)
+    : id(g_nextBufferInstanceId.fetch_add(1, std::memory_order_relaxed)) {}
+
+Buffer::BufferIdentity& Buffer::BufferIdentity::operator=(const BufferIdentity&) {
+    id = g_nextBufferInstanceId.fetch_add(1, std::memory_order_relaxed);
+    return *this;
+}
+
+Buffer::BufferIdentity::BufferIdentity(BufferIdentity&& other) noexcept
+    : id(other.id) {
+    other.id = g_nextBufferInstanceId.fetch_add(1, std::memory_order_relaxed);
+}
+
+Buffer::BufferIdentity& Buffer::BufferIdentity::operator=(BufferIdentity&& other) noexcept {
+    if (this != &other) {
+        id = other.id;
+        other.id = g_nextBufferInstanceId.fetch_add(1, std::memory_order_relaxed);
+    }
+    return *this;
 }
 
 void Buffer::SetDefaultMemoryMappedThresholdMB(int mb) noexcept {
@@ -796,7 +821,8 @@ Buffer::~Buffer() {
 }
 
 Buffer::Buffer(Buffer&& other) noexcept
-    : m_lines(std::move(other.m_lines)),
+    : m_identity(std::move(other.m_identity)),
+      m_lines(std::move(other.m_lines)),
       m_mappedState(std::move(other.m_mappedState)),
       m_mappedLineCount(other.m_mappedLineCount),
       m_mappedByteSize(other.m_mappedByteSize),
@@ -839,6 +865,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     s_undoCoalesceMap.erase(&other);
     s_undoCoalesceMap.erase(this);
     CloseFileMapping();
+    m_identity = std::move(other.m_identity);
     m_lines = std::move(other.m_lines);
     m_mappedState = std::move(other.m_mappedState);
     m_mappedLineCount = other.m_mappedLineCount;
@@ -970,23 +997,35 @@ bool Buffer::CanUndo() const noexcept {
            (m_hasPendingUndo && (m_version != m_pendingUndoVersion || m_lineEnding != m_pendingUndoLineEnding));
 }
 
-void Buffer::RunGarbageCollection() {
+void Buffer::RunGarbageCollection(bool clearTokenCache) {
     s_undoCoalesceMap.erase(this);
     CommitPendingUndo();
     EnforceUndoBudget();
-    m_lines.shrink_to_fit();
-    for (auto& l : m_lines) l.shrink_to_fit();
+    if (m_lines.capacity() > m_lines.size() + 256) {
+        m_lines.shrink_to_fit();
+    }
+    for (auto& l : m_lines) {
+        if (l.capacity() > l.size() + 128 && l.capacity() > l.size() * 2) {
+            l.shrink_to_fit();
+        }
+    }
     m_undoStack.shrink_to_fit();
     for (auto& h : m_undoStack) {
         h.beforeLines.shrink_to_fit();
-        for (auto& l : h.beforeLines) l.shrink_to_fit();
+        for (auto& l : h.beforeLines) {
+            if (l.capacity() > l.size() + 64) l.shrink_to_fit();
+        }
     }
     m_redoStack.shrink_to_fit();
     for (auto& h : m_redoStack) {
         h.beforeLines.shrink_to_fit();
-        for (auto& l : h.beforeLines) l.shrink_to_fit();
+        for (auto& l : h.beforeLines) {
+            if (l.capacity() > l.size() + 64) l.shrink_to_fit();
+        }
     }
-    m_tokenCache.clear();
+    if (clearTokenCache || m_tokenCache.size() > 8192) {
+        m_tokenCache.clear();
+    }
     m_lineEntryStates.shrink_to_fit();
 }
 
@@ -1204,14 +1243,24 @@ const std::wstring& Buffer::GetLine(size_t lineIdx) const {
 }
 
 std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wstring& ext) const {
+    return GetTokensForLineRef(lineIdx, ext);
+}
+
+const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, const std::wstring& ext) const {
+    static const std::vector<SyntaxToken> kEmptyTokens;
     if (m_mappedState) {
-        if (lineIdx >= m_mappedLineCount) return {};
+        if (lineIdx >= m_mappedLineCount) return kEmptyTokens;
         const std::wstring& mappedLine = GetLine(lineIdx);
-        if (mappedLine.empty() || mappedLine.length() > 8192) return {};
-        return m_lexer.TokenizeLine(mappedLine, ext);
+        if (mappedLine.empty()) return kEmptyTokens;
+        if (mappedLine.length() > 8192) {
+            m_mmapTokenScratch = m_lexer.TokenizeLine(mappedLine.substr(0, 8192), ext);
+        } else {
+            m_mmapTokenScratch = m_lexer.TokenizeLine(mappedLine, ext);
+        }
+        return m_mmapTokenScratch;
     }
     if (lineIdx >= m_lines.size()) {
-        return {};
+        return kEmptyTokens;
     }
 
     const bool isPhp = (ext == L".php" || ext == L"php");
@@ -1236,7 +1285,7 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
             }
             m_lineEntryStates[l] = newState;
             const auto& prevLine = m_lines[l];
-            size_t len = prevLine.length();
+            size_t len = (std::min)(prevLine.length(), static_cast<size_t>(16384));
             for (size_t i = 0; i < len; ++i) {
                 wchar_t c = prevLine[i];
                 if (inBlock) {
@@ -1286,19 +1335,21 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
     const auto& line = m_lines[lineIdx];
     size_t len = line.length();
     if (len == 0) {
-        return {};
+        return kEmptyTokens;
     }
+    const bool isHugeLine = (len > 8192);
+    const size_t lexLen = isHugeLine ? static_cast<size_t>(8192) : len;
 
     std::vector<SyntaxToken> resultTokens;
     if (inBlockComment) {
         size_t closePos = line.find(L"*/");
-        if (closePos == std::wstring::npos) {
+        if (closePos == std::wstring::npos || closePos >= lexLen) {
             resultTokens = { { TokenType::Comment, 0, len } };
         } else {
             size_t afterComment = closePos + 2;
             resultTokens.push_back({ TokenType::Comment, 0, afterComment });
-            if (afterComment < len) {
-                auto rest = m_lexer.TokenizeLine(line.substr(afterComment), ext);
+            if (afterComment < lexLen) {
+                auto rest = m_lexer.TokenizeLine(line.substr(afterComment, lexLen - afterComment), ext);
                 for (auto& t : rest) {
                     t.startCol += afterComment;
                     resultTokens.push_back(t);
@@ -1309,18 +1360,18 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
         size_t segStart = 0;
         size_t i = 0;
         bool closed = false;
-        while (i < len) {
-            if (line[i] == L'\\' && i + 1 < len) {
+        while (i < lexLen) {
+            if (line[i] == L'\\' && i + 1 < lexLen) {
                 i += 2;
                 continue;
             }
-            if (isPhp && inMultiLineQuote == L'"' && line[i] == L'$' && i + 1 < len && (iswalpha(line[i + 1]) || line[i + 1] == L'_')) {
+            if (isPhp && inMultiLineQuote == L'"' && line[i] == L'$' && i + 1 < lexLen && (iswalpha(line[i + 1]) || line[i + 1] == L'_')) {
                 if (i > segStart) {
                     resultTokens.push_back({ TokenType::String, segStart, i - segStart });
                 }
                 size_t varStart = i;
                 ++i;
-                while (i < len && (iswalnum(line[i]) || line[i] == L'_')) {
+                while (i < lexLen && (iswalnum(line[i]) || line[i] == L'_')) {
                     ++i;
                 }
                 resultTokens.push_back({ TokenType::Attribute, varStart, i - varStart });
@@ -1336,22 +1387,22 @@ std::vector<SyntaxToken> Buffer::GetTokensForLine(size_t lineIdx, const std::wst
             ++i;
         }
         if (!closed) {
-            if (len > segStart) {
-                resultTokens.push_back({ TokenType::String, segStart, len - segStart });
+            if (lexLen > segStart) {
+                resultTokens.push_back({ TokenType::String, segStart, lexLen - segStart });
             }
-        } else if (i < len) {
-            auto rest = m_lexer.TokenizeLine(line.substr(i), ext);
+        } else if (i < lexLen) {
+            auto rest = m_lexer.TokenizeLine(line.substr(i, lexLen - i), ext);
             for (auto& t : rest) {
                 t.startCol += i;
                 resultTokens.push_back(t);
             }
         }
     } else {
-        resultTokens = m_lexer.TokenizeLine(line, ext);
+        resultTokens = isHugeLine ? m_lexer.TokenizeLine(line.substr(0, lexLen), ext) : m_lexer.TokenizeLine(line, ext);
     }
 
-    m_tokenCache.emplace(lineIdx, resultTokens);
-    return resultTokens;
+    auto [insIt, inserted] = m_tokenCache.emplace(lineIdx, std::move(resultTokens));
+    return insIt->second;
 }
 
 void Buffer::SetCursor(size_t line, size_t col) {
@@ -1591,6 +1642,7 @@ void Buffer::Clear() {
     m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    m_tokenCache.clear();
     ++m_version;
 }
 
@@ -1600,6 +1652,7 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
     if (m_lines.empty()) m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    m_tokenCache.clear();
     ++m_version;
 }
 
@@ -1641,6 +1694,7 @@ void Buffer::SetText(const std::wstring& text) {
     if (m_lines.empty()) m_lines.push_back(L"");
     m_cursor = { 0, 0 };
     m_isModified = false;
+    m_tokenCache.clear();
     ++m_version;
 }
 

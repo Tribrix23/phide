@@ -16,11 +16,11 @@
 ; General Configuration
 ; ------------------------------------------------------------------------------
 !define APP_NAME "Phide"
-!define APP_VERSION "2026.e"
+!define APP_VERSION "2026.e-a"
 
 Name "${APP_NAME} ${APP_VERSION}"
 BrandingText "${APP_NAME} ${APP_VERSION}"
-OutFile "output\phide-Setup-x64e.exe"
+OutFile "output\phide-Setup-x64e-a.exe"
 InstallDir "$PROGRAMFILES64\phide"
 InstallDirRegKey HKLM "Software\phide" "InstallDir"
 RequestExecutionLevel admin
@@ -395,15 +395,25 @@ check_phide_loop:
     ${EndIf}
 
     ; 5. PATH Environment Registration (if option checked)
+    ;    Note: Never use NSIS ReadRegStr/WriteRegExpandStr on HKLM\...\Path because
+    ;    NSIS truncates strings at 1024 chars (and returns "" on overflow), which would wipe PATH.
     ${If} $StatePath == ${BST_CHECKED}
-        DetailPrint "Registering phide and bundled PHP in PATH..."
-        ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-        ${If} $0 != ""
-            WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0;$INSTDIR;$INSTDIR\runtimes\php"
-        ${Else}
-            WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$INSTDIR;$INSTDIR\runtimes\php"
+        DetailPrint "Registering phide and bundled PHP, Git, and GitHub CLI in PATH..."
+        ${If} ${RunningX64}
+            ${DisableX64FSRedirection}
         ${EndIf}
-        SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=3000
+        System::Call 'kernel32::SetEnvironmentVariableW(w "PHIDE_INSTDIR", w "$INSTDIR")'
+        nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$i=$$env:PHIDE_INSTDIR;if(!$$i){exit 1};$$i=$$i.TrimEnd('\');$$k=[Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine','Registry64').OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment',$$true);if(!$$k){exit 1};$$c=$$k.GetValue('Path',$$null,'DoNotExpandEnvironmentNames');if($$null -eq $$c){$$k.Close();exit 1};$$p=@();foreach($$x in ($$c -split ';')){if($$x.Trim()){$$p+=$$x}};foreach($$t in @($$i,($$i+'\runtimes\php'),($$i+'\runtimes\git\cmd'),($$i+'\runtimes\gh\bin'),($$i+'\runtimes\gh'))){if(!($$p|Where-Object{$$_.Trim().TrimEnd('\') -ieq $$t})){$$p+=$$t}};$$k.SetValue('Path',($$p -join ';'),'ExpandString');$$k.Close()"`
+        Pop $0
+        Pop $1
+        ${If} ${RunningX64}
+            ${EnableX64FSRedirection}
+        ${EndIf}
+        ${If} $0 != 0
+            DetailPrint "Warning: Could not safely update system PATH (exit code $0); existing PATH was left unchanged."
+        ${Else}
+            SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=3000
+        ${EndIf}
     ${EndIf}
 
     ; 6. Context Menu - Open Folder as Project
@@ -474,7 +484,28 @@ SectionEnd
 ; ------------------------------------------------------------------------------
 ; Uninstallation Section
 ; ------------------------------------------------------------------------------
+Function un.onInit
+    ${If} ${RunningX64}
+        SetRegView 64
+    ${EndIf}
+FunctionEnd
+
 Section "Uninstall"
+    ; Remove phide and bundled PHP, Git, and GitHub CLI from system PATH safely (without 1024-char truncation)
+    ${If} ${RunningX64}
+        ${DisableX64FSRedirection}
+    ${EndIf}
+    System::Call 'kernel32::SetEnvironmentVariableW(w "PHIDE_INSTDIR", w "$INSTDIR")'
+    nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$i=$$env:PHIDE_INSTDIR;if(!$$i){exit 1};$$i=$$i.TrimEnd('\');$$rem=@($$i,($$i+'\runtimes\php'),($$i+'\runtimes\git\cmd'),($$i+'\runtimes\gh\bin'),($$i+'\runtimes\gh'));$$k=[Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine','Registry64').OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment',$$true);if(!$$k){exit 1};$$c=$$k.GetValue('Path',$$null,'DoNotExpandEnvironmentNames');if($$null -eq $$c){$$k.Close();exit 1};$$p=@();foreach($$x in ($$c -split ';')){$$t=$$x.Trim().TrimEnd('\');if($$t -and !($$rem|Where-Object{$$_ -ieq $$t})){$$p+=$$x}};$$k.SetValue('Path',($$p -join ';'),'ExpandString');$$k.Close()"`
+    Pop $0
+    Pop $1
+    ${If} ${RunningX64}
+        ${EnableX64FSRedirection}
+    ${EndIf}
+    ${If} $0 == 0
+        SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=3000
+    ${EndIf}
+
     ; Remove Desktop & Start Menu Shortcuts
     Delete "$DESKTOP\phide.lnk"
     RMDir /r "$SMPROGRAMS\phide"
