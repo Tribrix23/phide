@@ -1503,7 +1503,23 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                                 for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
                                 const std::wstring& endLineRef = buffer.GetLine(gtLine);
                                 bool isSelfClosing = (gtCol > 0 && endLineRef[gtCol - 1] == L'/') || (voidTags.count(tag) > 0);
-                                if (!isSelfClosing) {
+                                // Avoid misclassifying TypeScript generics (e.g. fn<Foo, Bar>(), useRef<any>()) as JSX elements
+                                bool looksLikeTsGeneric = false;
+                                if (gtLine == l) {
+                                    std::wstring slice = line.substr(c + 1, gtCol - (c + 1));
+                                    if (slice.find(L'=') == std::wstring::npos &&
+                                        (slice.find(L',') != std::wstring::npos || slice.find(L'|') != std::wstring::npos ||
+                                         slice.find(L'&') != std::wstring::npos || slice.find(L" extends ") != std::wstring::npos)) {
+                                        looksLikeTsGeneric = true;
+                                    }
+                                }
+                                size_t afterGt = gtCol + 1;
+                                while (afterGt < endLineRef.length() && iswspace(endLineRef[afterGt])) ++afterGt;
+                                if (afterGt < endLineRef.length() &&
+                                    (endLineRef[afterGt] == L'(' || endLineRef[afterGt] == L';' || endLineRef[afterGt] == L'.')) {
+                                    looksLikeTsGeneric = true;
+                                }
+                                if (!isSelfClosing && !looksLikeTsGeneric) {
                                     jsxTagStack.push_back(tag);
                                 }
                                 if (gtLine > l) {
@@ -1597,7 +1613,23 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
                                 for (size_t k = c + 1; k < tagEnd; ++k) tag.push_back(towlower(line[k]));
                                 const std::wstring& endLineRef = buffer.GetLine(gtLine);
                                 bool isSelfClosing = (gtCol > 0 && endLineRef[gtCol - 1] == L'/') || (voidTags.count(tag) > 0);
-                                if (!isSelfClosing) {
+                                // Avoid misclassifying TypeScript generics (e.g. fn<Foo, Bar>(), useRef<any>()) as JSX elements
+                                bool looksLikeTsGeneric = false;
+                                if (gtLine == l) {
+                                    std::wstring slice = line.substr(c + 1, gtCol - (c + 1));
+                                    if (slice.find(L'=') == std::wstring::npos &&
+                                        (slice.find(L',') != std::wstring::npos || slice.find(L'|') != std::wstring::npos ||
+                                         slice.find(L'&') != std::wstring::npos || slice.find(L" extends ") != std::wstring::npos)) {
+                                        looksLikeTsGeneric = true;
+                                    }
+                                }
+                                size_t afterGt = gtCol + 1;
+                                while (afterGt < endLineRef.length() && iswspace(endLineRef[afterGt])) ++afterGt;
+                                if (afterGt < endLineRef.length() &&
+                                    (endLineRef[afterGt] == L'(' || endLineRef[afterGt] == L';' || endLineRef[afterGt] == L'.')) {
+                                    looksLikeTsGeneric = true;
+                                }
+                                if (!isSelfClosing && !looksLikeTsGeneric) {
                                     jsxTagStack.push_back(tag);
                                 }
                                 if (gtLine > l) {
@@ -1744,15 +1776,95 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
 
     bool inComment = false;
     bool inPhp = false;
+    bool phpInSingleQuote = false;
+    bool phpInDoubleQuote = false;
+    bool phpInBacktick = false;
+    bool phpInBlockComment = false;
+    std::wstring phpHeredocEnd;
+
+    auto isAsciiIdentStart = [](wchar_t ch) noexcept -> bool {
+        return (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z');
+    };
+    auto isAsciiTagChar = [](wchar_t ch) noexcept -> bool {
+        return (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z') ||
+               (ch >= L'0' && ch <= L'9') || ch == L'-' || ch == L':' || ch == L'_' || ch == L'.';
+    };
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& curLineRef = buffer.GetLine(l);
+        // Check heredoc/nowdoc closing marker at start of line while inside PHP heredoc
+        if (inPhp && !phpHeredocEnd.empty()) {
+            size_t ws = 0;
+            while (ws < curLineRef.length() && (curLineRef[ws] == L' ' || curLineRef[ws] == L'\t')) ++ws;
+            if (curLineRef.compare(ws, phpHeredocEnd.length(), phpHeredocEnd) == 0) {
+                size_t after = ws + phpHeredocEnd.length();
+                if (after >= curLineRef.length() || curLineRef[after] == L';' || curLineRef[after] == L',' ||
+                    curLineRef[after] == L')' || iswspace(curLineRef[after])) {
+                    phpHeredocEnd.clear();
+                }
+            }
+            continue;
+        }
+
         for (size_t c = 0; l < buffer.GetLineCount() && c < buffer.GetLine(l).length(); ++c) {
             const auto& line = buffer.GetLine(l);
-            // Skip PHP code blocks completely in mixed PHP/HTML templates
+            // Skip PHP code blocks completely in mixed PHP/HTML templates, tracking strings, heredocs, and comments
+            // so a literal "?>", "<tag>", or array<string, mixed> inside PHP never breaks out into HTML mode!
             if (inPhp) {
-                if (c + 1 < line.length() && line[c] == L'?' && line[c + 1] == L'>') {
+                const wchar_t pch = line[c];
+                if (phpInBlockComment) {
+                    if (pch == L'*' && c + 1 < line.length() && line[c + 1] == L'/') {
+                        phpInBlockComment = false;
+                        c++;
+                    }
+                    continue;
+                }
+                if (phpInSingleQuote) {
+                    if (pch == L'\\') { c++; continue; }
+                    if (pch == L'\'') phpInSingleQuote = false;
+                    continue;
+                }
+                if (phpInDoubleQuote) {
+                    if (pch == L'\\') { c++; continue; }
+                    if (pch == L'"') phpInDoubleQuote = false;
+                    continue;
+                }
+                if (phpInBacktick) {
+                    if (pch == L'\\') { c++; continue; }
+                    if (pch == L'`') phpInBacktick = false;
+                    continue;
+                }
+                // PHP closing tag (only valid outside strings & block comments)
+                if (pch == L'?' && c + 1 < line.length() && line[c + 1] == L'>') {
                     inPhp = false;
                     c++;
+                    continue;
+                }
+                // Single-line PHP comments // and # (excluding #[Attribute])
+                if ((pch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') ||
+                    (pch == L'#' && !(c + 1 < line.length() && line[c + 1] == L'['))) {
+                    break;
+                }
+                if (pch == L'/' && c + 1 < line.length() && line[c + 1] == L'*') {
+                    phpInBlockComment = true;
+                    c++;
+                    continue;
+                }
+                if (pch == L'\'') { phpInSingleQuote = true; continue; }
+                if (pch == L'"') { phpInDoubleQuote = true; continue; }
+                if (pch == L'`') { phpInBacktick = true; continue; }
+                // PHP Heredoc / Nowdoc: <<<EOD, <<<'EOD', <<<"EOD"
+                if (pch == L'<' && c + 2 < line.length() && line[c + 1] == L'<' && line[c + 2] == L'<') {
+                    size_t hp = c + 3;
+                    while (hp < line.length() && (line[hp] == L' ' || line[hp] == L'\t')) ++hp;
+                    wchar_t hq = L'\0';
+                    if (hp < line.length() && (line[hp] == L'\'' || line[hp] == L'"')) hq = line[hp++];
+                    size_t idStart = hp;
+                    while (hp < line.length() && (iswalnum(line[hp]) || line[hp] == L'_')) ++hp;
+                    if (hp > idStart && (hq == L'\0' || (hp < line.length() && line[hp] == hq))) {
+                        phpHeredocEnd = line.substr(idStart, hp - idStart);
+                        break; // remainder of line belongs to heredoc opener; body begins next line
+                    }
                 }
                 continue;
             }
@@ -1765,11 +1877,20 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                 continue;
             }
 
-            // Detect PHP opening tag
+            // Detect PHP opening tag (<?php, <?=, or short <? except <?xml)
             if (line[c] == L'<' && c + 1 < line.length() && line[c + 1] == L'?') {
-                inPhp = true;
-                c++;
-                continue;
+                bool isXmlPi = (c + 5 <= line.length() &&
+                                _wcsnicmp(line.c_str() + c, L"<?xml", 5) == 0);
+                if (!isXmlPi) {
+                    inPhp = true;
+                    phpInSingleQuote = false;
+                    phpInDoubleQuote = false;
+                    phpInBacktick = false;
+                    phpInBlockComment = false;
+                    phpHeredocEnd.clear();
+                    c++;
+                    continue;
+                }
             }
 
             if (line[c] == L'<' && c + 3 < line.length() && line[c + 1] == L'!' && line[c + 2] == L'-' && line[c + 3] == L'-') {
@@ -1778,29 +1899,71 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                 continue;
             }
 
+            // Skip quoted snippets and inline backticks in HTML text if they contain '<' safely within the same line
+            // (e.g. `<code>'<nav>'</code>` or `Use "<Shop>"` without splitting `<p>"<b>hi"</b></p>`)
+            if (line[c] == L'`' || line[c] == L'"' ||
+                (line[c] == L'\'' && (c == 0 || (!iswalnum(line[c - 1]) && line[c - 1] != L'_')))) {
+                const wchar_t q = line[c];
+                size_t closeQ = std::wstring::npos;
+                for (size_t k = c + 1; k < line.length(); ++k) {
+                    if (line[k] == L'\\' && k + 1 < line.length()) { ++k; continue; }
+                    if (line[k] == q) { closeQ = k; break; }
+                }
+                if (closeQ != std::wstring::npos) {
+                    std::wstring inner = line.substr(c + 1, closeQ - (c + 1));
+                    if (q == L'`' || inner.find(L'<') != std::wstring::npos) {
+                        bool hasDanglingClose = false;
+                        // Avoid skipping `"<b>hi"</b>` where a real closing tag sits right after the quote
+                        size_t lt = inner.find(L'<');
+                        while (lt != std::wstring::npos) {
+                            if (lt + 1 < inner.length() && isAsciiIdentStart(inner[lt + 1])) {
+                                size_t ne = lt + 1;
+                                while (ne < inner.length() && isAsciiTagChar(inner[ne])) ++ne;
+                                std::wstring tLower;
+                                for (size_t x = lt + 1; x < ne; ++x) tLower.push_back(static_cast<wchar_t>(towlower(inner[x])));
+                                std::wstring closeNeedle = L"</" + tLower + L">";
+                                if (inner.find(closeNeedle, ne) == std::wstring::npos &&
+                                    line.find(closeNeedle, closeQ + 1) != std::wstring::npos) {
+                                    hasDanglingClose = true;
+                                    break;
+                                }
+                            }
+                            lt = inner.find(L'<', lt + 1);
+                        }
+                        if (!hasDanglingClose) {
+                            c = closeQ;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             if (line[c] == L'<') {
                 // In HTML, a tag bracket MUST be followed by an ASCII letter, '/', or '!'
-                // Comparison operators (e.g. '< 1', '<=', '<<') or standalone '<' are NOT HTML tags!
                 if (c + 1 >= line.length()) continue;
                 wchar_t nextCh = line[c + 1];
-                if (!iswalpha(nextCh) && nextCh != L'/' && nextCh != L'!') {
+                const bool isClosingCandidate = (nextCh == L'/' && c + 2 < line.length() && isAsciiIdentStart(line[c + 2]));
+                const bool isOpeningCandidate = isAsciiIdentStart(nextCh) || nextCh == L'!';
+                if (!isClosingCandidate && !isOpeningCandidate) {
                     continue;
                 }
                 size_t tagStartLine = l;
                 size_t tagStartCol = c;
 
-                // Find closing '>'
+                // Find closing '>' within a sane tag window, aborting if an unquoted '<' or operator appears first
                 bool foundClose = false;
+                bool abortedByLt = false;
                 size_t endLine = l;
                 size_t endCol = 0;
                 bool inQuotes = false;
                 wchar_t quoteChar = L'\0';
                 bool inTagPhp = false;
+                bool inUnquotedAttrValue = false;
 
                 size_t curScanL = l;
                 size_t curScanC = c + 1;
 
-                while (curScanL < buffer.GetLineCount()) {
+                while (curScanL < buffer.GetLineCount() && (curScanL - l) <= 40) {
                     const auto& scanText = buffer.GetLine(curScanL);
                     for (size_t k = curScanC; k < scanText.length(); ++k) {
                         wchar_t ch = scanText[k];
@@ -1819,9 +1982,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                         if (inQuotes) {
                             if (ch == quoteChar) inQuotes = false;
                         } else {
-                            if (ch == L'"' || ch == L'\'') {
+                            if (ch == L'"' || ch == L'\'' || ch == L'`') {
                                 inQuotes = true;
                                 quoteChar = ch;
+                                inUnquotedAttrValue = false;
+                            } else if (ch == L'=') {
+                                inUnquotedAttrValue = true;
+                            } else if (iswspace(ch)) {
+                                inUnquotedAttrValue = false;
+                            } else if (ch == L'<') {
+                                abortedByLt = true;
+                                break;
+                            } else if (nextCh != L'!' && !inUnquotedAttrValue &&
+                                       (ch == L'&' || ch == L'|' || ch == L';' || ch == L',' ||
+                                        ch == L'+' || ch == L'?' || ch == L'~' || ch == L'^')) {
+                                abortedByLt = true;
+                                break;
                             } else if (ch == L'>') {
                                 endLine = curScanL;
                                 endCol = k;
@@ -1830,14 +2006,19 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                             }
                         }
                     }
-                    if (foundClose) break;
+                    if (foundClose || abortedByLt) break;
                     curScanL++;
                     curScanC = 0;
+                    inUnquotedAttrValue = false;
                 }
 
+                if (abortedByLt) {
+                    // Literal '<' inside prose/expression (e.g. a<b && c</p>), NOT an HTML tag
+                    continue;
+                }
                 if (!foundClose) {
-                    diagnostics.push_back({ tagStartLine, tagStartCol, 1, L"Syntax Error: Unclosed tag bracket '<'", 1 });
-                    break;
+                    // Only flag '<' as unclosed tag bracket when the scan reached EOF on an actual tag prefix without quotes
+                    continue;
                 }
 
                 std::wstring tagContent;
@@ -1860,6 +2041,16 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                 }
 
                 if (tagContent.empty()) continue;
+                // Validate extracted tag name consists strictly of valid ASCII tag chars followed by delimiter
+                if (tagContent.front() != L'!' && tagContent.front() != L'?') {
+                    size_t tnStart = (tagContent.front() == L'/') ? 1 : 0;
+                    if (tnStart >= tagContent.length() || !isAsciiIdentStart(tagContent[tnStart])) continue;
+                    size_t tnEnd = tnStart;
+                    while (tnEnd < tagContent.length() && isAsciiTagChar(tagContent[tnEnd])) ++tnEnd;
+                    if (tnEnd < tagContent.length() && tagContent[tnEnd] != L'/' && !iswspace(tagContent[tnEnd])) {
+                        continue; // Reject non-tag forms like <string, mixed> or <a+b>
+                    }
+                }
 
                 // Duplicate ID check: id="..."
                 size_t idPos = tagContent.find(L"id=\"");
@@ -1927,8 +2118,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                     if (!tagName.empty() && !isVoidTag(tagName)) {
                         std::wstring lowerTag = tagName;
                         for (auto& ch : lowerTag) ch = static_cast<wchar_t>(towlower(ch));
-                        if (lowerTag == L"script" || lowerTag == L"style") {
-                            // Raw text element: scan until </script> or </style>
+                        if (lowerTag == L"script" || lowerTag == L"style" ||
+                            lowerTag == L"textarea" || lowerTag == L"title") {
+                            // Raw text element: scan until </script>, </style>, </textarea>, or </title>
                             std::wstring endPattern = L"</" + lowerTag;
                             bool foundRawEnd = false;
                             size_t blockStartLine = l + 1;
@@ -3335,14 +3527,30 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
     size_t blockCommentLine = 0;
     size_t blockCommentCol = 0;
 
-    // In PHP, single-quoted and double-quoted string literals validly span multiple lines!
+    // In PHP, single-quoted, double-quoted, backtick, and heredoc/nowdoc strings validly span multiple lines!
     bool inDoubleQuote = false;
     bool inSingleQuote = false;
+    bool inBacktick = false;
+    std::wstring heredocEnd;
     size_t quoteStartLine = 0;
     size_t quoteStartCol = 0;
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
+
+        // If inside PHP heredoc/nowdoc, check for closing identifier at start of line and skip line content
+        if (inPhp && !heredocEnd.empty()) {
+            size_t ws = 0;
+            while (ws < line.length() && (line[ws] == L' ' || line[ws] == L'\t')) ++ws;
+            if (line.compare(ws, heredocEnd.length(), heredocEnd) == 0) {
+                size_t after = ws + heredocEnd.length();
+                if (after >= line.length() || line[after] == L';' || line[after] == L',' ||
+                    line[after] == L')' || iswspace(line[after])) {
+                    heredocEnd.clear();
+                }
+            }
+            continue;
+        }
 
         for (size_t c = 0; c < line.length(); ++c) {
             wchar_t ch = line[c];
@@ -3360,7 +3568,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 }
                 continue; // Skip HTML outside PHP tags
             } else {
-                if (!inDoubleQuote && !inSingleQuote && !inBlockComment) {
+                if (!inDoubleQuote && !inSingleQuote && !inBacktick && !inBlockComment) {
                     if (c + 1 < line.length() && line.substr(c, 2) == L"?>") {
                         inPhp = false;
                         c += 1;
@@ -3389,6 +3597,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 if (ch == L'\'') { inSingleQuote = false; }
                 continue;
             }
+            if (inBacktick) {
+                if (ch == L'\\') { c++; continue; }
+                if (ch == L'`') { inBacktick = false; }
+                continue;
+            }
 
             // Single line comments // or # (ignoring #[...] PHP 8 attributes)
             if ((ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') ||
@@ -3405,6 +3618,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
                 continue;
             }
 
+            // Heredoc / Nowdoc start: <<<EOD, <<<'EOD', <<<"EOD"
+            if (ch == L'<' && c + 2 < line.length() && line[c + 1] == L'<' && line[c + 2] == L'<') {
+                size_t hp = c + 3;
+                while (hp < line.length() && (line[hp] == L' ' || line[hp] == L'\t')) ++hp;
+                wchar_t hq = L'\0';
+                if (hp < line.length() && (line[hp] == L'\'' || line[hp] == L'"')) hq = line[hp++];
+                size_t idStart = hp;
+                while (hp < line.length() && (iswalnum(line[hp]) || line[hp] == L'_')) ++hp;
+                if (hp > idStart && (hq == L'\0' || (hp < line.length() && line[hp] == hq))) {
+                    heredocEnd = line.substr(idStart, hp - idStart);
+                    quoteStartLine = l;
+                    quoteStartCol = c;
+                    break;
+                }
+            }
+
             // String start
             if (ch == L'"') {
                 inDoubleQuote = true;
@@ -3414,6 +3643,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
             }
             if (ch == L'\'') {
                 inSingleQuote = true;
+                quoteStartLine = l;
+                quoteStartCol = c;
+                continue;
+            }
+            if (ch == L'`') {
+                inBacktick = true;
                 quoteStartLine = l;
                 quoteStartCol = c;
                 continue;
@@ -3443,7 +3678,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePhp(const Buffer& buffer) 
         }
     }
 
-    if (inDoubleQuote || inSingleQuote) {
+    if (inDoubleQuote || inSingleQuote || inBacktick || !heredocEnd.empty()) {
         const auto& qLine = buffer.GetLine(quoteStartLine);
         size_t len = (qLine.length() > quoteStartCol) ? (qLine.length() - quoteStartCol) : 1;
         diagnostics.push_back({ quoteStartLine, quoteStartCol, len, L"PHP: Unclosed string literal", 1 });
@@ -3605,6 +3840,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         std::wstring name;
         size_t line;
         size_t col;
+        int exprCurlyDepth = 0; ///< Nested '{ ... }' depth while inside this JSX element's children
     };
     std::vector<JsxTagInfo> jsxStack;
 
@@ -3614,86 +3850,102 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
     };
 
     bool inBacktickAcrossLines = false;
+    bool inBlockCommentAcrossLines = false;
+
+    auto sanitizeLine = [&](const std::wstring& rawLine, std::wstring& outCode, std::wstring& outCleanCode) {
+        outCode = rawLine;
+        outCleanCode = rawLine;
+        bool inS = false, inD = false, inB = inBacktickAcrossLines, inBlk = inBlockCommentAcrossLines;
+        for (size_t i = 0; i < rawLine.length(); ++i) {
+            wchar_t ch = rawLine[i];
+            if (inBlk) {
+                outCleanCode[i] = L' ';
+                if (ch == L'*' && i + 1 < rawLine.length() && rawLine[i + 1] == L'/') {
+                    outCleanCode[i + 1] = L' ';
+                    inBlk = false;
+                    ++i;
+                }
+                continue;
+            }
+            if (ch == L'\\' && (inS || inD || inB)) {
+                outCleanCode[i] = L' ';
+                if (i + 1 < rawLine.length()) { outCleanCode[i + 1] = L' '; ++i; }
+                continue;
+            }
+            if (inB && ch == L'$' && i + 1 < rawLine.length() && rawLine[i + 1] == L'{') {
+                outCleanCode[i] = L' ';
+                outCleanCode[i + 1] = L' ';
+                i += 2;
+                int tplDepth = 1;
+                bool tS = false, tD = false, tB = false;
+                while (i < rawLine.length() && tplDepth > 0) {
+                    wchar_t tc = rawLine[i];
+                    if (tc == L'\\' && (tS || tD || tB) && i + 1 < rawLine.length()) {
+                        outCleanCode[i] = L' '; outCleanCode[i + 1] = L' ';
+                        i += 2; continue;
+                    }
+                    if (!tD && !tB && tc == L'\'') { tS = !tS; outCleanCode[i] = L' '; }
+                    else if (!tS && !tB && tc == L'"') { tD = !tD; outCleanCode[i] = L' '; }
+                    else if (!tS && !tD && tc == L'`') { tB = !tB; outCleanCode[i] = L' '; }
+                    else if (tS || tD || tB) { outCleanCode[i] = L' '; }
+                    else if (tc == L'{') { ++tplDepth; }
+                    else if (tc == L'}') {
+                        --tplDepth;
+                        if (tplDepth == 0) { outCleanCode[i] = L' '; break; }
+                    }
+                    ++i;
+                }
+                continue;
+            }
+            if (!inS && !inD && !inB) {
+                if (ch == L'/' && i + 1 < rawLine.length() && rawLine[i + 1] == L'*') {
+                    inBlk = true;
+                    outCleanCode[i] = L' ';
+                    outCleanCode[i + 1] = L' ';
+                    ++i;
+                    continue;
+                }
+                if (ch == L'/' && IsJsRegexStart(rawLine, i)) {
+                    size_t r = ScanJsRegexEnd(rawLine, i);
+                    if (r != std::wstring::npos) {
+                        for (size_t k = i; k <= r; ++k) outCleanCode[k] = L' ';
+                        i = r;
+                        continue;
+                    }
+                }
+                if (ch == L'/' && i + 1 < rawLine.length() && rawLine[i + 1] == L'/') {
+                    if (!(i > 0 && rawLine[i - 1] == L':') && rawLine.find(L"</", i + 2) == std::wstring::npos) {
+                        outCode = rawLine.substr(0, i);
+                        outCleanCode = outCleanCode.substr(0, i);
+                        break;
+                    }
+                }
+            }
+            if (ch == L'\'' && !inD && !inB) {
+                if (!inS && i > 0 && (iswalnum(rawLine[i - 1]) || rawLine[i - 1] == L'_')) {
+                    continue; // Contraction / apostrophe in JSX prose
+                }
+                inS = !inS;
+                outCleanCode[i] = L' ';
+                continue;
+            }
+            if (ch == L'"' && !inS && !inB) { inD = !inD; outCleanCode[i] = L' '; continue; }
+            if (ch == L'`' && !inS && !inD) { inB = !inB; outCleanCode[i] = L' '; continue; }
+            if (inS || inD || inB) {
+                outCleanCode[i] = L' ';
+            }
+        }
+        inBacktickAcrossLines = inB;
+        inBlockCommentAcrossLines = inBlk;
+    };
 
     for (size_t l = 0; l < lineCount; ++l) {
         const std::wstring& line = buffer.GetLine(l);
         if (line.empty()) continue;
 
-        // Skip line comments, being careful to ignore // inside strings (e.g. "https://...", 'http://...', `http://...`)
-        bool inSingle = false;
-        bool inDouble = false;
-        bool inBacktick = inBacktickAcrossLines;
-        size_t lineComment = std::wstring::npos;
-        for (size_t i = 0; i < line.length(); ++i) {
-            wchar_t ch = line[i];
-            if (ch == L'\\' && (inSingle || inDouble || inBacktick)) {
-                i++; // skip escaped character
-                continue;
-            }
-            if (ch == L'\'' && !inDouble && !inBacktick) {
-                if (!inSingle && i > 0 && (iswalnum(line[i - 1]) || line[i - 1] == L'_')) {
-                    continue; // Contraction / apostrophe in JSX prose (e.g. isn't, don't, Windows'), NOT a string literal
-                }
-                inSingle = !inSingle;
-            } else if (ch == L'"' && !inSingle && !inBacktick) {
-                inDouble = !inDouble;
-            } else if (ch == L'`' && !inSingle && !inDouble) {
-                inBacktick = !inBacktick;
-            } else if (!inSingle && !inDouble && !inBacktick) {
-                if (ch == L'/' && IsJsRegexStart(line, i)) {
-                    size_t r = ScanJsRegexEnd(line, i);
-                    if (r != std::wstring::npos) {
-                        i = r;
-                        continue;
-                    }
-                }
-                if (ch == L'/' && i + 1 < line.length() && line[i + 1] == L'/') {
-                    if (i > 0 && line[i - 1] == L':') {
-                        continue; // Part of a URL like https:// or http://, NOT a line comment
-                    }
-                    if (line.find(L"</", i + 2) != std::wstring::npos) {
-                        continue; // Inside JSX text followed by closing tag (e.g. <span>// comment</span>), NOT a line comment
-                    }
-                    lineComment = i;
-                    break;
-                }
-            }
-        }
-        std::wstring code = (lineComment != std::wstring::npos) ? line.substr(0, lineComment) : line;
-
-        // Mask string literals, regex literals, and comments so strings containing '{', '}', 'if', etc. do not trigger false positives
-        std::wstring cleanCode = code;
-        bool inS = false, inD = false, inB = inBacktickAcrossLines;
-        for (size_t i = 0; i < cleanCode.length(); ++i) {
-            wchar_t ch = cleanCode[i];
-            if (ch == L'\\' && (inS || inD || inB)) {
-                cleanCode[i] = L' ';
-                if (i + 1 < cleanCode.length()) { cleanCode[i + 1] = L' '; i++; }
-                continue;
-            }
-            if (!inS && !inD && !inB && ch == L'/' && IsJsRegexStart(cleanCode, i)) {
-                size_t r = ScanJsRegexEnd(cleanCode, i);
-                if (r != std::wstring::npos) {
-                    for (size_t k = i; k <= r; ++k) cleanCode[k] = L' ';
-                    i = r;
-                    continue;
-                }
-            }
-            if (ch == L'\'' && !inD && !inB) {
-                if (!inS && i > 0 && (iswalnum(code[i - 1]) || code[i - 1] == L'_')) {
-                    continue; // Contraction / apostrophe in JSX prose (e.g. isn't, don't, Windows'), NOT a string literal
-                }
-                inS = !inS;
-                cleanCode[i] = L' ';
-                continue;
-            }
-            if (ch == L'"' && !inS && !inB) { inD = !inD; cleanCode[i] = L' '; continue; }
-            if (ch == L'`' && !inS && !inD) { inB = !inB; cleanCode[i] = L' '; continue; }
-            if (inS || inD || inB) {
-                cleanCode[i] = L' ';
-            }
-        }
-        inBacktickAcrossLines = inB;
+        std::wstring code;
+        std::wstring cleanCode;
+        sanitizeLine(line, code, cleanCode);
 
         auto findControlKeyword = [](const std::wstring& str) -> int {
             auto isWord = [&](size_t idx, const std::wstring& kw) -> bool {
@@ -4021,19 +4273,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             };
 
             size_t p = 0;
-            int jsxCurlyDepth = 0;
             while (p < code.length()) {
-                // If we are outside JSX tags (jsxStack is empty) or inside a JSX expression `{ ... }`,
-                // quotes ("...", '...', `...`) delimit string literals and /.../ delimits regex literals. Skip them completely so that
-                // characters like <, >, <=, >=, </, and <> inside strings or regexes are NEVER treated as JSX tags.
-                if (jsxStack.empty() || jsxCurlyDepth > 0) {
-                    if (code[p] == L'{') {
-                        jsxCurlyDepth++;
+                // Skip strings ("...", '...', `...`), regex literals, and comments when outside JSX children text
+                // (either outside all JSX tags OR inside an active `{ ... }` interpolation expression).
+                const bool inJsxExpr = (!jsxStack.empty() && jsxStack.back().exprCurlyDepth > 0);
+                if (jsxStack.empty() || inJsxExpr) {
+                    if (p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
                         p++;
                         continue;
                     }
-                    if (code[p] == L'}') {
-                        if (jsxCurlyDepth > 0) jsxCurlyDepth--;
+                    if (!jsxStack.empty() && code[p] == L'{') {
+                        jsxStack.back().exprCurlyDepth++;
+                        p++;
+                        continue;
+                    }
+                    if (!jsxStack.empty() && code[p] == L'}') {
+                        if (jsxStack.back().exprCurlyDepth > 0) jsxStack.back().exprCurlyDepth--;
                         p++;
                         continue;
                     }
@@ -4062,15 +4317,16 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     }
                 } else {
                     if (code[p] == L'{') {
-                        jsxCurlyDepth++;
+                        jsxStack.back().exprCurlyDepth = 1;
                         p++;
                         continue;
                     }
                 }
 
                 if (code[p] == L'<') {
-                    // Double check: if outside JSX prose (or inside JSX expression) and cleanCode masked this position (i.e. inside quote or comment), skip it!
-                    if ((jsxStack.empty() || jsxCurlyDepth > 0) && p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
+                    // Double check: if outside JSX prose (or inside JSX expression) and cleanCode masked this position (quote/regex/comment), skip!
+                    if ((jsxStack.empty() || (!jsxStack.empty() && jsxStack.back().exprCurlyDepth > 0)) &&
+                        p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
                         p++;
                         continue;
                     }
@@ -4174,8 +4430,17 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             // A generic type parameter in a call cannot have JSX attributes (e.g. key=, className=, onClick=)
                             bool hasJsxAttrs = (tagStr.find(L'=') != std::wstring::npos);
-                            // Inside JSX children prose (!jsxStack.empty() && jsxCurlyDepth == 0), <tag> is always JSX markup (e.g. <code>.exe</code>), never a TS generic type parameter
-                            bool canBeTsGeneric = (jsxStack.empty() || jsxCurlyDepth > 0);
+                            // Inside JSX children prose (!jsxStack.empty() && exprCurlyDepth == 0), <tag> is always JSX markup (e.g. <code>.exe</code>), never a TS generic type parameter
+                            bool canBeTsGeneric = (jsxStack.empty() || jsxStack.back().exprCurlyDepth > 0);
+
+                            auto advanceToTagEndLine = [&]() {
+                                if (tagEndLine > l) {
+                                    for (size_t adv = l + 1; adv <= tagEndLine; ++adv) {
+                                        sanitizeLine(buffer.GetLine(adv), code, cleanCode);
+                                    }
+                                    l = tagEndLine;
+                                }
+                            };
 
                             // If tagStr contains type operators or generic syntax (; | & , { [ typeof keyof extends as) and has NO attributes, this is a TS generic type parameter
                             if (canBeTsGeneric && !isClose && !hasJsxAttrs && (tagStr.find(L';') != std::wstring::npos ||
@@ -4188,10 +4453,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                              tagStr.find(L"keyof ") != std::wstring::npos ||
                                                              tagStr.find(L" extends ") != std::wstring::npos ||
                                                              tagStr.find(L" as ") != std::wstring::npos)) {
-                                if (tagEndLine > l) {
-                                    l = tagEndLine;
-                                    code = buffer.GetLine(l);
-                                }
+                                advanceToTagEndLine();
                                 p = tagEnd + 1;
                                 continue;
                             }
@@ -4207,10 +4469,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
                             if (canBeTsGeneric && !isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {
-                                if (tagEndLine > l) {
-                                    l = tagEndLine;
-                                    code = buffer.GetLine(l);
-                                }
+                                advanceToTagEndLine();
                                 p = tagEnd + 1;
                                 continue;
                             }
@@ -4224,17 +4483,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                                     targetLine[nextCharIdx] == L';' || targetLine[nextCharIdx] == L',' ||
                                                                     targetLine[nextCharIdx] == L'=' || targetLine[nextCharIdx] == L'.' ||
                                                                     targetLine[nextCharIdx] == L':')) {
-                                    if (tagEndLine > l) {
-                                        l = tagEndLine;
-                                        code = buffer.GetLine(l);
-                                    }
+                                    advanceToTagEndLine();
                                     p = tagEnd + 1;
                                     continue;
                                 }
                             }
 
                             if (!isClose && !isSelfClose && voidTags.count(tagName) == 0 && !tagName.empty()) {
-                                jsxStack.push_back({ tagName, l, p });
+                                jsxStack.push_back({ tagName, l, p, 0 });
 
                                 std::unordered_set<std::wstring> propNames;
                                 size_t aIdx = nEnd;
@@ -4373,15 +4629,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                     diagnostics.push_back(std::move(diag));
                                 }
                             }
-                            if (tagEndLine > l) {
-                                l = tagEndLine;
-                                code = buffer.GetLine(l);
-                                p = tagEnd + 1;
-                                continue;
-                            } else {
-                                p = tagEnd + 1;
-                                continue;
-                            }
+                            advanceToTagEndLine();
+                            p = tagEnd + 1;
+                            continue;
                         }
                     }
                 }

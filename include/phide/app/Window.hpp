@@ -211,6 +211,14 @@ public:
     // Git Branch Switcher Dropdown (Status bar popup)
     ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
     ui::Theme& GetTheme() noexcept { return m_theme; }
+    app::AppConfig& GetConfigMutable() noexcept { return m_config; }
+    void SetDrawerOpenStateForTest(bool open, int railTab) noexcept {
+        m_config.isDrawerOpen = open;
+        m_drawerAnimProgress = open ? 1.0f : 0.0f;
+        m_config.activeRailTab = railTab;
+    }
+    bool UpdateMultiFileDiffSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll);
+    bool UpdateDiffViewSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll);
     void ToggleBranchDropdown();
     void CloseBranchDropdown();
     void RenderBranchDropdown(ID2D1RenderTarget* pRT, float clientWidth, float clientHeight);

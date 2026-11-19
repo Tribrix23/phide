@@ -7487,7 +7487,19 @@ void Window::DoCopy() {
     auto* pDoc = GetActiveDoc();
     if (pDoc && !pDoc->isSpecialView) {
         std::wstring textToCopy;
-        if (pDoc->HasAnyMultiCursor()) {
+        if (pDoc->isMultiFileDiff) {
+            textToCopy = pDoc->GetMultiFileDiffSelectedText();
+        } else if (pDoc->isDiffView) {
+            if (pDoc->HasSelection()) {
+                textToCopy = pDoc->GetDiffPaneSelectedText();
+            } else {
+                const auto& srcBuf = (pDoc->diffActivePane == 0) ? pDoc->diffOriginalBuffer : pDoc->buffer;
+                auto cursor = srcBuf.GetCursor();
+                if (srcBuf.GetLineCount() > 0 && cursor.line < srcBuf.GetLineCount()) {
+                    textToCopy = srcBuf.GetLine(cursor.line) + L"\r\n";
+                }
+            }
+        } else if (pDoc->HasAnyMultiCursor()) {
             textToCopy = pDoc->GetMultiCursorCopyText();
         } else if (pDoc->HasSelection()) {
             textToCopy = pDoc->GetSelectedText();
@@ -16258,6 +16270,174 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     return HTCLIENT;
 }
 
+bool Window::UpdateMultiFileDiffSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll) {
+    if (!doc.isMultiFileDiff || doc.multiDiffSelectedPane < 0 || doc.multiDiffRowHits.empty() || doc.multiFileDiffs.empty()) {
+        return false;
+    }
+    const float codeStartX = (doc.multiDiffSelectedPane == 0) ? doc.multiDiffLeftCodeStartX : doc.multiDiffRightCodeStartX;
+    const float codeEndX = (doc.multiDiffSelectedPane == 0) ? doc.multiDiffLeftCodeEndX : doc.multiDiffRightCodeEndX;
+    if (codeEndX <= codeStartX + 8.0f) return false;
+
+    bool changed = false;
+    if (allowEdgeScroll) {
+        const float paneW = codeEndX - codeStartX;
+        const float maxScrollX = (doc.diffMaxScrollX > 0.0f)
+            ? doc.diffMaxScrollX
+            : ((doc.maxContentWidth > paneW) ? (doc.maxContentWidth - paneW + m_config.ScaleF(40.0f)) : 0.0f);
+        const float rightTrigger = codeEndX - m_config.ScaleF(24.0f);
+        const float leftTrigger = codeStartX + m_config.ScaleF(16.0f);
+        const float fx = static_cast<float>(clientPt.x);
+        if (fx > rightTrigger && doc.scrollOffsetX < maxScrollX) {
+            const float step = (std::max)(m_config.ScaleF(24.0f), (std::min)(m_config.ScaleF(72.0f), (fx - rightTrigger) * 0.65f));
+            doc.scrollOffsetX = (std::min)(maxScrollX, doc.scrollOffsetX + step);
+            changed = true;
+        } else if (fx < leftTrigger && doc.scrollOffsetX > 0.0f) {
+            const float step = (std::max)(m_config.ScaleF(24.0f), (std::min)(m_config.ScaleF(72.0f), (leftTrigger - fx) * 0.65f));
+            doc.scrollOffsetX = (std::max)(0.0f, doc.scrollOffsetX - step);
+            changed = true;
+        }
+
+        const float bottomY = (doc.hScrollbarTrack.bottom > doc.hScrollbarTrack.top)
+            ? doc.hScrollbarTrack.top
+            : ((doc.scrollbarTrack.bottom > doc.scrollbarTrack.top) ? doc.scrollbarTrack.bottom : static_cast<float>(clientPt.y + 100));
+        const float fy = static_cast<float>(clientPt.y);
+        if (fy < doc.diffCodeTopY + m_config.ScaleF(20.0f) && doc.scrollLine > 0) {
+            doc.scrollLine--;
+            changed = true;
+        } else if (fy > bottomY - m_config.ScaleF(20.0f)) {
+            doc.scrollLine++;
+            changed = true;
+        }
+    }
+
+    // Match the row hit containing clientPt.y (or closest row when dragging across headers/edges)
+    const auto* bestHit = &doc.multiDiffRowHits.front();
+    const float fy = static_cast<float>(clientPt.y);
+    if (fy <= bestHit->leftCodeBounds.top) {
+        bestHit = &doc.multiDiffRowHits.front();
+    } else if (fy >= doc.multiDiffRowHits.back().leftCodeBounds.bottom) {
+        bestHit = &doc.multiDiffRowHits.back();
+    } else {
+        float bestDist = (std::numeric_limits<float>::max)();
+        for (const auto& h : doc.multiDiffRowHits) {
+            if (fy >= h.leftCodeBounds.top && fy <= h.leftCodeBounds.bottom) {
+                bestHit = &h;
+                break;
+            }
+            const float mid = (h.leftCodeBounds.top + h.leftCodeBounds.bottom) * 0.5f;
+            const float dist = std::abs(fy - mid);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestHit = &h;
+            }
+        }
+    }
+
+    size_t hitEntry = (std::min)(bestHit->entryIdx, doc.multiFileDiffs.size() - 1);
+    const auto& entry = doc.multiFileDiffs[hitEntry];
+    const auto& srcBuf = (doc.multiDiffSelectedPane == 0) ? entry.originalBuffer : entry.workingBuffer;
+    const size_t lc = srcBuf.GetLineCount();
+    size_t hitLine = 0;
+    size_t col = 0;
+    if (lc > 0) {
+        hitLine = (std::min)(bestHit->lineIdx, lc - 1);
+        const float charW = (m_editor.GetCharWidth() > 0.0f) ? m_editor.GetCharWidth() : m_config.ScaleF(7.8f);
+        const float clampedX = (std::clamp)(static_cast<float>(clientPt.x), codeStartX, codeEndX - 1.0f);
+        const float relX = (clampedX - codeStartX) + doc.scrollOffsetX;
+        col = (relX > 0.0f && charW > 0.0f) ? static_cast<size_t>(std::round(relX / charW)) : 0;
+        const size_t lineLen = srcBuf.GetLine(hitLine).length();
+        if (col > lineLen) col = lineLen;
+    }
+
+    if (doc.multiDiffEndEntry != hitEntry || doc.multiDiffEndLine != hitLine || doc.multiDiffEndCol != col) {
+        doc.multiDiffEndEntry = hitEntry;
+        doc.multiDiffEndLine = hitLine;
+        doc.multiDiffEndCol = col;
+        changed = true;
+    }
+    doc.hasMultiDiffSelection =
+        (doc.multiDiffAnchorEntry != doc.multiDiffEndEntry ||
+         doc.multiDiffAnchorLine != doc.multiDiffEndLine ||
+         doc.multiDiffAnchorCol != doc.multiDiffEndCol);
+    return changed;
+}
+
+bool Window::UpdateDiffViewSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll) {
+    if (!doc.isDiffView || doc.isMultiFileDiff) return false;
+    const float codeStartX = (doc.diffActivePane == 0) ? doc.diffLeftCodeStartX : doc.diffRightCodeStartX;
+    const float codeEndX = (doc.diffActivePane == 0) ? doc.diffLeftCodeEndX : doc.diffRightCodeEndX;
+    if (codeEndX <= codeStartX + 8.0f) return false;
+
+    bool changed = false;
+    if (allowEdgeScroll) {
+        const float paneW = codeEndX - codeStartX;
+        const float maxScrollX = (doc.diffMaxScrollX > 0.0f)
+            ? doc.diffMaxScrollX
+            : ((doc.maxContentWidth > paneW) ? (doc.maxContentWidth - paneW + m_config.ScaleF(40.0f)) : 0.0f);
+        const float rightTrigger = codeEndX - m_config.ScaleF(24.0f);
+        const float leftTrigger = codeStartX + m_config.ScaleF(16.0f);
+        const float fx = static_cast<float>(clientPt.x);
+        if (fx > rightTrigger && doc.scrollOffsetX < maxScrollX) {
+            const float step = (std::max)(m_config.ScaleF(24.0f), (std::min)(m_config.ScaleF(72.0f), (fx - rightTrigger) * 0.65f));
+            doc.scrollOffsetX = (std::min)(maxScrollX, doc.scrollOffsetX + step);
+            changed = true;
+        } else if (fx < leftTrigger && doc.scrollOffsetX > 0.0f) {
+            const float step = (std::max)(m_config.ScaleF(24.0f), (std::min)(m_config.ScaleF(72.0f), (leftTrigger - fx) * 0.65f));
+            doc.scrollOffsetX = (std::max)(0.0f, doc.scrollOffsetX - step);
+            changed = true;
+        }
+
+        const float bottomY = (doc.hScrollbarTrack.bottom > doc.hScrollbarTrack.top)
+            ? doc.hScrollbarTrack.top
+            : ((doc.scrollbarTrack.bottom > doc.scrollbarTrack.top) ? doc.scrollbarTrack.bottom : static_cast<float>(clientPt.y + 100));
+        const float fy = static_cast<float>(clientPt.y);
+        auto& srcBuf = (doc.diffActivePane == 0) ? doc.diffOriginalBuffer : doc.buffer;
+        if (fy < doc.diffCodeTopY + m_config.ScaleF(20.0f) && doc.scrollLine > 0) {
+            doc.scrollLine--;
+            changed = true;
+        } else if (fy > bottomY - m_config.ScaleF(20.0f) && doc.scrollLine + 1 < srcBuf.GetLineCount()) {
+            doc.scrollLine++;
+            changed = true;
+        }
+    }
+
+    auto& srcBuf = (doc.diffActivePane == 0) ? doc.diffOriginalBuffer : doc.buffer;
+    const size_t totalLines = srcBuf.GetLineCount();
+    const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+    const float charW = (m_editor.GetCharWidth() > 0.0f) ? m_editor.GetCharWidth() : m_config.ScaleF(7.8f);
+    size_t line = doc.scrollLine;
+    if (lineH > 0.0f && static_cast<float>(clientPt.y) >= doc.diffCodeTopY) {
+        line = doc.scrollLine + static_cast<size_t>((static_cast<float>(clientPt.y) - doc.diffCodeTopY) / lineH);
+    }
+    if (totalLines == 0) {
+        line = 0;
+    } else if (line >= totalLines) {
+        line = totalLines - 1;
+    }
+    const float clampedX = (std::clamp)(static_cast<float>(clientPt.x), codeStartX, codeEndX - 1.0f);
+    const float relX = (clampedX - codeStartX) + doc.scrollOffsetX;
+    size_t col = (relX > 0.0f && charW > 0.0f) ? static_cast<size_t>(std::round(relX / charW)) : 0;
+    if (totalLines > 0) {
+        const size_t lineLen = srcBuf.GetLine(line).length();
+        if (col > lineLen) col = lineLen;
+        srcBuf.SetCursor(line, col);
+    } else {
+        col = 0;
+    }
+    if (doc.selEnd.line != line || doc.selEnd.col != col) {
+        doc.selEnd = { line, col };
+        changed = true;
+    }
+    if (doc.selAnchor.line != doc.selEnd.line || doc.selAnchor.col != doc.selEnd.col) {
+        doc.hasSelection = true;
+        doc.selectedWord = doc.GetDiffPaneSelectedText();
+    } else {
+        doc.hasSelection = false;
+        doc.selectedWord.clear();
+    }
+    return changed;
+}
+
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (!m_activeFloatingWindow) {
         if (m_showBranchDropdown) {
@@ -16985,7 +17165,19 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
     // Check Editor Mouse Drag Text Selection (Images 2, 3, 4)
     auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isDraggingMultiDiffSelect && (GetKeyState(VK_LBUTTON) & 0x8000)) {
+        if (UpdateMultiFileDiffSelection(*pActiveDoc, clientPt, true)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        return;
+    }
     if (pActiveDoc && pActiveDoc->isSelecting && (GetKeyState(VK_LBUTTON) & 0x8000)) {
+        if (pActiveDoc->isDiffView && !pActiveDoc->isMultiFileDiff && m_config.gitDiffSideBySide) {
+            if (UpdateDiffViewSelection(*pActiveDoc, clientPt, true)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
         RECT clientRc;
         GetClientRect(m_hwnd, &clientRc);
         const float clientW = static_cast<float>(clientRc.right - clientRc.left);
@@ -17247,7 +17439,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         float travelRange = trackW - thumbW;
         if (travelRange > 0.0f) {
             float viewportCodeW = pActiveDoc->hScrollbarTrack.right - pActiveDoc->hScrollbarTrack.left;
-            float maxScrollX = (pActiveDoc->maxContentWidth > viewportCodeW) ? (pActiveDoc->maxContentWidth - viewportCodeW + m_config.ScaleF(40.0f)) : 0.0f;
+            float maxScrollX = (pActiveDoc->isDiffView || pActiveDoc->isMultiFileDiff)
+                ? pActiveDoc->diffMaxScrollX
+                : ((pActiveDoc->maxContentWidth > viewportCodeW) ? (pActiveDoc->maxContentWidth - viewportCodeW + m_config.ScaleF(40.0f)) : 0.0f);
             float newScrollX = pActiveDoc->dragStartScrollOffsetX + (deltaX / travelRange) * maxScrollX;
             pActiveDoc->scrollOffsetX = (std::clamp)(newScrollX, 0.0f, maxScrollX);
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -20468,6 +20662,80 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
 
+                    // 3. Horizontal scrollbar click & drag in multi-file diff view
+                    bool hitHThumb = false;
+                    if (m_editor.HitTestHScrollbar(clientPt, doc, hitHThumb)) {
+                        const float maxScrollX = (doc.diffMaxScrollX > 0.0f) ? doc.diffMaxScrollX : (std::max)(0.0f, doc.maxContentWidth);
+                        if (hitHThumb) {
+                            doc.isDraggingHScrollbar = true;
+                            doc.dragStartHX = static_cast<float>(clientPt.x);
+                            doc.dragStartScrollOffsetX = doc.scrollOffsetX;
+                            SetCapture(m_hwnd);
+                        } else {
+                            if (clientPt.x < doc.hScrollbarThumb.left) {
+                                doc.scrollOffsetX = (std::max)(0.0f, doc.scrollOffsetX - 150.0f);
+                            } else if (clientPt.x > doc.hScrollbarThumb.right) {
+                                doc.scrollOffsetX = (std::min)(maxScrollX, doc.scrollOffsetX + 150.0f);
+                            }
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+
+                    // 4. Long-press / drag text selection across left (Parent) or right (Commit) code pane
+                    const float fx = static_cast<float>(clientPt.x);
+                    const float fy = static_cast<float>(clientPt.y);
+                    const float gutterW = m_config.ScaleF(46.0f);
+                    int clickedPane = -1;
+                    if (fx >= doc.multiDiffLeftCodeStartX - gutterW && fx <= doc.multiDiffLeftCodeEndX) {
+                        clickedPane = 0;
+                    } else if (fx >= doc.multiDiffRightCodeStartX - gutterW && fx <= doc.multiDiffRightCodeEndX) {
+                        clickedPane = 1;
+                    }
+
+                    if (clickedPane >= 0 && !doc.multiDiffRowHits.empty()) {
+                        const auto* hitRow = &doc.multiDiffRowHits.front();
+                        bool matchedRow = false;
+                        for (const auto& r : doc.multiDiffRowHits) {
+                            if (fy >= r.leftCodeBounds.top && fy <= r.leftCodeBounds.bottom) {
+                                hitRow = &r;
+                                matchedRow = true;
+                                break;
+                            }
+                        }
+                        if (matchedRow) {
+                            size_t hitEntry = (std::min)(hitRow->entryIdx, doc.multiFileDiffs.size() - 1);
+                            const auto& entry = doc.multiFileDiffs[hitEntry];
+                            const auto& srcBuf = (clickedPane == 0) ? entry.originalBuffer : entry.workingBuffer;
+                            const size_t lc = srcBuf.GetLineCount();
+                            size_t hitLine = (lc > 0) ? (std::min)(hitRow->lineIdx, lc - 1) : 0;
+                            const float codeStartX = (clickedPane == 0) ? doc.multiDiffLeftCodeStartX : doc.multiDiffRightCodeStartX;
+                            const float charW = (m_editor.GetCharWidth() > 0.0f) ? m_editor.GetCharWidth() : m_config.ScaleF(7.8f);
+                            const float relX = (fx - codeStartX) + doc.scrollOffsetX;
+                            size_t col = (relX > 0.0f && charW > 0.0f) ? static_cast<size_t>(std::round(relX / charW)) : 0;
+                            if (lc > 0) {
+                                const size_t lineLen = srcBuf.GetLine(hitLine).length();
+                                if (col > lineLen) col = lineLen;
+                            } else {
+                                col = 0;
+                            }
+                            doc.multiDiffSelectedPane = clickedPane;
+                            doc.multiDiffAnchorEntry = hitEntry;
+                            doc.multiDiffAnchorLine = hitLine;
+                            doc.multiDiffAnchorCol = col;
+                            doc.multiDiffEndEntry = hitEntry;
+                            doc.multiDiffEndLine = hitLine;
+                            doc.multiDiffEndCol = col;
+                            doc.hasMultiDiffSelection = false;
+                            doc.isDraggingMultiDiffSelect = true;
+                            SetCapture(m_hwnd);
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
+                    }
+
+                    doc.hasMultiDiffSelection = false;
+                    doc.isDraggingMultiDiffSelect = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 } else {
@@ -20596,7 +20864,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             if (clientPt.x < doc.hScrollbarThumb.left) {
                                 doc.scrollOffsetX = (std::max)(0.0f, doc.scrollOffsetX - 150.0f);
                             } else if (clientPt.x > doc.hScrollbarThumb.right) {
-                                doc.scrollOffsetX += 150.0f;
+                                const float maxScrollX = (doc.isDiffView && doc.diffMaxScrollX > 0.0f)
+                                    ? doc.diffMaxScrollX
+                                    : (std::max)(0.0f, doc.maxContentWidth);
+                                doc.scrollOffsetX = (std::min)(maxScrollX, doc.scrollOffsetX + 150.0f);
                             }
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -20701,38 +20972,54 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
                         if (clientPt.y >= codeTopY && lineH > 0.0f) {
                             size_t clickedLine = doc.scrollLine + static_cast<size_t>((clientPt.y - codeTopY) / lineH);
-                            if (clientPt.x >= rightX) {
+                            if (clientPt.x >= rightX && clientPt.x < rightX + halfW) {
                                 doc.diffActivePane = 1;
                                 size_t clickedCol = 0;
-                                float textLeft = rightX + gutterW + m_config.ScaleF(12.0f);
+                                float textLeft = (doc.diffRightCodeStartX > 0.0f) ? doc.diffRightCodeStartX : (rightX + gutterW + m_config.ScaleF(12.0f));
                                 if (clientPt.x >= textLeft && charW > 0.0f) {
-                                    clickedCol = static_cast<size_t>(std::round((clientPt.x - textLeft) / charW));
+                                    clickedCol = static_cast<size_t>(std::round(((static_cast<float>(clientPt.x) - textLeft) + doc.scrollOffsetX) / charW));
                                 }
                                 size_t totalLines = doc.buffer.GetLineCount();
                                 if (clickedLine >= totalLines) {
                                     clickedLine = totalLines > 0 ? totalLines - 1 : 0;
                                 }
-                                const auto& lineStr = doc.buffer.GetLine(clickedLine);
-                                if (clickedCol > lineStr.length()) {
-                                    clickedCol = lineStr.length();
+                                if (totalLines > 0) {
+                                    const auto& lineStr = doc.buffer.GetLine(clickedLine);
+                                    if (clickedCol > lineStr.length()) clickedCol = lineStr.length();
+                                    doc.buffer.SetCursor(clickedLine, clickedCol);
+                                } else {
+                                    clickedLine = 0;
+                                    clickedCol = 0;
                                 }
-                                doc.buffer.SetCursor(clickedLine, clickedCol);
+                                doc.selAnchor = { clickedLine, clickedCol };
+                                doc.selEnd = doc.selAnchor;
+                                doc.hasSelection = false;
+                                doc.isSelecting = true;
+                                SetCapture(m_hwnd);
                             } else if (clientPt.x < dividerX) {
                                 doc.diffActivePane = 0; // Read-only side
                                 size_t clickedCol = 0;
-                                float textLeft = leftX + gutterW + m_config.ScaleF(12.0f);
+                                float textLeft = (doc.diffLeftCodeStartX > 0.0f) ? doc.diffLeftCodeStartX : (leftX + gutterW + m_config.ScaleF(12.0f));
                                 if (clientPt.x >= textLeft && charW > 0.0f) {
-                                    clickedCol = static_cast<size_t>(std::round((clientPt.x - textLeft) / charW));
+                                    clickedCol = static_cast<size_t>(std::round(((static_cast<float>(clientPt.x) - textLeft) + doc.scrollOffsetX) / charW));
                                 }
                                 size_t totalLines = doc.diffOriginalBuffer.GetLineCount();
                                 if (clickedLine >= totalLines) {
                                     clickedLine = totalLines > 0 ? totalLines - 1 : 0;
                                 }
-                                const auto& lineStr = doc.diffOriginalBuffer.GetLine(clickedLine);
-                                if (clickedCol > lineStr.length()) {
-                                    clickedCol = lineStr.length();
+                                if (totalLines > 0) {
+                                    const auto& lineStr = doc.diffOriginalBuffer.GetLine(clickedLine);
+                                    if (clickedCol > lineStr.length()) clickedCol = lineStr.length();
+                                    doc.diffOriginalBuffer.SetCursor(clickedLine, clickedCol);
+                                } else {
+                                    clickedLine = 0;
+                                    clickedCol = 0;
                                 }
-                                doc.diffOriginalBuffer.SetCursor(clickedLine, clickedCol);
+                                doc.selAnchor = { clickedLine, clickedCol };
+                                doc.selEnd = doc.selAnchor;
+                                doc.hasSelection = false;
+                                doc.isSelecting = true;
+                                SetCapture(m_hwnd);
                             }
                             InvalidateRect(m_hwnd, nullptr, FALSE);
                             return;
@@ -21768,6 +22055,17 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
+            if (doc.isDraggingMultiDiffSelect) {
+                doc.isDraggingMultiDiffSelect = false;
+                if (doc.multiDiffAnchorEntry == doc.multiDiffEndEntry &&
+                    doc.multiDiffAnchorLine == doc.multiDiffEndLine &&
+                    doc.multiDiffAnchorCol == doc.multiDiffEndCol) {
+                    doc.hasMultiDiffSelection = false;
+                }
+                ReleaseCapture();
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
         }
     }
 
@@ -22439,6 +22737,14 @@ void Window::HandleLButtonUp(POINT clientPt) {
             doc.isDraggingScrollbar = false;
             doc.isDraggingHScrollbar = false;
             doc.isDraggingMinimap = false;
+            if (doc.isDraggingMultiDiffSelect) {
+                doc.isDraggingMultiDiffSelect = false;
+                if (doc.multiDiffAnchorEntry == doc.multiDiffEndEntry &&
+                    doc.multiDiffAnchorLine == doc.multiDiffEndLine &&
+                    doc.multiDiffAnchorCol == doc.multiDiffEndCol) {
+                    doc.hasMultiDiffSelection = false;
+                }
+            }
             if (doc.isSelecting) {
                 doc.isSelecting = false;
                 if (!doc.isColumnSelection && doc.selAnchor.line == doc.selEnd.line && doc.selAnchor.col == doc.selEnd.col) {
@@ -23313,6 +23619,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
 
+                    if (pHoverPaneDoc->isMultiFileDiff) {
+                        const float fpx = static_cast<float>(pt.x);
+                        const float fpy = static_cast<float>(pt.y);
+                        for (const auto& entry : pHoverPaneDoc->multiFileDiffs) {
+                            if (fpx >= entry.headerBounds.left && fpx <= entry.headerBounds.right &&
+                                fpy >= entry.headerBounds.top && fpy <= entry.headerBounds.bottom) {
+                                SetCursor(LoadCursor(nullptr, IDC_HAND));
+                                return TRUE;
+                            }
+                        }
+                        if ((fpx >= pHoverPaneDoc->hScrollbarTrack.left && fpx <= pHoverPaneDoc->hScrollbarTrack.right &&
+                             fpy >= pHoverPaneDoc->hScrollbarTrack.top && fpy <= pHoverPaneDoc->hScrollbarTrack.bottom) ||
+                            (fpx >= pHoverPaneDoc->scrollbarTrack.left && fpx <= pHoverPaneDoc->scrollbarTrack.right &&
+                             fpy >= pHoverPaneDoc->scrollbarTrack.top && fpy <= pHoverPaneDoc->scrollbarTrack.bottom)) {
+                            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                            return TRUE;
+                        }
+                    }
+
                     if (pt.x >= paneLeft + gutterW && pt.x < paneRight - scrollbarW &&
                         pt.y >= topY && pt.y < paneBottom) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
@@ -23633,16 +23958,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
                 float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
 
-                // 1. Scroll Drawer Panel tree if mouse is over sidebar
+                // 1. Scroll Drawer Panel tree if mouse is over open sidebar drawer.
+                // Never leak wheel events to the active editor canvas when cursor is inside the sidebar,
+                // even if the sidebar list is short or already at top/bottom scroll bounds.
                 if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
-                    if (m_config.activeRailTab == 0 && m_drawer.ScrollOutline(delta)) {
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                        return 0;
+                    if (m_config.activeRailTab == 0) {
+                        m_drawer.ScrollOutline(delta);
+                    } else {
+                        m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y));
                     }
-                    if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y))) {
-                        InvalidateRect(m_hwnd, nullptr, FALSE);
-                        return 0;
-                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
             }
 
@@ -23819,7 +24145,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     bool isShiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
                     if (isShiftDown) {
                         float hDelta = (delta > 0) ? -60.0f : 60.0f;
-                        float maxScrollX = (std::max)(0.0f, pDoc->maxContentWidth);
+                        float maxScrollX = (pDoc->isDiffView || pDoc->isMultiFileDiff)
+                            ? pDoc->diffMaxScrollX
+                            : (std::max)(0.0f, pDoc->maxContentWidth);
                         pDoc->scrollOffsetX = (std::clamp)(pDoc->scrollOffsetX + hDelta, 0.0f, maxScrollX);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
@@ -23858,10 +24186,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_MOUSEHWHEEL: {
             m_lastUserInputTick = GetTickCount64();
             short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(m_hwnd, &pt);
+
+            // Isolate horizontal wheel events inside the open sidebar drawer so they never scroll the editor
+            if (!m_activeFloatingWindow && m_drawerAnimProgress > 0.001f) {
+                const float headerH = EffectiveHeaderHeight();
+                const float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+                const float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+                if (pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                    return 0;
+                }
+            }
+
             auto* pDoc = GetActiveDoc();
             if (pDoc && pDoc->isSpecialView && pDoc->viewType == L"api") {
-                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-                ScreenToClient(m_hwnd, &pt);
                 if (m_editor.GetApiTesterView().HandleHMouseWheel(delta, static_cast<float>(pt.y))) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -23869,7 +24208,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             if (pDoc && !pDoc->isSpecialView) {
                 float hDelta = (delta > 0) ? 60.0f : -60.0f;
-                float maxScrollX = (std::max)(0.0f, pDoc->maxContentWidth);
+                float maxScrollX = (pDoc->isDiffView || pDoc->isMultiFileDiff)
+                    ? pDoc->diffMaxScrollX
+                    : (std::max)(0.0f, pDoc->maxContentWidth);
                 pDoc->scrollOffsetX = (std::clamp)(pDoc->scrollOffsetX + hDelta, 0.0f, maxScrollX);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -24438,6 +24779,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     doc.isDraggingScrollbar = false;
                     doc.isDraggingMinimap = false;
                     doc.isDraggingHScrollbar = false;
+                    doc.isDraggingMultiDiffSelect = false;
                     doc.isSelecting = false;
                 }
             }
@@ -26660,6 +27002,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (m_drawer.PollSearchThrottle(now)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                }
+
+                // Continuous edge auto-scroll when holding left mouse button near/past pane edges during diff selection
+                if (GetCapture() == m_hwnd && (GetKeyState(VK_LBUTTON) & 0x8000)) {
+                    if (auto* pSelDoc = GetActiveDoc()) {
+                        POINT curPt{};
+                        if (GetCursorPos(&curPt) && ScreenToClient(m_hwnd, &curPt)) {
+                            if (pSelDoc->isDraggingMultiDiffSelect) {
+                                if (UpdateMultiFileDiffSelection(*pSelDoc, curPt, true)) {
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                }
+                            } else if (pSelDoc->isSelecting && pSelDoc->isDiffView && !pSelDoc->isMultiFileDiff && m_config.gitDiffSideBySide) {
+                                if (UpdateDiffViewSelection(*pSelDoc, curPt, true)) {
+                                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Poll active visible Log Tail viewer tabs (zero background work unless active tab uses follow mode)

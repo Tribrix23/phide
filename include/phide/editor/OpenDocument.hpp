@@ -1620,6 +1620,97 @@ struct OpenDocument {
     std::wstring commitAuthor;           ///< Commit author
     std::wstring commitDate;             ///< Commit date
     std::wstring commitMessage;          ///< Full commit message
+    // Interactive row map & selection state for MultiFileDiffView & DiffView horizontal drag-scroll/copy
+    struct MultiFileDiffRowHit {
+        size_t entryIdx = 0;
+        size_t lineIdx = 0;
+        D2D1_RECT_F leftCodeBounds{};
+        D2D1_RECT_F rightCodeBounds{};
+    };
+    mutable std::vector<MultiFileDiffRowHit> multiDiffRowHits;
+    size_t multiDiffAnchorEntry = 0;
+    size_t multiDiffAnchorLine = 0;
+    size_t multiDiffAnchorCol = 0;
+    size_t multiDiffEndEntry = 0;
+    size_t multiDiffEndLine = 0;
+    size_t multiDiffEndCol = 0;
+    int multiDiffSelectedPane = -1; ///< -1=None, 0=Left(HEAD), 1=Right(Working)
+    bool isDraggingMultiDiffSelect = false;
+    bool hasMultiDiffSelection = false;
+    mutable float multiDiffLeftCodeStartX = 0.0f;
+    mutable float multiDiffLeftCodeEndX = 0.0f;
+    mutable float multiDiffRightCodeStartX = 0.0f;
+    mutable float multiDiffRightCodeEndX = 0.0f;
+    mutable float diffLeftCodeStartX = 0.0f;
+    mutable float diffLeftCodeEndX = 0.0f;
+    mutable float diffRightCodeStartX = 0.0f;
+    mutable float diffRightCodeEndX = 0.0f;
+    mutable float diffCodeTopY = 0.0f;
+    mutable float diffMaxScrollX = 0.0f;
+
+    /**
+     * @brief Extracts selected text from the active pane inside side-by-side DiffView (Left=HEAD or Right=Working).
+     */
+    [[nodiscard]] std::wstring GetDiffPaneSelectedText() const {
+        if (!isDiffView || isMultiFileDiff || !hasSelection) return L"";
+        auto s = selAnchor;
+        auto e = selEnd;
+        if (s.line > e.line || (s.line == e.line && s.col > e.col)) {
+            std::swap(s, e);
+        }
+        const auto& srcBuf = (diffActivePane == 0) ? diffOriginalBuffer : buffer;
+        const size_t lc = srcBuf.GetLineCount();
+        if (lc == 0 || s.line >= lc) return L"";
+        if (e.line >= lc) {
+            e.line = lc - 1;
+            e.col = srcBuf.GetLine(e.line).length();
+        }
+        std::wstring out;
+        for (size_t li = s.line; li <= e.line; ++li) {
+            const auto& lineStr = srcBuf.GetLine(li);
+            const size_t c0 = (li == s.line) ? (std::min)(s.col, lineStr.length()) : 0;
+            const size_t c1 = (li == e.line) ? (std::min)(e.col, lineStr.length()) : lineStr.length();
+            if (c1 > c0) out += lineStr.substr(c0, c1 - c0);
+            if (li < e.line) out += L"\n";
+        }
+        return out;
+    }
+
+    /**
+     * @brief Extracts selected text from the active pane inside MultiFileDiffView (for Ctrl+C).
+     */
+    [[nodiscard]] std::wstring GetMultiFileDiffSelectedText() const {
+        if (!isMultiFileDiff || !hasMultiDiffSelection || multiDiffSelectedPane < 0 || multiDiffsEmpty()) return L"";
+        size_t sE = multiDiffAnchorEntry, sL = multiDiffAnchorLine, sC = multiDiffAnchorCol;
+        size_t eE = multiDiffEndEntry, eL = multiDiffEndLine, eC = multiDiffEndCol;
+        if (sE > eE || (sE == eE && (sL > eL || (sL == eL && sC > eC)))) {
+            std::swap(sE, eE); std::swap(sL, eL); std::swap(sC, eC);
+        }
+        if (sE >= multiFileDiffs.size()) return L"";
+        if (eE >= multiFileDiffs.size()) eE = multiFileDiffs.size() - 1;
+
+        std::wstring out;
+        for (size_t ei = sE; ei <= eE; ++ei) {
+            const auto& entry = multiFileDiffs[ei];
+            if (entry.isBinary) continue;
+            const auto& buf = (multiDiffSelectedPane == 0) ? entry.originalBuffer : entry.workingBuffer;
+            const size_t lc = buf.GetLineCount();
+            if (lc == 0) continue;
+            const size_t l0 = (ei == sE) ? (std::min)(sL, lc - 1) : 0;
+            const size_t l1 = (ei == eE) ? (std::min)(eL, lc - 1) : (lc - 1);
+            for (size_t li = l0; li <= l1; ++li) {
+                const auto& lineStr = buf.GetLine(li);
+                const size_t c0 = (ei == sE && li == l0) ? (std::min)(sC, lineStr.length()) : 0;
+                const size_t c1 = (ei == eE && li == l1) ? (std::min)(eC, lineStr.length()) : lineStr.length();
+                if (c1 > c0) out += lineStr.substr(c0, c1 - c0);
+                if (!(ei == eE && li == l1)) out += L"\n";
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] bool multiDiffsEmpty() const noexcept { return multiFileDiffs.empty(); }
+
     std::vector<MultiFileDiffEntry> multiFileDiffs; ///< List of all files changed in this commit
     std::shared_ptr<NotebookDocument> notebookDoc; ///< Attached interactive notebook model when viewType == L"notebook"
 

@@ -4353,15 +4353,22 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
             }
             return m_gitChangesScrollIdx != oldScroll;
         } else {
-            // Scroll Graph list
-            size_t oldScroll = m_gitGraphScrollIdx;
-            if (delta > 0) {
-                if (m_gitGraphScrollIdx >= 2) m_gitGraphScrollIdx -= 2;
-                else m_gitGraphScrollIdx = 0;
-            } else {
-                if (!m_gitCommits.empty() && m_gitGraphScrollIdx + 2 < m_gitCommits.size()) m_gitGraphScrollIdx += 2;
+            // Smooth pixel scrolling for the Source Control Graph (respects expanded file sub-rows
+            // so scrolling by 1 notch moves ~48 DIP instead of jumping over commits).
+            const float step = 48.0f * (m_lastGraphScale > 0.0f ? m_lastGraphScale : 1.0f);
+            float maxScroll = m_gitGraphMaxScrollY;
+            if (m_gitGraphViewportH > 0.0f) {
+                float totalH = ComputeGitGraphTotalHeight(m_lastGraphScale > 0.0f ? m_lastGraphScale : 1.0f);
+                maxScroll = (std::max)(0.0f, totalH - m_gitGraphViewportH);
+                m_gitGraphMaxScrollY = maxScroll;
             }
-            return m_gitGraphScrollIdx != oldScroll;
+            float oldScroll = m_gitGraphScrollY;
+            if (delta > 0) {
+                m_gitGraphScrollY = (std::max)(0.0f, m_gitGraphScrollY - step);
+            } else {
+                m_gitGraphScrollY = (std::min)(maxScroll, m_gitGraphScrollY + step);
+            }
+            return std::abs(m_gitGraphScrollY - oldScroll) > 0.1f;
         }
     }
 
@@ -6193,13 +6200,18 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             }
             m_gitCommits = std::move(commits);
             if (m_gitCommits.empty()) {
-                m_gitGraphScrollIdx = 0;
+                m_gitGraphScrollY = 0.0f;
+                m_gitGraphMaxScrollY = 0.0f;
                 m_hoveredCommitIdx = -1;
                 m_selectedCommitIdx = -1;
                 m_commitCardHash.clear();
             } else {
-                if (m_gitGraphScrollIdx >= m_gitCommits.size()) {
-                    m_gitGraphScrollIdx = m_gitCommits.size() - 1;
+                if (m_gitGraphViewportH > 0.0f) {
+                    float totalH = ComputeGitGraphTotalHeight(m_lastGraphScale > 0.0f ? m_lastGraphScale : 1.0f);
+                    m_gitGraphMaxScrollY = (std::max)(0.0f, totalH - m_gitGraphViewportH);
+                }
+                if (m_gitGraphScrollY > m_gitGraphMaxScrollY) {
+                    m_gitGraphScrollY = m_gitGraphMaxScrollY;
                 }
                 auto resolveIdxByHash = [&](int idx) -> int {
                     if (idx < 0) return -1;
@@ -7286,8 +7298,11 @@ void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
 
     for (size_t i = 0; i < commits.size(); ++i) {
         auto& ci = commits[i];
+        ci.parentLanes.clear();
+        ci.passThroughLanes.clear();
+        ci.postCommitLanes.clear();
 
-        // 1. Locate lane for this commit if assigned by child
+        // 1. Locate lane for this commit if assigned by a newer child commit above
         int assignedLane = -1;
         for (size_t l = 0; l < activeLanes.size(); ++l) {
             if (!activeLanes[l].empty() && activeLanes[l] == ci.hash) {
@@ -7323,19 +7338,33 @@ void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
             if (!ph.empty()) parents.push_back(ph);
         }
 
-        // 3. Mark pass-through lanes for vertical continuation
+        // 3. Mark pass-through lanes for vertical continuation across this commit row
         for (size_t l = 0; l < activeLanes.size(); ++l) {
             if (static_cast<int>(l) != ci.lane && !activeLanes[l].empty()) {
                 ci.passThroughLanes.push_back(static_cast<int>(l));
             }
         }
 
-        // 4. Update active lanes with parents
+        // 4. Update active lanes with parents (avoid duplicating a parent already tracked on another lane)
         if (parents.empty()) {
             activeLanes[ci.lane].clear();
         } else {
-            activeLanes[ci.lane] = parents[0];
-            ci.parentLanes.push_back(ci.lane);
+            int existingFirst = -1;
+            for (size_t l = 0; l < activeLanes.size(); ++l) {
+                if (static_cast<int>(l) != ci.lane && !activeLanes[l].empty() && activeLanes[l] == parents[0]) {
+                    existingFirst = static_cast<int>(l);
+                    break;
+                }
+            }
+            if (existingFirst != -1) {
+                // First parent is already tracked on another lane: merge this lane back into it
+                // and retire ci.lane instead of creating two parallel lanes for the same commit.
+                activeLanes[ci.lane].clear();
+                ci.parentLanes.push_back(existingFirst);
+            } else {
+                activeLanes[ci.lane] = parents[0];
+                ci.parentLanes.push_back(ci.lane);
+            }
 
             for (size_t p = 1; p < parents.size(); ++p) {
                 const auto& parentHash = parents[p];
@@ -7359,10 +7388,37 @@ void DrawerPanel::ComputeGitGraphLanes(std::vector<GitCommitItem>& commits) {
                     pLane = static_cast<int>(activeLanes.size());
                     activeLanes.push_back(parentHash);
                 }
-                ci.parentLanes.push_back(pLane);
+                if (std::find(ci.parentLanes.begin(), ci.parentLanes.end(), pLane) == ci.parentLanes.end()) {
+                    ci.parentLanes.push_back(pLane);
+                }
+            }
+        }
+
+        // 5. Record all active lanes continuing below this commit row (through any expanded files)
+        for (size_t l = 0; l < activeLanes.size(); ++l) {
+            if (!activeLanes[l].empty()) {
+                ci.postCommitLanes.push_back(static_cast<int>(l));
             }
         }
     }
+}
+
+float DrawerPanel::ComputeGitGraphTotalHeight(float scale) const noexcept {
+    const float s = (scale > 0.0f) ? scale : 1.0f;
+    const float rowH = 26.0f * s;
+    const float fileRowH = 22.0f * s;
+    float totalH = 0.0f;
+    for (const auto& ci : m_gitCommits) {
+        totalH += rowH;
+        if (ci.isExpanded && !ci.files.empty()) {
+            totalH += static_cast<float>(ci.files.size()) * fileRowH;
+        }
+    }
+    if (m_gitGraphLimit < 400 && !m_gitCommits.empty() &&
+        (m_gitCommits.size() >= static_cast<size_t>(m_gitGraphLimit) || !m_gitGraphFilter.empty())) {
+        totalH += 28.0f * s;
+    }
+    return totalH;
 }
 
 void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths) {
@@ -9943,7 +9999,7 @@ bool DrawerPanel::HitTestGit(POINT pt, const app::AppConfig& config,
         }
         if (pt.x >= m_gitGraphBullseyeBounds.left && pt.x <= m_gitGraphBullseyeBounds.right &&
             pt.y >= m_gitGraphBullseyeBounds.top && pt.y <= m_gitGraphBullseyeBounds.bottom) {
-            m_gitGraphScrollIdx = 0;
+            m_gitGraphScrollY = 0.0f;
             return true;
         }
         if (pt.x >= m_gitGraphSplitBounds.left && pt.x <= m_gitGraphSplitBounds.right &&
@@ -12473,11 +12529,31 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
         m_gitGraphLoadMoreBounds = {};
 
         if (m_graphExpanded) {
+            // Clear offscreen hit rectangles before laying out visible Graph rows
+            for (auto& ciReset : m_gitCommits) {
+                ciReset.bounds = D2D1::RectF(0, 0, 0, 0);
+                ciReset.chevronBounds = D2D1::RectF(0, 0, 0, 0);
+                ciReset.openChangesBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                for (auto& cfReset : ciReset.files) {
+                    cfReset.bounds = D2D1::RectF(0, 0, 0, 0);
+                }
+            }
+            m_gitGraphScrollbarTrack = D2D1::RectF(0, 0, 0, 0);
+            m_gitGraphScrollbarThumb = D2D1::RectF(0, 0, 0, 0);
+
+            const float listTopY = curY;
+            m_lastGraphScale = config.ScaleF(1.0f);
+            m_gitGraphViewportH = (std::max)(0.0f, clientHeight - listTopY);
+            const float totalGraphH = ComputeGitGraphTotalHeight(m_lastGraphScale);
+            m_gitGraphMaxScrollY = (std::max)(0.0f, totalGraphH - m_gitGraphViewportH);
+            m_gitGraphScrollY = (std::min)(m_gitGraphMaxScrollY, (std::max)(0.0f, m_gitGraphScrollY));
+
             // Clip to Graph scrollable area (cleanly bounded, never spills over)
-            D2D1_RECT_F rcGraphClip = D2D1::RectF(railW, curY, railW + currentDrawerW, clientHeight);
+            D2D1_RECT_F rcGraphClip = D2D1::RectF(railW, listTopY, railW + currentDrawerW, clientHeight);
             pRT->PushAxisAlignedClip(rcGraphClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             float rowH = config.ScaleF(26.0f);
+            float fileRowH = config.ScaleF(22.0f);
             float timelineX = railW + config.ScaleF(24.0f);
 
             // VS Code Git Graph multi-lane color palette (Image 2)
@@ -12503,12 +12579,13 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCloud;
             pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.741f, 0.576f, 0.976f, 1.0f) : D2D1::ColorF(0.50f, 0.18f, 0.75f, 1.0f), &brushCloud);
 
-            size_t startIdx = (std::min)(m_gitGraphScrollIdx, m_gitCommits.empty() ? size_t(0) : m_gitCommits.size() - 1);
-
             int maxLaneVisible = 0;
-            for (size_t k = startIdx; k < m_gitCommits.size(); ++k) {
-                maxLaneVisible = (std::max)(maxLaneVisible, m_gitCommits[k].lane);
-                for (int pl : m_gitCommits[k].passThroughLanes) {
+            for (const auto& cm : m_gitCommits) {
+                maxLaneVisible = (std::max)(maxLaneVisible, cm.lane);
+                for (int pl : cm.passThroughLanes) {
+                    maxLaneVisible = (std::max)(maxLaneVisible, pl);
+                }
+                for (int pl : cm.postCommitLanes) {
                     maxLaneVisible = (std::max)(maxLaneVisible, pl);
                 }
             }
@@ -12518,88 +12595,133 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             m_gitGraphOutgoingBounds = D2D1::RectF(0, 0, 0, 0);
             m_gitGraphOutgoingStageAllBounds = D2D1::RectF(0, 0, 0, 0);
 
-            for (size_t i = startIdx; i < m_gitCommits.size() && curY < clientHeight; ++i) {
+            curY = listTopY - m_gitGraphScrollY;
+            for (size_t i = 0; i < m_gitCommits.size(); ++i) {
                 auto& ci = m_gitCommits[i];
-                ci.bounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
+                const float expandedH = (ci.isExpanded && !ci.files.empty())
+                    ? (static_cast<float>(ci.files.size()) * fileRowH)
+                    : 0.0f;
+                const float commitBlockH = rowH + expandedH;
+                if (curY + commitBlockH <= listTopY) {
+                    curY += commitBlockH;
+                    continue;
+                }
+                if (curY >= clientHeight) {
+                    break;
+                }
+
+                const float commitTopY = curY;
+                const bool headerVisible = (curY + rowH > listTopY && curY < clientHeight);
+                ci.bounds = headerVisible
+                    ? D2D1::RectF(railW, (std::max)(curY, listTopY), railW + currentDrawerW, (std::min)(curY + rowH, clientHeight))
+                    : D2D1::RectF(0, 0, 0, 0);
                 bool isHovered = (static_cast<int>(i) == m_hoveredCommitIdx);
                 bool isSelected = (static_cast<int>(i) == m_selectedCommitIdx);
 
-                // Clip row to prevent any text leaking beyond drawer width
-                D2D1_RECT_F rcRowClip = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + rowH);
+                // Clip row to prevent any text leaking beyond drawer width or scrollable viewport
+                D2D1_RECT_F rcRowClip = headerVisible
+                    ? ci.bounds
+                    : D2D1::RectF(railW, listTopY, railW + currentDrawerW, listTopY);
                 pRT->PushAxisAlignedClip(rcRowClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-                if (isHovered || isSelected) {
+                if (headerVisible && (isHovered || isSelected)) {
                     pRT->FillRectangle(ci.bounds, isSelected ? theme.brushTreeSelected.Get() : theme.brushItemHover.Get());
                 }
 
                 float nodeY = curY + rowH / 2.0f;
                 float nodeX = originTimelineX + ci.lane * laneSpacing;
+                timelineX = nodeX;
                 ID2D1SolidColorBrush* pCommitBrush = laneBrushes[ci.colorIdx % 8].Get();
 
-                // 1. Pass-through vertical lines for other active lanes
-                for (int passLane : ci.passThroughLanes) {
-                    float plx = originTimelineX + passLane * laneSpacing;
-                    pRT->DrawLine(
-                        D2D1::Point2F(plx, curY),
-                        D2D1::Point2F(plx, curY + rowH),
-                        laneBrushes[passLane % 8].Get(), 1.6f
-                    );
-                }
+                const bool hasExpandedFiles = (ci.isExpanded && !ci.files.empty());
+                const bool hasOwnParentLane = (std::find(ci.parentLanes.begin(), ci.parentLanes.end(), ci.lane) != ci.parentLanes.end());
 
-                // 2. Incoming vertical line from newer commit above (only if connected)
-                bool hasIncoming = false;
-                if (i > 0) {
-                    for (int pl : m_gitCommits[i - 1].parentLanes) {
-                        if (pl == ci.lane) { hasIncoming = true; break; }
+                if (headerVisible) {
+                    // 1. Pass-through vertical lines for other active lanes
+                    for (int passLane : ci.passThroughLanes) {
+                        float plx = originTimelineX + passLane * laneSpacing;
+                        pRT->DrawLine(
+                            D2D1::Point2F(plx, curY),
+                            D2D1::Point2F(plx, curY + rowH),
+                            laneBrushes[passLane % 8].Get(), 1.6f
+                        );
                     }
-                    if (!hasIncoming) {
-                        for (int pl : m_gitCommits[i - 1].passThroughLanes) {
+
+                    // 2. Incoming vertical line from newer commit above (only if connected)
+                    bool hasIncoming = false;
+                    if (i > 0) {
+                        for (int pl : m_gitCommits[i - 1].parentLanes) {
                             if (pl == ci.lane) { hasIncoming = true; break; }
                         }
+                        if (!hasIncoming) {
+                            for (int pl : m_gitCommits[i - 1].passThroughLanes) {
+                                if (pl == ci.lane) { hasIncoming = true; break; }
+                            }
+                        }
+                        if (!hasIncoming) {
+                            for (int pl : m_gitCommits[i - 1].postCommitLanes) {
+                                if (pl == ci.lane) { hasIncoming = true; break; }
+                            }
+                        }
                     }
-                } else if (startIdx > 0 && !m_gitCommits.empty()) {
-                    hasIncoming = true;
-                }
 
-                if (hasIncoming) {
-                    pRT->DrawLine(
-                        D2D1::Point2F(nodeX, curY),
-                        D2D1::Point2F(nodeX, nodeY),
-                        pCommitBrush, 1.6f
-                    );
-                }
-
-                // 3. Outgoing connector lines to parent commits below
-                for (int pLane : ci.parentLanes) {
-                    float x1 = nodeX;
-                    float x2 = originTimelineX + pLane * laneSpacing;
-                    float y1 = nodeY;
-                    float y2 = curY + rowH;
-                    if (std::abs(x1 - x2) < 0.5f) {
+                    if (hasIncoming) {
                         pRT->DrawLine(
-                            D2D1::Point2F(x1, y1),
-                            D2D1::Point2F(x2, y2),
+                            D2D1::Point2F(nodeX, curY),
+                            D2D1::Point2F(nodeX, nodeY),
                             pCommitBrush, 1.6f
                         );
-                    } else {
-                        // Smooth Bézier S-curve matching VS Code Git Graph (Image 2)
-                        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
-                        pRT->GetFactory(&pFactory);
-                        if (pFactory) {
-                            Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
-                            if (SUCCEEDED(pFactory->CreatePathGeometry(&path)) && path) {
-                                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
-                                if (SUCCEEDED(path->Open(&sink)) && sink) {
-                                    sink->BeginFigure(D2D1::Point2F(x1, y1), D2D1_FIGURE_BEGIN_HOLLOW);
-                                    float midY = (y1 + y2) * 0.5f;
-                                    sink->AddBezier(D2D1::BezierSegment(
-                                        D2D1::Point2F(x1, midY),
-                                        D2D1::Point2F(x2, midY),
-                                        D2D1::Point2F(x2, y2)
-                                    ));
-                                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                                    sink->Close();
-                                    pRT->DrawGeometry(path.Get(), laneBrushes[pLane % 8].Get(), 1.6f);
+                    }
+
+                    // 3. Outgoing connector lines to parent commits below.
+                    // When this commit is expanded and shows files beneath it, always draw a vertical stem
+                    // at nodeX down into the file list so the stem never jogs; any merge-back curve to an
+                    // existing pass-through lane is drawn smoothly at the bottom of its final file row.
+                    if (hasExpandedFiles && !hasOwnParentLane) {
+                        pRT->DrawLine(
+                            D2D1::Point2F(nodeX, nodeY),
+                            D2D1::Point2F(nodeX, curY + rowH),
+                            pCommitBrush, 1.6f
+                        );
+                    }
+                    for (int pLane : ci.parentLanes) {
+                        if (hasExpandedFiles && !hasOwnParentLane &&
+                            std::find(ci.passThroughLanes.begin(), ci.passThroughLanes.end(), pLane) != ci.passThroughLanes.end()) {
+                            continue;
+                        }
+                        float x1 = nodeX;
+                        float x2 = originTimelineX + pLane * laneSpacing;
+                        float y1 = nodeY;
+                        float y2 = curY + rowH;
+                        bool isMergeBack = (pLane < ci.lane ||
+                            std::find(ci.passThroughLanes.begin(), ci.passThroughLanes.end(), pLane) != ci.passThroughLanes.end());
+                        ID2D1SolidColorBrush* pCurveBrush = isMergeBack ? pCommitBrush : laneBrushes[pLane % 8].Get();
+                        if (std::abs(x1 - x2) < 0.5f) {
+                            pRT->DrawLine(
+                                D2D1::Point2F(x1, y1),
+                                D2D1::Point2F(x2, y2),
+                                pCommitBrush, 1.6f
+                            );
+                        } else {
+                            // Smooth Bezier S-curve matching VS Code Git Graph
+                            Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                            pRT->GetFactory(&pFactory);
+                            if (pFactory) {
+                                Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+                                if (SUCCEEDED(pFactory->CreatePathGeometry(&path)) && path) {
+                                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                                    if (SUCCEEDED(path->Open(&sink)) && sink) {
+                                        sink->BeginFigure(D2D1::Point2F(x1, y1), D2D1_FIGURE_BEGIN_HOLLOW);
+                                        float midY = (y1 + y2) * 0.5f;
+                                        sink->AddBezier(D2D1::BezierSegment(
+                                            D2D1::Point2F(x1, midY),
+                                            D2D1::Point2F(x2, midY),
+                                            D2D1::Point2F(x2, y2)
+                                        ));
+                                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                        sink->Close();
+                                        pRT->DrawGeometry(path.Get(), pCurveBrush, 1.6f);
+                                    }
                                 }
                             }
                         }
@@ -12764,27 +12886,90 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 }
 
                 pRT->PopAxisAlignedClip();
-                curY += rowH;
+                if (!headerVisible) {
+                    ci.bounds = D2D1::RectF(0, 0, 0, 0);
+                    ci.chevronBounds = D2D1::RectF(0, 0, 0, 0);
+                    ci.openChangesBtnBounds = D2D1::RectF(0, 0, 0, 0);
+                }
+                curY = commitTopY + rowH;
 
-                // Render expanded commit changed files (Image 3)
-                if (ci.isExpanded) {
-                    float fileRowH = config.ScaleF(22.0f);
-                    float fileIndent = timelineX + config.ScaleF(8.0f);
+                // Render expanded commit changed files with uninterrupted continuing branch lanes
+                if (hasExpandedFiles) {
+                    float fileIndent = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(6.0f);
+                    const size_t fileCount = ci.files.size();
 
-                    for (auto& cf : ci.files) {
-                        if (curY + fileRowH > clientHeight) break;
-                        cf.bounds = D2D1::RectF(railW, curY, railW + currentDrawerW, curY + fileRowH);
-
-                        // File row vertical timeline connector
-                        pRT->DrawLine(
-                            D2D1::Point2F(timelineX, curY),
-                            D2D1::Point2F(timelineX, curY + fileRowH),
-                            pCommitBrush, 1.0f
+                    for (size_t fi = 0; fi < fileCount; ++fi) {
+                        auto& cf = ci.files[fi];
+                        if (curY + fileRowH <= listTopY) {
+                            curY += fileRowH;
+                            continue;
+                        }
+                        if (curY >= clientHeight) {
+                            break;
+                        }
+                        cf.bounds = D2D1::RectF(
+                            railW,
+                            (std::max)(curY, listTopY),
+                            railW + currentDrawerW,
+                            (std::min)(curY + fileRowH, clientHeight)
                         );
-                        // Small branch connecting timeline to file
+                        const bool isLastFile = (fi + 1 == fileCount);
+                        const float fileMidY = curY + fileRowH * 0.5f;
+
+                        // Draw all active post-commit lanes (including parallel branches) straight through this file row
+                        for (int postLane : ci.postCommitLanes) {
+                            float plx = originTimelineX + postLane * laneSpacing;
+                            pRT->DrawLine(
+                                D2D1::Point2F(plx, curY),
+                                D2D1::Point2F(plx, curY + fileRowH),
+                                laneBrushes[postLane % 8].Get(), 1.6f
+                            );
+                        }
+
+                        // If commit's own lane retired/merged at this commit, draw the vertical stem down to the
+                        // final file row and smoothly curve back into any continuing pass-through parent lane.
+                        if (!hasOwnParentLane) {
+                            float stemBottomY = isLastFile ? fileMidY : (curY + fileRowH);
+                            pRT->DrawLine(
+                                D2D1::Point2F(nodeX, curY),
+                                D2D1::Point2F(nodeX, stemBottomY),
+                                pCommitBrush, 1.6f
+                            );
+                            if (isLastFile) {
+                                for (int pLane : ci.parentLanes) {
+                                    if (std::find(ci.passThroughLanes.begin(), ci.passThroughLanes.end(), pLane) == ci.passThroughLanes.end()) {
+                                        continue;
+                                    }
+                                    float x2 = originTimelineX + pLane * laneSpacing;
+                                    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                                    pRT->GetFactory(&pFactory);
+                                    if (pFactory) {
+                                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+                                        if (SUCCEEDED(pFactory->CreatePathGeometry(&path)) && path) {
+                                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                                            if (SUCCEEDED(path->Open(&sink)) && sink) {
+                                                float y2 = curY + fileRowH;
+                                                float midY = (fileMidY + y2) * 0.5f;
+                                                sink->BeginFigure(D2D1::Point2F(nodeX, fileMidY), D2D1_FIGURE_BEGIN_HOLLOW);
+                                                sink->AddBezier(D2D1::BezierSegment(
+                                                    D2D1::Point2F(nodeX, midY),
+                                                    D2D1::Point2F(x2, midY),
+                                                    D2D1::Point2F(x2, y2)
+                                                ));
+                                                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                                sink->Close();
+                                                pRT->DrawGeometry(path.Get(), pCommitBrush, 1.6f);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Small horizontal tick connecting commit stem cleanly to file icon
                         pRT->DrawLine(
-                            D2D1::Point2F(timelineX, curY + fileRowH / 2.0f),
-                            D2D1::Point2F(fileIndent, curY + fileRowH / 2.0f),
+                            D2D1::Point2F(nodeX, fileMidY),
+                            D2D1::Point2F(fileIndent, fileMidY),
                             pCommitBrush, 1.0f
                         );
 
@@ -12870,21 +13055,54 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
                         curY += fileRowH;
                     }
+                    curY = commitTopY + commitBlockH;
                 }
             }
 
             if (m_gitGraphLimit < 400 && !m_gitCommits.empty() &&
                 (m_gitCommits.size() >= static_cast<size_t>(m_gitGraphLimit) || !m_gitGraphFilter.empty())) {
-                curY += config.ScaleF(4.0f);
-                float btnH = config.ScaleF(24.0f);
-                m_gitGraphLoadMoreBounds = D2D1::RectF(
-                    railW + config.ScaleF(12.0f), curY,
-                    railW + currentDrawerW - config.ScaleF(12.0f), curY + btnH);
-                pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitGraphLoadMoreBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
-                const wchar_t* lmLabel = L"Load More Commits (+40)";
-                pRT->DrawText(lmLabel, static_cast<UINT32>(wcslen(lmLabel)),
-                              theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
-                              m_gitGraphLoadMoreBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                float btnY = listTopY - m_gitGraphScrollY + totalGraphH - config.ScaleF(24.0f);
+                if (btnY + config.ScaleF(24.0f) > listTopY && btnY < clientHeight) {
+                    float btnH = config.ScaleF(24.0f);
+                    m_gitGraphLoadMoreBounds = D2D1::RectF(
+                        railW + config.ScaleF(12.0f), btnY,
+                        railW + currentDrawerW - config.ScaleF(12.0f), btnY + btnH);
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitGraphLoadMoreBounds, 3.0f, 3.0f), theme.brushItemHover.Get());
+                    const wchar_t* lmLabel = L"Load More Commits (+40)";
+                    pRT->DrawText(lmLabel, static_cast<UINT32>(wcslen(lmLabel)),
+                                  theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
+                                  m_gitGraphLoadMoreBounds, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+            }
+
+            // Render slim vertical scrollbar thumb on the Graph right edge when content exceeds viewport
+            if (m_gitGraphMaxScrollY > 0.5f && m_gitGraphViewportH > 0.0f) {
+                float sbW = config.ScaleF(4.0f);
+                m_gitGraphScrollbarTrack = D2D1::RectF(
+                    railW + currentDrawerW - sbW - config.ScaleF(2.0f),
+                    listTopY + config.ScaleF(2.0f),
+                    railW + currentDrawerW - config.ScaleF(2.0f),
+                    clientHeight - config.ScaleF(2.0f)
+                );
+                float trackH = m_gitGraphScrollbarTrack.bottom - m_gitGraphScrollbarTrack.top;
+                float ratio = m_gitGraphViewportH / (std::max)(1.0f, totalGraphH);
+                float thumbH = (std::max)(config.ScaleF(20.0f), trackH * ratio);
+                float scrollRatio = m_gitGraphScrollY / m_gitGraphMaxScrollY;
+                float thumbY = m_gitGraphScrollbarTrack.top + (trackH - thumbH) * scrollRatio;
+                m_gitGraphScrollbarThumb = D2D1::RectF(
+                    m_gitGraphScrollbarTrack.left,
+                    thumbY,
+                    m_gitGraphScrollbarTrack.right,
+                    thumbY + thumbH
+                );
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sbBrush;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f),
+                    &sbBrush
+                );
+                if (sbBrush) {
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_gitGraphScrollbarThumb, sbW * 0.5f, sbW * 0.5f), sbBrush.Get());
+                }
             }
 
             pRT->PopAxisAlignedClip();

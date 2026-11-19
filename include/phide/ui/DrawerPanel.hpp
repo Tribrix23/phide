@@ -244,6 +244,9 @@ struct GitCommitItem {
     int colorIdx = 0;
     std::vector<int> parentLanes;
     std::vector<int> passThroughLanes;
+    // Active lanes that continue *below* this commit's header row (and through any expanded file rows).
+    // Populated by ComputeGitGraphLanes so continuing branches don't get cut off under expanded commits.
+    std::vector<int> postCommitLanes;
     std::vector<GitCommitFile> files;
     D2D1_RECT_F bounds{};
     D2D1_RECT_F chevronBounds{};
@@ -327,7 +330,7 @@ public:
     }
     void SetGitGraphFilter(const std::wstring& f) {
         m_gitGraphFilter = f;
-        m_gitGraphScrollIdx = 0;
+        m_gitGraphScrollY = 0.0f;
         RefreshGitState(true, true);
     }
     [[nodiscard]] const std::wstring& GetGitGraphFilter() const noexcept { return m_gitGraphFilter; }
@@ -409,6 +412,18 @@ public:
     void LoadCommitFiles(GitCommitItem& ci);
     void LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash);
     static void ComputeGitGraphLanes(std::vector<GitCommitItem>& commits);
+    /**
+     * @brief Computes total vertical pixel height of the Source Control Graph list
+     *        including expanded commit file rows and optional "Load More" button.
+     */
+    [[nodiscard]] float ComputeGitGraphTotalHeight(float scale) const noexcept;
+    void SetGitGraphViewportHeightForLayout(float viewportH, float scale = 1.0f) noexcept {
+        m_gitGraphViewportH = (std::max)(0.0f, viewportH);
+        m_lastGraphScale = (scale > 0.0f) ? scale : 1.0f;
+        m_gitGraphMaxScrollY = (std::max)(0.0f, ComputeGitGraphTotalHeight(m_lastGraphScale) - m_gitGraphViewportH);
+    }
+    [[nodiscard]] float GetGitGraphScrollY() const noexcept { return m_gitGraphScrollY; }
+    [[nodiscard]] float GetGitGraphMaxScrollY() const noexcept { return m_gitGraphMaxScrollY; }
     bool HandleGitMouseMove(POINT pt, bool isLButtonDown = false, Theme* pTheme = nullptr, const app::AppConfig* pConfig = nullptr);
     bool HandleGitMouseDown(POINT pt, bool isShift, Theme& theme, const app::AppConfig& config);
     bool HandleGitMouseUp(POINT pt);
@@ -1614,7 +1629,13 @@ private:
     D2D1_RECT_F m_gitHubLoginCloseBtnBounds{};
     std::function<void()> m_onRequireGitHubLogin;
 
-    size_t m_gitGraphScrollIdx = 0;
+    // Smooth vertical pixel scroll offset and maximum scroll range for the Source Control Graph list.
+    float m_gitGraphScrollY = 0.0f;
+    float m_gitGraphMaxScrollY = 0.0f;
+    float m_gitGraphViewportH = 0.0f;
+    float m_lastGraphScale = 1.0f;
+    D2D1_RECT_F m_gitGraphScrollbarTrack{};
+    D2D1_RECT_F m_gitGraphScrollbarThumb{};
     size_t m_gitChangesScrollIdx = 0;
     int m_hoveredGitChangeIdx = -1;
     int m_hoveredGitCommitIdx = -1;
