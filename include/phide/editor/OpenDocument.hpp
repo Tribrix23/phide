@@ -21,6 +21,7 @@
 
 namespace phide::ui {
 struct StructuredViewerState;
+struct AssetViewerState;
 }
 
 namespace phide::editor {
@@ -1325,15 +1326,21 @@ struct OpenDocument {
 
     // Syntax Error Diagnostics & Hover Popover State
     std::vector<phide::lsp::Diagnostic> diagnostics;   ///< Diagnostic errors and warnings for this document
+    std::vector<phide::lsp::Diagnostic> unusedSymbolHints; ///< Cached local unused-import/variable fade hints (severity 4)
+    uint64_t cachedUnusedHintsVersion = UINT64_MAX;
+    std::wstring cachedUnusedHintsTarget;
     size_t hoveredDiagnosticLine = static_cast<size_t>(-1); ///< Line of currently hovered diagnostic error
     D2D1_RECT_F diagnosticTooltipBounds{};             ///< Hitbox of floating diagnostic error tooltip
 
-    // Picture Viewer State (Image 2)
+    // Picture Viewer & Asset Viewer State (#5)
     bool isImageView = false;           ///< True if this document is displaying a picture/image file
+    bool isFontView = false;            ///< True if this document is displaying a font asset (.ttf/.otf/.woff/.woff2)
+    bool svgSplitPreview = false;       ///< True if .svg file displays live Direct2D preview side-by-side with XML
     Microsoft::WRL::ComPtr<ID2D1Bitmap> pImageBitmap; ///< Decoded Direct2D bitmap
     UINT imageWidth = 0;                ///< Pixel width of the decoded image
     UINT imageHeight = 0;               ///< Pixel height of the decoded image
     uint64_t imageFileSize = 0;         ///< File size on disk in bytes
+    std::shared_ptr<phide::ui::AssetViewerState> assetView; ///< Bounded RAII state for Image/SVG/Font asset viewers
 
     // Unsupported Binary File View State (Image 2)
     bool isUnsupportedBinary = false;    ///< True if this document is an unsupported binary file (e.g. .exe, .dll, video)
@@ -1688,6 +1695,7 @@ struct OpenDocument {
         std::vector<CachedVisualLine>().swap(visualLineCache.lines);
         std::set<size_t>().swap(visualLineCache.foldedLines);
         structuredView.reset();
+        assetView.reset();
         pImageBitmap.Reset();
         buffer.RunGarbageCollection();
     }

@@ -1269,6 +1269,24 @@ void LspClient::HandleIncomingJsonMessage(const std::string& jsonText) {
                     }
                 }
                 if (item.length == 0) item.length = 1;
+                if (const JsonValue* tags = d.Get("tags"); tags && tags->type == JsonValue::Type::Array) {
+                    for (const auto& tv : tags->arrVal) {
+                        if (tv.type == JsonValue::Type::Number && static_cast<long long>(tv.numVal) == 1) {
+                            item.isUnnecessary = true;
+                            break;
+                        }
+                    }
+                }
+                if (!item.isUnnecessary && !item.message.empty()) {
+                    std::wstring msgLow = ToLowerW(item.message);
+                    if (msgLow.find(L"is unused") != std::wstring::npos ||
+                        msgLow.find(L"imported but unused") != std::wstring::npos ||
+                        msgLow.find(L"never read") != std::wstring::npos ||
+                        msgLow.find(L"never used") != std::wstring::npos ||
+                        msgLow.find(L"is not accessed") != std::wstring::npos) {
+                        item.isUnnecessary = true;
+                    }
+                }
                 if (!item.message.empty()) {
                     diags.push_back(std::move(item));
                 }

@@ -19,6 +19,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <atomic>
 #include <condition_variable>
@@ -952,6 +953,13 @@ private:
     // Workspace .env + Live MySQL Schema IntelliSense
     void RefreshWorkspaceEnvVars();
     void RefreshDatabaseSchemaAsync();
+    void SyncActiveSqlSchemaToIntelliSense();
+    void RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector<lsp::Diagnostic>& diags) const;
+    void RefreshEnvDriftDiagnostics();
+    void DoSyncEnvKeysToExample();
+    std::unordered_set<std::wstring> m_cachedKnownEnvKeys;
+    bool m_hasWorkspaceEnvFile = false;
+    std::vector<editor::ProblemEntry> m_envDriftProblems;
     std::atomic<bool> m_isRefreshingDbSchema{false};
     std::atomic<bool> m_isDestroying{false};
     std::mutex m_bgWorkersMutex;

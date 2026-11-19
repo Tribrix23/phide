@@ -8,6 +8,7 @@
 #include "phide/editor/SnippetManager.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include "phide/editor/AdaptiveCodeEngine.hpp"
+#include "phide/editor/HostSqlAnalyzer.hpp"
 #include "phide/plugin/PluginManager.hpp"
 #include <algorithm>
 #include <chrono>
@@ -2841,7 +2842,8 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     const std::wstring& fileName,
     const std::wstring& currentLine,
     size_t cursorCol,
-    const std::vector<std::wstring>* pDocLines
+    const std::vector<std::wstring>* pDocLines,
+    size_t cursorLine
 ) const {
     // Suppress all completions when cursor is inside a line comment or comment block
     std::wstring lowerFile = fileName;
@@ -3293,6 +3295,32 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         return false;
     };
     bool isSqlContext = isSqlFile || hasSqlToken(currentLine);
+    HostSqlCursorContext hostSqlCtx{};
+    size_t resolvedCursorLine = cursorLine;
+    if (resolvedCursorLine == static_cast<size_t>(-1) && pDocLines && !pDocLines->empty()) {
+        for (size_t li = 0; li < pDocLines->size(); ++li) {
+            if (&(*pDocLines)[li] == &currentLine) {
+                resolvedCursorLine = li;
+                break;
+            }
+        }
+        // If currentLine was passed by copy, try locating exact unique match around end
+        if (resolvedCursorLine == static_cast<size_t>(-1)) {
+            for (size_t li = 0; li < pDocLines->size(); ++li) {
+                if ((*pDocLines)[li] == currentLine) {
+                    resolvedCursorLine = li;
+                    break;
+                }
+            }
+        }
+    }
+    if (pDocLines && resolvedCursorLine < pDocLines->size() &&
+        HostSqlAnalyzer::IsSupportedHostExtension(ext)) {
+        hostSqlCtx = HostSqlAnalyzer::ExtractContextAtCursor(*pDocLines, resolvedCursorLine, cursorCol);
+        if (hostSqlCtx.inSqlString) {
+            isSqlContext = true;
+        }
+    }
     if (!isSqlContext && isInsideQuotes && pDocLines && !pDocLines->empty()) {
         size_t checked = 0;
         for (const auto& dl : *pDocLines) {
@@ -3318,7 +3346,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool pyImportTrigger = isPy && (TrimWs(currentLine).rfind(L"import ", 0) == 0 || TrimWs(currentLine).rfind(L"from ", 0) == 0)
                            && cursorCol > 0 && cursorCol <= currentLine.length() && currentLine[cursorCol - 1] == L' ';
     bool envTrigger = isEnvKeyContext && (afterDot || (isInsideQuotes && openQuotePos != std::wstring::npos && cursorCol >= openQuotePos));
-    bool sqlDotTrigger = isSqlContext && afterDot;
+    bool sqlDotTrigger = isSqlContext && (afterDot || (hostSqlCtx.inSqlString &&
+        (hostSqlCtx.expectation == HostSqlExpectation::TableName ||
+         hostSqlCtx.expectation == HostSqlExpectation::QualifiedColumn)));
     if (prefixLower.empty() && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle && !insideServerKey && !insideJsImportClause && !pyImportTrigger && !quoteAttrTrigger && !envTrigger && !sqlDotTrigger) {
         return {};
     }
@@ -3349,7 +3379,13 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
         if (isSqlContext) {
             std::wstring tableQualifier;
-            if (afterDot && beforePos >= 2) {
+            if (hostSqlCtx.inSqlString && hostSqlCtx.expectation == HostSqlExpectation::QualifiedColumn &&
+                !hostSqlCtx.qualifier.empty()) {
+                std::wstring qLow = hostSqlCtx.qualifier;
+                for (auto& cQ : qLow) cQ = static_cast<wchar_t>(towlower(cQ));
+                auto aIt = hostSqlCtx.aliasToTable.find(qLow);
+                tableQualifier = (aIt != hostSqlCtx.aliasToTable.end()) ? aIt->second : hostSqlCtx.qualifier;
+            } else if (afterDot && beforePos >= 2) {
                 size_t qEnd = beforePos - 1;
                 size_t qStart = qEnd;
                 while (qStart > 0 && (iswalnum(currentLine[qStart - 1]) || currentLine[qStart - 1] == L'_')) {
@@ -3357,6 +3393,10 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 }
                 if (qEnd > qStart) {
                     tableQualifier = currentLine.substr(qStart, qEnd - qStart);
+                    std::wstring qLow = tableQualifier;
+                    for (auto& cQ : qLow) cQ = static_cast<wchar_t>(towlower(cQ));
+                    auto aIt = hostSqlCtx.aliasToTable.find(qLow);
+                    if (aIt != hostSqlCtx.aliasToTable.end()) tableQualifier = aIt->second;
                 }
             }
 
@@ -3371,7 +3411,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         item.insertText = col.columnName;
                         item.kind = CompletionKind::Property;
                         item.origin = L"db-schema";
-                        item.score = 4200;
+                        item.score = 4400;
                         sqlItems.push_back(std::move(item));
                     }
                 }
@@ -3380,6 +3420,14 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     pyExclusiveItems = std::move(sqlItems);
                 }
             } else {
+                std::unordered_set<std::wstring> refTablesLower;
+                for (const auto& rt : hostSqlCtx.referencedTables) {
+                    std::wstring rtl = rt;
+                    for (auto& cR : rtl) cR = static_cast<wchar_t>(towlower(cR));
+                    refTablesLower.insert(std::move(rtl));
+                }
+                const bool wantTables = (hostSqlCtx.inSqlString && hostSqlCtx.expectation == HostSqlExpectation::TableName);
+
                 std::unordered_set<std::wstring> addedTables;
                 std::wstring dbLabel = m_dbName.empty() ? L"MySQL" : m_dbName;
                 for (const auto& col : m_dbSchema) {
@@ -3392,24 +3440,28 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         tItem.insertText = col.tableName;
                         tItem.kind = CompletionKind::Class;
                         tItem.origin = L"db-schema";
-                        tItem.score = 3400;
+                        tItem.score = wantTables ? 4300 : 3500;
                         sqlItems.push_back(std::move(tItem));
                     }
-                    IntelliSenseItem cItem;
-                    cItem.label = col.columnName;
-                    cItem.detail = col.tableName + L"." + col.columnName + L" (" + col.dataType + L")" +
-                                   (col.keyType.empty() ? L"" : (L" [" + col.keyType + L"]"));
-                    cItem.insertText = col.columnName;
-                    cItem.kind = CompletionKind::Property;
-                    cItem.origin = L"db-schema";
-                    cItem.score = 3200;
-                    sqlItems.push_back(std::move(cItem));
+                    if (!wantTables) {
+                        const bool inRefTable = refTablesLower.count(tLow) > 0;
+                        IntelliSenseItem cItem;
+                        cItem.label = col.columnName;
+                        cItem.detail = col.tableName + L"." + col.columnName + L" (" + col.dataType + L")" +
+                                       (col.keyType.empty() ? L"" : (L" [" + col.keyType + L"]"));
+                        cItem.insertText = col.columnName;
+                        cItem.kind = CompletionKind::Property;
+                        cItem.origin = L"db-schema";
+                        cItem.score = inRefTable ? 4100 : (refTablesLower.empty() ? 3300 : 2800);
+                        sqlItems.push_back(std::move(cItem));
+                    }
                 }
-                if (isSqlFile) {
+                if (isSqlFile || hostSqlCtx.inSqlString) {
                     static const wchar_t* kSqlKwList[] = {
                         L"SELECT", L"FROM", L"WHERE", L"JOIN", L"LEFT JOIN", L"INNER JOIN",
-                        L"INSERT INTO", L"VALUES", L"UPDATE", L"SET", L"DELETE FROM",
-                        L"ORDER BY", L"GROUP BY", L"HAVING", L"LIMIT", L"OFFSET",
+                        L"ON", L"AND", L"OR", L"INSERT INTO", L"VALUES", L"UPDATE", L"SET",
+                        L"DELETE FROM", L"ORDER BY", L"GROUP BY", L"HAVING", L"LIMIT", L"OFFSET",
+                        L"COUNT", L"COALESCE", L"AS", L"DISTINCT", L"IN", L"IS NULL", L"IS NOT NULL",
                         L"CREATE TABLE", L"ALTER TABLE", L"DROP TABLE", L"PRIMARY KEY",
                         L"AUTO_INCREMENT", L"NOT NULL", L"VARCHAR", L"INT", L"BIGINT",
                         L"TEXT", L"DATETIME", L"TIMESTAMP", L"BOOLEAN"
@@ -3418,7 +3470,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         sqlItems.push_back({ sk, L"SQL Keyword", sk, CompletionKind::Keyword, 2200, 0, 0, L"sql" });
                     }
                 }
-                if (isSqlFile || (isInsideQuotes && !sqlItems.empty())) {
+                if (isSqlFile || ((isInsideQuotes || hostSqlCtx.inSqlString) && !sqlItems.empty())) {
                     pyExclusive = true;
                     pyExclusiveItems = std::move(sqlItems);
                 } else {

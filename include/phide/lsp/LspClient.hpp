@@ -33,6 +33,7 @@ struct Diagnostic {
     int severity = 1; // 1 = Error, 2 = Warning, 3 = Info, 4 = Hint
     std::wstring source;
     std::wstring code;
+    bool isUnnecessary = false;
 };
 
 enum class TextDocumentSyncKind {

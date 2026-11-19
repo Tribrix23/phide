@@ -109,7 +109,8 @@ public:
         const std::wstring& fileName,
         const std::wstring& currentLine,
         size_t cursorCol,
-        const std::vector<std::wstring>* pDocLines = nullptr
+        const std::vector<std::wstring>* pDocLines = nullptr,
+        size_t cursorLine = static_cast<size_t>(-1)
     ) const;
 
     /**

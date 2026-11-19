@@ -21,6 +21,468 @@ namespace phide::editor {
 
 namespace {
 
+[[nodiscard]] bool IsIdentStartSv(wchar_t c) noexcept {
+    return iswalpha(c) || c == L'_';
+}
+
+[[nodiscard]] bool IsIdentCharSv(wchar_t c) noexcept {
+    return iswalnum(c) || c == L'_';
+}
+
+/**
+ * @brief Counts identifier token occurrences across a Python buffer outside strings and comments.
+ *        Also extracts identifiers referenced inside `__all__ = [...]`.
+ */
+void CollectPythonIdentCounts(
+    const Buffer& buffer,
+    std::unordered_map<std::wstring, size_t>& outCounts,
+    std::unordered_set<std::wstring>& outExportedAll) {
+    bool inTriple = false;
+    wchar_t tCh = 0;
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+        bool inSgl = false;
+        wchar_t sCh = 0;
+        const bool isAllLine = (line.find(L"__all__") != std::wstring::npos);
+        for (size_t c = 0; c < line.size();) {
+            wchar_t ch = line[c];
+            if (inTriple) {
+                if (ch == tCh && c + 2 < line.size() && line[c + 1] == tCh && line[c + 2] == tCh) {
+                    inTriple = false;
+                    c += 3;
+                } else {
+                    ++c;
+                }
+                continue;
+            }
+            if (inSgl) {
+                if (ch == L'\\') { c += 2; continue; }
+                if (ch == sCh) { inSgl = false; ++c; continue; }
+                if (isAllLine && IsIdentStartSv(ch)) {
+                    size_t st = c;
+                    while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                    outExportedAll.insert(line.substr(st, c - st));
+                    continue;
+                }
+                ++c;
+                continue;
+            }
+            if ((ch == L'"' || ch == L'\'') && c + 2 < line.size() && line[c + 1] == ch && line[c + 2] == ch) {
+                inTriple = true;
+                tCh = ch;
+                c += 3;
+                continue;
+            }
+            if (ch == L'"' || ch == L'\'') {
+                inSgl = true;
+                sCh = ch;
+                ++c;
+                continue;
+            }
+            if (ch == L'#') break;
+            if (IsIdentStartSv(ch)) {
+                size_t st = c++;
+                while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                outCounts[line.substr(st, c - st)]++;
+                continue;
+            }
+            ++c;
+        }
+    }
+}
+
+void AppendPythonUnusedDiagnostics(const Buffer& buffer, std::vector<lsp::Diagnostic>& diagnostics) {
+    static const std::unordered_set<std::wstring> kSkip = {
+        L"self", L"cls", L"_", L"__all__", L"__version__", L"__author__", L"True", L"False", L"None",
+        L"if", L"else", L"elif", L"for", L"while", L"in", L"return", L"import", L"from", L"as", L"with",
+        L"def", L"class", L"try", L"except", L"finally", L"raise", L"pass", L"break", L"continue", L"global", L"nonlocal"
+    };
+
+    std::unordered_map<std::wstring, size_t> counts;
+    std::unordered_set<std::wstring> exportedAll;
+    CollectPythonIdentCounts(buffer, counts, exportedAll);
+
+    struct ImportBinding {
+        std::wstring bound;
+        size_t itemCol = 0;
+        size_t itemLen = 0;
+    };
+
+    int pyParenDepth = 0;
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& raw = buffer.GetLine(l);
+        if (raw.find(L"# noqa") != std::wstring::npos) {
+            for (wchar_t ch : raw) {
+                if (ch == L'(' || ch == L'[' || ch == L'{') ++pyParenDepth;
+                else if ((ch == L')' || ch == L']' || ch == L'}') && pyParenDepth > 0) --pyParenDepth;
+            }
+            continue;
+        }
+
+        std::wstring code = raw;
+        {
+            bool inQ = false;
+            wchar_t qCh = 0;
+            for (size_t i = 0; i < raw.size(); ++i) {
+                wchar_t ch = raw[i];
+                if (!inQ && (ch == L'"' || ch == L'\'')) { inQ = true; qCh = ch; }
+                else if (inQ && ch == L'\\') { ++i; }
+                else if (inQ && ch == qCh) { inQ = false; }
+                else if (!inQ && ch == L'#') { code = raw.substr(0, i); break; }
+            }
+        }
+        size_t lead = 0;
+        while (lead < code.size() && (code[lead] == L' ' || code[lead] == L'\t')) ++lead;
+        size_t codeEnd = code.size();
+        while (codeEnd > lead && (code[codeEnd - 1] == L' ' || code[codeEnd - 1] == L'\t')) --codeEnd;
+        if (codeEnd <= lead) continue;
+        std::wstring trimmed = code.substr(lead, codeEnd - lead);
+
+        if (trimmed.rfind(L"import ", 0) == 0 || trimmed.rfind(L"from ", 0) == 0) {
+            if (trimmed.find(L"__future__") != std::wstring::npos || trimmed.find(L'*') != std::wstring::npos) {
+                continue;
+            }
+            std::vector<ImportBinding> items;
+            size_t parseStart = 0;
+            if (trimmed.rfind(L"from ", 0) == 0) {
+                size_t impPos = trimmed.find(L" import ");
+                if (impPos == std::wstring::npos) continue;
+                parseStart = lead + impPos + 8;
+            } else {
+                parseStart = lead + 7;
+            }
+
+            size_t p = parseStart;
+            while (p < codeEnd) {
+                while (p < codeEnd && (code[p] == L' ' || code[p] == L',' || code[p] == L'(' || code[p] == L')')) ++p;
+                if (p >= codeEnd) break;
+                size_t itemStart = p;
+                size_t modStart = p;
+                while (p < codeEnd && (IsIdentCharSv(code[p]) || code[p] == L'.')) ++p;
+                if (p == modStart) { ++p; continue; }
+                std::wstring fullMod = code.substr(modStart, p - modStart);
+                size_t dotPos = fullMod.find(L'.');
+                std::wstring bound = (dotPos != std::wstring::npos && trimmed.rfind(L"import ", 0) == 0)
+                    ? fullMod.substr(0, dotPos) : fullMod;
+
+                size_t sp = p;
+                while (sp < codeEnd && code[sp] == L' ') ++sp;
+                if (sp + 3 <= codeEnd && code.compare(sp, 3, L"as ") == 0) {
+                    p = sp + 3;
+                    while (p < codeEnd && code[p] == L' ') ++p;
+                    size_t alStart = p;
+                    while (p < codeEnd && IsIdentCharSv(code[p])) ++p;
+                    if (p > alStart) bound = code.substr(alStart, p - alStart);
+                }
+                if (!bound.empty() && kSkip.find(bound) == kSkip.end()) {
+                    items.push_back({ bound, itemStart, p - itemStart });
+                }
+            }
+
+            if (items.empty()) continue;
+            std::vector<size_t> unusedIdxs;
+            for (size_t idx = 0; idx < items.size(); ++idx) {
+                const auto& it = items[idx];
+                if (exportedAll.count(it.bound)) continue;
+                if (counts[it.bound] <= 1) {
+                    unusedIdxs.push_back(idx);
+                }
+            }
+            if (unusedIdxs.size() == items.size()) {
+                lsp::Diagnostic d;
+                d.line = l;
+                d.col = lead;
+                d.length = codeEnd - lead;
+                d.severity = 4;
+                d.source = L"Python";
+                d.code = L"unused-import";
+                d.isUnnecessary = true;
+                d.message = L"Python: '" + items[0].bound + L"' is imported but unused";
+                diagnostics.push_back(std::move(d));
+            } else {
+                for (size_t uidx : unusedIdxs) {
+                    const auto& it = items[uidx];
+                    lsp::Diagnostic d;
+                    d.line = l;
+                    d.col = it.itemCol;
+                    d.length = (std::max<size_t>)(1, it.itemLen);
+                    d.severity = 4;
+                    d.source = L"Python";
+                    d.code = L"unused-import";
+                    d.isUnnecessary = true;
+                    d.message = L"Python: '" + it.bound + L"' is imported but unused";
+                    diagnostics.push_back(std::move(d));
+                }
+            }
+            continue;
+        }
+
+        const int lineStartDepth = pyParenDepth;
+        for (size_t i = lead; i < codeEnd; ++i) {
+            wchar_t ch = code[i];
+            if (ch == L'(' || ch == L'[' || ch == L'{') ++pyParenDepth;
+            else if ((ch == L')' || ch == L']' || ch == L'}') && pyParenDepth > 0) --pyParenDepth;
+        }
+
+        if (lineStartDepth == 0 && IsIdentStartSv(code[lead]) && code[codeEnd - 1] != L',') {
+            size_t p = lead;
+            while (p < codeEnd && IsIdentCharSv(code[p])) ++p;
+            std::wstring lhs = code.substr(lead, p - lead);
+            if (!lhs.empty() && lhs[0] != L'_' && kSkip.find(lhs) == kSkip.end() && !exportedAll.count(lhs)) {
+                bool allUpper = true;
+                for (wchar_t uc : lhs) {
+                    if (iswalpha(uc) && !iswupper(uc)) { allUpper = false; break; }
+                }
+                if (!allUpper) {
+                    size_t q = p;
+                    while (q < codeEnd && (code[q] == L' ' || code[q] == L'\t')) ++q;
+                    if (q < codeEnd && code[q] == L':') {
+                        size_t eqPos = code.find(L'=', q + 1);
+                        if (eqPos != std::wstring::npos && eqPos < codeEnd) q = eqPos;
+                    }
+                    if (q < codeEnd && code[q] == L'=' && (q + 1 >= codeEnd || code[q + 1] != L'=')) {
+                        if (counts[lhs] <= 1) {
+                            lsp::Diagnostic d;
+                            d.line = l;
+                            d.col = lead;
+                            d.length = lhs.size();
+                            d.severity = 4;
+                            d.source = L"Python";
+                            d.code = L"unused-variable";
+                            d.isUnnecessary = true;
+                            d.message = L"Python: '" + lhs + L"' is assigned but never used";
+                            diagnostics.push_back(std::move(d));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void AppendJsUnusedDiagnostics(const Buffer& buffer, size_t startLine, size_t endLine, bool isJsx,
+                               std::vector<lsp::Diagnostic>& diagnostics) {
+    const size_t lineCount = buffer.GetLineCount();
+    const size_t effEnd = (std::min)(endLine, lineCount);
+    if (startLine != 0 || effEnd < lineCount || effEnd == 0) return;
+    std::unordered_map<std::wstring, size_t> counts;
+    bool inBlk = false;
+    for (size_t l = 0; l < effEnd; ++l) {
+        const auto& line = buffer.GetLine(l);
+        bool inS = false;
+        wchar_t sCh = 0;
+        for (size_t c = 0; c < line.size();) {
+            wchar_t ch = line[c];
+            if (inBlk) {
+                if (ch == L'*' && c + 1 < line.size() && line[c + 1] == L'/') { inBlk = false; c += 2; }
+                else ++c;
+                continue;
+            }
+            if (inS) {
+                if (ch == L'\\') { c += 2; continue; }
+                if (ch == sCh) inS = false;
+                ++c;
+                continue;
+            }
+            if (ch == L'/' && c + 1 < line.size() && line[c + 1] == L'/') break;
+            if (ch == L'/' && c + 1 < line.size() && line[c + 1] == L'*') { inBlk = true; c += 2; continue; }
+            if (ch == L'"' || ch == L'\'' || ch == L'`') { inS = true; sCh = ch; ++c; continue; }
+            if (iswalpha(ch) || ch == L'_' || ch == L'$') {
+                size_t st = c++;
+                while (c < line.size() && (iswalnum(line[c]) || line[c] == L'_' || line[c] == L'$')) ++c;
+                counts[line.substr(st, c - st)]++;
+                continue;
+            }
+            ++c;
+        }
+    }
+
+    for (size_t l = 0; l < effEnd; ++l) {
+        const auto& raw = buffer.GetLine(l);
+        size_t lead = 0;
+        while (lead < raw.size() && iswspace(raw[lead])) ++lead;
+        if (lead >= raw.size()) continue;
+        std::wstring trimmed = raw.substr(lead);
+        if (trimmed.rfind(L"export ", 0) == 0) continue;
+
+        if (trimmed.rfind(L"import ", 0) == 0) {
+            size_t fromPos = trimmed.find(L" from ");
+            if (fromPos == std::wstring::npos) continue;
+            std::wstring clause = trimmed.substr(7, fromPos - 7);
+            std::vector<std::pair<std::wstring, std::pair<size_t, size_t>>> bindings;
+            size_t bOpen = clause.find(L'{');
+            size_t bClose = (bOpen != std::wstring::npos) ? clause.find(L'}', bOpen) : std::wstring::npos;
+            size_t defEnd = (bOpen != std::wstring::npos) ? bOpen : clause.size();
+            {
+                std::wstring head = clause.substr(0, defEnd);
+                size_t asPos = head.find(L" as ");
+                if (asPos != std::wstring::npos) {
+                    size_t p = asPos + 4;
+                    while (p < head.size() && iswspace(head[p])) ++p;
+                    size_t st = p;
+                    while (p < head.size() && (iswalnum(head[p]) || head[p] == L'_' || head[p] == L'$')) ++p;
+                    if (p > st) bindings.push_back({ head.substr(st, p - st), { lead + 7 + st, p - st } });
+                } else {
+                    size_t p = 0;
+                    while (p < head.size() && (iswspace(head[p]) || head[p] == L',')) ++p;
+                    size_t st = p;
+                    while (p < head.size() && (iswalnum(head[p]) || head[p] == L'_' || head[p] == L'$')) ++p;
+                    std::wstring nm = (p > st) ? head.substr(st, p - st) : L"";
+                    if (!nm.empty() && nm != L"type") {
+                        bindings.push_back({ nm, { lead + 7 + st, p - st } });
+                    }
+                }
+            }
+            if (bOpen != std::wstring::npos && bClose != std::wstring::npos) {
+                size_t p = bOpen + 1;
+                while (p < bClose) {
+                    while (p < bClose && (iswspace(clause[p]) || clause[p] == L',')) ++p;
+                    if (p >= bClose) break;
+                    size_t itemStart = p;
+                    size_t st = p;
+                    while (p < bClose && (iswalnum(clause[p]) || clause[p] == L'_' || clause[p] == L'$')) ++p;
+                    if (p == st) { ++p; continue; }
+                    std::wstring sym = clause.substr(st, p - st);
+                    while (p < bClose && iswspace(clause[p])) ++p;
+                    if (p + 3 <= bClose && clause.compare(p, 3, L"as ") == 0) {
+                        p += 3;
+                        while (p < bClose && iswspace(clause[p])) ++p;
+                        size_t alS = p;
+                        while (p < bClose && (iswalnum(clause[p]) || clause[p] == L'_' || clause[p] == L'$')) ++p;
+                        if (p > alS) sym = clause.substr(alS, p - alS);
+                    }
+                    if (!sym.empty() && sym != L"type") {
+                        bindings.push_back({ sym, { lead + 7 + itemStart, p - itemStart } });
+                    }
+                }
+            }
+            if (bindings.empty()) continue;
+            size_t unusedCnt = 0;
+            for (const auto& b : bindings) {
+                if (isJsx && b.first == L"React") continue;
+                if (b.first[0] != L'_' && counts[b.first] <= 1) ++unusedCnt;
+            }
+            if (unusedCnt > 0 && unusedCnt == bindings.size()) {
+                size_t lineEnd = raw.size();
+                while (lineEnd > lead && iswspace(raw[lineEnd - 1])) --lineEnd;
+                diagnostics.push_back({ l, lead, lineEnd - lead,
+                    L"JS/TS: '" + bindings[0].first + L"' is declared but never used",
+                    4, L"JS/TS", L"unused-import", true });
+            } else {
+                for (const auto& b : bindings) {
+                    if (isJsx && b.first == L"React") continue;
+                    if (b.first[0] != L'_' && counts[b.first] <= 1) {
+                        diagnostics.push_back({ l, b.second.first, (std::max<size_t>)(1, b.second.second),
+                            L"JS/TS: '" + b.first + L"' is declared but never used",
+                            4, L"JS/TS", L"unused-import", true });
+                    }
+                }
+            }
+            continue;
+        }
+
+        size_t kwLen = 0;
+        if (trimmed.rfind(L"const ", 0) == 0) kwLen = 6;
+        else if (trimmed.rfind(L"let ", 0) == 0) kwLen = 4;
+        else if (trimmed.rfind(L"var ", 0) == 0) kwLen = 4;
+        if (kwLen > 0) {
+            size_t p = kwLen;
+            while (p < trimmed.size() && iswspace(trimmed[p])) ++p;
+            if (p < trimmed.size() && (iswalpha(trimmed[p]) || trimmed[p] == L'_' || trimmed[p] == L'$')) {
+                size_t st = p++;
+                while (p < trimmed.size() && (iswalnum(trimmed[p]) || trimmed[p] == L'_' || trimmed[p] == L'$')) ++p;
+                std::wstring vname = trimmed.substr(st, p - st);
+                if (!vname.empty() && vname[0] != L'_' && counts[vname] <= 1) {
+                    size_t q = p;
+                    while (q < trimmed.size() && iswspace(trimmed[q])) ++q;
+                    if (q < trimmed.size() && (trimmed[q] == L'=' || trimmed[q] == L':')) {
+                        diagnostics.push_back({ l, lead + st, vname.size(),
+                            L"JS/TS: '" + vname + L"' is declared but its value is never read",
+                            4, L"JS/TS", L"unused-var", true });
+                    }
+                }
+            }
+        }
+    }
+}
+
+void AppendPhpUnusedDiagnostics(const Buffer& buffer, std::vector<lsp::Diagnostic>& diagnostics) {
+    static const std::unordered_set<std::wstring> kSkipDollar = {
+        L"$this", L"$_GET", L"$_POST", L"$_SERVER", L"$_SESSION", L"$_ENV",
+        L"$_COOKIE", L"$_FILES", L"$_REQUEST", L"$GLOBALS", L"$_"
+    };
+    std::unordered_map<std::wstring, size_t> varCounts;
+    std::unordered_map<std::wstring, size_t> classUseCounts;
+
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+        for (size_t c = 0; c < line.size();) {
+            if (line[c] == L'$' && c + 1 < line.size() && (iswalpha(line[c + 1]) || line[c + 1] == L'_')) {
+                size_t st = c++;
+                while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                varCounts[line.substr(st, c - st)]++;
+                continue;
+            }
+            if (IsIdentStartSv(line[c])) {
+                size_t st = c++;
+                while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                classUseCounts[line.substr(st, c - st)]++;
+                continue;
+            }
+            ++c;
+        }
+    }
+
+    bool inPhp = false;
+    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+        const auto& line = buffer.GetLine(l);
+        if (line.find(L"<?php") != std::wstring::npos || line.find(L"<?=") != std::wstring::npos) inPhp = true;
+        if (!inPhp) continue;
+        size_t lead = 0;
+        while (lead < line.size() && iswspace(line[lead])) ++lead;
+        if (lead >= line.size()) continue;
+        std::wstring trimmed = line.substr(lead);
+
+        if (trimmed.rfind(L"use ", 0) == 0 && trimmed.find(L'(') == std::wstring::npos) {
+            size_t semi = trimmed.find(L';');
+            if (semi != std::wstring::npos) {
+                std::wstring body = trimmed.substr(4, semi - 4);
+                size_t asPos = body.find(L" as ");
+                std::wstring sym;
+                if (asPos != std::wstring::npos) {
+                    sym = body.substr(asPos + 4);
+                } else {
+                    size_t sl = body.find_last_of(L'\\');
+                    sym = (sl != std::wstring::npos) ? body.substr(sl + 1) : body;
+                }
+                while (!sym.empty() && iswspace(sym.front())) sym.erase(sym.begin());
+                while (!sym.empty() && iswspace(sym.back())) sym.pop_back();
+                if (!sym.empty() && sym[0] != L'_' && classUseCounts[sym] <= 1) {
+                    diagnostics.push_back({ l, lead, semi + 1,
+                        L"PHP: Symbol '" + sym + L"' is imported via 'use' but never used",
+                        4, L"PHP", L"unused-use", true });
+                }
+            }
+        } else if (trimmed[0] == L'$') {
+            size_t p = 1;
+            while (p < trimmed.size() && IsIdentCharSv(trimmed[p])) ++p;
+            std::wstring v = trimmed.substr(0, p);
+            if (v.size() > 1 && v[1] != L'_' && kSkipDollar.find(v) == kSkipDollar.end()) {
+                size_t q = p;
+                while (q < trimmed.size() && iswspace(trimmed[q])) ++q;
+                if (q < trimmed.size() && trimmed[q] == L'=' && (q + 1 >= trimmed.size() || trimmed[q + 1] != L'=')) {
+                    if (varCounts[v] <= 1) {
+                        diagnostics.push_back({ l, lead, v.size(),
+                            L"PHP: Variable '" + v + L"' is assigned but never used",
+                            4, L"PHP", L"unused-var", true });
+                    }
+                }
+            }
+        }
+        if (line.find(L"?>") != std::wstring::npos) inPhp = false;
+    }
+}
+
 bool IsJsRegexStart(const std::wstring& str, size_t pos) {
     if (pos >= str.length() || str[pos] != L'/') return false;
     // JSX closing tag '</' or self-closing '/>' or comment '//' or '/*' is NEVER a regex
@@ -143,6 +605,31 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         diags.insert(diags.end(), pluginDiags.begin(), pluginDiags.end());
     }
     return diags;
+}
+
+std::vector<lsp::Diagnostic> SyntaxValidator::CollectUnusedSymbolHints(
+    const std::wstring& filePath,
+    const Buffer& buffer
+) {
+    if (buffer.GetLineCount() == 0) return {};
+
+    std::wstring ext;
+    try {
+        std::filesystem::path p(filePath);
+        ext = p.extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    } catch (...) {}
+
+    std::vector<lsp::Diagnostic> hints;
+    if (ext == L".py") {
+        AppendPythonUnusedDiagnostics(buffer, hints);
+    } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
+        bool isJsx = (ext == L".jsx" || ext == L".tsx");
+        AppendJsUnusedDiagnostics(buffer, 0, static_cast<size_t>(-1), isJsx, hints);
+    } else if (ext == L".php") {
+        AppendPhpUnusedDiagnostics(buffer, hints);
+    }
+    return hints;
 }
 
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer) {

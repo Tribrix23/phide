@@ -14,6 +14,9 @@
 #include "phide/editor/FormatEngine.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include "phide/editor/LanguageIntelligence.hpp"
+#include "phide/editor/WorkspaceAuditEngine.hpp"
+#include "phide/editor/HostSqlAnalyzer.hpp"
+#include "phide/db/ErdAndMigrationEngine.hpp"
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/SplashScreen.hpp"
 #include "phide/plugin/PluginManager.hpp"
@@ -2072,6 +2075,10 @@ void Window::LoadSessionState() {
                     OpenSpecialView(L"task_runner", L"Task Runner");
                 } else if (vType == L"sql_console") {
                     OpenSpecialView(L"sql_console", L"SQL Query Console");
+                } else if (vType == L"erd") {
+                    OpenSpecialView(L"erd", L"ER Diagram");
+                } else if (vType == L"audit") {
+                    OpenSpecialView(L"audit", L"Workspace Audit");
                 } else if (vType == L"snippet_editor") {
                     m_snippetManager.EnsureDefaultSnippetsFile();
                     m_editor.BindSnippetManager(&m_snippetManager);
@@ -3130,6 +3137,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     bool isImage = (ext == L".png" || ext == L".jpg" || ext == L".jpeg" ||
                     ext == L".bmp" || ext == L".gif" || ext == L".ico" ||
                     ext == L".webp" || ext == L".tiff" || ext == L".tif");
+    bool isFont = ui::AssetViewerRenderer::IsFontExtension(ext);
 
     bool isBinary = false;
     std::wstring binaryType;
@@ -3151,7 +3159,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         binaryType = L"Compressed Archive";
     }
 
-    if (!isImage && !isBinary) {
+    if (!isImage && !isFont && !isBinary) {
         std::ifstream fileCheck(resolvedPath, std::ios::binary);
         if (fileCheck.is_open()) {
             char buf[1024];
@@ -3175,11 +3183,13 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     newDoc.isDirty = false;
     newDoc.isSpecialView = false;
     newDoc.isImageView = isImage;
+    newDoc.isFontView = isFont;
+    newDoc.svgSplitPreview = (ext == L".svg");
     newDoc.isUnsupportedBinary = isBinary;
     newDoc.binaryFileType = binaryType;
     newDoc.viewType.clear();
 
-    if (isImage) {
+    if (isImage || isFont) {
         std::error_code ec;
         newDoc.imageFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else if (isBinary) {
@@ -3244,8 +3254,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             newDoc.diffDeletedGutterMarkers.clear();
         }
 
-        if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary) {
+        if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isFontView && !newDoc.isUnsupportedBinary) {
             newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
+            RunExtraDocDiagnostics(newDoc, newDoc.diagnostics);
             CalculateImportCosts(newDoc);
             RefreshMergeConflicts(newDoc);
 
@@ -4141,6 +4152,22 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                     wsFolder,
                     m_dbSettingsModal.GetHost(), mysqlPort,
                     m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+            } else if (viewType == L"erd") {
+                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                m_editor.SetSqlWorkspaceRoot(
+                    wsFolder,
+                    m_dbSettingsModal.GetHost(), m_mysqlPort,
+                    m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+                m_editor.GetErdView().SetSchemaTables(
+                    m_editor.GetSqlTables(),
+                    m_editor.GetActiveSqlDialect(),
+                    m_editor.GetActiveSqlSchemaLabel());
+                if (m_editor.GetSqlTables().empty()) {
+                    m_editor.StartRefreshActiveSqlSchemaAsync();
+                }
+            } else if (viewType == L"audit") {
+                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                m_editor.GetAuditView().StartAuditAsync(wsFolder);
             }
             ClearExplorerSelectionOverride();
             SyncActiveTabWithDrawer();
@@ -4201,6 +4228,22 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
             wsFolder,
             m_dbSettingsModal.GetHost(), mysqlPort,
             m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+    } else if (viewType == L"erd") {
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_editor.SetSqlWorkspaceRoot(
+            wsFolder,
+            m_dbSettingsModal.GetHost(), m_mysqlPort,
+            m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+        m_editor.GetErdView().SetSchemaTables(
+            m_editor.GetSqlTables(),
+            m_editor.GetActiveSqlDialect(),
+            m_editor.GetActiveSqlSchemaLabel());
+        if (m_editor.GetSqlTables().empty()) {
+            m_editor.StartRefreshActiveSqlSchemaAsync();
+        }
+    } else if (viewType == L"audit") {
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+        m_editor.GetAuditView().StartAuditAsync(wsFolder);
     }
     ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
@@ -4945,7 +4988,7 @@ bool Window::ApplyDetachHandoffFile(const std::wstring& handoffPath) {
 
 void Window::ToggleActiveStructuredViewer(bool openHexIfBinary) {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isFolderView) return;
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isFontView || pDoc->isFolderView) return;
 
     if (pDoc->isUnsupportedBinary) {
         if (!pDoc->structuredView) {
@@ -5843,6 +5886,38 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
         OpenSpecialView(L"sql_console", L"SQL Query Console");
         return;
     }
+    if (actionCmd == L"cmd_db_erd") {
+        m_editor.GetErdView().OpenSchemaDiffMode(false);
+        OpenSpecialView(L"erd", L"ER Diagram");
+        return;
+    }
+    if (actionCmd == L"cmd_db_schema_diff") {
+        m_editor.GetErdView().OpenSchemaDiffMode(true);
+        OpenSpecialView(L"erd", L"ER Diagram");
+        return;
+    }
+    if (actionCmd == L"cmd_workspace_audit") {
+        OpenSpecialView(L"audit", L"Workspace Audit");
+        return;
+    }
+    if (actionCmd == L"cmd_sync_env_example") {
+        DoSyncEnvKeysToExample();
+        return;
+    }
+    if (actionCmd == L"cmd_toggle_svg_preview") {
+        if (auto* pAct = GetActiveDoc()) {
+            std::wstring ext = std::filesystem::path(pAct->filePath.empty() ? pAct->fileName : pAct->filePath).extension().wstring();
+            for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+            if (ext == L".svg" && !pAct->isSpecialView && !pAct->isImageView && !pAct->isFontView) {
+                pAct->svgSplitPreview = !pAct->svgSplitPreview;
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else {
+                m_drawer.ShowGitNotification(L"Open an .svg file to toggle live SVG Split Preview.");
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+        }
+        return;
+    }
     if (actionCmd == L"cmd_heatmap") {
         OpenSpecialView(L"heatmap", L"Activity Heatmap");
         return;
@@ -6617,6 +6692,7 @@ void Window::DoRevertFile() {
         pDoc->lastDiskWriteTime = std::filesystem::last_write_time(pDoc->filePath, writeEc);
         pDoc->hasLastDiskWriteTime = !writeEc;
         pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath, pDoc->buffer);
+        RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
         if (m_lsp.IsRunning()) {
             m_lsp.NotifyDidChange(pDoc->filePath, pDoc->originalDiskText);
@@ -6759,9 +6835,13 @@ void Window::UpdateDrawerErrorFiles() {
     for (const auto& group : m_editorGroups) {
         for (const auto& doc : group.docs) {
             if (!doc.diagnostics.empty() && !doc.isSpecialView) {
+                size_t actionableCount = 0;
+                for (const auto& d : doc.diagnostics) {
+                    if (!d.isUnnecessary && d.severity <= 2) ++actionableCount;
+                }
                 std::wstring key = !doc.filePath.empty() ? doc.filePath : doc.fileName;
-                if (!key.empty()) {
-                    errorFiles[key] = doc.diagnostics.size();
+                if (!key.empty() && actionableCount > 0) {
+                    errorFiles[key] = actionableCount;
                 }
             }
         }
@@ -12807,6 +12887,103 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             }
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         };
+        m_editor.onOpenSqlErdView = [this](bool openDiffMode) {
+            m_editor.GetErdView().OpenSchemaDiffMode(openDiffMode);
+            OpenSpecialView(L"erd", L"ER Diagram");
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        {
+            ui::ErdCallbacks erdCbs;
+            erdCbs.onDetectServers = [this]() {
+        m_editor.StartDiscoverSqlServersAsync();
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    erdCbs.onSelectProfile = [this](size_t profileIdx) {
+        m_editor.SelectSqlProfile(profileIdx);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    erdCbs.onSelectDatabase = [this](const std::wstring& dbName) {
+        m_editor.SelectSqlDatabase(dbName);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    erdCbs.onSelectCompareDatabase = [this](size_t profileIdx, const std::wstring& dbName) {
+        m_editor.StartCompareSqlDatabaseAsync(profileIdx, dbName);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+    erdCbs.onRefreshLiveSchema = [this]() {
+                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                m_editor.SetSqlWorkspaceRoot(
+                    wsFolder,
+                    m_dbSettingsModal.GetHost(), m_mysqlPort,
+                    m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+                m_editor.StartRefreshActiveSqlSchemaAsync();
+                m_editor.GetErdView().SetSchemaTables(
+                    m_editor.GetSqlTables(),
+                    m_editor.GetActiveSqlDialect(),
+                    m_editor.GetActiveSqlSchemaLabel());
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            };
+            erdCbs.onOpenSqlInConsole = [this](const std::wstring& sqlText) {
+                m_editor.SetSqlQueryText(sqlText);
+                OpenSpecialView(L"sql_console", L"SQL Query Console");
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            };
+            erdCbs.onPromptOpenSqlFile = [this]() -> std::wstring {
+                wchar_t szFile[MAX_PATH] = {};
+                OPENFILENAMEW ofn{};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = m_hwnd;
+                ofn.lpstrFilter = L"SQL DDL Files (*.sql)\0*.sql\0All Files (*.*)\0*.*\0";
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrTitle = L"Load SQL Snapshot / Schema for Diff Comparison";
+                ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+                std::wstring initDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                if (!initDir.empty()) ofn.lpstrInitialDir = initDir.c_str();
+                if (GetOpenFileNameW(&ofn)) return std::wstring(szFile);
+                return L"";
+            };
+            erdCbs.onPromptSaveSvgFile = [this](const std::wstring& defaultName) -> std::wstring {
+                wchar_t szFile[MAX_PATH] = {};
+                wcsncpy_s(szFile, defaultName.c_str(), _TRUNCATE);
+                OPENFILENAMEW ofn{};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = m_hwnd;
+                ofn.lpstrFilter = L"SVG Vector Image (*.svg)\0*.svg\0All Files (*.*)\0*.*\0";
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrDefExt = L"svg";
+                ofn.lpstrTitle = L"Export ER Diagram as SVG";
+                ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+                std::wstring initDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                if (!initDir.empty()) ofn.lpstrInitialDir = initDir.c_str();
+                if (GetSaveFileNameW(&ofn)) return std::wstring(szFile);
+                return L"";
+            };
+            m_editor.GetErdView().SetCallbacks(std::move(erdCbs));
+        }
+        {
+            ui::AuditViewCallbacks auditCbs;
+            auditCbs.onOpenLocation = [this](const std::wstring& filePath, size_t line0, size_t col0) {
+                if (filePath.empty()) return;
+                RecordNavCheckpoint();
+                JumpToFileAndLocation(filePath, line0, col0);
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            };
+            auditCbs.onEnvSynced = [this](int addedCount) {
+                RefreshWorkspaceEnvVars();
+                m_drawer.ShowGitNotification(addedCount > 0
+                    ? (L"Synced " + std::to_wstring(addedCount) + L" missing key(s) to .env.example")
+                    : L".env.example already contains all .env keys");
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            };
+            auditCbs.onRequestRepaint = [this]() {
+                if (!m_isDestroying.load() && m_hwnd) {
+                    PostMessageW(m_hwnd, WM_USER + 233, 0, 0);
+                }
+            };
+            m_editor.GetAuditView().SetCallbacks(std::move(auditCbs));
+        }
 
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
     m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
@@ -13646,6 +13823,12 @@ void Window::DiscardDeviceResources() {
     m_rail.DiscardDeviceResources();
     m_drawer.DiscardDeviceResources();
     m_terminal.DiscardDeviceResources();
+    for (auto& grp : m_editorGroups) {
+        for (auto& doc : grp.docs) {
+            doc.pImageBitmap.Reset();
+            if (doc.assetView) doc.assetView->DiscardDeviceResources();
+        }
+    }
     m_pRenderTarget.Reset();
     if (m_popupMenu.IsOpen()) {
         m_popupMenu.Close();
@@ -16832,6 +17015,20 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.UpdateSqlConsoleHover(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"erd") {
+            if (m_editor.GetErdView().HandleMouseMove(clientPt, m_config)) {
+                needRepaint = true;
+            }
+        } else if (pActiveDoc->viewType == L"audit") {
+            if (m_editor.GetAuditView().HandleMouseMove(clientPt)) {
+                needRepaint = true;
+            }
+        }
+    }
+    if (pActiveDoc && !pActiveDoc->isSpecialView &&
+        (pActiveDoc->isImageView || pActiveDoc->isFontView || pActiveDoc->svgSplitPreview)) {
+        if (ui::AssetViewerRenderer::HandleMouseMove(clientPt, *pActiveDoc)) {
+            needRepaint = true;
         }
     }
     // Also route hover tooltips smoothly when Activity Heatmap is visible in any unfocused split pane
@@ -16845,6 +17042,19 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                     const POINT hmPt = (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt))
                         ? POINT{ -10000, -10000 } : clientPt;
                     if (m_editor.GetActivityHeatmapView().HandleMouseMove(hmPt)) {
+                        needRepaint = true;
+                    }
+                } else if (!hDoc.isSpecialView &&
+                           (hDoc.isImageView || hDoc.isFontView || hDoc.svgSplitPreview) && (&hDoc != pActiveDoc)) {
+                    if (ui::AssetViewerRenderer::HandleMouseMove(clientPt, const_cast<editor::OpenDocument&>(hDoc))) {
+                        needRepaint = true;
+                    }
+                } else if (hDoc.isSpecialView && hDoc.viewType == L"erd" && (&hDoc != pActiveDoc)) {
+                    if (m_editor.GetErdView().HandleMouseMove(clientPt, m_config)) {
+                        needRepaint = true;
+                    }
+                } else if (hDoc.isSpecialView && hDoc.viewType == L"audit" && (&hDoc != pActiveDoc)) {
+                    if (m_editor.GetAuditView().HandleMouseMove(clientPt)) {
                         needRepaint = true;
                     }
                 }
@@ -18021,6 +18231,20 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         OpenSpecialView(L"sql_console", L"SQL Query Console");
                         SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ViewDatabaseErd:
+                        m_editor.GetErdView().OpenSchemaDiffMode(false);
+                        OpenSpecialView(L"erd", L"ER Diagram");
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::ViewWorkspaceAudit:
+                        OpenSpecialView(L"audit", L"Workspace Audit");
+                        SaveSessionState();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        break;
+                    case ui::MenuActionId::EnvSyncKeysToExample:
+                        DoSyncEnvKeysToExample();
                         break;
                     case ui::MenuActionId::ViewHeatmap:
                         OpenSpecialView(L"heatmap", L"Activity Heatmap");
@@ -19633,6 +19857,26 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
+                } else if (doc.isSpecialView && doc.viewType == L"erd") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetErdView().HandleLButtonDown(clientPt, m_hwnd, m_config)) {
+                        SetCapture(m_hwnd);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isSpecialView && doc.viewType == L"audit") {
+                    m_drawer.SetSearchFocus(0);
+                    if (m_editor.GetAuditView().HandleLButtonDown(clientPt, m_hwnd, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                } else if (doc.isImageView || doc.isFontView) {
+                    m_drawer.SetSearchFocus(0);
+                    if (ui::AssetViewerRenderer::HandleLButtonDown(clientPt, m_hwnd, doc, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
+                    return;
                 } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleSnippetEditorMouseDown(clientPt, m_config)) {
@@ -19840,6 +20084,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     float paneCanvasLeft = group.bounds.left;
                     float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
                     float paneBottom = group.bounds.bottom;
+
+                    if (doc.svgSplitPreview &&
+                        ui::AssetViewerRenderer::HandleLButtonDown(clientPt, m_hwnd, doc, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return;
+                    }
 
                     // Breadcrumbs header bar click (sibling files / outline symbols dropdown)
                     if (m_config.showBreadcrumbs && !doc.isSpecialView) {
@@ -21129,6 +21379,13 @@ void Window::HandleLButtonUp(POINT clientPt) {
     }
 
     auto* pActiveDoc = GetActiveDoc();
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"erd") {
+        if (GetCapture() == m_hwnd) ReleaseCapture();
+        if (m_editor.GetErdView().HandleLButtonUp(clientPt)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
     if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"graph") {
         if (m_editor.GetGraphView().HandleLButtonUp(clientPt)) {
             if (m_editor.GetGraphView().IsAnimating()) {
@@ -22484,9 +22741,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Asset Viewer (Image, Font, and right half of SVG split preview) MUST win before Editor code I-beam check
+                if (pHoverPaneDoc && (pHoverPaneDoc->isImageView || pHoverPaneDoc->isFontView || pHoverPaneDoc->svgSplitPreview)) {
+                    if (LPCWSTR cur = ui::AssetViewerRenderer::GetCursorForPoint(pt, *pHoverPaneDoc)) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                    if (pHoverPaneDoc->svgSplitPreview && pHoverPaneDoc->assetView &&
+                        pt.x >= static_cast<LONG>(pHoverPaneDoc->assetView->rcToolbar.left) &&
+                        pt.y >= static_cast<LONG>(pHoverPaneDoc->assetView->rcToolbar.top)) {
+                        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                        return TRUE;
+                    }
+                }
+
                 // Editor code text area: show I-beam cursor (matching Image 1)
                 if (pHoverPaneDoc && !pHoverPaneDoc->isSpecialView && !pHoverPaneDoc->isFolderView &&
-                    !pHoverPaneDoc->isImageView && !pHoverPaneDoc->isUnsupportedBinary) {
+                    !pHoverPaneDoc->isImageView && !pHoverPaneDoc->isFontView && !pHoverPaneDoc->isUnsupportedBinary) {
                     RECT rcClient;
                     GetClientRect(m_hwnd, &rcClient);
                     float clientW = static_cast<float>(rcClient.right - rcClient.left);
@@ -22651,7 +22922,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Test Explorer button/row pointer cursor
+                // ER Diagram cursor handling (IDC_HAND on buttons/DB pills, IDC_IBEAM on search, IDC_SIZEALL on cards/pan)
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"erd") {
+                    LPCWSTR cur = m_editor.GetErdView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // Workspace Dead Code / Security Audit cursor handling
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"audit") {
+                    LPCWSTR cur = m_editor.GetAuditView().GetCursorForPoint(pt);
+                    if (cur) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // Test Explorer pointer cursor
                 if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"test_explorer") {
                     if (m_editor.IsPointInTestExplorerInteractive(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -22753,7 +23042,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return 0;
                             }
-                        } else if (!doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
+                        } else if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
                             float paneCanvasLeft = group.bounds.left;
                             size_t line = 0, col = 0;
                             if (m_editor.HitTestCodeArea(clientPt, m_config, doc, paneCanvasLeft, clientH, line, col)) {
@@ -22974,6 +23263,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"erd") {
+                    bool isCtrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                    if (m_editor.GetErdView().HandleMouseWheel(delta, isCtrlDown, pt, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"audit") {
+                    if (m_editor.GetAuditView().HandleMouseWheel(delta, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isImageView || pDoc->isFontView) {
+                    bool isCtrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                    if (ui::AssetViewerRenderer::HandleMouseWheel(delta, isCtrlDown, *pDoc, m_config)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    return 0;
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"snippet_editor") {
                     if (m_editor.HandleSnippetEditorMouseWheel(pt, delta)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -23248,6 +23555,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"erd") {
+                    if (m_editor.GetErdView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"audit") {
+                    if (m_editor.GetAuditView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isFontView || pDoc->isImageView) {
+                    if (ui::AssetViewerRenderer::HandleChar(ch, *pDoc)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"snippet_editor") {
                     if (m_editor.HandleSnippetEditorChar(ch)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -24608,6 +24930,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
+                } else if (pDoc->viewType == L"erd") {
+                    if (m_editor.GetErdView().HandleKeyDown(wParam)) {
+                        if (wParam == VK_BACK || wParam == VK_RETURN || wParam == VK_ESCAPE) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->viewType == L"audit") {
+                    if (m_editor.GetAuditView().HandleKeyDown(wParam)) {
+                        if (wParam == VK_BACK || wParam == VK_RETURN || wParam == VK_ESCAPE) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 } else if (pDoc->viewType == L"snippet_editor") {
                     if (m_editor.HandleSnippetEditorKeyDown(wParam)) {
                         if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
@@ -24635,6 +24973,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
                 }
+            }
+
+            if (pDoc && pDoc->isFontView &&
+                ui::AssetViewerRenderer::HandleKeyDown(wParam, *pDoc)) {
+                if (wParam == VK_BACK || wParam == VK_ESCAPE) {
+                    m_suppressNextChar = true;
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return 0;
             }
 
             if (pDoc && pDoc->structuredView && pDoc->structuredView->isActive &&
@@ -25848,6 +26195,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         });
                         pDoc->diagnostics = editor::SyntaxValidator::Validate(
                             pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+                        RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
                         CalculateImportCosts(*pDoc);
                         if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
                             NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
@@ -26338,6 +26686,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (doc.isSpecialView || doc.filePath.empty()) continue;
                             if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0) {
                                 doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                                RunExtraDocDiagnostics(doc, doc.diagnostics);
                                 for (const auto& ld : u.diags) {
                                     bool dup = false;
                                     for (const auto& existing : doc.diagnostics) {
@@ -26635,6 +26984,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 225: {
             if (!m_isDestroying.load() && m_editor.ApplyPendingSqlAsyncResults()) {
+                SyncActiveSqlSchemaToIntelliSense();
+                const std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                (void)wsRoot;
+                for (auto& grp : m_editorGroups) {
+                    for (auto& doc : grp.docs) {
+                        if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
+                            std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                            doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
+                            RunExtraDocDiagnostics(doc, doc.diagnostics);
+                        }
+                    }
+                }
+                RebuildProblemsCache();
+                UpdateDrawerErrorFiles();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
             return 0;
@@ -26642,6 +27005,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_USER + 226: {
             if (!m_isDestroying.load() && m_editor.GetActivityHeatmapView().ApplyPendingRefresh()) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_USER + 233: {
+            if (!m_isDestroying.load()) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
             return 0;
@@ -28422,6 +28792,7 @@ void Window::CheckOpenDocumentsDiskChanges() {
                 doc.originalDiskText = diskText;
                 doc.hasExternalDiskConflict = false;
                 doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                RunExtraDocDiagnostics(doc, doc.diagnostics);
                 if (m_lsp.IsRunning()) {
                     NotifyLspDidChangeAsync(doc.filePath, diskText);
                 }
@@ -28441,12 +28812,18 @@ void Window::CheckOpenDocumentsDiskChanges() {
 void Window::RefreshWorkspaceEnvVars() {
     if (!m_drawer.HasOpenFolder()) {
         m_intelliSense.SetWorkspaceEnvVars({});
+        m_cachedKnownEnvKeys.clear();
+        m_hasWorkspaceEnvFile = false;
+        m_envDriftProblems.clear();
         return;
     }
     std::filesystem::path wsRoot(m_drawer.GetOpenFolderPath());
     std::error_code ec;
     if (!std::filesystem::exists(wsRoot, ec)) {
         m_intelliSense.SetWorkspaceEnvVars({});
+        m_cachedKnownEnvKeys.clear();
+        m_hasWorkspaceEnvFile = false;
+        m_envDriftProblems.clear();
         return;
     }
 
@@ -28519,6 +28896,144 @@ void Window::RefreshWorkspaceEnvVars() {
         }
     }
     m_intelliSense.SetWorkspaceEnvVars(std::move(vars));
+
+    // Cache known keys from workspace .env and .env.example for Feature #8 code validator & drift detector
+    std::wstring wsRootStr = wsRoot.wstring();
+    m_hasWorkspaceEnvFile = !envFiles.empty() || std::filesystem::exists(wsRoot / L".env.example", ec);
+    m_cachedKnownEnvKeys = editor::EnvAuditEngine::CollectKnownWorkspaceEnvKeys(wsRootStr);
+    RefreshEnvDriftDiagnostics();
+}
+
+void Window::SyncActiveSqlSchemaToIntelliSense() {
+    const auto& sqlTables = m_editor.GetSqlTables();
+    if (sqlTables.empty()) return;
+    std::vector<editor::IntelliSenseEngine::DbSchemaColumn> cols;
+    cols.reserve(sqlTables.size() * 6);
+    for (const auto& t : sqlTables) {
+        for (const auto& c : t.columns) {
+            editor::IntelliSenseEngine::DbSchemaColumn sc;
+            sc.tableName = t.name;
+            sc.columnName = c.name;
+            sc.dataType = c.type;
+            if (c.isPrimaryKey) sc.keyType = L"PK";
+            else {
+                for (const auto& fk : t.foreignKeys) {
+                    if (_wcsicmp(fk.column.c_str(), c.name.c_str()) == 0) {
+                        sc.keyType = L"FK -> " + fk.refTable;
+                        break;
+                    }
+                }
+            }
+            cols.push_back(std::move(sc));
+        }
+    }
+    m_intelliSense.SetDatabaseSchema(std::move(cols), m_editor.GetActiveSqlSchemaLabel());
+}
+
+void Window::RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector<lsp::Diagnostic>& diags) const {
+    if (doc.isSpecialView || doc.isImageView || doc.isFontView || doc.isUnsupportedBinary || doc.buffer.IsMemoryMappedReadOnly()) {
+        return;
+    }
+    const std::wstring docPath = doc.filePath.empty() ? doc.fileName : doc.filePath;
+    if (docPath.empty()) return;
+
+    std::wstring ext = std::filesystem::path(docPath).extension().wstring();
+    for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+
+    // #11 Validate SQL queries inside PHP / JS / TS strings against active SqlEngine schema
+    const auto& activeSqlTables = m_editor.GetSqlTables();
+    if (!activeSqlTables.empty() && editor::HostSqlAnalyzer::IsSupportedHostExtension(ext)) {
+        auto sqlDiags = editor::HostSqlAnalyzer::ValidateDocumentSql(docPath, doc.buffer.GetLines(), activeSqlTables);
+        for (const auto& sd : sqlDiags) {
+            lsp::Diagnostic ld;
+            ld.line = sd.line0;
+            ld.col = sd.col0;
+            ld.length = sd.length;
+            ld.severity = sd.severity;
+            ld.message = sd.message;
+            ld.source = L"SQL Schema";
+            ld.code = L"sql-schema";
+            diags.push_back(std::move(ld));
+        }
+    }
+
+    // #8 Validate referenced env keys ($_ENV, getenv, process.env, os.getenv) against workspace .env/.env.example
+    if (m_hasWorkspaceEnvFile && m_drawer.HasOpenFolder()) {
+        const std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+        const std::wstring fnLower = std::filesystem::path(docPath).filename().wstring();
+        const bool isCodeFile = (ext == L".php" || ext == L".js" || ext == L".jsx" ||
+                                 ext == L".ts" || ext == L".tsx" || ext == L".py" ||
+                                 ext == L".mjs" || ext == L".cjs");
+        if (isCodeFile && fnLower.rfind(L".env", 0) != 0) {
+            auto findings = editor::EnvAuditEngine::ScanCodeEnvReferences(
+                docPath, wsRoot, doc.buffer.GetText(), m_cachedKnownEnvKeys);
+            for (const auto& f : findings) {
+                lsp::Diagnostic ld;
+                ld.line = f.line0;
+                ld.col = f.col0;
+                ld.length = (std::max<size_t>)(1, f.symbol.size());
+                ld.severity = f.severity;
+                ld.message = f.message;
+                ld.source = L".env Validator";
+                ld.code = L"env-missing-key";
+                diags.push_back(std::move(ld));
+            }
+        }
+    }
+}
+
+void Window::RefreshEnvDriftDiagnostics() {
+    m_envDriftProblems.clear();
+    if (!m_drawer.HasOpenFolder()) return;
+    const std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    auto driftFindings = editor::EnvAuditEngine::CheckEnvFileDrift(wsRoot);
+    for (const auto& f : driftFindings) {
+        editor::ProblemEntry pe;
+        pe.filePath = f.filePath;
+        pe.displayPath = f.displayPath;
+        pe.line = f.line0;
+        pe.col = f.col0;
+        pe.length = (std::max<size_t>)(1, f.symbol.size());
+        pe.severity = f.severity;
+        pe.message = f.message;
+        pe.source = L".env Drift";
+        pe.code = f.canSyncEnvExample ? L"env-drift-missing-example" : L"env-drift-missing-local";
+        m_envDriftProblems.push_back(std::move(pe));
+    }
+
+    // Re-run extra diagnostics on open tabs so missing env warnings update immediately
+    for (auto& grp : m_editorGroups) {
+        for (auto& doc : grp.docs) {
+            if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
+                std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
+                RunExtraDocDiagnostics(doc, doc.diagnostics);
+            }
+        }
+    }
+    RebuildProblemsCache();
+    UpdateDrawerErrorFiles();
+}
+
+void Window::DoSyncEnvKeysToExample() {
+    if (!m_drawer.HasOpenFolder()) {
+        m_drawer.ShowGitNotification(L"Open a workspace folder first to sync .env keys to .env.example.");
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+    int addedCount = 0;
+    const std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    if (editor::EnvAuditEngine::SyncEnvExampleKeys(wsRoot, addedCount)) {
+        RefreshWorkspaceEnvVars();
+        if (addedCount > 0) {
+            m_drawer.ShowGitNotification(L"Synced " + std::to_wstring(addedCount) + L" key name(s) to .env.example (values omitted)");
+        } else {
+            m_drawer.ShowGitNotification(L".env.example already contains all keys from .env");
+        }
+    } else {
+        m_drawer.ShowGitNotification(L"No .env file found in workspace root to sync.");
+    }
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 struct BgWorkerGuard {
@@ -28832,7 +29347,9 @@ std::vector<editor::IntelliSenseItem> Window::QueryCombinedCompletions(
         }
         m_editor.SetWorkspaceRoot(wsRoot);
     }
-    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, col, &pDoc->buffer.GetLines());
+    SyncActiveSqlSchemaToIntelliSense();
+    const auto curPos = pDoc->buffer.GetCursor();
+    auto items = m_intelliSense.QueryCompletions(docTarget, lineText, col, &pDoc->buffer.GetLines(), curPos.line);
     if (!pDoc->filePath.empty() && !m_cachedLspCompletions.items.empty() &&
         _wcsicmp(m_cachedLspCompletions.filePath.c_str(), pDoc->filePath.c_str()) == 0) {
         auto pos = pDoc->buffer.GetCursor();
@@ -29897,6 +30414,7 @@ void Window::RebuildProblemsCache() {
             if (disp.empty()) disp = fp;
 
             for (const auto& diag : d.diagnostics) {
+                if (diag.isUnnecessary && diag.severity >= 4) continue;
                 editor::ProblemEntry pe;
                 pe.filePath = fp;
                 pe.displayPath = disp;
@@ -29913,6 +30431,10 @@ void Window::RebuildProblemsCache() {
                 all.push_back(std::move(pe));
             }
         }
+    }
+
+    for (const auto& pe : m_envDriftProblems) {
+        all.push_back(pe);
     }
 
     for (const auto& [fk, list] : m_externalLinterProblems) {
@@ -29947,6 +30469,10 @@ void Window::RebuildProblemsCache() {
 }
 
 void Window::ApplyQuickFixForProblem(const editor::ProblemEntry& prob) {
+    if (prob.code == L"env-drift-missing-example") {
+        DoSyncEnvKeysToExample();
+        return;
+    }
     RecordNavCheckpoint();
     JumpToFileAndLocation(prob.filePath, prob.line, prob.col);
     if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isDiffView) {

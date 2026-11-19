@@ -44,6 +44,9 @@
 #include "phide/ui/PhideLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/ui/StructuredViewers.hpp"
+#include "phide/ui/AssetViewer.hpp"
+#include "phide/ui/ErdView.hpp"
+#include "phide/ui/AuditView.hpp"
 #include <unordered_map>
 
 namespace phide::ui {
@@ -321,6 +324,10 @@ public:
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
     GraphView& GetGraphView() noexcept { return m_graphView; }
+    ErdView& GetErdView() noexcept { return m_erdView; }
+    const ErdView& GetErdView() const noexcept { return m_erdView; }
+    AuditView& GetAuditView() noexcept { return m_auditView; }
+    const AuditView& GetAuditView() const noexcept { return m_auditView; }
     ActivityHeatmapView& GetActivityHeatmapView() noexcept { return m_activityHeatmapView; }
     const ActivityHeatmapView& GetActivityHeatmapView() const noexcept { return m_activityHeatmapView; }
     SettingsView& GetSettingsView() noexcept { return m_settingsView; }
@@ -443,6 +450,8 @@ private:
     PackageManagerView m_packageManagerView;
     NotebookView m_notebookView;
     GraphView m_graphView;
+    ErdView m_erdView;
+    AuditView m_auditView;
     ActivityHeatmapView m_activityHeatmapView;
     SettingsView m_settingsView;
     ApiTesterView m_apiTesterView;
@@ -770,6 +779,14 @@ public:
     void SetSqlSelectedProfileIndex(size_t idx) noexcept {
         if (idx < m_sqlProfiles.size()) m_sqlSelectedProfileIdx = idx;
     }
+    /** @brief Switches active SQL server profile and asynchronously inspects its schema (syncs ERD + Console). */
+    void SelectSqlProfile(size_t idx);
+    /** @brief Switches active database/schema name on the current server profile and refreshes tables. */
+    void SelectSqlDatabase(const std::wstring& dbName);
+    /** @brief Asynchronously inspects another profile/database as the baseline schema for ERD Schema Diff. */
+    void StartCompareSqlDatabaseAsync(size_t profileIdx, const std::wstring& dbName);
+    /** @brief Pushes current SQL connection profiles, busy status, and errors into ErdView. */
+    void SyncErdViewConnections();
     void SetSqlPageSize(size_t pageSize) noexcept {
         m_sqlPageSize = (std::max<size_t>)(10, (std::min<size_t>)(500, pageSize));
         m_sqlPage = 0;
@@ -785,6 +802,20 @@ public:
     [[nodiscard]] bool IsSqlBusy() const noexcept { return m_sqlIsBusy; }
     [[nodiscard]] const phide::db::SqlQueryResult& GetSqlQueryResult() const noexcept { return m_sqlResult; }
     [[nodiscard]] const std::vector<phide::db::SqlConnectionProfile>& GetSqlProfiles() const noexcept { return m_sqlProfiles; }
+    [[nodiscard]] const std::vector<phide::db::SqlTableInfo>& GetSqlTables() const noexcept { return m_sqlTables; }
+    [[nodiscard]] phide::db::SqlDialect GetActiveSqlDialect() const noexcept {
+        return (m_sqlSelectedProfileIdx < m_sqlProfiles.size())
+            ? m_sqlProfiles[m_sqlSelectedProfileIdx].dialect
+            : phide::db::SqlDialect::MySQL;
+    }
+    [[nodiscard]] std::wstring GetActiveSqlSchemaLabel() const {
+        if (m_sqlSelectedProfileIdx < m_sqlProfiles.size()) {
+            const auto& p = m_sqlProfiles[m_sqlSelectedProfileIdx];
+            if (!p.database.empty()) return p.name + L" / " + p.database;
+            return p.name;
+        }
+        return L"Workspace Schema";
+    }
     [[nodiscard]] size_t GetSqlSelectedProfileIndex() const noexcept { return m_sqlSelectedProfileIdx; }
     [[nodiscard]] LPCWSTR GetSqlConsoleCursorForPoint(POINT pt) const noexcept;
     bool UpdateSqlConsoleHover(POINT pt) noexcept;
@@ -798,6 +829,7 @@ public:
     std::function<void()> onSqlQueryExecuted;
     std::function<void()> onRequestEnsureMysqlRunning;
     std::function<void(int port, bool running)> onMysqlServerStateChanged;
+    std::function<void(bool openDiffMode)> onOpenSqlErdView;
 
     // #49 GUI Snippet Editor View (`snippet_editor`)
     void BindSnippetManager(editor::SnippetManager* pMgr);
@@ -1414,6 +1446,7 @@ private:
         uint64_t queryReqGen = 0;
         uint64_t discoverReqGen = 0;
         uint64_t serverToggleReqGen = 0;
+        uint64_t diffCompareReqGen = 0;
         bool hasSchemaUpdate = false;
         size_t schemaProfileIdx = 0;
         std::vector<phide::db::SqlTableInfo> schemaTables;
@@ -1433,12 +1466,16 @@ private:
         int toggledPort = 0;
         bool toggledSuccess = false;
         std::wstring serverToggleMessage;
+        bool hasDiffCompareUpdate = false;
+        std::vector<phide::db::SqlTableInfo> diffCompareTables;
+        std::wstring diffCompareLabel;
     };
     std::shared_ptr<SqlAsyncInbox> m_sqlAsyncInbox = std::make_shared<SqlAsyncInbox>();
     uint64_t m_sqlSchemaReqGen = 0;
     uint64_t m_sqlQueryReqGen = 0;
     uint64_t m_sqlDiscoverReqGen = 0;
     uint64_t m_sqlServerToggleReqGen = 0;
+    uint64_t m_sqlDiffCompareReqGen = 0;
     bool m_sqlIsBusy = false;
     HWND m_sqlNotifyHwnd = nullptr;
     std::wstring m_sqlMysqlHost = L"localhost";
@@ -1478,6 +1515,8 @@ private:
     D2D1_RECT_F m_rcSqlStartMysqlBtn{};
     D2D1_RECT_F m_rcSqlExportCsvBtn{};
     D2D1_RECT_F m_rcSqlExportJsonBtn{};
+    D2D1_RECT_F m_rcSqlErdBtn{};
+    D2D1_RECT_F m_rcSqlDiffBtn{};
     D2D1_RECT_F m_rcSqlPrevPageBtn{};
     D2D1_RECT_F m_rcSqlNextPageBtn{};
     D2D1_RECT_F m_rcSqlQueryBox{};
@@ -1559,6 +1598,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugGutterGreenBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pDebugFloatBgBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pInlineBlameBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pUnnecessaryBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pScopeGuideBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSelBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pGutterBlueBrush;

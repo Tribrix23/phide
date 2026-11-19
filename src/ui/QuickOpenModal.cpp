@@ -233,7 +233,11 @@ void QuickOpenModal::FilterItems() {
                 std::filesystem::path p(filePath);
                 std::wstring ext = p.extension().wstring();
                 for (auto& c : ext) c = towlower(c);
-                if (ext == L".png" || ext == L".jpg" || ext == L".ico" || ext == L".exe" || ext == L".dll" || ext == L".obj" || ext == L".bin") {
+                if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".ico" ||
+                    ext == L".webp" || ext == L".gif" || ext == L".bmp" || ext == L".tiff" || ext == L".tif" ||
+                    ext == L".ttf" || ext == L".otf" || ext == L".woff" || ext == L".woff2" ||
+                    ext == L".exe" || ext == L".dll" || ext == L".obj" || ext == L".bin" ||
+                    ext == L".pyc" || ext == L".wasm") {
                     continue;
                 }
                 std::ifstream ifs(filePath);
@@ -364,6 +368,11 @@ void QuickOpenModal::FilterItems() {
             { L"Debug: Edit Breakpoint Condition / Logpoint", L"Shift + F9", L"cmd_edit_breakpoint_condition" },
             { L"View: Test Explorer", L"", L"cmd_test_explorer" },
             { L"View: SQL Query Console", L"", L"cmd_sql_console" },
+            { L"Database: Open ER Diagram (Crow's Foot / UML / Chen / Barker)", L"", L"cmd_db_erd" },
+            { L"Database: Schema Diff & Migration Generator", L"", L"cmd_db_schema_diff" },
+            { L"Tools: Workspace Dead Code & .env Drift Audit", L"", L"cmd_workspace_audit" },
+            { L"Env: Sync Missing Keys to .env.example", L"", L"cmd_sync_env_example" },
+            { L"View: Toggle SVG Live Split Preview", L"", L"cmd_toggle_svg_preview" },
             { L"View: Git & Activity Heatmap", L"", L"cmd_heatmap" },
             { L"View: Toggle Sticky Scroll", L"", L"cmd_toggle_sticky_scroll" },
             { L"View: Toggle Zen Mode", L"Ctrl+K Z", L"cmd_toggle_zen_mode" },

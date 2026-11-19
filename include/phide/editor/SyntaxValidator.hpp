@@ -29,6 +29,15 @@ public:
     );
 
     /**
+     * @brief Returns lightweight "unnecessary / unused" fade hints (isUnnecessary = true, severity = 4)
+     *        for unused imports and local variables in Python, JS/TS, and PHP without polluting error diagnostics.
+     */
+    static std::vector<lsp::Diagnostic> CollectUnusedSymbolHints(
+        const std::wstring& filePath,
+        const Buffer& buffer
+    );
+
+    /**
      * @brief Validates CSS syntax, invalid properties, missing colons/semicolons, and color values.
      */
     static std::vector<lsp::Diagnostic> ValidateCss(

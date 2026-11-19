@@ -12,6 +12,7 @@
 #include "phide/ui/WatermarkLogo.hpp"
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/editor/TailwindHelper.hpp"
+#include "phide/editor/SyntaxValidator.hpp"
 #include <algorithm>
 #include <cmath>
 #include <wincodec.h>
@@ -558,6 +559,7 @@ void EditorCanvas::DiscardDeviceResources() {
     m_pDebugGutterGreenBrush.Reset();
     m_pDebugFloatBgBrush.Reset();
     m_pInlineBlameBrush.Reset();
+    m_pUnnecessaryBrush.Reset();
     m_pScopeGuideBrush.Reset();
     m_pSelBrush.Reset();
     m_pGutterBlueBrush.Reset();
@@ -599,6 +601,8 @@ void EditorCanvas::DiscardDeviceResources() {
     m_cachedInlineDiffRows.shrink_to_fit();
     m_structuredRenderer.DiscardDeviceResources();
     m_notebookView.DiscardDeviceResources();
+    m_erdView.DiscardDeviceResources();
+    m_auditView.DiscardDeviceResources();
     m_cachedTestTaskRT = nullptr;
     m_brushTestRowBg.Reset();
     m_brushTestRowSel.Reset();
@@ -657,6 +661,9 @@ void EditorCanvas::EnsureCachedEditorBrushes(ID2D1RenderTarget* pRT, const Theme
     pRT->CreateSolidColorBrush(
         isDark ? D2D1::ColorF(0.45f, 0.48f, 0.54f, 0.75f) : D2D1::ColorF(0.42f, 0.46f, 0.52f, 0.80f),
         &m_pInlineBlameBrush);
+    pRT->CreateSolidColorBrush(
+        isDark ? D2D1::ColorF(0.47f, 0.50f, 0.56f, 0.62f) : D2D1::ColorF(0.46f, 0.50f, 0.56f, 0.62f),
+        &m_pUnnecessaryBrush);
     pRT->CreateSolidColorBrush(
         isDark ? D2D1::ColorF(0.65f, 0.70f, 0.78f, 0.14f) : D2D1::ColorF(0.25f, 0.28f, 0.35f, 0.14f),
         &m_pScopeGuideBrush);
@@ -1106,6 +1113,10 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         RenderFileHistoryView(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"sql_console") {
         RenderSqlConsoleView(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"erd") {
+        m_erdView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
+    } else if (activeDoc.isSpecialView && activeDoc.viewType == L"audit") {
+        m_auditView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"snippet_editor") {
         RenderSnippetEditorView(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight);
     } else if (activeDoc.isSpecialView && activeDoc.viewType == L"settings") {
@@ -1127,6 +1138,22 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
             RenderFolderView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isImageView) {
             RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.isFontView) {
+            AssetViewerRenderer::RenderFontAssetView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.svgSplitPreview && canvasWidth > config.ScaleF(420.0f)) {
+            const float codeW = std::floor(canvasWidth * 0.50f);
+            const float prevLeft = canvasLeft + codeW;
+            const float prevW = canvasWidth - codeW;
+            RenderCode(pRT, theme, config, activeDoc, canvasLeft, codeW, contentTopY, clientHeight, isPaneFocused,
+                       highlightQuery, highlightMatchCase, highlightWholeWord, highlightUseRegex, isRenaming, groupIdx);
+            if (theme.brushBorderSubtle) {
+                pRT->DrawLine(D2D1::Point2F(prevLeft, contentTopY),
+                              D2D1::Point2F(prevLeft, clientHeight),
+                              theme.brushBorderSubtle.Get(), 1.0f);
+            }
+            AssetViewerRenderer::RenderSvgPreviewPane(pRT, theme, config, activeDoc,
+                                                      prevLeft + 1.0f, (std::max)(1.0f, prevW - 1.0f),
+                                                      contentTopY, clientHeight);
         } else if (activeDoc.structuredView && activeDoc.structuredView->isActive) {
             m_structuredRenderer.Render(pRT, theme, config, *activeDoc.structuredView,
                                         canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -1444,6 +1471,10 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_icons.DrawMonitorAppIcon(pRT, iconBounds);
         } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
             m_icons.DrawDatabase(pRT, iconBounds, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushTextWhite.Get(), 1.2f);
+        } else if (doc.isSpecialView && doc.viewType == L"erd") {
+            m_icons.DrawDatabase(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+        } else if (doc.isSpecialView && doc.viewType == L"audit") {
+            m_icons.DrawTerminal(pRT, iconBounds, theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushTextWhite.Get(), 1.2f);
         } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
             m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
         } else if (doc.isSpecialView && doc.viewType == L"task_runner") {
@@ -1742,6 +1773,12 @@ void EditorCanvas::RenderBreadcrumbs(ID2D1RenderTarget* pRT, Theme& theme, const
     } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
         segments.push_back(L"Database");
         segments.push_back(L"SQL Query Console");
+    } else if (doc.isSpecialView && doc.viewType == L"erd") {
+        segments.push_back(L"Database");
+        segments.push_back(L"ER Diagram & Schema Diff");
+    } else if (doc.isSpecialView && doc.viewType == L"audit") {
+        segments.push_back(L"Tools");
+        segments.push_back(L"Workspace Audit & .env Drift");
     } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
         segments.push_back(L"Preferences");
         segments.push_back(L"Snippet Editor (GUI)");
@@ -3650,16 +3687,37 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
+    const std::wstring& unusedTargetPath = doc.filePath.empty() ? doc.fileName : doc.filePath;
+    if (!doc.isSpecialView && !doc.isDiffView &&
+        (doc.cachedUnusedHintsVersion != buffer.GetVersion() || doc.cachedUnusedHintsTarget != unusedTargetPath)) {
+        doc.cachedUnusedHintsVersion = buffer.GetVersion();
+        doc.cachedUnusedHintsTarget = unusedTargetPath;
+        doc.unusedSymbolHints = phide::editor::SyntaxValidator::CollectUnusedSymbolHints(unusedTargetPath, buffer);
+    }
+
     // Pre-index per-line sparse overlays for ONLY visible buffer range [minVisBufLine, maxVisBufLine]
     std::unordered_map<size_t, std::vector<const lsp::Diagnostic*>> visDiagsByLine;
+    std::unordered_map<size_t, std::vector<std::pair<size_t, size_t>>> visUnnecessaryByLine;
     std::unordered_set<size_t> visDiagErrorLines;
-    if (!doc.diagnostics.empty()) {
-        for (const auto& d : doc.diagnostics) {
+    uint64_t diagFadeVer = 0;
+    auto pushUnnecessary = [&](const lsp::Diagnostic& d) {
+        if (d.isUnnecessary || d.severity >= 4) {
+            const size_t uLen = (d.length > 0) ? d.length : 1;
+            diagFadeVer = MixHash64(diagFadeVer, d.line * 1315423911ULL + d.col * 2654435761ULL + uLen);
             if (d.line >= minVisBufLine && d.line <= maxVisBufLine) {
-                visDiagsByLine[d.line].push_back(&d);
-                if (d.severity == 1) visDiagErrorLines.insert(d.line);
+                visUnnecessaryByLine[d.line].push_back({ d.col, d.col + uLen });
             }
         }
+    };
+    for (const auto& d : doc.diagnostics) {
+        pushUnnecessary(d);
+        if (d.line >= minVisBufLine && d.line <= maxVisBufLine) {
+            visDiagsByLine[d.line].push_back(&d);
+            if (d.severity == 1) visDiagErrorLines.insert(d.line);
+        }
+    }
+    for (const auto& d : doc.unusedSymbolHints) {
+        pushUnnecessary(d);
     }
     std::unordered_map<size_t, std::vector<const editor::OpenDocument::InlayHint*>> visHintsByLine;
     if (!doc.inlayHints.empty()) {
@@ -3691,9 +3749,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    const uint64_t curDocSemVer = (!doc.semanticTokensData.empty())
+    uint64_t curDocSemVer = (!doc.semanticTokensData.empty())
         ? MixHash64(doc.semanticTokensVersion, doc.semanticTokensData.size())
         : UINT64_MAX;
+    if (diagFadeVer != 0) {
+        curDocSemVer = MixHash64(curDocSemVer, diagFadeVer);
+    }
 
     auto resolveTokenBrush = [&](const editor::SyntaxToken& tok, size_t bufLine, const std::wstring& lineStr) -> ID2D1Brush* {
         if (tok.type == editor::TokenType::Operator && tok.length == 1) {
@@ -4479,6 +4540,23 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                 pLineLayout->SetDrawingEffect(brush, range);
                             }
 
+                            // Grey out unused imports & unused variables smoothly over syntax colors
+                            if (m_pUnnecessaryBrush) {
+                                if (auto uIt = visUnnecessaryByLine.find(vl.bufferLine); uIt != visUnnecessaryByLine.end()) {
+                                    for (const auto& uSpan : uIt->second) {
+                                        const size_t uS = (std::max)(uSpan.first, sliceStart);
+                                        const size_t uE = (std::min)(uSpan.second, sliceEnd);
+                                        if (uE > uS) {
+                                            DWRITE_TEXT_RANGE fadeRange = {
+                                                static_cast<UINT32>(uS - sliceStart),
+                                                static_cast<UINT32>(uE - uS)
+                                            };
+                                            pLineLayout->SetDrawingEffect(m_pUnnecessaryBrush.Get(), fadeRange);
+                                        }
+                                    }
+                                }
+                            }
+
                             if (!isMmapLarge && m_lineLayoutMap.size() >= 512 && !m_lineLayoutLru.empty()) {
                                 const auto& evictKey = m_lineLayoutLru.back();
                                 m_lineLayoutMap.erase(evictKey);
@@ -4575,6 +4653,22 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                 pSegLayout->SetDrawingEffect(brush, range);
                             }
 
+                            if (m_pUnnecessaryBrush) {
+                                if (auto uIt = visUnnecessaryByLine.find(vl.bufferLine); uIt != visUnnecessaryByLine.end()) {
+                                    for (const auto& uSpan : uIt->second) {
+                                        const size_t uS = (std::max)(uSpan.first, segStart);
+                                        const size_t uE = (std::min)(uSpan.second, segEnd);
+                                        if (uE > uS) {
+                                            DWRITE_TEXT_RANGE fadeRange = {
+                                                static_cast<UINT32>(uS - segStart),
+                                                static_cast<UINT32>(uE - uS)
+                                            };
+                                            pSegLayout->SetDrawingEffect(m_pUnnecessaryBrush.Get(), fadeRange);
+                                        }
+                                    }
+                                }
+                            }
+
                             pRT->DrawTextLayout(D2D1::Point2F(segVisualX, lineY), pSegLayout.Get(), theme.brushTextPrimary.Get());
                         }
                     }
@@ -4598,6 +4692,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     float tokenW = getColVisualX(tok.startCol + tok.length) - tokenX;
                     D2D1_RECT_F rcTok = D2D1::RectF(tokenX, lineY, tokenX + tokenW + config.ScaleF(4.0f), lineY + lineH);
                     ID2D1Brush* brush = resolveTokenBrush(tok, vl.bufferLine, lineStr);
+                    if (m_pUnnecessaryBrush) {
+                        if (auto uIt = visUnnecessaryByLine.find(vl.bufferLine); uIt != visUnnecessaryByLine.end()) {
+                            for (const auto& uSpan : uIt->second) {
+                                if (tok.startCol < uSpan.second && tok.startCol + tok.length > uSpan.first) {
+                                    brush = m_pUnnecessaryBrush.Get();
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     pRT->DrawText(
                         lineStr.c_str() + tok.startCol,
@@ -4785,6 +4889,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         if (auto dIt = visDiagsByLine.find(vl.bufferLine); dIt != visDiagsByLine.end()) {
             for (const auto* pDiag : dIt->second) {
                 const auto& diag = *pDiag;
+                if (diag.isUnnecessary || diag.severity >= 4) continue;
                 float errX1 = getColVisualX(diag.col);
                 size_t errLen = (diag.length > 0) ? diag.length : (std::max)(1ULL, lineStr.length() > diag.col ? lineStr.length() - diag.col : 1);
                 float errX2 = (std::max)(getColVisualX(diag.col + errLen), errX1 + config.ScaleF(14.0f));
@@ -5934,6 +6039,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             if (!doc.diagnostics.empty()) {
                 std::unordered_map<size_t, int> diagSeverityByLine;
                 for (const auto& diag : doc.diagnostics) {
+                    if (diag.isUnnecessary || diag.severity >= 4) continue;
                     auto it = diagSeverityByLine.find(diag.line);
                     if (it == diagSeverityByLine.end() || diag.severity == 1) {
                         diagSeverityByLine[diag.line] = diag.severity;
@@ -7051,6 +7157,11 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
+    if (doc.svgSplitPreview && paneRight < canvasLeft + 90000.0f &&
+        (paneRight - canvasLeft) > config.ScaleF(420.0f)) {
+        paneRight = canvasLeft + std::floor((paneRight - canvasLeft) * 0.50f);
+    }
+
     if (pt.x < canvasLeft + gutterW || pt.x > paneRight || pt.y < topY || pt.y > paneBottom) {
         return false;
     }
@@ -7255,136 +7366,7 @@ bool EditorCanvas::UpdateCodeLensHover(POINT pt) {
 void EditorCanvas::RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                    float topY, float clientHeight) {
-    if (!pRT) return;
-
-    // Load bitmap using WIC if not yet loaded
-    if (!doc.pImageBitmap && !doc.filePath.empty()) {
-        Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
-        HRESULT hr = CoCreateInstance(
-            CLSID_WICImagingFactory,
-            nullptr,
-            CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&pWicFactory)
-        );
-        if (SUCCEEDED(hr) && pWicFactory) {
-            Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
-            hr = pWicFactory->CreateDecoderFromFilename(
-                doc.filePath.c_str(),
-                nullptr,
-                GENERIC_READ,
-                WICDecodeMetadataCacheOnDemand,
-                &pDecoder
-            );
-            if (SUCCEEDED(hr) && pDecoder) {
-                Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
-                hr = pDecoder->GetFrame(0, &pFrame);
-                if (SUCCEEDED(hr) && pFrame) {
-                    pFrame->GetSize(&doc.imageWidth, &doc.imageHeight);
-
-                    Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
-                    hr = pWicFactory->CreateFormatConverter(&pConverter);
-                    if (SUCCEEDED(hr) && pConverter) {
-                        hr = pConverter->Initialize(
-                            pFrame.Get(),
-                            GUID_WICPixelFormat32bppPBGRA,
-                            WICBitmapDitherTypeNone,
-                            nullptr,
-                            0.0,
-                            WICBitmapPaletteTypeCustom
-                        );
-                        if (SUCCEEDED(hr)) {
-                            pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &doc.pImageBitmap);
-                        }
-                    }
-                }
-            }
-        }
-        if (doc.imageFileSize == 0 && !doc.filePath.empty()) {
-            std::error_code ec;
-            doc.imageFileSize = std::filesystem::file_size(doc.filePath, ec);
-        }
-    }
-
-    const float availW = canvasWidth - config.ScaleF(80.0f);
-    const float availH = (clientHeight - topY) - config.ScaleF(100.0f);
-
-    if (doc.pImageBitmap && doc.imageWidth > 0 && doc.imageHeight > 0 && availW > 10.0f && availH > 10.0f) {
-        float scale = 1.0f;
-        if (static_cast<float>(doc.imageWidth) > availW || static_cast<float>(doc.imageHeight) > availH) {
-            float scaleX = availW / static_cast<float>(doc.imageWidth);
-            float scaleY = availH / static_cast<float>(doc.imageHeight);
-            scale = (std::min)(scaleX, scaleY);
-        }
-
-        const float drawW = static_cast<float>(doc.imageWidth) * scale;
-        const float drawH = static_cast<float>(doc.imageHeight) * scale;
-        const float drawX = canvasLeft + (canvasWidth - drawW) / 2.0f;
-        const float drawY = topY + ((clientHeight - topY) - drawH) / 2.0f - config.ScaleF(20.0f);
-
-        D2D1_RECT_F imgRect = D2D1::RectF(drawX, drawY, drawX + drawW, drawY + drawH);
-
-        // Subtle frame around image
-        D2D1_RECT_F borderRect = D2D1::RectF(drawX - 1.0f, drawY - 1.0f, drawX + drawW + 1.0f, drawY + drawH + 1.0f);
-        pRT->DrawRectangle(borderRect, theme.brushBorderSubtle.Get(), 1.0f);
-
-        // Draw image bitmap
-        pRT->DrawBitmap(doc.pImageBitmap.Get(), imgRect);
-
-        // Format metadata info
-        std::wstring ext;
-        auto dotPos = doc.filePath.find_last_of(L".");
-        if (dotPos != std::wstring::npos) {
-            ext = doc.filePath.substr(dotPos + 1);
-            for (auto& ch : ext) ch = towupper(ch);
-        } else {
-            ext = L"IMAGE";
-        }
-
-        std::wstring sizeStr;
-        if (doc.imageFileSize < 1024) {
-            sizeStr = std::to_wstring(doc.imageFileSize) + L" B";
-        } else if (doc.imageFileSize < 1024 * 1024) {
-            sizeStr = std::to_wstring(doc.imageFileSize / 1024) + L" KB";
-        } else {
-            sizeStr = std::to_wstring(doc.imageFileSize / (1024 * 1024)) + L" MB";
-        }
-
-        std::wstring infoText = std::to_wstring(doc.imageWidth) + L" \u00D7 " +
-                                std::to_wstring(doc.imageHeight) + L" px   |   " +
-                                ext + L"   |   " + sizeStr;
-
-        const float badgeH = config.ScaleF(26.0f);
-        const float badgeW = config.ScaleF(250.0f);
-        const float badgeX = canvasLeft + (canvasWidth - badgeW) / 2.0f;
-        const float badgeY = clientHeight - badgeH - config.ScaleF(16.0f);
-
-        D2D1_ROUNDED_RECT rcBadge = D2D1::RoundedRect(
-            D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH),
-            config.ScaleF(13.0f), config.ScaleF(13.0f)
-        );
-        pRT->FillRoundedRectangle(rcBadge, theme.brushItemHover.Get());
-        pRT->DrawRoundedRectangle(rcBadge, theme.brushBorderSubtle.Get(), 1.0f);
-
-        D2D1_RECT_F rcText = rcBadge.rect;
-        IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
-        if (pFmt) {
-            DWRITE_TEXT_ALIGNMENT oldAlign = pFmt->GetTextAlignment();
-            DWRITE_PARAGRAPH_ALIGNMENT oldPara = pFmt->GetParagraphAlignment();
-            pFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            pRT->DrawText(infoText.c_str(), static_cast<UINT32>(infoText.length()),
-                          pFmt, rcText, theme.brushTextSecondary.Get());
-            pFmt->SetTextAlignment(oldAlign);
-            pFmt->SetParagraphAlignment(oldPara);
-        }
-    } else {
-        std::wstring msg = L"Unable to display image: " + doc.fileName;
-        D2D1_RECT_F rcMsg = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight);
-        IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
-        if (pFmt) {
-            pRT->DrawText(msg.c_str(), static_cast<UINT32>(msg.length()), pFmt, rcMsg, theme.brushTextMuted.Get());
-        }
-    }
+    AssetViewerRenderer::RenderRasterImageView(pRT, theme, config, doc, canvasLeft, canvasWidth, topY, clientHeight);
 }
 
 /**
@@ -15470,6 +15452,8 @@ void EditorCanvas::RefreshActiveSqlSchema() {
         if (m_sqlSchemaError.empty()) {
             prof.isConnected = true;
         }
+        m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
+    SyncErdViewConnections();
     }
 }
 
@@ -15688,6 +15672,8 @@ void EditorCanvas::ExecuteActiveSqlQuery() {
         if (SqlNeedsSchemaRefresh(m_sqlQueryText)) {
             std::wstring ignoredErr;
             m_sqlTables = phide::db::SqlEngine::InspectSchema(prof, ignoredErr);
+            m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
+    SyncErdViewConnections();
         }
     } else {
         m_sqlStatusBanner = L"Error: " + m_sqlResult.errorMessage;
@@ -15721,6 +15707,7 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
 
     m_sqlIsBusy = true;
     m_sqlStatusBanner = L"Detecting database servers...";
+    SyncErdViewConnections();
 
     std::thread([root, host, prefPort, user, pass, defDb, prevKey, prevDb, discGen, schGen, inbox, notifyHwnd]() {
         if (!inbox->alive.load()) return;
@@ -15791,6 +15778,75 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
                 inbox->schemaDatabases = std::move(dbs);
                 inbox->schemaError = std::move(schemaErr);
                 inbox->hasSchemaUpdate = true;
+            }
+        }
+        if (notifyHwnd && IsWindow(notifyHwnd)) {
+            PostMessageW(notifyHwnd, WM_PHIDE_SQL_ASYNC_DONE, 0, 0);
+        }
+    }).detach();
+}
+
+void EditorCanvas::SyncErdViewConnections() {
+    m_erdView.SetConnectionProfiles(m_sqlProfiles, m_sqlSelectedProfileIdx, m_sqlIsBusy, m_sqlSchemaError);
+}
+
+void EditorCanvas::SelectSqlProfile(size_t idx) {
+    if (idx >= m_sqlProfiles.size()) return;
+    m_sqlSelectedProfileIdx = idx;
+    m_sqlExpandedTableIdx = -1;
+    m_sqlSidebarScrollY = 0.0f;
+    m_sqlTables.clear();
+    m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
+    SyncErdViewConnections();
+    StartRefreshActiveSqlSchemaAsync();
+}
+
+void EditorCanvas::SelectSqlDatabase(const std::wstring& dbName) {
+    if (m_sqlSelectedProfileIdx >= m_sqlProfiles.size() || dbName.empty()) return;
+    m_sqlProfiles[m_sqlSelectedProfileIdx].database = dbName;
+    m_sqlExpandedTableIdx = -1;
+    m_sqlSidebarScrollY = 0.0f;
+    SyncErdViewConnections();
+    StartRefreshActiveSqlSchemaAsync();
+}
+
+void EditorCanvas::StartCompareSqlDatabaseAsync(size_t profileIdx, const std::wstring& dbName) {
+    if (profileIdx >= m_sqlProfiles.size()) return;
+    phide::db::SqlConnectionProfile profCopy = m_sqlProfiles[profileIdx];
+    if (!dbName.empty()) profCopy.database = dbName;
+    const std::wstring targetLabel = profCopy.database.empty()
+        ? profCopy.name
+        : (profCopy.name + L" / " + profCopy.database);
+
+    if (m_sqlNotifyHwnd == nullptr) {
+        std::wstring err;
+        auto tbls = phide::db::SqlEngine::InspectSchema(profCopy, err);
+        if (err.empty() || !tbls.empty()) {
+            m_erdView.SetComparisonSchema(tbls, targetLabel);
+            m_erdView.OpenSchemaDiffMode(true);
+        } else {
+            SyncErdViewConnections();
+        }
+        return;
+    }
+
+    const uint64_t reqGen = ++m_sqlDiffCompareReqGen;
+    auto inbox = m_sqlAsyncInbox;
+    HWND notifyHwnd = m_sqlNotifyHwnd;
+
+    std::thread([profCopy, targetLabel, reqGen, inbox, notifyHwnd]() {
+        if (!inbox->alive.load()) return;
+        std::wstring err;
+        auto tbls = phide::db::SqlEngine::InspectSchema(profCopy, err);
+        if (!inbox->alive.load()) return;
+        {
+            std::lock_guard<std::mutex> lk(inbox->mtx);
+            if (!inbox->alive.load()) return;
+            if (reqGen >= inbox->diffCompareReqGen) {
+                inbox->diffCompareReqGen = reqGen;
+                inbox->diffCompareTables = std::move(tbls);
+                inbox->diffCompareLabel = targetLabel;
+                inbox->hasDiffCompareUpdate = true;
             }
         }
         if (notifyHwnd && IsWindow(notifyHwnd)) {
@@ -16041,10 +16097,12 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
     bool hasSch = false;
     bool hasQry = false;
     bool hasToggle = false;
+    bool hasDiff = false;
     uint64_t seenDiscGen = 0;
     uint64_t seenSchGen = 0;
     uint64_t seenQryGen = 0;
     uint64_t seenToggleGen = 0;
+    uint64_t seenDiffGen = 0;
     std::vector<phide::db::SqlConnectionProfile> discProfs;
     size_t schProfIdx = 0;
     std::vector<phide::db::SqlTableInfo> schTables;
@@ -16060,6 +16118,8 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
     int togPort = 0;
     bool togSuccess = false;
     std::wstring togMsg;
+    std::vector<phide::db::SqlTableInfo> diffTbls;
+    std::wstring diffLbl;
 
     {
         std::lock_guard<std::mutex> lk(m_sqlAsyncInbox->mtx);
@@ -16067,6 +16127,7 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
         seenSchGen = m_sqlAsyncInbox->schemaReqGen;
         seenQryGen = m_sqlAsyncInbox->queryReqGen;
         seenToggleGen = m_sqlAsyncInbox->serverToggleReqGen;
+        seenDiffGen = m_sqlAsyncInbox->diffCompareReqGen;
         if (m_sqlAsyncInbox->hasDiscoverUpdate) {
             hasDisc = true;
             m_sqlAsyncInbox->hasDiscoverUpdate = false;
@@ -16098,6 +16159,12 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
             togPort = m_sqlAsyncInbox->toggledPort;
             togSuccess = m_sqlAsyncInbox->toggledSuccess;
             togMsg = std::move(m_sqlAsyncInbox->serverToggleMessage);
+        }
+        if (m_sqlAsyncInbox->hasDiffCompareUpdate) {
+            hasDiff = true;
+            m_sqlAsyncInbox->hasDiffCompareUpdate = false;
+            diffTbls = std::move(m_sqlAsyncInbox->diffCompareTables);
+            diffLbl = std::move(m_sqlAsyncInbox->diffCompareLabel);
         }
     }
 
@@ -16172,6 +16239,8 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
             m_sqlSchemaError = std::move(schErr);
             m_sqlExpandedTableIdx = -1;
             m_sqlSidebarScrollY = 0.0f;
+            m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
+    SyncErdViewConnections();
             if (!hasQry && !(hasToggle && seenToggleGen == m_sqlServerToggleReqGen && (!togSuccess || !togConnected || !togMsg.empty()))) {
                 if (!m_sqlSchemaError.empty()) {
                     m_sqlStatusBanner = L"Schema: " + m_sqlSchemaError;
@@ -16219,10 +16288,20 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
         anyApplied = true;
     }
 
+    if (hasDiff && seenDiffGen == m_sqlDiffCompareReqGen) {
+        m_erdView.SetComparisonSchema(diffTbls, diffLbl);
+        m_erdView.OpenSchemaDiffMode(true);
+        anyApplied = true;
+    }
+
     m_sqlIsBusy = (seenDiscGen < m_sqlDiscoverReqGen) ||
                   (seenSchGen < m_sqlSchemaReqGen) ||
                   (seenQryGen < m_sqlQueryReqGen) ||
-                  (seenToggleGen < m_sqlServerToggleReqGen);
+                  (seenToggleGen < m_sqlServerToggleReqGen) ||
+                  (seenDiffGen < m_sqlDiffCompareReqGen);
+    if (anyApplied) {
+        SyncErdViewConnections();
+    }
     return anyApplied;
 }
 
@@ -16236,6 +16315,8 @@ LPCWSTR EditorCanvas::GetSqlConsoleCursorForPoint(POINT pt) const noexcept {
         SqlPtInRectF(pt, m_rcSqlExportJsonBtn) ||
         SqlPtInRectF(pt, m_rcSqlSaveSnipBtn) ||
         SqlPtInRectF(pt, m_rcSqlHistoryBtn) ||
+        SqlPtInRectF(pt, m_rcSqlErdBtn) ||
+        SqlPtInRectF(pt, m_rcSqlDiffBtn) ||
         SqlPtInRectF(pt, m_rcSqlPrevPageBtn) ||
         SqlPtInRectF(pt, m_rcSqlNextPageBtn)) {
         return IDC_HAND;
@@ -16268,6 +16349,8 @@ bool EditorCanvas::UpdateSqlConsoleHover(POINT pt) noexcept {
     else if (SqlPtInRectF(pt, m_rcSqlExportJsonBtn)) newBtnId = 6;
     else if (SqlPtInRectF(pt, m_rcSqlSaveSnipBtn)) newBtnId = 9;
     else if (SqlPtInRectF(pt, m_rcSqlHistoryBtn)) newBtnId = 10;
+    else if (SqlPtInRectF(pt, m_rcSqlErdBtn)) newBtnId = 11;
+    else if (SqlPtInRectF(pt, m_rcSqlDiffBtn)) newBtnId = 12;
     else if (SqlPtInRectF(pt, m_rcSqlPrevPageBtn)) newBtnId = 7;
     else if (SqlPtInRectF(pt, m_rcSqlNextPageBtn)) newBtnId = 8;
 
@@ -16330,6 +16413,8 @@ void EditorCanvas::RenderSqlConsoleView(
     m_rcSqlStartMysqlBtn = {};
     m_rcSqlExportCsvBtn = {};
     m_rcSqlExportJsonBtn = {};
+    m_rcSqlErdBtn = {};
+    m_rcSqlDiffBtn = {};
     m_rcSqlPrevPageBtn = {};
     m_rcSqlNextPageBtn = {};
     m_rcSqlQueryBox = {};
@@ -16500,6 +16585,8 @@ void EditorCanvas::RenderSqlConsoleView(
     std::wstring histLbl = L"History (" + std::to_wstring(m_sqlQueryHistory.size() + m_sqlSavedSnippets.size()) + L") ▼";
     drawBtn(m_rcSqlHistoryBtn, 10, histLbl.c_str(), m_sqlHistoryMenuOpen ? brAccent.Get() : brPanel.Get(),
             m_sqlHistoryMenuOpen ? brAccent.Get() : brBorder.Get(), m_sqlHistoryMenuOpen ? txtWhite : txtMain);
+    drawBtn(m_rcSqlErdBtn, 11, L"ER Diagram", brPanel.Get(), brAccent.Get(), txtMain);
+    drawBtn(m_rcSqlDiffBtn, 12, L"Schema Diff", brPanel.Get(), brBorder.Get(), txtMain);
 
     if (m_sqlIsBusy) {
         const float busyW = MeasureDWriteTextWidth(dwf, fRowUse, L"Working...", config.ScaleF(7.0f)) + config.ScaleF(16.0f);
@@ -16946,6 +17033,14 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
     }
     if (SqlPtInRectF(pt, m_rcSqlHistoryBtn)) {
         m_sqlHistoryMenuOpen = !m_sqlHistoryMenuOpen;
+        return true;
+    }
+    if (SqlPtInRectF(pt, m_rcSqlErdBtn)) {
+        if (onOpenSqlErdView) onOpenSqlErdView(false);
+        return true;
+    }
+    if (SqlPtInRectF(pt, m_rcSqlDiffBtn)) {
+        if (onOpenSqlErdView) onOpenSqlErdView(true);
         return true;
     }
     if (m_sqlHistoryMenuOpen) {
