@@ -85,7 +85,7 @@ public:
      * @brief Returns multiline lexer entry state for the given line (0=normal, 1=block comment /* *\/, 2=doubleQuote, 3=singleQuote, 4=HTML comment <!-- -->).
      */
     [[nodiscard]] uint8_t GetLineEntryState(size_t lineIdx) const noexcept {
-        return (lineIdx < m_lineEntryStates.size()) ? m_lineEntryStates[lineIdx] : 0;
+        return (lineIdx < m_lineEntryStates.size()) ? static_cast<uint8_t>(m_lineEntryStates[lineIdx] & 0x0F) : 0;
     }
 
     /**
@@ -293,7 +293,9 @@ private:
     // O(1) version-tracked per-line state and syntax token cache for large files
     mutable uint64_t m_cachedTokenVersion = UINT64_MAX;
     mutable std::wstring m_cachedTokenExt;
-    mutable std::vector<uint8_t> m_lineEntryStates; // 0 = normal, 1 = blockComment, 2 = doubleQuote, 3 = singleQuote, 4 = htmlComment
+    mutable std::vector<uint8_t> m_lineEntryStates; // Low nibble: 0=normal, 1=blockComment, 2=doubleQuote, 3=singleQuote, 4=htmlComment; bit 0x10 = inPhpTag
+    mutable size_t m_dirtyEntryStart = 0;
+    mutable bool m_entryFullRebuild = true;
     mutable std::unordered_map<size_t, std::vector<SyntaxToken>> m_tokenCache;
     mutable std::vector<SyntaxToken> m_mmapTokenScratch;
 
@@ -319,11 +321,15 @@ private:
     size_t m_redoMemoryBytes = 0;
 
     bool m_hasPendingUndo = false;
+    bool m_hasPendingRangeUndo = false;
+    size_t m_pendingRangeStartLine = 0;
+    size_t m_pendingRangeAfterCount = 0;
     uint64_t m_pendingUndoVersion = 0;
     std::vector<std::wstring> m_pendingUndoLines;
     CursorPosition m_pendingUndoCursor{ 0, 0 };
     std::wstring m_pendingUndoLineEnding = L"\n";
 
+    void BeginPendingSliceUndo(size_t startLine, size_t beforeCount, size_t afterCount);
     void CommitPendingUndo();
     void EnforceUndoBudget();
     static bool LoadBytesWithEncoding(const std::string& bytes, TextEncoding enc, std::wstring& outText);

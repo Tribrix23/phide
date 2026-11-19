@@ -1492,6 +1492,7 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
             const float itemH = config.ScaleF(24.0f);
             const float availableTreeH = treeBottomY - curY;
             const size_t visibleSlots = (itemH > 0.0f) ? static_cast<size_t>(availableTreeH / itemH) : 10;
+            m_lastExplorerVisibleSlots = visibleSlots;
             if (m_visibleItems.size() <= visibleSlots) {
                 m_scrollIndex = 0;
             } else if (m_scrollIndex > m_visibleItems.size() - visibleSlots) {
@@ -4409,18 +4410,24 @@ bool DrawerPanel::HandleMouseWheel(short delta, int activeRailTab, float mouseY)
         return std::abs(m_remoteScrollY - oldScroll) > 0.1f;
     }
 
+    if (activeRailTab == 0 && m_outlineExpanded) {
+        const bool overOutlineViewport = (m_rcOutlineViewport.bottom > m_rcOutlineViewport.top && mouseY >= m_rcOutlineViewport.top);
+        const bool overOutlineHeader = (m_rcOutlineHeader.bottom > m_rcOutlineHeader.top && mouseY >= m_rcOutlineHeader.top);
+        if (overOutlineViewport || overOutlineHeader) {
+            return ScrollOutline(delta);
+        }
+    }
+
     if (m_visibleItems.empty()) return false;
     size_t oldScroll = m_scrollIndex;
+    const size_t step = 3;
+    const size_t maxScroll = (m_lastExplorerVisibleSlots > 0 && m_visibleItems.size() > m_lastExplorerVisibleSlots)
+        ? (m_visibleItems.size() - m_lastExplorerVisibleSlots)
+        : (m_visibleItems.size() - 1);
     if (delta > 0) {
-        if (m_scrollIndex >= 2) {
-            m_scrollIndex -= 2;
-        } else {
-            m_scrollIndex = 0;
-        }
+        m_scrollIndex = (m_scrollIndex >= step) ? (m_scrollIndex - step) : 0;
     } else {
-        if (m_scrollIndex + 2 < m_visibleItems.size()) {
-            m_scrollIndex += 2;
-        }
+        m_scrollIndex = (std::min)(maxScroll, m_scrollIndex + step);
     }
     return m_scrollIndex != oldScroll;
 }

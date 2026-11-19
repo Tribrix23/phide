@@ -1221,6 +1221,9 @@ struct OpenDocument {
 
     // Viewport Scrolling State
     size_t scrollLine = 0;              ///< Top-most visible visual line index
+    size_t lastTotalVisualLines = 0;    ///< Last rendered visual line count (including CodeLens & folding)
+    size_t lastMaxScrollLine = 0;       ///< Last rendered max vertical scrollLine bound
+    size_t lastVisibleLines = 25;       ///< Last rendered vertical line capacity of viewport
     float scrollOffsetX = 0.0f;         ///< Horizontal scroll offset in pixels
     float maxContentWidth = 0.0f;       ///< Maximum content width in pixels across lines
     float markdownScrollY = 0.0f;       ///< Vertical scroll offset in pixels for Markdown Preview
@@ -1258,6 +1261,8 @@ struct OpenDocument {
     float minimapDragStartY = 0.0f;     ///< Mouse Y at start of drag
     float minimapGrabOffsetY = 0.0f;    ///< Offset from slider top when grabbed
     size_t minimapDragStartLine = 0;    ///< scrollLine at start of drag
+    size_t lastMinimapStartLine = 0;    ///< First buffer line rendered in scrollable minimap window
+    size_t lastMinimapVisibleLines = 0; ///< Number of buffer lines visible inside minimap track
 
     // Code Folding State (Images 2 & 3)
     std::set<size_t> foldedLines;       ///< Set of starting line indices (0-based buffer line) that are folded
@@ -1787,6 +1792,10 @@ struct OpenDocument {
         visualLineCache.valid = false;
         std::vector<CachedVisualLine>().swap(visualLineCache.lines);
         std::set<size_t>().swap(visualLineCache.foldedLines);
+        lastTotalVisualLines = 0;
+        lastMaxScrollLine = 0;
+        lastMinimapStartLine = 0;
+        lastMinimapVisibleLines = 0;
         structuredView.reset();
         assetView.reset();
         pImageBitmap.Reset();

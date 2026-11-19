@@ -1091,6 +1091,8 @@ public:
     void SetOnOutlineJump(std::function<void(size_t line0Based, size_t col0Based)> cb) { m_onOutlineJump = std::move(cb); }
     bool HitTestOutline(POINT pt, const app::AppConfig& config, bool toggleOnly = false);
     bool ScrollOutline(int delta);
+    [[nodiscard]] size_t GetScrollIndex() const noexcept { return m_scrollIndex; }
+    [[nodiscard]] size_t GetOutlineScrollIdx() const noexcept { return m_outlineScrollIdx; }
 
     [[nodiscard]] bool IsSearchDetailsOpen() const noexcept { return m_isSearchDetailsOpen; }
     void SetSearchDetailsOpen(bool open) noexcept { m_isSearchDetailsOpen = open; }
@@ -1670,6 +1672,7 @@ private:
     std::set<std::wstring> m_expandedDirs;
     std::vector<DrawerTreeItem> m_visibleItems;
     size_t m_scrollIndex = 0;           ///< Vertical scroll index for tree items
+    size_t m_lastExplorerVisibleSlots = 0; ///< Last rendered Explorer tree slot capacity
     bool m_isDraggingExplorerScrollbar = false;
     float m_dragScrollStartY = 0.0f;
     size_t m_dragScrollStartIndex = 0;

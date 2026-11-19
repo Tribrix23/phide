@@ -408,7 +408,7 @@ private:
     void SplitEditor();
 
     /** @brief Keeps cursor within horizontal viewport bounds when typing or navigating. */
-    void EnsureCursorVisible();
+    void EnsureCursorVisible(bool centerVertically = false);
 
     // --- File & Window Action Handlers ---
 
@@ -1494,6 +1494,8 @@ private:
 
 public:
     bool JumpToNextCommentAnnotation();
+    [[nodiscard]] const std::wstring& GetStatusCommentTooltip() const noexcept { return m_statusCommentTooltip; }
+    [[nodiscard]] D2D1_RECT_F GetStatusBarCommentAnnotsRect() const noexcept { return m_rcStatusBarCommentAnnots; }
 
 private:
 

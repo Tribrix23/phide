@@ -782,9 +782,14 @@ std::wstring Buffer::GetText() const {
         return res;
     }
     std::wstring res;
-    for (size_t i = 0; i < m_lines.size(); ++i) {
-        res += m_lines[i];
-        if (i + 1 < m_lines.size()) res += L"\n";
+    if (!m_lines.empty()) {
+        size_t totalLen = m_lines.size() - 1;
+        for (const auto& l : m_lines) totalLen += l.size();
+        res.reserve(totalLen);
+        for (size_t i = 0; i < m_lines.size(); ++i) {
+            res += m_lines[i];
+            if (i + 1 < m_lines.size()) res += L"\n";
+        }
     }
     return res;
 }
@@ -838,11 +843,16 @@ Buffer::Buffer(Buffer&& other) noexcept
       m_cachedTokenVersion(other.m_cachedTokenVersion),
       m_cachedTokenExt(std::move(other.m_cachedTokenExt)),
       m_lineEntryStates(std::move(other.m_lineEntryStates)),
+      m_dirtyEntryStart(other.m_dirtyEntryStart),
+      m_entryFullRebuild(other.m_entryFullRebuild),
       m_undoStack(std::move(other.m_undoStack)),
       m_redoStack(std::move(other.m_redoStack)),
       m_undoMemoryBytes(other.m_undoMemoryBytes),
       m_redoMemoryBytes(other.m_redoMemoryBytes),
       m_hasPendingUndo(other.m_hasPendingUndo),
+      m_hasPendingRangeUndo(other.m_hasPendingRangeUndo),
+      m_pendingRangeStartLine(other.m_pendingRangeStartLine),
+      m_pendingRangeAfterCount(other.m_pendingRangeAfterCount),
       m_pendingUndoVersion(other.m_pendingUndoVersion),
       m_pendingUndoLines(std::move(other.m_pendingUndoLines)),
       m_pendingUndoCursor(other.m_pendingUndoCursor),
@@ -857,6 +867,9 @@ Buffer::Buffer(Buffer&& other) noexcept
     other.m_undoMemoryBytes = 0;
     other.m_redoMemoryBytes = 0;
     other.m_hasPendingUndo = false;
+    other.m_hasPendingRangeUndo = false;
+    other.m_dirtyEntryStart = 0;
+    other.m_entryFullRebuild = true;
     other.m_cachedTokenVersion = UINT64_MAX;
 }
 
@@ -884,12 +897,17 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     m_cachedTokenVersion = other.m_cachedTokenVersion;
     m_cachedTokenExt = std::move(other.m_cachedTokenExt);
     m_lineEntryStates = std::move(other.m_lineEntryStates);
+    m_dirtyEntryStart = other.m_dirtyEntryStart;
+    m_entryFullRebuild = other.m_entryFullRebuild;
     std::swap(m_tokenCache, other.m_tokenCache);
     m_undoStack = std::move(other.m_undoStack);
     m_redoStack = std::move(other.m_redoStack);
     m_undoMemoryBytes = other.m_undoMemoryBytes;
     m_redoMemoryBytes = other.m_redoMemoryBytes;
     m_hasPendingUndo = other.m_hasPendingUndo;
+    m_hasPendingRangeUndo = other.m_hasPendingRangeUndo;
+    m_pendingRangeStartLine = other.m_pendingRangeStartLine;
+    m_pendingRangeAfterCount = other.m_pendingRangeAfterCount;
     m_pendingUndoVersion = other.m_pendingUndoVersion;
     m_pendingUndoLines = std::move(other.m_pendingUndoLines);
     m_pendingUndoCursor = other.m_pendingUndoCursor;
@@ -899,6 +917,9 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     other.m_undoMemoryBytes = 0;
     other.m_redoMemoryBytes = 0;
     other.m_hasPendingUndo = false;
+    other.m_hasPendingRangeUndo = false;
+    other.m_dirtyEntryStart = 0;
+    other.m_entryFullRebuild = true;
     other.m_cachedTokenVersion = UINT64_MAX;
     return *this;
 }
@@ -929,6 +950,36 @@ void Buffer::EnforceUndoBudget() {
 void Buffer::CommitPendingUndo() {
     if (!m_hasPendingUndo) return;
     m_hasPendingUndo = false;
+
+    if (m_hasPendingRangeUndo) {
+        m_hasPendingRangeUndo = false;
+        const size_t start = (std::min)(m_pendingRangeStartLine, m_lines.size());
+        const size_t actualAfter = (std::min)(m_pendingRangeAfterCount, m_lines.size() - start);
+        bool differs = (actualAfter != m_pendingUndoLines.size()) || (m_pendingUndoLineEnding != m_lineEnding);
+        if (!differs) {
+            for (size_t i = 0; i < actualAfter; ++i) {
+                if (m_lines[start + i] != m_pendingUndoLines[i]) {
+                    differs = true;
+                    break;
+                }
+            }
+        }
+        if (differs) {
+            UndoHunk h;
+            h.startLine = start;
+            h.afterCount = actualAfter;
+            h.beforeLines = std::move(m_pendingUndoLines);
+            h.beforeCursor = m_pendingUndoCursor;
+            h.afterCursor = m_cursor;
+            h.beforeLineEnding = m_pendingUndoLineEnding;
+            h.afterLineEnding = m_lineEnding;
+            m_undoMemoryBytes += h.EstimateBytes();
+            m_undoStack.push_back(std::move(h));
+            EnforceUndoBudget();
+        }
+        std::vector<std::wstring>().swap(m_pendingUndoLines);
+        return;
+    }
 
     const size_t oldN = m_pendingUndoLines.size();
     const size_t newN = m_lines.size();
@@ -963,9 +1014,32 @@ void Buffer::CommitPendingUndo() {
     std::vector<std::wstring>().swap(m_pendingUndoLines);
 }
 
+void Buffer::BeginPendingSliceUndo(size_t startLine, size_t beforeCount, size_t afterCount) {
+    s_undoCoalesceMap.erase(this);
+    CommitPendingUndo();
+    const size_t safeStart = (std::min)(startLine, m_lines.size());
+    const size_t safeBefore = (std::min)(beforeCount, m_lines.size() - safeStart);
+    m_pendingUndoLines.clear();
+    m_pendingUndoLines.reserve(safeBefore);
+    for (size_t i = 0; i < safeBefore; ++i) {
+        m_pendingUndoLines.push_back(m_lines[safeStart + i]);
+    }
+    m_hasPendingUndo = true;
+    m_hasPendingRangeUndo = true;
+    m_pendingRangeStartLine = safeStart;
+    m_pendingRangeAfterCount = afterCount;
+    m_pendingUndoCursor = m_cursor;
+    m_pendingUndoLineEnding = m_lineEnding;
+    m_pendingUndoVersion = m_version;
+    m_redoStack.clear();
+    m_redoMemoryBytes = 0;
+    EnforceUndoBudget();
+}
+
 void Buffer::PushUndo() {
     s_undoCoalesceMap.erase(this);
     CommitPendingUndo();
+    m_hasPendingRangeUndo = false;
     m_pendingUndoLines = m_lines;
     m_pendingUndoCursor = m_cursor;
     m_pendingUndoLineEnding = m_lineEnding;
@@ -1065,6 +1139,8 @@ bool Buffer::Undo() {
     m_lineEnding = h.beforeLineEnding;
     m_isModified = true;
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     ++m_version;
     EnforceUndoBudget();
     return true;
@@ -1106,6 +1182,8 @@ bool Buffer::Redo() {
     m_lineEnding = h.beforeLineEnding;
     m_isModified = true;
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     ++m_version;
     EnforceUndoBudget();
     return true;
@@ -1113,7 +1191,6 @@ bool Buffer::Redo() {
 
 void Buffer::InsertText(const std::wstring& text) {
     if (m_mappedState || text.empty()) return;
-    PushUndo();
     if (m_lines.empty()) m_lines.push_back(L"");
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     if (m_cursor.col > m_lines[m_cursor.line].length()) m_cursor.col = m_lines[m_cursor.line].length();
@@ -1138,6 +1215,9 @@ void Buffer::InsertText(const std::wstring& text) {
     }
     if (insertLines.empty()) return;
 
+    const size_t editStartLine = m_cursor.line;
+    BeginPendingSliceUndo(editStartLine, 1, insertLines.size());
+
     const std::wstring line = m_lines[m_cursor.line];
     const std::wstring prefix = line.substr(0, m_cursor.col);
     const std::wstring suffix = line.substr(m_cursor.col);
@@ -1145,6 +1225,7 @@ void Buffer::InsertText(const std::wstring& text) {
         m_lines[m_cursor.line] = prefix + insertLines[0] + suffix;
         m_cursor.col += insertLines[0].length();
         m_tokenCache.erase(m_cursor.line);
+        if (editStartLine < m_dirtyEntryStart) m_dirtyEntryStart = editStartLine;
         m_isModified = true;
         ++m_version;
     } else {
@@ -1275,26 +1356,37 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
         _wcsicmp(ext.c_str(), L".vue") == 0 || _wcsicmp(ext.c_str(), L"vue") == 0 ||
         _wcsicmp(ext.c_str(), L".svelte") == 0 || _wcsicmp(ext.c_str(), L"svelte") == 0;
 
-    // Recompute per-line entry states in a single O(N) pass ONLY when buffer version or extension changes
-    if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size()) {
-        const bool fullClear = (m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size());
+    // Recompute per-line entry states incrementally starting from m_dirtyEntryStart when possible
+    if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_entryFullRebuild || m_lineEntryStates.size() != m_lines.size()) {
+        const bool fullClear = (m_cachedTokenExt != ext || m_entryFullRebuild || m_lineEntryStates.size() != m_lines.size());
         m_cachedTokenVersion = m_version;
         m_cachedTokenExt = ext;
         if (fullClear) {
             m_tokenCache.clear();
             m_lineEntryStates.assign(m_lines.size(), 0);
+            m_dirtyEntryStart = 0;
+            m_entryFullRebuild = false;
         }
 
-        bool inBlock = false;
-        bool inHtmlComment = false;
-        bool inPhpTag = false;
-        wchar_t inQuote = 0;
-        for (size_t l = 0; l < m_lines.size(); ++l) {
-            uint8_t newState = inHtmlComment ? 4 : (inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0)));
-            if (!fullClear && m_lineEntryStates[l] != newState) {
+        const size_t startL = (fullClear || m_dirtyEntryStart >= m_lines.size()) ? 0 : m_dirtyEntryStart;
+        const size_t minConvergeLine = startL + 2;
+        const uint8_t initPacked = (!fullClear && startL < m_lineEntryStates.size()) ? m_lineEntryStates[startL] : 0;
+        const uint8_t initLow = static_cast<uint8_t>(initPacked & 0x0F);
+        bool inBlock = (initLow == 1);
+        bool inHtmlComment = (initLow == 4);
+        bool inPhpTag = !fullClear && ((initPacked & 0x10) != 0);
+        wchar_t inQuote = (initLow == 2) ? L'"' : ((initLow == 3) ? L'\'' : 0);
+
+        for (size_t l = startL; l < m_lines.size(); ++l) {
+            uint8_t newLow = inHtmlComment ? 4 : (inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0)));
+            uint8_t newPacked = static_cast<uint8_t>(newLow | (inPhpTag ? 0x10 : 0));
+            if (!fullClear && l >= minConvergeLine && m_lineEntryStates[l] == newPacked) {
+                break;
+            }
+            if (!fullClear && (m_lineEntryStates[l] & 0x0F) != newLow) {
                 m_tokenCache.erase(l);
             }
-            m_lineEntryStates[l] = newState;
+            m_lineEntryStates[l] = newPacked;
             const auto& prevLine = m_lines[l];
             size_t len = (std::min)(prevLine.length(), static_cast<size_t>(16384));
             for (size_t i = 0; i < len; ++i) {
@@ -1356,6 +1448,7 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
                 }
             }
         }
+        m_dirtyEntryStart = m_lines.size();
     }
 
     auto cacheIt = m_tokenCache.find(lineIdx);
@@ -1363,7 +1456,7 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
         return cacheIt->second;
     }
 
-    const uint8_t entryState = m_lineEntryStates[lineIdx];
+    const uint8_t entryState = static_cast<uint8_t>(m_lineEntryStates[lineIdx] & 0x0F);
     const bool inBlockComment = (entryState == 1);
     const bool inHtmlComment = (entryState == 4);
     const wchar_t inMultiLineQuote = (entryState == 2) ? L'"' : ((entryState == 3) ? L'\'' : 0);
@@ -1482,8 +1575,9 @@ void Buffer::InsertChar(wchar_t ch) {
                         itCoal->second.line == m_cursor.line &&
                         itCoal->second.col == m_cursor.col &&
                         (now - itCoal->second.tick) <= 750);
+    const size_t editLine = m_cursor.line;
     if (!canCoalesce) {
-        PushUndo();
+        BeginPendingSliceUndo(editLine, 1, isNewline ? 2 : 1);
     } else {
         m_redoStack.clear();
         m_redoMemoryBytes = 0;
@@ -1496,7 +1590,14 @@ void Buffer::InsertChar(wchar_t ch) {
         // Split current line at cursor
         std::wstring remainder = line.substr(m_cursor.col);
         line = line.substr(0, m_cursor.col);
-        m_lines.insert(m_lines.begin() + m_cursor.line + 1, remainder);
+        m_lines.insert(m_lines.begin() + m_cursor.line + 1, std::move(remainder));
+        if (!m_entryFullRebuild && m_lineEntryStates.size() + 1 == m_lines.size() && editLine < m_lineEntryStates.size()) {
+            m_lineEntryStates.insert(m_lineEntryStates.begin() + editLine + 1, m_lineEntryStates[editLine]);
+            m_dirtyEntryStart = (std::min)(m_dirtyEntryStart, editLine);
+        } else {
+            m_entryFullRebuild = true;
+            m_dirtyEntryStart = 0;
+        }
         m_cursor.line++;
         m_cursor.col = 0;
         m_tokenCache.clear();
@@ -1504,6 +1605,7 @@ void Buffer::InsertChar(wchar_t ch) {
     } else {
         line.insert(line.begin() + m_cursor.col, ch);
         m_tokenCache.erase(m_cursor.line);
+        if (editLine < m_dirtyEntryStart) m_dirtyEntryStart = editLine;
         m_cursor.col++;
         s_undoCoalesceMap[this] = { 1, m_cursor.line, m_cursor.col, now };
     }
@@ -1527,7 +1629,11 @@ void Buffer::Backspace() {
                         itCoal->second.col == m_cursor.col &&
                         (now - itCoal->second.tick) <= 750);
     if (!canCoalesce) {
-        PushUndo();
+        if (m_cursor.col > 0) {
+            BeginPendingSliceUndo(m_cursor.line, 1, 1);
+        } else {
+            BeginPendingSliceUndo(m_cursor.line - 1, 2, 1);
+        }
     } else {
         m_redoStack.clear();
         m_redoMemoryBytes = 0;
@@ -1538,14 +1644,23 @@ void Buffer::Backspace() {
         if (m_cursor.col > line.length()) m_cursor.col = line.length();
         line.erase(m_cursor.col - 1, 1);
         m_tokenCache.erase(m_cursor.line);
+        if (m_cursor.line < m_dirtyEntryStart) m_dirtyEntryStart = m_cursor.line;
         m_cursor.col--;
         m_isModified = true;
         s_undoCoalesceMap[this] = { 2, m_cursor.line, m_cursor.col, now };
     } else if (m_cursor.line > 0) {
         // Join with previous line
-        size_t prevLen = m_lines[m_cursor.line - 1].length();
-        m_lines[m_cursor.line - 1] += line;
+        const size_t targetLine = m_cursor.line - 1;
+        size_t prevLen = m_lines[targetLine].length();
+        m_lines[targetLine] += line;
         m_lines.erase(m_lines.begin() + m_cursor.line);
+        if (!m_entryFullRebuild && m_lineEntryStates.size() == m_lines.size() + 1 && targetLine + 1 < m_lineEntryStates.size()) {
+            m_lineEntryStates.erase(m_lineEntryStates.begin() + targetLine + 1);
+            m_dirtyEntryStart = (std::min)(m_dirtyEntryStart, targetLine);
+        } else {
+            m_entryFullRebuild = true;
+            m_dirtyEntryStart = 0;
+        }
         m_cursor.line--;
         m_cursor.col = prevLen;
         m_tokenCache.clear();
@@ -1574,7 +1689,11 @@ void Buffer::DeleteForward() {
                         itCoal->second.col == m_cursor.col &&
                         (now - itCoal->second.tick) <= 750);
     if (!canCoalesce) {
-        PushUndo();
+        if (m_cursor.col < line.length()) {
+            BeginPendingSliceUndo(m_cursor.line, 1, 1);
+        } else {
+            BeginPendingSliceUndo(m_cursor.line, 2, 1);
+        }
     } else {
         m_redoStack.clear();
         m_redoMemoryBytes = 0;
@@ -1583,11 +1702,20 @@ void Buffer::DeleteForward() {
     if (m_cursor.col < line.length()) {
         line.erase(m_cursor.col, 1);
         m_tokenCache.erase(m_cursor.line);
+        if (m_cursor.line < m_dirtyEntryStart) m_dirtyEntryStart = m_cursor.line;
         m_isModified = true;
         s_undoCoalesceMap[this] = { 3, m_cursor.line, m_cursor.col, now };
     } else if (m_cursor.line + 1 < m_lines.size()) {
-        line += m_lines[m_cursor.line + 1];
-        m_lines.erase(m_lines.begin() + m_cursor.line + 1);
+        const size_t targetLine = m_cursor.line;
+        line += m_lines[targetLine + 1];
+        m_lines.erase(m_lines.begin() + targetLine + 1);
+        if (!m_entryFullRebuild && m_lineEntryStates.size() == m_lines.size() + 1 && targetLine + 1 < m_lineEntryStates.size()) {
+            m_lineEntryStates.erase(m_lineEntryStates.begin() + targetLine + 1);
+            m_dirtyEntryStart = (std::min)(m_dirtyEntryStart, targetLine);
+        } else {
+            m_entryFullRebuild = true;
+            m_dirtyEntryStart = 0;
+        }
         m_tokenCache.clear();
         m_isModified = true;
         s_undoCoalesceMap.erase(this);
@@ -1598,10 +1726,11 @@ void Buffer::DeleteForward() {
 void Buffer::DeleteLine(size_t lineIdx) {
     if (m_mappedState) return;
     if (m_lines.empty() || lineIdx >= m_lines.size()) return;
-    PushUndo();
+    BeginPendingSliceUndo(lineIdx, 1, (m_lines.size() == 1) ? 1 : 0);
     if (m_lines.size() == 1) {
         m_lines[0].clear();
         m_cursor = { 0, 0 };
+        m_dirtyEntryStart = 0;
     } else {
         m_lines.erase(m_lines.begin() + lineIdx);
         if (m_cursor.line >= m_lines.size()) {
@@ -1610,7 +1739,10 @@ void Buffer::DeleteLine(size_t lineIdx) {
         if (m_cursor.col > m_lines[m_cursor.line].length()) {
             m_cursor.col = m_lines[m_cursor.line].length();
         }
+        m_entryFullRebuild = true;
+        m_dirtyEntryStart = 0;
     }
+    m_tokenCache.clear();
     m_isModified = true;
     ++m_version;
 }
@@ -1622,13 +1754,14 @@ void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
     if (eLine >= m_lines.size()) eLine = m_lines.size() - 1;
     if (sLine > eLine || (sLine == eLine && sCol >= eCol)) return;
 
-    PushUndo();
+    BeginPendingSliceUndo(sLine, eLine - sLine + 1, 1);
     if (sLine == eLine) {
         auto& line = m_lines[sLine];
         if (sCol > line.length()) sCol = line.length();
         if (eCol > line.length()) eCol = line.length();
         line.erase(sCol, eCol - sCol);
         m_tokenCache.erase(sLine);
+        if (sLine < m_dirtyEntryStart) m_dirtyEntryStart = sLine;
     } else {
         const auto& startLineText = m_lines[sLine];
         const auto& endLineText = m_lines[eLine];
@@ -1639,6 +1772,8 @@ void Buffer::DeleteRange(size_t sLine, size_t sCol, size_t eLine, size_t eCol) {
         m_lines.erase(m_lines.begin() + sLine + 1, m_lines.begin() + eLine + 1);
         if (m_lines.empty()) m_lines.push_back(L"");
         m_tokenCache.clear();
+        m_entryFullRebuild = true;
+        m_dirtyEntryStart = 0;
     }
     m_cursor = { sLine, (std::min)(sCol, m_lines[sLine].length()) };
     m_isModified = true;
@@ -1694,6 +1829,8 @@ void Buffer::Clear() {
     m_cursor = { 0, 0 };
     m_isModified = false;
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     ++m_version;
 }
 
@@ -1704,6 +1841,8 @@ void Buffer::SetLines(const std::vector<std::wstring>& lines) {
     m_cursor = { 0, 0 };
     m_isModified = false;
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     ++m_version;
 }
 
@@ -1712,6 +1851,7 @@ void Buffer::SetLine(size_t lineIdx, const std::wstring& text) {
     if (lineIdx < m_lines.size()) {
         m_lines[lineIdx] = text;
         m_tokenCache.erase(lineIdx);
+        if (lineIdx < m_dirtyEntryStart) m_dirtyEntryStart = lineIdx;
         m_isModified = true;
         ++m_version;
     }
@@ -1725,6 +1865,8 @@ void Buffer::ReplaceLineSlice(size_t startLine, size_t removeCount, const std::v
     m_lines.insert(m_lines.begin() + startLine, insertLines.begin(), insertLines.end());
     if (m_lines.empty()) m_lines.push_back(L"");
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     m_isModified = true;
     ++m_version;
 }
@@ -1746,6 +1888,8 @@ void Buffer::SetText(const std::wstring& text) {
     m_cursor = { 0, 0 };
     m_isModified = false;
     m_tokenCache.clear();
+    m_entryFullRebuild = true;
+    m_dirtyEntryStart = 0;
     ++m_version;
 }
 
@@ -2070,6 +2214,7 @@ bool Buffer::LoadFromFile(const std::wstring& path, uint64_t mmapThresholdOverri
     m_undoMemoryBytes = 0;
     m_redoMemoryBytes = 0;
     m_hasPendingUndo = false;
+    m_hasPendingRangeUndo = false;
     std::vector<std::wstring>().swap(m_pendingUndoLines);
 
     SetText(wide);

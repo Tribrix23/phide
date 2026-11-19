@@ -263,6 +263,23 @@ public:
      * @brief Toggles caret blink phase.
      */
     void ToggleCaretBlink() noexcept { m_caretVisible = !m_caretVisible; }
+    void ResetCaretBlink() noexcept { m_caretVisible = true; }
+
+    /**
+     * @brief Computes dynamic line-number gutter width so 5-7+ digit line numbers never clip.
+     */
+    [[nodiscard]] static float ComputeGutterWidth(const app::AppConfig& config, size_t lineCount) noexcept {
+        if (!config.showLineNumbers) return config.ScaleF(12.0f);
+        size_t digits = 1;
+        size_t n = lineCount;
+        while (n >= 10) {
+            n /= 10;
+            ++digits;
+        }
+        if (digits <= 4) return config.ScaleF(50.0f);
+        const float perDigit = (std::max)(11.5f, config.fontSize * 0.80f);
+        return config.ScaleF(50.0f + static_cast<float>(digits - 4) * perDigit);
+    }
 
     /**
      * @brief Tests if mouse clicked on any tab header.
@@ -1203,6 +1220,7 @@ public:
     [[nodiscard]] static ID2D1Brush* ResolveBetterCommentBrush(const Theme& theme, BetterCommentType type) noexcept;
     [[nodiscard]] static D2D1_COLOR_F GetBetterCommentColor(const Theme& theme, BetterCommentType type) noexcept;
     [[nodiscard]] const DocCommentSummary& GetDocCommentSummary(const editor::Buffer& buffer, const std::wstring& ext) const;
+    void PruneDocCommentCache(const std::vector<uint64_t>& liveBufferIds) const;
     [[nodiscard]] const std::vector<TodoCheckboxHit>& GetVisibleTodoCheckboxes() const noexcept { return m_visibleTodoCheckboxes; }
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 
@@ -1776,6 +1794,9 @@ private:
         uint64_t bufferInstanceId = 0;
         uint64_t bufferVersion = UINT64_MAX;
         size_t lineCount = 0;
+        size_t minimapStartLine = 0;
+        size_t visibleRows = 0;
+        float rowStep = 0.0f;
         std::wstring docExt;
         float minimapW = 0.0f;
         float miniH = 0.0f;

@@ -2885,33 +2885,113 @@ void Window::SetEditorSplitLayout(editor::EditorSplitLayout mode) {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
-void Window::EnsureCursorVisible() {
+void Window::EnsureCursorVisible(bool centerVertically) {
     auto* pDoc = GetActiveDoc();
     if (!pDoc || pDoc->isSpecialView) return;
 
-    UpdateEditorGroupBounds();
-    RECT rc;
-    GetClientRect(m_hwnd, &rc);
-    float clientW = static_cast<float>(rc.right - rc.left);
+    float clientW = 1280.0f;
+    float clientH = 800.0f;
+    if (m_hwnd) {
+        UpdateEditorGroupBounds();
+        RECT rc{};
+        if (GetClientRect(m_hwnd, &rc)) {
+            clientW = static_cast<float>(rc.right - rc.left);
+            clientH = static_cast<float>(rc.bottom - rc.top);
+        }
+    }
+    if (clientW <= 10.0f) clientW = 1280.0f;
+    if (clientH <= 10.0f) clientH = 800.0f;
+
     float canvasLeft = 0.0f, canvasWidth = 0.0f;
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
     float paneW = canvasWidth;
     float paneCanvasLeft = canvasLeft;
+    float paneTop = EffectiveHeaderHeight();
+    const float statusH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    float paneBottom = (std::max)(paneTop + m_config.ScaleF(60.0f), clientH - statusH);
     if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
         const auto& b = m_editorGroups[m_focusedGroupIdx].bounds;
         if (b.right > b.left + 10.0f) {
             paneCanvasLeft = b.left;
             paneW = b.right - b.left;
         }
+        if (b.bottom > b.top + 10.0f) {
+            paneTop = b.top;
+            paneBottom = b.bottom;
+        }
     }
-    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
+
+    auto cursor = pDoc->buffer.GetCursor();
+
+    // Vertical viewport reveal: map cursor buffer line -> visual line index (CodeLens & folding aware)
+    size_t visualCursorIdx = cursor.line;
+    size_t totalVisualLines = pDoc->buffer.GetLineCount();
+    if (!pDoc->buffer.IsMemoryMappedReadOnly() &&
+        pDoc->visualLineCache.valid && !pDoc->visualLineCache.isMmap && !pDoc->visualLineCache.lines.empty()) {
+        const auto& vLines = pDoc->visualLineCache.lines;
+        totalVisualLines = (std::max)(totalVisualLines, vLines.size());
+        auto it = std::lower_bound(vLines.begin(), vLines.end(), cursor.line,
+            [](const editor::OpenDocument::CachedVisualLine& vl, size_t ln) {
+                return vl.bufferLine < ln;
+            });
+        while (it != vLines.end() && it->bufferLine == cursor.line && it->isCodeLens) {
+            ++it;
+        }
+        if (it != vLines.end() && it->bufferLine == cursor.line && !it->isCodeLens) {
+            visualCursorIdx = static_cast<size_t>(it - vLines.begin());
+        } else if (it != vLines.begin()) {
+            auto prev = std::prev(it);
+            if (!prev->isCodeLens && prev->isFolded && cursor.line > prev->bufferLine && cursor.line <= prev->foldEndLine) {
+                visualCursorIdx = static_cast<size_t>(prev - vLines.begin());
+            }
+        }
+    } else if (pDoc->lastTotalVisualLines > 0) {
+        totalVisualLines = pDoc->lastTotalVisualLines;
+    }
+
+    size_t visibleLines = pDoc->lastVisibleLines;
+    if (visibleLines < 3) {
+        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+        const float chromeH = m_config.ScaleF(36.0f) + (m_config.showBreadcrumbs ? m_config.ScaleF(22.0f) : 0.0f);
+        const float codeAreaH = (std::max)(lineH * 3.0f, (paneBottom - paneTop) - chromeH);
+        visibleLines = (lineH > 0.0f) ? (std::max<size_t>)(3, static_cast<size_t>(codeAreaH / lineH)) : 20;
+    }
+
+    const size_t maxScroll = (totalVisualLines > 3) ? (totalVisualLines - 3) : 0;
+    const size_t viewTopMargin = (visibleLines >= 8) ? 2 : 0;
+    const size_t viewBottomMargin = (visibleLines >= 8) ? 2 : 1;
+    const size_t safeStart = pDoc->scrollLine + viewTopMargin;
+    const size_t safeEnd = (pDoc->scrollLine + visibleLines > viewBottomMargin)
+        ? (pDoc->scrollLine + visibleLines - viewBottomMargin)
+        : (pDoc->scrollLine + visibleLines);
+
+    const bool outsideHard = (visualCursorIdx < pDoc->scrollLine) || (visualCursorIdx >= pDoc->scrollLine + visibleLines);
+    const bool outsideComfort = (visualCursorIdx < safeStart) || (visualCursorIdx >= safeEnd);
+    if (outsideHard || (centerVertically && outsideComfort)) {
+        const size_t upperThirdOffset = (visibleLines > 3) ? (visibleLines / 3) : 1;
+        const size_t dist = (visualCursorIdx < pDoc->scrollLine)
+            ? (pDoc->scrollLine - visualCursorIdx)
+            : (visualCursorIdx - (pDoc->scrollLine + visibleLines - 1));
+        if (centerVertically || dist > 4) {
+            pDoc->scrollLine = (visualCursorIdx > upperThirdOffset) ? (visualCursorIdx - upperThirdOffset) : 0;
+        } else if (visualCursorIdx < pDoc->scrollLine) {
+            pDoc->scrollLine = visualCursorIdx;
+        } else {
+            pDoc->scrollLine = (visualCursorIdx + 1 > visibleLines) ? (visualCursorIdx + 1 - visibleLines) : 0;
+        }
+    }
+    if (pDoc->scrollLine > maxScroll) {
+        pDoc->scrollLine = maxScroll;
+    }
+
+    // Horizontal viewport reveal
+    float gutterW = ui::EditorCanvas::ComputeGutterWidth(m_config, pDoc->buffer.GetLineCount());
     float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
     float minimapW = m_config.ScaleF(88.0f);
     float scrollbarW = m_config.ScaleF(14.0f);
     float codeRight = m_config.showMinimap ? (paneCanvasLeft + paneW - minimapW - m_config.ScaleF(6.0f)) : (paneCanvasLeft + paneW - scrollbarW);
     float charW = (m_editor.GetCharWidth() > 0.0f) ? m_editor.GetCharWidth() : m_config.ScaleF(7.8f);
 
-    auto cursor = pDoc->buffer.GetCursor();
     const float swatchSpan = m_config.ScaleF(14.0f);
     float caretVisualColX = static_cast<float>(cursor.col) * charW;
     if (cursor.line < pDoc->buffer.GetLineCount()) {
@@ -3274,8 +3354,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         newDoc.binaryFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else {
         newDoc.buffer.LoadFromFile(resolvedPath);
-        if (newDoc.buffer.IsMemoryMappedReadOnly()) {
-            // Skip copying >50 MB mapped files into RAM or running full-file LSP/symbol indexing
+        const bool isLargeBufferDoc = newDoc.buffer.IsMemoryMappedReadOnly() || (newDoc.buffer.GetLineCount() > 15000);
+        if (isLargeBufferDoc) {
+            // Skip copying multi-MB files into RAM or running full-file validators/LSP/symbol indexing synchronously on UI thread
             newDoc.originalDiskText.clear();
         } else {
             newDoc.originalDiskText = newDoc.buffer.GetText();
@@ -3332,10 +3413,12 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         }
 
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isFontView && !newDoc.isUnsupportedBinary) {
-            newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
-            RunExtraDocDiagnostics(newDoc, newDoc.diagnostics);
-            CalculateImportCosts(newDoc);
-            RefreshMergeConflicts(newDoc);
+            if (!isLargeBufferDoc) {
+                newDoc.diagnostics = editor::SyntaxValidator::Validate(newDoc.filePath.empty() ? newDoc.fileName : newDoc.filePath, newDoc.buffer);
+                RunExtraDocDiagnostics(newDoc, newDoc.diagnostics);
+                CalculateImportCosts(newDoc);
+                RefreshMergeConflicts(newDoc);
+            }
 
             // Attach modular structured viewer state cleanly with bounded memory limits
             std::wstring docExtLower = std::filesystem::path(resolvedPath).extension().wstring();
@@ -3381,7 +3464,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             }
         }
     }
-    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary && !newDoc.buffer.IsMemoryMappedReadOnly()) {
+    if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isUnsupportedBinary &&
+        !newDoc.buffer.IsMemoryMappedReadOnly() && newDoc.buffer.GetLineCount() <= 15000) {
         m_symbolIndex.UpdateFileSymbols(resolvedPath, newDoc.buffer.GetText());
     }
 
@@ -3400,7 +3484,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
     if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
         auto& openedDoc = group.docs[group.activeDocIdx];
-        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary && !openedDoc.buffer.IsMemoryMappedReadOnly()) {
+        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary &&
+            !openedDoc.buffer.IsMemoryMappedReadOnly() && openedDoc.buffer.GetLineCount() <= 15000) {
             StartLspForDocumentAsync(resolvedPath, openedDoc.buffer.GetText());
             ScheduleLangIntelAndLintersAsync(&openedDoc, m_config.enableExternalLinters);
         }
@@ -3546,7 +3631,10 @@ void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview, bool 
 
 void Window::RefreshMergeConflicts(editor::OpenDocument& doc) {
     doc.mergeConflicts.clear();
-    if (doc.isSpecialView || doc.isDiffView || doc.isImageView || doc.isUnsupportedBinary) return;
+    if (doc.isSpecialView || doc.isDiffView || doc.isImageView || doc.isUnsupportedBinary ||
+        doc.buffer.IsMemoryMappedReadOnly() || doc.buffer.GetLineCount() > 15000) {
+        return;
+    }
     auto blocks = git::GitWorkflowEngine::ParseMergeConflicts(doc.buffer);
     doc.mergeConflicts.reserve(blocks.size());
     for (const auto& b : blocks) {
@@ -6868,6 +6956,18 @@ void Window::DoReopenClosedEditor() {
 
 void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
     if (!sourceDoc || sourceDoc->filePath.empty() || sourceDoc->isSpecialView) return;
+    bool hasDuplicateTab = false;
+    for (const auto& group : m_editorGroups) {
+        for (const auto& doc : group.docs) {
+            if (&doc != sourceDoc && !doc.filePath.empty() && doc.filePath == sourceDoc->filePath) {
+                hasDuplicateTab = true;
+                break;
+            }
+        }
+        if (hasDuplicateTab) break;
+    }
+    if (!hasDuplicateTab) return;
+
     std::wstring text = sourceDoc->buffer.GetText();
     for (auto& group : m_editorGroups) {
         for (auto& doc : group.docs) {
@@ -9426,9 +9526,9 @@ void Window::JumpToEditorLocation(size_t line0Based, size_t col0Based) {
     pDest->selAnchor = { clampedLine, clampedCol };
     pDest->selEnd = { clampedLine, clampedCol };
     pDest->hasSelection = false;
-    EnsureCursorVisible();
+    EnsureCursorVisible(true);
     RefreshActiveDocOutlineAndBreadcrumbs();
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::JumpToFileAndLocation(const std::wstring& filePath, size_t line0Based, size_t col0Based) {
@@ -9527,7 +9627,8 @@ void Window::FocusAdjacentEditorGroup(bool next) {
 
 void Window::RefreshActiveDocOutlineAndBreadcrumbs() {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary) {
+    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary ||
+        pDoc->buffer.IsMemoryMappedReadOnly() || pDoc->buffer.GetLineCount() > 15000) {
         if (!m_lastOutlineFileKey.empty()) {
             m_lastOutlineFileKey.clear();
             m_lastOutlineDocVersion = static_cast<size_t>(-1);
@@ -14246,7 +14347,7 @@ void Window::OnPaint() {
             if (!doc.isSpecialView && !doc.isImageView && !doc.isDiffView) {
                 float pLeft = group.bounds.left;
                 float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
-                float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
+                float gutterW = ui::EditorCanvas::ComputeGutterWidth(m_config, doc.buffer.GetLineCount());
                 float tabH = EffectiveTabBarHeight();
                 float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
                 float topY = group.bounds.top + tabH + breadcrumbH;
@@ -16105,15 +16206,99 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
-    // 4b. Priority Comment Annotations Summary Pill (Urgent / ASAP / TODO / Alert / Note - click to jump)
-    if (hasActiveDoc && !curDoc->isDiffView && !curDoc->isImageView && !curDoc->isFontView && !curDoc->isFolderView) {
-        std::wstring docExtStr;
-        try {
-            const std::wstring& target = curDoc->filePath.empty() ? curDoc->fileName : curDoc->filePath;
-            docExtStr = std::filesystem::path(target).extension().wstring();
-        } catch (...) {}
-        const auto& cSum = m_editor.GetDocCommentSummary(curDoc->buffer, docExtStr);
-        if (!cSum.entries.empty()) {
+    // 4b. Priority Comment Annotations Summary Pill (Active doc, or aggregated open tabs when active tab has none)
+    {
+        auto getDocExtStr = [](const editor::OpenDocument& d) -> std::wstring {
+            try {
+                const std::wstring& target = d.filePath.empty() ? d.fileName : d.filePath;
+                return std::filesystem::path(target).extension().wstring();
+            } catch (...) {
+                return {};
+            }
+        };
+        auto isAnnotatableDoc = [](const editor::OpenDocument& d) -> bool {
+            return !d.isSpecialView && !d.isDiffView && !d.isMultiFileDiff &&
+                   !d.isImageView && !d.isFontView && !d.isFolderView &&
+                   !d.buffer.IsMemoryMappedReadOnly() && d.buffer.GetLineCount() <= 15000;
+        };
+
+        std::vector<uint64_t> liveBufferIds;
+        liveBufferIds.reserve(16);
+        auto collectLiveIds = [&](const std::vector<editor::EditorGroup>& groups) {
+            for (const auto& grp : groups) {
+                for (const auto& d : grp.docs) {
+                    liveBufferIds.push_back(d.buffer.GetInstanceId());
+                }
+            }
+        };
+        collectLiveIds(m_editorGroups);
+        for (const auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                collectLiveIds(fw->editorGroups);
+            }
+        }
+        m_editor.PruneDocCommentCache(liveBufferIds);
+
+        size_t sumUrgent = 0, sumAsap = 0, sumAlert = 0, sumTodo = 0, sumWarning = 0;
+        size_t sumHack = 0, sumReview = 0, sumNote = 0, sumImportant = 0, sumQuestion = 0;
+        bool hasAnyAnnots = false;
+        bool fromOtherOpenTabs = false;
+        std::vector<std::wstring> otherTabNames;
+
+        if (hasActiveDoc && isAnnotatableDoc(*curDoc)) {
+            const auto& cSum = m_editor.GetDocCommentSummary(curDoc->buffer, getDocExtStr(*curDoc));
+            if (!cSum.entries.empty()) {
+                hasAnyAnnots = true;
+                sumUrgent = cSum.urgentCount;
+                sumAsap = cSum.asapCount;
+                sumAlert = cSum.alertCount;
+                sumTodo = cSum.todoCount;
+                sumWarning = cSum.warningCount;
+                sumHack = cSum.hackCount;
+                sumReview = cSum.reviewCount;
+                sumNote = cSum.noteCount;
+                sumImportant = cSum.importantCount;
+                sumQuestion = cSum.questionCount;
+            }
+        }
+
+        if (!hasAnyAnnots) {
+            auto accumulateFromGroups = [&](const std::vector<editor::EditorGroup>& groups) {
+                for (const auto& grp : groups) {
+                    for (const auto& d : grp.docs) {
+                        if (&d == curDoc || !isAnnotatableDoc(d)) continue;
+                        const auto& s = m_editor.GetDocCommentSummary(d.buffer, getDocExtStr(d));
+                        if (s.entries.empty()) continue;
+                        hasAnyAnnots = true;
+                        fromOtherOpenTabs = true;
+                        sumUrgent += s.urgentCount;
+                        sumAsap += s.asapCount;
+                        sumAlert += s.alertCount;
+                        sumTodo += s.todoCount;
+                        sumWarning += s.warningCount;
+                        sumHack += s.hackCount;
+                        sumReview += s.reviewCount;
+                        sumNote += s.noteCount;
+                        sumImportant += s.importantCount;
+                        sumQuestion += s.questionCount;
+                        if (otherTabNames.size() < 3) {
+                            std::wstring nm = d.fileName.empty() ? d.filePath : d.fileName;
+                            if (!nm.empty() && std::find(otherTabNames.begin(), otherTabNames.end(), nm) == otherTabNames.end()) {
+                                otherTabNames.push_back(std::move(nm));
+                            }
+                        }
+                    }
+                }
+            };
+            accumulateFromGroups(m_editorGroups);
+            for (const auto& fw : m_floatingWindows) {
+                if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                    accumulateFromGroups(fw->editorGroups);
+                }
+            }
+        }
+
+        if (hasAnyAnnots) {
             struct PillChip {
                 ui::EditorCanvas::BetterCommentType type;
                 size_t count;
@@ -16123,23 +16308,34 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             auto pushChip = [&](ui::EditorCanvas::BetterCommentType t, size_t cnt, const wchar_t* name) {
                 if (cnt > 0) chips.push_back({ t, cnt, std::to_wstring(cnt) + L" " + name });
             };
-            pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    cSum.urgentCount,    L"Urgent");
-            pushChip(ui::EditorCanvas::BetterCommentType::Asap,      cSum.asapCount,      L"ASAP");
-            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     cSum.alertCount,     L"Error");
-            pushChip(ui::EditorCanvas::BetterCommentType::Todo,      cSum.todoCount,      L"TODO");
-            pushChip(ui::EditorCanvas::BetterCommentType::Warning,   cSum.warningCount,   L"Warn");
-            pushChip(ui::EditorCanvas::BetterCommentType::Hack,      cSum.hackCount,      L"Hack");
-            pushChip(ui::EditorCanvas::BetterCommentType::Review,    cSum.reviewCount,    L"Review");
-            pushChip(ui::EditorCanvas::BetterCommentType::Note,      cSum.noteCount,      L"Note");
-            pushChip(ui::EditorCanvas::BetterCommentType::Important, cSum.importantCount, L"Imp");
-            pushChip(ui::EditorCanvas::BetterCommentType::Question,  cSum.questionCount,  L"Question");
+            pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    sumUrgent,    L"Urgent");
+            pushChip(ui::EditorCanvas::BetterCommentType::Asap,      sumAsap,      L"ASAP");
+            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     sumAlert,     L"Error");
+            pushChip(ui::EditorCanvas::BetterCommentType::Todo,      sumTodo,      L"TODO");
+            pushChip(ui::EditorCanvas::BetterCommentType::Warning,   sumWarning,   L"Warn");
+            pushChip(ui::EditorCanvas::BetterCommentType::Hack,      sumHack,      L"Hack");
+            pushChip(ui::EditorCanvas::BetterCommentType::Review,    sumReview,    L"Review");
+            pushChip(ui::EditorCanvas::BetterCommentType::Note,      sumNote,      L"Note");
+            pushChip(ui::EditorCanvas::BetterCommentType::Important, sumImportant, L"Imp");
+            pushChip(ui::EditorCanvas::BetterCommentType::Question,  sumQuestion,  L"Question");
 
             if (!chips.empty()) {
-                m_statusCommentTooltip = L"Comment Annotations in file:";
+                if (fromOtherOpenTabs && !otherTabNames.empty()) {
+                    m_statusCommentTooltip = L"Open tab annotations (";
+                    for (size_t ni = 0; ni < otherTabNames.size(); ++ni) {
+                        if (ni > 0) m_statusCommentTooltip += L", ";
+                        m_statusCommentTooltip += otherTabNames[ni];
+                    }
+                    m_statusCommentTooltip += L"):";
+                } else {
+                    m_statusCommentTooltip = L"Comment Annotations in file:";
+                }
                 for (size_t ci = 0; ci < chips.size(); ++ci) {
                     m_statusCommentTooltip += (ci == 0 ? L" " : L" \x2022 ") + chips[ci].label;
                 }
-                m_statusCommentTooltip += L" (Click to jump to next)";
+                m_statusCommentTooltip += fromOtherOpenTabs
+                    ? L" (Click to switch tab & jump)"
+                    : L" (Click to jump to next)";
 
                 const size_t shown = (std::min<size_t>)(chips.size(), 3);
                 const float cPadX = m_config.ScaleF(6.0f);
@@ -16174,6 +16370,18 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                     extraW = measureChipStr(extraLabel);
                     pillW += cChipGap + extraW;
                 }
+                std::wstring sourceTabSuffix;
+                float sourceTabW = 0.0f;
+                if (fromOtherOpenTabs && !otherTabNames.empty()) {
+                    sourceTabSuffix = L"(" + otherTabNames.front() + (otherTabNames.size() > 1 ? L", \x2026)" : L")");
+                    float candidateW = measureChipStr(sourceTabSuffix);
+                    if (curLeftX + pillW + cChipGap + candidateW + m_config.ScaleF(10.0f) < curRightX) {
+                        sourceTabW = candidateW;
+                        pillW += cChipGap + sourceTabW;
+                    } else {
+                        sourceTabSuffix.clear();
+                    }
+                }
 
                 // Render only if sufficient horizontal room remains before right-aligned status items
                 if (curLeftX + pillW + m_config.ScaleF(10.0f) < curRightX) {
@@ -16207,6 +16415,11 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                     if (!extraLabel.empty() && pFmt && textBrush) {
                         D2D1_RECT_F rcExt = D2D1::RectF(drawX, itemY, drawX + extraW + m_config.ScaleF(2.0f), itemY + itemH);
                         m_pRenderTarget->DrawText(extraLabel.c_str(), static_cast<UINT32>(extraLabel.length()), pFmt, rcExt, textBrush);
+                        drawX += extraW + cChipGap;
+                    }
+                    if (!sourceTabSuffix.empty() && pFmt && textBrush) {
+                        D2D1_RECT_F rcSrc = D2D1::RectF(drawX, itemY, drawX + sourceTabW + m_config.ScaleF(2.0f), itemY + itemH);
+                        m_pRenderTarget->DrawText(sourceTabSuffix.c_str(), static_cast<UINT32>(sourceTabSuffix.length()), pFmt, rcSrc, textBrush);
                     }
                     curLeftX += pillW + rightPillGap;
                 }
@@ -17313,7 +17526,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             const auto& grpBounds = m_editorGroups[fIdx].bounds;
             float paneCanvasLeft = grpBounds.left;
             float paneW = (std::max)(20.0f, grpBounds.right - grpBounds.left);
-            const float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
+            const float gutterW = ui::EditorCanvas::ComputeGutterWidth(m_config, pActiveDoc->buffer.GetLineCount());
             const float codeLeft = paneCanvasLeft + gutterW + m_config.ScaleF(12.0f);
             const float minimapW = m_config.ScaleF(88.0f);
             const float scrollbarW = m_config.ScaleF(14.0f);
@@ -17327,9 +17540,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
 
             // Vertical edge scrolling when dragging near top/bottom of pane
+            const size_t rawLines = pActiveDoc->buffer.GetLineCount();
+            const size_t maxDragScroll = (pActiveDoc->lastTotalVisualLines > 0)
+                ? pActiveDoc->lastMaxScrollLine
+                : ((rawLines > 3) ? (rawLines - 3) : 0);
             if (clientPt.y < grpBounds.top + 45 && pActiveDoc->scrollLine > 0) {
                 pActiveDoc->scrollLine--;
-            } else if (clientPt.y > grpBounds.bottom - 25 && pActiveDoc->scrollLine + 1 < pActiveDoc->buffer.GetLineCount()) {
+            } else if (clientPt.y > grpBounds.bottom - 25 && pActiveDoc->scrollLine < maxDragScroll) {
                 pActiveDoc->scrollLine++;
             }
 
@@ -17515,8 +17732,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         float scrollRange = trackH - thumbH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
+            size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
             if (pActiveDoc->isDiffView) {
                 totalLines = (std::max)(pActiveDoc->diffOriginalBuffer.GetLineCount(), pActiveDoc->buffer.GetLineCount());
+                maxS = (totalLines > 3) ? (totalLines - 3) : 0;
             } else if (pActiveDoc->isMultiFileDiff) {
                 totalLines = 0;
                 for (const auto& entry : pActiveDoc->multiFileDiffs) {
@@ -17525,13 +17744,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                         totalLines += entry.isBinary ? 3 : (std::max)(entry.originalBuffer.GetLineCount(), entry.workingBuffer.GetLineCount());
                     }
                 }
+                maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+            } else if (pActiveDoc->lastTotalVisualLines > 0) {
+                totalLines = pActiveDoc->lastTotalVisualLines;
+                maxS = pActiveDoc->lastMaxScrollLine;
             }
-            float linesPerPixel = static_cast<float>(totalLines) / scrollRange;
-            int newScroll = static_cast<int>(pActiveDoc->dragStartScrollLine) + static_cast<int>(deltaY * linesPerPixel);
+            float linesPerPixel = static_cast<float>((std::max<size_t>)(1, maxS)) / scrollRange;
+            long long newScroll = static_cast<long long>(pActiveDoc->dragStartScrollLine) + static_cast<long long>(deltaY * linesPerPixel);
             if (newScroll < 0) newScroll = 0;
-            if (static_cast<size_t>(newScroll) >= totalLines) {
-                newScroll = totalLines > 0 ? static_cast<int>(totalLines - 1) : 0;
-            }
+            if (static_cast<size_t>(newScroll) > maxS) newScroll = static_cast<long long>(maxS);
             pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -17551,10 +17772,13 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         float scrollRange = trackH - sliderH;
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
-            size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+            size_t maxS = (pActiveDoc->lastTotalVisualLines > 0)
+                ? pActiveDoc->lastMaxScrollLine
+                : ((totalLines > 3) ? (totalLines - 3) : 0);
             float desiredSliderTop = (static_cast<float>(clientPt.y) - pActiveDoc->minimapTrack.top) - pActiveDoc->minimapGrabOffsetY;
             float ratio = (std::max)(0.0f, (std::min)(1.0f, desiredSliderTop / scrollRange));
-            pActiveDoc->scrollLine = static_cast<size_t>(ratio * maxS);
+            pActiveDoc->scrollLine = static_cast<size_t>(std::llround(static_cast<double>(ratio) * static_cast<double>(maxS)));
+            if (pActiveDoc->scrollLine > maxS) pActiveDoc->scrollLine = maxS;
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -20796,7 +21020,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 if (doc.scrollLine >= 10) doc.scrollLine -= 10;
                                 else doc.scrollLine = 0;
                             } else if (clientPt.y > doc.scrollbarThumb.bottom) {
-                                doc.scrollLine += 10;
+                                const size_t rawLines = doc.buffer.GetLineCount();
+                                const size_t maxS = (doc.lastTotalVisualLines > 0)
+                                    ? doc.lastMaxScrollLine
+                                    : ((rawLines > 3) ? (rawLines - 3) : 0);
+                                doc.scrollLine = (std::min)(maxS, doc.scrollLine + 10);
                             }
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -20952,7 +21180,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         float sliderH = doc.minimapSlider.bottom - doc.minimapSlider.top;
                         float scrollRange = trackH - sliderH;
                         size_t totalLines = doc.buffer.GetLineCount();
-                        size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
+                        size_t maxS = (doc.lastTotalVisualLines > 0)
+                            ? doc.lastMaxScrollLine
+                            : ((totalLines > 3) ? (totalLines - 3) : 0);
 
                         if (hitMinimapSlider) {
                             // Clicked on slider: preserve exact grab offset
@@ -20963,7 +21193,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                             if (scrollRange > 0.0f) {
                                 float targetSliderTop = (static_cast<float>(clientPt.y) - doc.minimapTrack.top) - doc.minimapGrabOffsetY;
                                 float ratio = (std::max)(0.0f, (std::min)(1.0f, targetSliderTop / scrollRange));
-                                doc.scrollLine = static_cast<size_t>(ratio * maxS);
+                                doc.scrollLine = static_cast<size_t>(std::llround(static_cast<double>(ratio) * static_cast<double>(maxS)));
+                                if (doc.scrollLine > maxS) doc.scrollLine = maxS;
                             }
                         }
                         doc.minimapDragStartY = static_cast<float>(clientPt.y);
@@ -20986,7 +21217,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 if (doc.scrollLine >= 10) doc.scrollLine -= 10;
                                 else doc.scrollLine = 0;
                             } else if (clientPt.y > doc.scrollbarThumb.bottom) {
-                                doc.scrollLine += 10;
+                                const size_t rawLines = doc.buffer.GetLineCount();
+                                const size_t maxS = (doc.lastTotalVisualLines > 0)
+                                    ? doc.lastMaxScrollLine
+                                    : ((rawLines > 3) ? (rawLines - 3) : 0);
+                                doc.scrollLine = (std::min)(maxS, doc.scrollLine + 10);
                             }
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -21474,6 +21709,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 m_isColumnSelecting = true;
                                 doc.isSelecting = true;
                                 doc.SetColumnSelection(line, col, line, col);
+                                m_editor.ResetCaretBlink();
                                 UpdatePrediction();
                                 UpdateCssPeekHover(clientPt);
                                 SetCapture(m_hwnd);
@@ -21483,6 +21719,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 // Alt+Click: Add or toggle arbitrary cursor
                                 m_isColumnSelecting = false;
                                 doc.AddCursorAt(line, col);
+                                m_editor.ResetCaretBlink();
                                 EnsureCursorVisible();
                                 UpdatePrediction();
                                 UpdateCssPeekHover(clientPt);
@@ -21501,6 +21738,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 doc.hasSelection = (doc.selAnchor.line != line || doc.selAnchor.col != col);
                                 doc.selectedWord = doc.hasSelection ? doc.GetSelectedText() : L"";
                                 doc.isSelecting = true;
+                                m_editor.ResetCaretBlink();
                                 UpdatePrediction();
                                 UpdateCssPeekHover(clientPt);
                                 SetCapture(m_hwnd);
@@ -21511,6 +21749,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 doc.isColumnSelection = false;
                                 m_isColumnSelecting = false;
                                 doc.buffer.SetCursor(line, col);
+                                m_editor.ResetCaretBlink();
                                 UpdatePrediction();
                                 UpdateCssPeekHover(clientPt);
                                 // Start drag text selection (Images 2, 3, 4)
@@ -23705,7 +23944,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float paneTop = hasHoverPaneBounds ? hoverPaneBounds.top : headerH;
                     float paneBottom = hasHoverPaneBounds ? hoverPaneBounds.bottom : (clientH - statusBarH - termH);
 
-                    float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
+                    float gutterW = ui::EditorCanvas::ComputeGutterWidth(m_config, pHoverPaneDoc->buffer.GetLineCount());
                     float tabH    = EffectiveTabBarHeight();
                     float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
                     float topY    = paneTop + tabH + breadcrumbH;
@@ -24105,15 +24344,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
                 float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
 
-                // 1. Scroll Drawer Panel tree if mouse is over open sidebar drawer.
+                // 1. Scroll Drawer Panel tree (or expanded Outline panel when hovered) if mouse is over open sidebar drawer.
                 // Never leak wheel events to the active editor canvas when cursor is inside the sidebar,
                 // even if the sidebar list is short or already at top/bottom scroll bounds.
                 if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
-                    if (m_config.activeRailTab == 0) {
-                        m_drawer.ScrollOutline(delta);
-                    } else {
-                        m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y));
-                    }
+                    m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -24318,7 +24553,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             pDoc->scrollLine = 0;
                         }
                     } else if (totalWheelDelta < 0) {
-                        pDoc->scrollLine += linesToScroll;
+                        const size_t rawLines = pDoc->buffer.GetLineCount();
+                        const size_t maxS = (pDoc->lastTotalVisualLines > 0)
+                            ? pDoc->lastMaxScrollLine
+                            : ((rawLines > 3) ? (rawLines - 3) : 0);
+                        pDoc->scrollLine = (std::min)(maxS, pDoc->scrollLine + linesToScroll);
                     }
                     if (IsMarkdownFile(pDoc->filePath)) {
                         SyncMarkdownCompanionScroll(*pDoc, false);
@@ -27241,25 +27480,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         if (!pDoc) continue;
                         anyProcessed = true;
 
-                        std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
-                            return d.message.find(L"Runtime:") != std::wstring::npos;
-                        });
-                        pDoc->diagnostics = editor::SyntaxValidator::Validate(
-                            pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
-                        RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
-                        CalculateImportCosts(*pDoc);
-                        if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
-                            NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
-                        }
-                        ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters);
-                        if (pDoc == activeDoc) {
-                            RequestCodeActionsAsync(pDoc, false, false);
-                        }
+                        if (pDoc->buffer.IsMemoryMappedReadOnly() || pDoc->buffer.GetLineCount() > 15000) {
+                            // Keep editing responsive on huge files (>15,000 lines); skip heavy full-file validation/diff
+                        } else {
+                            std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
+                                return d.message.find(L"Runtime:") != std::wstring::npos;
+                            });
+                            pDoc->diagnostics = editor::SyntaxValidator::Validate(
+                                pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
+                            RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
+                            CalculateImportCosts(*pDoc);
+                            if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
+                                NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
+                            }
+                            ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters);
+                            if (pDoc == activeDoc) {
+                                RequestCodeActionsAsync(pDoc, false, false);
+                            }
 
-                        if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
-                            pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+                            if (pDoc->diffOriginalBuffer.GetLineCount() == 0 && !pDoc->originalDiskText.empty()) {
+                                pDoc->diffOriginalBuffer.SetText(pDoc->originalDiskText);
+                            }
+                            ComputeDiffHunks(*pDoc);
                         }
-                        ComputeDiffHunks(*pDoc);
 
                         bool isActuallyDirty = true;
                         if (pDoc->isDiffView) {
@@ -28874,7 +29117,7 @@ void Window::UpdateCssPeekHover(POINT clientPt) {
 }
 
 void Window::CalculateImportCosts(editor::OpenDocument& doc) {
-    if (doc.isSpecialView) return;
+    if (doc.isSpecialView || doc.buffer.IsMemoryMappedReadOnly() || doc.buffer.GetLineCount() > 15000) return;
     doc.importCostMap.clear();
 
     std::wstring ext;
@@ -30084,7 +30327,8 @@ void Window::SyncActiveSqlSchemaToIntelliSense() {
 }
 
 void Window::RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector<lsp::Diagnostic>& diags) const {
-    if (doc.isSpecialView || doc.isImageView || doc.isFontView || doc.isUnsupportedBinary || doc.buffer.IsMemoryMappedReadOnly()) {
+    if (doc.isSpecialView || doc.isImageView || doc.isFontView || doc.isUnsupportedBinary ||
+        doc.buffer.IsMemoryMappedReadOnly() || doc.buffer.GetLineCount() > 15000) {
         return;
     }
     const std::wstring docPath = doc.filePath.empty() ? doc.fileName : doc.filePath;
@@ -31526,35 +31770,110 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
 }
 
 bool Window::JumpToNextCommentAnnotation() {
-    auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return false;
-    std::wstring ext;
-    try {
-        const std::wstring& target = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
-        ext = std::filesystem::path(target).extension().wstring();
-    } catch (...) {}
-    const auto& summary = m_editor.GetDocCommentSummary(pDoc->buffer, ext);
-    if (summary.entries.empty()) return false;
+    auto getDocExtStr = [](const editor::OpenDocument& d) -> std::wstring {
+        try {
+            const std::wstring& target = d.filePath.empty() ? d.fileName : d.filePath;
+            return std::filesystem::path(target).extension().wstring();
+        } catch (...) {
+            return {};
+        }
+    };
+    auto isAnnotatableDoc = [](const editor::OpenDocument& d) -> bool {
+        return !d.isSpecialView && !d.isDiffView && !d.isMultiFileDiff &&
+               !d.isImageView && !d.isFontView && !d.isFolderView &&
+               !d.buffer.IsMemoryMappedReadOnly() && d.buffer.GetLineCount() <= 15000;
+    };
+    auto jumpWithinDoc = [&](editor::OpenDocument& d, const ui::EditorCanvas::CommentAnnotationEntry& entry) {
+        const size_t targetCol = (entry.tagCol != std::wstring::npos) ? entry.tagCol : 0;
+        d.buffer.SetCursor(entry.line, targetCol);
+        d.ClearSelection();
+        d.targetHighlightLine = entry.line;
+        d.targetHighlightCol = targetCol;
+        d.targetHighlightLen = entry.tagLen;
+        d.targetHighlightTime = GetTickCount64();
+        EnsureCursorVisible(true);
+    };
 
-    const size_t curLine = pDoc->buffer.GetCursor().line;
-    const ui::EditorCanvas::CommentAnnotationEntry* nextEntry = &summary.entries.front();
-    for (const auto& e : summary.entries) {
-        if (e.line > curLine) {
-            nextEntry = &e;
-            break;
+    auto* pDoc = GetActiveDoc();
+    if (pDoc && isAnnotatableDoc(*pDoc)) {
+        const auto& summary = m_editor.GetDocCommentSummary(pDoc->buffer, getDocExtStr(*pDoc));
+        if (!summary.entries.empty()) {
+            const size_t curLine = pDoc->buffer.GetCursor().line;
+            const ui::EditorCanvas::CommentAnnotationEntry* nextEntry = &summary.entries.front();
+            for (const auto& e : summary.entries) {
+                if (e.line > curLine) {
+                    nextEntry = &e;
+                    break;
+                }
+            }
+            RecordNavCheckpoint();
+            jumpWithinDoc(*pDoc, *nextEntry);
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+            return true;
         }
     }
 
-    const size_t targetCol = (nextEntry->tagCol != std::wstring::npos) ? nextEntry->tagCol : 0;
-    pDoc->buffer.SetCursor(nextEntry->line, targetCol);
-    pDoc->ClearSelection();
-    pDoc->targetHighlightLine = nextEntry->line;
-    pDoc->targetHighlightCol = targetCol;
-    pDoc->targetHighlightLen = nextEntry->tagLen;
-    pDoc->targetHighlightTime = GetTickCount64();
-    EnsureCursorVisible();
-    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
-    return true;
+    // Active tab has no annotations: find and activate the next open tab that has comment annotations
+    if (!m_editorGroups.empty()) {
+        const size_t numGroups = m_editorGroups.size();
+        const size_t startGroup = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(numGroups))
+            ? static_cast<size_t>(m_focusedGroupIdx)
+            : 0;
+        for (size_t gi = 0; gi < numGroups; ++gi) {
+            size_t gIdx = (startGroup + gi) % numGroups;
+            auto& grp = m_editorGroups[gIdx];
+            if (grp.docs.empty()) continue;
+            const size_t numDocs = grp.docs.size();
+            const size_t startDoc = (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(numDocs))
+                ? static_cast<size_t>(grp.activeDocIdx + 1)
+                : 0;
+            for (size_t di = 0; di < numDocs; ++di) {
+                size_t dIdx = (startDoc + di) % numDocs;
+                auto& cand = grp.docs[dIdx];
+                if (!isAnnotatableDoc(cand)) continue;
+                const auto& sum = m_editor.GetDocCommentSummary(cand.buffer, getDocExtStr(cand));
+                if (sum.entries.empty()) continue;
+
+                RecordNavCheckpoint();
+                m_focusedGroupIdx = static_cast<int>(gIdx);
+                grp.activeDocIdx = static_cast<int>(dIdx);
+                m_drawer.SetActiveFilePath(cand.filePath);
+                jumpWithinDoc(cand, sum.entries.front());
+                RefreshActiveDocOutlineAndBreadcrumbs();
+                UpdateDrawerErrorFiles();
+                SaveSessionState();
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                return true;
+            }
+        }
+    }
+
+    for (auto& fw : m_floatingWindows) {
+        if (!fw || fw->kind != FloatingDockKind::EditorGroup) continue;
+        for (size_t gi = 0; gi < fw->editorGroups.size(); ++gi) {
+            auto& grp = fw->editorGroups[gi];
+            for (size_t di = 0; di < grp.docs.size(); ++di) {
+                auto& cand = grp.docs[di];
+                if (!isAnnotatableDoc(cand)) continue;
+                const auto& sum = m_editor.GetDocCommentSummary(cand.buffer, getDocExtStr(cand));
+                if (sum.entries.empty()) continue;
+
+                grp.activeDocIdx = static_cast<int>(di);
+                fw->focusedGroupIdx = static_cast<int>(gi);
+                {
+                    ScopedFloatingEditorContext ctx(*this, *fw);
+                    jumpWithinDoc(cand, sum.entries.front());
+                }
+                if (fw->hwnd) {
+                    if (IsIconic(fw->hwnd)) ShowWindow(fw->hwnd, SW_RESTORE);
+                    SetForegroundWindow(fw->hwnd);
+                    InvalidateRect(fw->hwnd, nullptr, FALSE);
+                }
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void Window::ToggleProblemsPanel(bool forceOpen) {

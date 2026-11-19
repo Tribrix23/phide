@@ -116,10 +116,13 @@ public:
      * @param ext Optional file extension so tokenization shares the buffer's token cache.
      * @return Complete BracketAnalysisResult.
      */
-    static BracketAnalysisResult Analyze(const Buffer& buffer, size_t cursorLine, size_t cursorCol, const std::wstring& ext = L"") {
+    static BracketAnalysisResult Analyze(const Buffer& buffer, size_t cursorLine, size_t cursorCol, const std::wstring& ext = L"",
+                                         size_t scanStartLine = 0, size_t scanEndLine = SIZE_MAX) {
         BracketAnalysisResult result;
         const size_t totalLines = buffer.GetLineCount();
-        if (totalLines == 0) return result;
+        if (totalLines == 0 || scanStartLine >= totalLines) return result;
+        const size_t endLine = (std::min)(totalLines, scanEndLine);
+        if (scanStartLine >= endLine) return result;
 
         struct OpenStackItem {
             size_t line;
@@ -130,7 +133,7 @@ public:
         };
         std::vector<OpenStackItem> stack;
 
-        for (size_t l = 0; l < totalLines; ++l) {
+        for (size_t l = scanStartLine; l < endLine; ++l) {
             const auto& lineStr = buffer.GetLine(l);
             if (lineStr.empty()) continue;
 

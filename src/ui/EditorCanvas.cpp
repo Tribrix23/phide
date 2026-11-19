@@ -311,6 +311,13 @@ ID2D1Brush* EditorCanvas::ResolveBetterCommentBrush(const Theme& theme, BetterCo
     }
 }
 
+void EditorCanvas::PruneDocCommentCache(const std::vector<uint64_t>& liveBufferIds) const {
+    if (m_docCommentCache.empty()) return;
+    std::erase_if(m_docCommentCache, [&](const DocCommentSummary& s) {
+        return std::find(liveBufferIds.begin(), liveBufferIds.end(), s.bufferInstanceId) == liveBufferIds.end();
+    });
+}
+
 const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
     const editor::Buffer& buffer, const std::wstring& ext) const {
     const uint64_t bufId = buffer.GetInstanceId();
@@ -328,18 +335,48 @@ const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
     summary.bufferVersion = bufVer;
     summary.docExt = ext;
 
-    const size_t totalLines = (std::min)(buffer.GetLineCount(), static_cast<size_t>(50000));
+    // Avoid synchronous UI-thread stalls on huge files (>15,000 lines or memory-mapped blobs)
+    const size_t rawLineCount = buffer.GetLineCount();
+    if (buffer.IsMemoryMappedReadOnly() || rawLineCount > 15000) {
+        if (m_docCommentCache.size() >= 16) {
+            m_docCommentCache.erase(m_docCommentCache.begin());
+        }
+        m_docCommentCache.push_back(std::move(summary));
+        return m_docCommentCache.back();
+    }
+
+    const size_t totalLines = rawLineCount;
+    if (totalLines > 0) {
+        // Ensure multiline entry states (m_lineEntryStates) are initialized once before reading GetLineEntryState
+        (void)buffer.GetTokensForLineRef(0, ext);
+    }
     BetterCommentType activeBlockType = BetterCommentType::Normal;
 
     for (size_t l = 0; l < totalLines; ++l) {
         const auto& lineStr = buffer.GetLine(l);
-        const auto& toks = buffer.GetTokensForLineRef(l, ext);
         const uint8_t entryState = buffer.GetLineEntryState(l);
         const uint8_t nextState = (l + 1 < totalLines) ? buffer.GetLineEntryState(l + 1) : 0;
         const bool inBlockContinuation = (entryState == 1 || entryState == 4);
         if (!inBlockContinuation) {
             activeBlockType = BetterCommentType::Normal;
         }
+
+        // Fast prefilter: skip invoking SyntaxLexer::TokenizeLine on lines that neither continue a block
+        // comment nor contain any comment delimiter character (eliminates ~85% of tokenization work)
+        if (!inBlockContinuation) {
+            bool hasCommentStarter = false;
+            for (wchar_t ch : lineStr) {
+                if (ch == L'/' || ch == L'#' || ch == L'<' || ch == L'-' || ch == L';' || ch == L'\'') {
+                    hasCommentStarter = true;
+                    break;
+                }
+            }
+            if (!hasCommentStarter) {
+                continue;
+            }
+        }
+
+        const auto& toks = buffer.GetTokensForLineRef(l, ext);
 
         BetterCommentType lineOpenedBlockType = activeBlockType;
         for (const auto& tok : toks) {
@@ -2763,8 +2800,11 @@ bool EditorCanvas::FindMatchingHtmlTag(
 
 bool EditorCanvas::FindMatchingBracket(const editor::Buffer& buffer, size_t line, size_t col,
                                        size_t& outLine, size_t& outCol) {
-    if (line >= buffer.GetLineCount()) return false;
-    auto analysis = editor::BracketPairAnalyzer::Analyze(buffer, line, col);
+    const size_t totalLines = buffer.GetLineCount();
+    if (line >= totalLines) return false;
+    const size_t scanStart = (totalLines > 15000 && line > 4000) ? (line - 4000) : 0;
+    const size_t scanEnd = (totalLines > 15000) ? (std::min)(totalLines, line + 4001) : SIZE_MAX;
+    auto analysis = editor::BracketPairAnalyzer::Analyze(buffer, line, col, L"", scanStart, scanEnd);
     for (const auto& pair : analysis.pairs) {
         if (pair.openLine == line && (pair.openCol == col || (col > 0 && pair.openCol + 1 == col))) {
             outLine = pair.closeLine;
@@ -3030,7 +3070,8 @@ std::vector<std::pair<size_t, std::wstring>> ComputeStickyScopeLines(
 
     const size_t limit = (std::min)(topBufferLine, totalLines - 1);
     const bool isMmap = buffer.IsMemoryMappedReadOnly();
-    size_t startLine = (isMmap && limit > 400) ? (limit - 400) : 0;
+    const bool skipFullCheckpointScan = isMmap || (totalLines > 15000);
+    size_t startLine = (skipFullCheckpointScan && limit > 400) ? (limit - 400) : 0;
     const bool indentOnlyLang = (docExt == L".py" || docExt == L".yaml" || docExt == L".yml" ||
                                  docExt == L".html" || docExt == L".htm" || docExt == L".xml");
 
@@ -3041,7 +3082,7 @@ std::vector<std::pair<size_t, std::wstring>> ComputeStickyScopeLines(
 
     static constexpr size_t kCheckpointStride = 256;
     StickyScopeBufferCheckpoints* pCpEntry = nullptr;
-    if (!isMmap) {
+    if (!skipFullCheckpointScan) {
         for (size_t i = 0; i < g_stickyCheckpointCache.size(); ++i) {
             auto& cp = g_stickyCheckpointCache[i];
             if (cp.bufInstanceId == bufId && cp.version == bufVer && cp.lineCount == totalLines &&
@@ -3397,7 +3438,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                               bool isRenaming,
                               int groupIdx) {
     auto& buffer = doc.buffer;
-    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
+    const float gutterW = ComputeGutterWidth(config, buffer.GetLineCount());
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
     // Auto-invalidate character width if font size or font family changed
@@ -3609,15 +3650,17 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     const size_t totalBufLines = buffer.GetLineCount();
     const bool isMmapLarge = buffer.IsMemoryMappedReadOnly();
-    const bool supportsCodeLens = config.enableCodeLens && !doc.isDiffView &&
+    const bool isFastLargeBuf = isMmapLarge || (totalBufLines > 15000);
+    const bool supportsCodeLens = !isFastLargeBuf && config.enableCodeLens && !doc.isDiffView &&
         (docExt != L".json" && docExt != L".txt" && docExt != L".md" && docExt != L".css" && docExt != L".html" && docExt != L".svg" && docExt != L".xml");
+    const bool useFastDirectVisualMap = isMmapLarge || (isFastLargeBuf && doc.foldedLines.empty() && doc.mergeConflicts.empty() && predGhostLines.size() <= 1);
 
     const std::vector<editor::OpenDocument::CachedVisualLine>* pBaseVisualLines =
-        isMmapLarge ? nullptr : &EnsureBaseVisualLines(doc, supportsCodeLens, docExt);
+        useFastDirectVisualMap ? nullptr : &EnsureBaseVisualLines(doc, supportsCodeLens, docExt);
 
     size_t predAnchorBaseIdx = 0;
     size_t predExtraRows = 0;
-    if (!isMmapLarge && predGhostLines.size() > 1 && pBaseVisualLines && !pBaseVisualLines->empty()) {
+    if (!useFastDirectVisualMap && predGhostLines.size() > 1 && pBaseVisualLines && !pBaseVisualLines->empty()) {
         bool predFound = false;
         size_t idx = FindBaseVisualIndexForBufferLine(*pBaseVisualLines, cursor.line, predFound);
         if (predFound && (*pBaseVisualLines)[idx].bufferLine == cursor.line && !(*pBaseVisualLines)[idx].isCodeLens) {
@@ -3626,10 +3669,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    const size_t totalVisualLines = isMmapLarge ? totalBufLines : (pBaseVisualLines->size() + predExtraRows);
+    const size_t totalVisualLines = useFastDirectVisualMap ? totalBufLines : (pBaseVisualLines->size() + predExtraRows);
     auto getVisualLineAt = [&](size_t idx) -> VisualLine {
         VisualLine vl{};
-        if (isMmapLarge) {
+        if (useFastDirectVisualMap) {
             vl.bufferLine = idx;
             return vl;
         }
@@ -3652,7 +3695,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     };
 
     auto findVisualIdxForBufferLine = [&](size_t targetBufLine, bool& outFound) -> size_t {
-        if (isMmapLarge) {
+        if (useFastDirectVisualMap) {
             outFound = (targetBufLine < totalBufLines);
             return outFound ? targetBufLine : 0;
         }
@@ -3664,6 +3707,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     const size_t visibleCount = (lineH > 0.0f) ? static_cast<size_t>(codeAreaH / lineH) : 20;
     // Scroll beyond last line (VS Code scrollBeyondLastLine feature): allows scrolling closing brackets comfortably up into view
     const size_t maxScroll = (totalVisualLines == 0) ? 0 : (totalVisualLines > 3 ? totalVisualLines - 3 : 0);
+    doc.lastTotalVisualLines = totalVisualLines;
+    doc.lastMaxScrollLine = maxScroll;
+    doc.lastVisibleLines = (std::max<size_t>)(3, visibleCount);
     if (doc.scrollLine > maxScroll) {
         doc.scrollLine = maxScroll;
     }
@@ -3771,12 +3817,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
+    // Compute visible buffer line range before bracket analysis so huge files can scan locally in O(1)
+    size_t minVisBufLine = (doc.scrollLine < totalVisualLines) ? getVisualLineAt(doc.scrollLine).bufferLine : 0;
+    size_t maxVisRows = static_cast<size_t>((clientHeight - topY) / (std::max)(1.0f, lineH)) + 6;
+    size_t maxVisIdx = (std::min)(totalVisualLines, doc.scrollLine + maxVisRows);
+    size_t maxVisBufLine = (maxVisIdx > 0 && maxVisIdx - 1 < totalVisualLines) ? getVisualLineAt(maxVisIdx - 1).bufferLine : totalBufLines;
+
     // Analyze rainbow bracket pairs, nesting depths, and active cursor pair with per-buffer caching
     struct PerBufBracketCache {
         uint64_t instanceId = 0;
         std::wstring docExt;
         uint64_t version = UINT64_MAX;
         size_t lineCount = 0;
+        size_t winStart = 0;
+        size_t winEnd = SIZE_MAX;
         size_t curLine = SIZE_MAX;
         size_t curCol = SIZE_MAX;
         editor::BracketAnalysisResult analysis;
@@ -3802,10 +3856,30 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         bufCache.analysis = editor::BracketAnalysisResult{};
         bufCache.version = buffer.GetVersion();
         bufCache.lineCount = totalBufLines;
+    } else if (isFastLargeBuf) {
+        const size_t pad = 400;
+        const bool outsideWindow = (minVisBufLine < bufCache.winStart) || (maxVisBufLine > bufCache.winEnd) || (bufCache.winEnd == SIZE_MAX);
+        if (bufCache.version != buffer.GetVersion() || bufCache.lineCount != totalBufLines || outsideWindow) {
+            const size_t newWinStart = (minVisBufLine > pad) ? (minVisBufLine - pad) : 0;
+            const size_t newWinEnd = (std::min)(totalBufLines, maxVisBufLine + pad + 1);
+            bufCache.analysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col, docExt, newWinStart, newWinEnd);
+            bufCache.version = buffer.GetVersion();
+            bufCache.lineCount = totalBufLines;
+            bufCache.winStart = newWinStart;
+            bufCache.winEnd = newWinEnd;
+            bufCache.curLine = cursor.line;
+            bufCache.curCol = cursor.col;
+        } else if (bufCache.curLine != cursor.line || bufCache.curCol != cursor.col) {
+            bufCache.analysis.activePairIdx = editor::BracketPairAnalyzer::FindActivePairIdx(bufCache.analysis.pairs, cursor.line, cursor.col);
+            bufCache.curLine = cursor.line;
+            bufCache.curCol = cursor.col;
+        }
     } else if (bufCache.version != buffer.GetVersion() || bufCache.lineCount != totalBufLines) {
         bufCache.analysis = editor::BracketPairAnalyzer::Analyze(buffer, cursor.line, cursor.col, docExt);
         bufCache.version = buffer.GetVersion();
         bufCache.lineCount = totalBufLines;
+        bufCache.winStart = 0;
+        bufCache.winEnd = SIZE_MAX;
         bufCache.curLine = cursor.line;
         bufCache.curCol = cursor.col;
     } else if (bufCache.curLine != cursor.line || bufCache.curCol != cursor.col) {
@@ -3814,10 +3888,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         bufCache.curCol = cursor.col;
     }
     const auto& bracketAnalysis = bufCache.analysis;
-    size_t minVisBufLine = (doc.scrollLine < totalVisualLines) ? getVisualLineAt(doc.scrollLine).bufferLine : 0;
-    size_t maxVisRows = static_cast<size_t>((clientHeight - topY) / (std::max)(1.0f, lineH)) + 6;
-    size_t maxVisIdx = (std::min)(totalVisualLines, doc.scrollLine + maxVisRows);
-    size_t maxVisBufLine = (maxVisIdx > 0 && maxVisIdx - 1 < totalVisualLines) ? getVisualLineAt(maxVisIdx - 1).bufferLine : totalBufLines;
     std::unordered_map<size_t, std::vector<const editor::BracketItem*>> bracketsByLine;
     if (config.enableBracketPairColorization && !bracketAnalysis.brackets.empty()) {
         auto itB = std::lower_bound(bracketAnalysis.brackets.begin(), bracketAnalysis.brackets.end(), minVisBufLine,
@@ -6236,17 +6306,35 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
-    // 5. Code Minimap (Image 5: scaled miniature code preview with syntax highlighting, search ticks, and viewport slider)
+    // 5. Code Minimap (Scrollable viewport code preview + full-file overview ticks and viewport slider)
     if (config.showMinimap && !doc.isSpecialView && !doc.isImageView && !doc.isUnsupportedBinary) {
         doc.minimapTrack = D2D1::RectF(canvasRight - minimapW, topY, canvasRight, clientHeight);
         pRT->PushAxisAlignedClip(doc.minimapTrack, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        size_t totalLines = buffer.GetLineCount();
-        float miniH = (std::max)(10.0f, clientHeight - topY);
-        float baseLineStep = (std::max)(3.2f, config.ScaleF(3.8f));
-        float stepY = (totalLines * baseLineStep > miniH && totalLines > 0) ? (miniH / static_cast<float>(totalLines)) : baseLineStep;
-        float microH = (std::max)(1.2f, (totalLines * baseLineStep > miniH) ? (stepY * 0.70f) : 2.2f);
-        float microCharW = (std::max)(0.8f, config.ScaleF(1.3f));
+        const size_t totalLines = buffer.GetLineCount();
+        const float miniH = (std::max)(10.0f, clientHeight - topY);
+        const float rowStep = (std::max)(2.4f, config.ScaleF(2.8f));
+        const size_t minimapCapacity = (miniH > rowStep)
+            ? (std::max<size_t>)(1, static_cast<size_t>(std::floor(miniH / rowStep)))
+            : 1;
+        const bool isScrollableMinimap = (totalLines > minimapCapacity);
+        const float stepY = rowStep;
+        const float microH = (std::max)(1.3f, rowStep * 0.65f);
+        const float microCharW = (std::max)(0.8f, config.ScaleF(1.3f));
+
+        const float scrollRatio = (maxScroll > 0)
+            ? (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll)))
+            : 0.0f;
+        size_t minimapStartLine = 0;
+        size_t minimapEndLine = totalLines;
+        if (isScrollableMinimap) {
+            const size_t maxMiniStart = totalLines - minimapCapacity;
+            minimapStartLine = static_cast<size_t>(std::llround(static_cast<double>(scrollRatio) * static_cast<double>(maxMiniStart)));
+            minimapStartLine = (std::min)(minimapStartLine, maxMiniStart);
+            minimapEndLine = (std::min)(totalLines, minimapStartLine + minimapCapacity + 1);
+        }
+        doc.lastMinimapStartLine = minimapStartLine;
+        doc.lastMinimapVisibleLines = (minimapEndLine > minimapStartLine) ? (minimapEndLine - minimapStartLine) : 0;
 
         ID2D1SolidColorBrush* miniBgBrush = m_pMinimapBgBrush.Get();
         ID2D1SolidColorBrush* selMiniBrush = m_pMinimapSelBrush.Get();
@@ -6266,66 +6354,62 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             if (theme.brushBorderSubtle) {
                 pTargetRT->DrawLine(D2D1::Point2F(ox, oy), D2D1::Point2F(ox, oy + trackH), theme.brushBorderSubtle.Get(), 1.0f);
             }
-            if (isMmapLarge) return;
-
-            float lastDrawnTokenY = -100.0f;
-            const float minTokenStepPx = (totalLines > 600) ? 1.5f : 0.0f;
-            for (size_t b = 0; b < totalLines; ++b) {
-                float relY = static_cast<float>(b) * stepY;
-                if (relY + microH > trackH) break;
-                if (relY - lastDrawnTokenY < minTokenStepPx) continue;
+            for (size_t b = minimapStartLine; b < minimapEndLine; ++b) {
+                float relY = static_cast<float>(b - minimapStartLine) * stepY;
+                if (relY > trackH + 2.0f) break;
 
                 const auto& lineStr = buffer.GetLine(b);
                 if (lineStr.empty()) continue;
 
                 size_t indent = lineStr.find_first_not_of(L" \t");
                 if (indent == std::wstring::npos) continue;
-                lastDrawnTokenY = relY;
 
                 float my = oy + relY;
-                const auto& tokens = buffer.GetTokensForLineRef(b, docExt);
-                if (!tokens.empty()) {
-                    for (const auto& tok : tokens) {
-                        if (tok.startCol + tok.length > lineStr.length()) continue;
-                        float tx = ox + config.ScaleF(5.0f) + static_cast<float>(tok.startCol) * microCharW;
-                        if (tx >= ox + trackW - 2.0f) break;
-                        float tw = (std::min)(ox + trackW - tx - 2.0f, static_cast<float>(tok.length) * microCharW);
-                        if (tw <= 0.5f) continue;
+                if (!isMmapLarge) {
+                    const auto& tokens = buffer.GetTokensForLineRef(b, docExt);
+                    if (!tokens.empty()) {
+                        for (const auto& tok : tokens) {
+                            if (tok.startCol + tok.length > lineStr.length()) continue;
+                            float tx = ox + config.ScaleF(5.0f) + static_cast<float>(tok.startCol) * microCharW;
+                            if (tx >= ox + trackW - 2.0f) break;
+                            float tw = (std::min)(ox + trackW - tx - 2.0f, static_cast<float>(tok.length) * microCharW);
+                            if (tw <= 0.5f) continue;
 
-                        ID2D1Brush* brush = theme.brushTextMuted.Get();
-                        switch (tok.type) {
-                            case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
-                            case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
-                            case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                            case editor::TokenType::Comment: {
-                                BetterCommentType inh = BetterCommentType::Normal;
-                                auto inhIt = docCommentSummary.inheritedLineTypes.find(b);
-                                if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
-                                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
-                                brush = ResolveBetterCommentBrush(theme, cInfo.type);
-                                break;
+                            ID2D1Brush* brush = theme.brushTextMuted.Get();
+                            switch (tok.type) {
+                                case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                                case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                                case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                                case editor::TokenType::Comment: {
+                                    BetterCommentType inh = BetterCommentType::Normal;
+                                    auto inhIt = docCommentSummary.inheritedLineTypes.find(b);
+                                    if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
+                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
+                                    brush = ResolveBetterCommentBrush(theme, cInfo.type);
+                                    break;
+                                }
+                                case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                                case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                                case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                                case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                                default: brush = theme.brushTextPrimary.Get(); break;
                             }
-                            case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
-                            case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
-                            case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
-                            case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
-                            default: brush = theme.brushTextPrimary.Get(); break;
+                            pTargetRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
                         }
-                        pTargetRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
+                        continue;
                     }
-                } else {
-                    float mx = ox + config.ScaleF(5.0f) + static_cast<float>(indent) * microCharW;
-                    float tw = (std::min)(ox + trackW - mx - 2.0f, static_cast<float>(lineStr.length() - indent) * microCharW);
-                    if (tw > 0.5f) {
-                        pTargetRT->FillRectangle(D2D1::RectF(mx, my, mx + tw, my + microH), theme.brushTextMuted.Get());
-                    }
+                }
+                float mx = ox + config.ScaleF(5.0f) + static_cast<float>(indent) * microCharW;
+                float tw = (std::min)(ox + trackW - mx - 2.0f, static_cast<float>(lineStr.length() - indent) * microCharW);
+                if (tw > 0.5f) {
+                    pTargetRT->FillRectangle(D2D1::RectF(mx, my, mx + tw, my + microH), theme.brushTextMuted.Get());
                 }
             }
         };
 
-        // Cached static minimap bitmap (rebuilt only on buffer edit, theme change, or resize)
+        // Cached steady-state minimap bitmap keyed by buffer + minimapStartLine; active scroll drags draw ~300 rows directly
         bool drewCachedMinimap = false;
-        if (!isMmapLarge && minimapW >= 2.0f && miniH >= 2.0f) {
+        if (!isMmapLarge && !doc.isDraggingMinimap && !doc.isDraggingScrollbar && minimapW >= 2.0f && miniH >= 2.0f) {
             uint64_t themeSig = 14695981039346656037ULL;
             themeSig = MixHash64(themeSig, theme.IsDarkMode() ? 1ULL : 0ULL);
             themeSig = MixHash64(themeSig, reinterpret_cast<uintptr_t>(theme.brushCanvasBg.Get()));
@@ -6358,7 +6442,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             for (size_t ci = 0; ci < m_minimapBitmapCache.size(); ++ci) {
                 auto& e = m_minimapBitmapCache[ci];
                 if (e.pRT == pRT && e.bufferInstanceId == mBufId && e.bufferVersion == mBufVer &&
-                    e.lineCount == totalLines && e.docExt == docExt &&
+                    e.lineCount == totalLines && e.minimapStartLine == minimapStartLine &&
+                    e.visibleRows == doc.lastMinimapVisibleLines && std::abs(e.rowStep - stepY) < 0.01f &&
+                    e.docExt == docExt &&
                     std::abs(e.minimapW - minimapW) < 0.5f && std::abs(e.miniH - miniH) < 0.5f &&
                     std::abs(e.dpiScale - config.dpiScale) < 0.001f && e.themeSig == themeSig && e.bitmap) {
                     cachedBmp = e.bitmap.Get();
@@ -6389,6 +6475,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                             entry.bufferInstanceId = mBufId;
                             entry.bufferVersion = mBufVer;
                             entry.lineCount = totalLines;
+                            entry.minimapStartLine = minimapStartLine;
+                            entry.visibleRows = doc.lastMinimapVisibleLines;
+                            entry.rowStep = stepY;
                             entry.docExt = docExt;
                             entry.minimapW = minimapW;
                             entry.miniH = miniH;
@@ -6411,43 +6500,73 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             drawMinimapCodeLayer(pRT, doc.minimapTrack.left, topY, minimapW, miniH);
         }
 
+        auto lineToWindowY = [&](size_t line, float& outY) -> bool {
+            if (line < minimapStartLine || line >= minimapEndLine) return false;
+            outY = topY + static_cast<float>(line - minimapStartLine) * stepY;
+            return (outY <= clientHeight);
+        };
+        auto lineToOverviewY = [&](size_t line) -> float {
+            if (!isScrollableMinimap) {
+                return topY + static_cast<float>(line) * stepY;
+            }
+            const float span = (std::max)(0.0f, miniH - microH);
+            const size_t clamped = (totalLines > 0) ? (std::min)(line, totalLines - 1) : 0;
+            const float frac = (totalLines > 1)
+                ? (static_cast<float>(clamped) / static_cast<float>(totalLines - 1))
+                : 0.0f;
+            return topY + frac * span;
+        };
+
         // Dynamic O(1) / O(sparse items) minimap overlays
         if (isMmapLarge) {
             if (cursor.line < totalLines && cursorMiniBrush) {
-                float my = topY + (totalLines > 0 ? (static_cast<float>(cursor.line) / static_cast<float>(totalLines)) * miniH : 0.0f);
-                pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my, doc.minimapTrack.right - 1.0f, my + config.ScaleF(3.0f)), cursorMiniBrush);
+                float my = 0.0f;
+                if (lineToWindowY(cursor.line, my)) {
+                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my, doc.minimapTrack.right - 1.0f, my + config.ScaleF(3.0f)), cursorMiniBrush);
+                } else {
+                    float ovY = lineToOverviewY(cursor.line);
+                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(6.0f), ovY, doc.minimapTrack.right - 1.0f, ovY + config.ScaleF(3.0f)), cursorMiniBrush);
+                }
             }
         } else {
-            // 1. Active selection band on minimap (O(1))
+            // 1. Active selection band in scrolled minimap window (O(1))
             if (doc.HasSelection() && selMiniBrush && totalLines > 0) {
                 size_t sLine = 0, sCol = 0, eLine = 0, eCol = 0;
                 doc.GetSelectionRange(sLine, sCol, eLine, eCol);
-                float selTopY = topY + static_cast<float>(sLine) * stepY;
-                if (selTopY + microH <= clientHeight) {
-                    float selBotY = (std::min)(clientHeight, topY + static_cast<float>(eLine) * stepY + (std::max)(microH, stepY));
+                if (eLine >= minimapStartLine && sLine < minimapEndLine) {
+                    size_t visS = (std::max)(sLine, minimapStartLine);
+                    size_t visE = (std::min)(eLine, (minimapEndLine > 0 ? minimapEndLine - 1 : 0));
+                    float selTopY = topY + static_cast<float>(visS - minimapStartLine) * stepY;
+                    float selBotY = (std::min)(clientHeight, topY + static_cast<float>(visE - minimapStartLine) * stepY + (std::max)(microH, stepY));
                     if (selBotY > selTopY) {
                         pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 2.0f, selTopY, doc.minimapTrack.right - 2.0f, selBotY), selMiniBrush);
                     }
                 }
             }
 
-            // 2. Active Caret Line Indicator on minimap (O(1))
+            // 2. Active Caret Line Indicator (in scrolled code window + full-file overview tick when scrolled elsewhere)
             if (cursor.line < totalLines && cursorMiniBrush) {
-                float my = topY + static_cast<float>(cursor.line) * stepY;
-                if (my + microH <= clientHeight) {
+                float my = 0.0f;
+                if (lineToWindowY(cursor.line, my)) {
                     pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my, doc.minimapTrack.right - 1.0f, my + (std::max)(2.5f, microH + 1.0f)), cursorMiniBrush);
+                } else {
+                    float ovY = lineToOverviewY(cursor.line);
+                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(6.0f), ovY, doc.minimapTrack.right - 1.0f, ovY + (std::max)(2.5f, microH + 1.0f)), cursorMiniBrush);
                 }
             }
 
-            // 3. Target search jump highlight banner on minimap (O(1))
+            // 3. Target search/annotation jump highlight banner (O(1))
             if (doc.targetHighlightLine < totalLines && targetMiniBrush) {
-                float my = topY + static_cast<float>(doc.targetHighlightLine) * stepY;
-                if (my + microH <= clientHeight) {
+                float my = 0.0f;
+                if (lineToWindowY(doc.targetHighlightLine, my)) {
                     pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my - 1.0f, doc.minimapTrack.right - 1.0f, my + microH + 1.0f), targetMiniBrush);
+                } else {
+                    float ovY = lineToOverviewY(doc.targetHighlightLine);
+                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(7.0f), ovY - 1.0f, doc.minimapTrack.right - 1.0f, ovY + microH + 1.0f), targetMiniBrush);
                 }
             }
 
-            // 4. Diagnostic syntax error markers on minimap (O(#diagnostics))
+            // 4. Diagnostic syntax error markers on full-file overview rail + in-window highlight
             if (!doc.diagnostics.empty()) {
                 std::unordered_map<size_t, int> diagSeverityByLine;
                 for (const auto& diag : doc.diagnostics) {
@@ -6459,58 +6578,57 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
                 for (const auto& kv : diagSeverityByLine) {
                     if (kv.first >= totalLines) continue;
-                    float my = topY + static_cast<float>(kv.first) * stepY;
-                    if (my + microH > clientHeight) continue;
                     ID2D1Brush* pErrBrush = (kv.second == 1) ?
                         (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
                         (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
-                    pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my - 0.5f, doc.minimapTrack.right - 1.0f, my + (std::max)(microH + 1.5f, stepY)), pErrBrush);
+                    float my = 0.0f;
+                    if (lineToWindowY(kv.first, my)) {
+                        pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 1.0f, my - 0.5f, doc.minimapTrack.right - 1.0f, my + (std::max)(microH + 1.5f, stepY)), pErrBrush);
+                    } else if (isScrollableMinimap) {
+                        float ovY = lineToOverviewY(kv.first);
+                        pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(7.0f), ovY - 0.5f, doc.minimapTrack.right - 1.0f, ovY + (std::max)(2.5f, microH + 1.0f)), pErrBrush);
+                    }
                 }
             }
 
-            // 5. Minimap Diff Gutter Indicators (O(#diff lines))
+            // 5. Minimap Diff Gutter Indicators (full-file overview + in-window sync)
             if (!doc.isDiffView) {
                 const float diffW = config.ScaleF(2.5f);
                 const float diffH = (std::max)(microH, stepY);
                 if (blueMini) {
                     for (size_t b : doc.diffModifiedLines) {
-                        if (b >= totalLines) break;
-                        float my = topY + static_cast<float>(b) * stepY;
-                        if (my + microH > clientHeight) break;
+                        if (b >= totalLines) continue;
+                        float my = lineToOverviewY(b);
                         pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left, my, doc.minimapTrack.left + diffW, my + diffH), blueMini);
                     }
                 }
                 if (greenMini) {
                     for (size_t b : doc.diffAddedLines) {
-                        if (b >= totalLines) break;
-                        if (doc.diffModifiedLines.count(b)) continue;
-                        float my = topY + static_cast<float>(b) * stepY;
-                        if (my + microH > clientHeight) break;
+                        if (b >= totalLines || doc.diffModifiedLines.count(b)) continue;
+                        float my = lineToOverviewY(b);
                         pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left, my, doc.minimapTrack.left + diffW, my + diffH), greenMini);
                     }
                 }
                 if (redMini) {
                     for (size_t b : doc.diffDeletedGutterMarkers) {
-                        if (b >= totalLines) break;
-                        if (doc.diffModifiedLines.count(b) || doc.diffAddedLines.count(b)) continue;
-                        float my = topY + static_cast<float>(b) * stepY;
-                        if (my + microH > clientHeight) break;
+                        if (b >= totalLines || doc.diffModifiedLines.count(b) || doc.diffAddedLines.count(b)) continue;
+                        float my = lineToOverviewY(b);
                         pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left, my - 1.0f, doc.minimapTrack.left + config.ScaleF(3.0f), my + 1.0f), redMini);
                     }
                 }
             }
 
-            // 6. Selected-word / caret-word occurrences on minimap (O(#cached occurrence lines))
+            // 6. Selected-word / caret-word occurrences (in scrolled window + full-file right rail)
             if (!doc.occurrenceMatchLines.empty() && wordTickBrush) {
                 const float bandH = (std::max)(2.5f, microH + 1.0f);
                 for (size_t lineIdx : doc.occurrenceMatchLines) {
-                    if (lineIdx >= totalLines) break;
-                    float oy = topY + static_cast<float>(lineIdx) * stepY;
-                    if (oy + microH > clientHeight) break;
-                    if (occBandBrush) {
-                        pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 2.0f, oy - 0.5f,
-                                                       doc.minimapTrack.right - 2.0f, oy + bandH), occBandBrush);
+                    if (lineIdx >= totalLines) continue;
+                    float winY = 0.0f;
+                    if (occBandBrush && lineToWindowY(lineIdx, winY)) {
+                        pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.left + 2.0f, winY - 0.5f,
+                                                       doc.minimapTrack.right - 2.0f, winY + bandH), occBandBrush);
                     }
+                    float oy = lineToOverviewY(lineIdx);
                     pRT->FillRectangle(D2D1::RectF(doc.minimapTrack.right - config.ScaleF(4.0f), oy - 0.5f,
                                                    doc.minimapTrack.right - 1.0f, oy + bandH), wordTickBrush);
                 }
@@ -6520,23 +6638,29 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             if (!docCommentSummary.entries.empty() && totalLines > 0) {
                 const float tickH = (std::max)(2.5f, (std::min)(config.ScaleF(4.0f), microH + 1.5f));
                 for (const auto& ce : docCommentSummary.entries) {
-                    if (ce.line >= totalLines) break;
-                    float my = topY + static_cast<float>(ce.line) * stepY;
-                    if (my + microH > clientHeight) break;
+                    if (ce.line >= totalLines) continue;
                     ID2D1Brush* pCB = ResolveBetterCommentBrush(theme, ce.type);
-                    if (pCB) {
-                        const float barW = (ce.type == BetterCommentType::Urgent || ce.type == BetterCommentType::Asap)
-                            ? config.ScaleF(7.0f) : config.ScaleF(5.0f);
+                    if (!pCB) continue;
+                    const float barW = (ce.type == BetterCommentType::Urgent || ce.type == BetterCommentType::Asap)
+                        ? config.ScaleF(7.0f) : config.ScaleF(5.0f);
+                    float ovY = lineToOverviewY(ce.line);
+                    pRT->FillRectangle(D2D1::RectF(
+                        doc.minimapTrack.right - barW - config.ScaleF(1.0f),
+                        ovY,
+                        doc.minimapTrack.right - config.ScaleF(1.0f),
+                        ovY + tickH), pCB);
+                    float winY = 0.0f;
+                    if (isScrollableMinimap && lineToWindowY(ce.line, winY)) {
                         pRT->FillRectangle(D2D1::RectF(
-                            doc.minimapTrack.right - barW - config.ScaleF(1.0f),
-                            my,
-                            doc.minimapTrack.right - config.ScaleF(1.0f),
-                            my + tickH), pCB);
+                            doc.minimapTrack.left + config.ScaleF(2.0f),
+                            winY,
+                            doc.minimapTrack.left + config.ScaleF(6.0f),
+                            winY + tickH), pCB);
                     }
                 }
             }
 
-            // 7. Search highlight ticks on right side of minimap (cached per buffer version + query)
+            // 7. Search highlight ticks on right overview rail of minimap
             if (!highlightQuery.empty() && hlTickBrush && totalLines > 0) {
                 const uint64_t sBufId = buffer.GetInstanceId();
                 const uint64_t sBufVer = buffer.GetVersion();
@@ -6583,9 +6707,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
                 const float tickH = (std::max)(2.0f, microH);
                 for (size_t b : *pMatchLines) {
-                    if (b >= totalLines) break;
-                    float my = topY + static_cast<float>(b) * stepY;
-                    if (my + microH > clientHeight) break;
+                    if (b >= totalLines) continue;
+                    float my = lineToOverviewY(b);
                     pRT->FillRectangle(D2D1::RectF(
                         doc.minimapTrack.right - config.ScaleF(8.0f),
                         my,
@@ -6595,17 +6718,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // Viewport Slider Box with smooth modern translucency (Images 3 & 4)
+        // Viewport Slider Box with smooth modern translucency (1:1 synchronized with minimap scroll & drag)
         float sliderH = (maxScroll > 0)
             ? (std::max)(config.ScaleF(24.0f), (static_cast<float>(visibleCount) / static_cast<float>(totalVisualLines + visibleCount)) * miniH)
             : miniH;
         if (sliderH > miniH) sliderH = miniH;
 
-        float sliderTop = topY;
-        if (maxScroll > 0) {
-            float scrollRatio = (std::max)(0.0f, (std::min)(1.0f, static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll)));
-            sliderTop = topY + scrollRatio * (miniH - sliderH);
-        }
+        float sliderTop = topY + scrollRatio * (std::max)(0.0f, miniH - sliderH);
         float sliderBottom = (std::min)(topY + miniH, sliderTop + sliderH);
 
         doc.minimapSlider = D2D1::RectF(
@@ -6968,10 +7087,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     doc.hoveredBlameAnchor = {};
 
     auto findVisIdxForLine = [&](size_t targetBufLine) -> size_t {
-        if (isMmapLarge) {
+        if (useFastDirectVisualMap) {
             return (targetBufLine >= doc.scrollLine) ? (targetBufLine - doc.scrollLine) : static_cast<size_t>(-1);
         }
-        for (size_t v = doc.scrollLine; v < totalVisualLines; ++v) {
+        const size_t scanLimit = (std::min)(totalVisualLines, doc.scrollLine + visibleCount + 12);
+        for (size_t v = doc.scrollLine; v < scanLimit; ++v) {
             const auto vl = getVisualLineAt(v);
             if (!vl.isCodeLens && !vl.isPredictionVirtual && vl.bufferLine == targetBufLine) {
                 return v - doc.scrollLine;
@@ -7547,7 +7667,7 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     float topY    = paneTop + tabH + breadcrumbH;
     if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);
     if (!doc.mergeConflicts.empty() && !doc.isMergeView && !doc.isDiffView) topY += config.ScaleF(30.0f);
-    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
+    const float gutterW = ComputeGutterWidth(config, doc.buffer.GetLineCount());
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
 
     if (pt.x < canvasLeft || pt.x >= canvasLeft + gutterW || pt.y < topY || pt.y > paneBottom) {
@@ -7572,10 +7692,15 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
             for (auto& c : docExt) c = towlower(c);
         }
     }
-    const bool supportsCodeLens = config.enableCodeLens && !doc.isDiffView &&
+    const bool isMmapLarge = buffer.IsMemoryMappedReadOnly();
+    const bool isFastLargeBuf = isMmapLarge || (totalBufLines > 15000);
+    const bool supportsCodeLens = !isFastLargeBuf && config.enableCodeLens && !doc.isDiffView &&
         (docExt != L".json" && docExt != L".txt" && docExt != L".md" && docExt != L".css" && docExt != L".html" && docExt != L".svg" && docExt != L".xml");
+    const bool hasMultiLinePred = (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() &&
+        m_prediction.ghostText.find(L'\n') != std::wstring::npos);
+    const bool useFastDirectVisualMap = isMmapLarge || (isFastLargeBuf && doc.foldedLines.empty() && doc.mergeConflicts.empty() && !hasMultiLinePred);
 
-    if (buffer.IsMemoryMappedReadOnly()) {
+    if (useFastDirectVisualMap) {
         if (totalBufLines == 0 || visualSlot >= totalBufLines) return false;
         outLine = visualSlot;
         return true;
@@ -7641,7 +7766,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     float topY    = paneTop + tabH + breadcrumbH;
     if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);
     if (!doc.mergeConflicts.empty() && !doc.isMergeView && !doc.isDiffView) topY += config.ScaleF(30.0f);
-    const float gutterW = config.showLineNumbers ? config.ScaleF(50.0f) : config.ScaleF(12.0f);
+    const float gutterW = ComputeGutterWidth(config, doc.buffer.GetLineCount());
     const float lineH   = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float charW   = (m_charWidth > 0.0f) ? m_charWidth : config.ScaleF(7.8f);
 
@@ -7658,7 +7783,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     if (relY < 0.0f) relY = 0.0f;
     size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
 
-    // Map visual slot back to buffer line taking fold state into account
+    // Map visual slot back to buffer line taking fold state and large-buffer fast direct mapping into account
     auto& buffer = doc.buffer;
     size_t totalBufLines = buffer.GetLineCount();
     size_t mappedLine = 0;
@@ -7673,10 +7798,15 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
             for (auto& c : docExt) c = towlower(c);
         }
     }
-    const bool supportsCodeLens = config.enableCodeLens && !doc.isDiffView &&
+    const bool isMmapLarge = buffer.IsMemoryMappedReadOnly();
+    const bool isFastLargeBuf = isMmapLarge || (totalBufLines > 15000);
+    const bool supportsCodeLens = !isFastLargeBuf && config.enableCodeLens && !doc.isDiffView &&
         (docExt != L".json" && docExt != L".txt" && docExt != L".md" && docExt != L".css" && docExt != L".html" && docExt != L".svg" && docExt != L".xml");
+    const bool hasMultiLinePred = (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() &&
+        m_prediction.ghostText.find(L'\n') != std::wstring::npos);
+    const bool useFastDirectVisualMap = isMmapLarge || (isFastLargeBuf && doc.foldedLines.empty() && doc.mergeConflicts.empty() && !hasMultiLinePred);
 
-    if (buffer.IsMemoryMappedReadOnly()) {
+    if (useFastDirectVisualMap) {
         if (totalBufLines == 0) return false;
         hitActualBufferLine = (visualSlot < totalBufLines);
         mappedLine = (std::min)(visualSlot, totalBufLines - 1);
