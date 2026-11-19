@@ -2052,21 +2052,100 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                     }
                 }
 
-                // Duplicate ID check: id="..."
-                size_t idPos = tagContent.find(L"id=\"");
-                if (idPos != std::wstring::npos) {
-                    size_t idValStart = idPos + 4;
-                    size_t idValEnd = tagContent.find(L'"', idValStart);
-                    if (idValEnd != std::wstring::npos) {
-                        std::wstring idVal = tagContent.substr(idValStart, idValEnd - idValStart);
-                        if (!idVal.empty()) {
-                            auto it = seenIds.find(idVal);
-                            if (it != seenIds.end()) {
-                                diagnostics.push_back({ tagStartLine, tagStartCol, idVal.length(),
-                                    L"HTML Validation: Duplicate ID '" + idVal + L"'. Element IDs must be unique within an HTML document", 2 });
+                // Duplicate ID check: parse only standalone HTML `id="..."` / `id='...'` attributes on opening tags
+                // (never match substring suffixes like `data-id="..."` or `aria-labelledby`, and skip dynamic templates)
+                if (!tagContent.empty() &&
+                    tagContent.front() != L'!' && tagContent.front() != L'?' && tagContent.front() != L'/') {
+                    size_t ap = 0;
+                    const size_t tLen = tagContent.length();
+                    while (ap < tLen && !iswspace(tagContent[ap]) && tagContent[ap] != L'/') {
+                        ++ap;
+                    }
+                    while (ap < tLen) {
+                        while (ap < tLen && iswspace(tagContent[ap])) ++ap;
+                        if (ap >= tLen || tagContent[ap] == L'/') break;
+                        if (tagContent[ap] == L'<' && ap + 1 < tLen && tagContent[ap + 1] == L'?') {
+                            size_t phpClose = tagContent.find(L"?>", ap + 2);
+                            if (phpClose == std::wstring::npos) break;
+                            ap = phpClose + 2;
+                            continue;
+                        }
+                        const size_t attrStart = ap;
+                        while (ap < tLen && !iswspace(tagContent[ap]) && tagContent[ap] != L'=' && tagContent[ap] != L'/') {
+                            ++ap;
+                        }
+                        const size_t attrLen = ap - attrStart;
+                        while (ap < tLen && iswspace(tagContent[ap])) ++ap;
+
+                        std::wstring attrVal;
+                        size_t attrEnd = ap;
+                        if (ap < tLen && tagContent[ap] == L'=') {
+                            ++ap;
+                            while (ap < tLen && iswspace(tagContent[ap])) ++ap;
+                            if (ap < tLen && (tagContent[ap] == L'"' || tagContent[ap] == L'\'')) {
+                                const wchar_t q = tagContent[ap++];
+                                const size_t vStart = ap;
+                                while (ap < tLen) {
+                                    if (tagContent[ap] == L'\\' && ap + 1 < tLen) {
+                                        ap += 2;
+                                        continue;
+                                    }
+                                    if (tagContent[ap] == L'<' && ap + 1 < tLen && tagContent[ap + 1] == L'?') {
+                                        size_t pc = tagContent.find(L"?>", ap + 2);
+                                        if (pc != std::wstring::npos) {
+                                            ap = pc + 2;
+                                            continue;
+                                        }
+                                    }
+                                    if (tagContent[ap] == q) break;
+                                    ++ap;
+                                }
+                                attrVal = tagContent.substr(vStart, ap - vStart);
+                                if (ap < tLen && tagContent[ap] == q) ++ap;
+                                attrEnd = ap;
                             } else {
-                                seenIds[idVal] = { tagStartLine, tagStartCol };
+                                const size_t vStart = ap;
+                                while (ap < tLen && !iswspace(tagContent[ap]) && tagContent[ap] != L'/') ++ap;
+                                attrVal = tagContent.substr(vStart, ap - vStart);
+                                attrEnd = ap;
                             }
+                        }
+
+                        if (attrLen == 2 &&
+                            (tagContent[attrStart] == L'i' || tagContent[attrStart] == L'I') &&
+                            (tagContent[attrStart + 1] == L'd' || tagContent[attrStart + 1] == L'D')) {
+                            const bool isDynamicTemplate =
+                                attrVal.find(L"<?") != std::wstring::npos ||
+                                attrVal.find(L"{{") != std::wstring::npos ||
+                                attrVal.find(L"<%") != std::wstring::npos;
+                            if (!attrVal.empty() && !isDynamicTemplate) {
+                                auto it = seenIds.find(attrVal);
+                                if (it != seenIds.end()) {
+                                    size_t diagLine = tagStartLine;
+                                    size_t diagCol = tagStartCol;
+                                    size_t diagLen = (std::max<size_t>)(attrEnd - attrStart, 2);
+                                    if (endLine == tagStartLine) {
+                                        diagCol = tagStartCol + 1 + attrStart;
+                                    } else {
+                                        const std::wstring needle = tagContent.substr(attrStart, diagLen);
+                                        for (size_t sl = tagStartLine; sl <= endLine; ++sl) {
+                                            const auto& slText = buffer.GetLine(sl);
+                                            const size_t minCol = (sl == tagStartLine) ? (tagStartCol + 1) : 0;
+                                            size_t foundAt = (minCol < slText.length()) ? slText.find(needle, minCol) : std::wstring::npos;
+                                            if (foundAt != std::wstring::npos) {
+                                                diagLine = sl;
+                                                diagCol = foundAt;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    diagnostics.push_back({ diagLine, diagCol, diagLen,
+                                        L"HTML Validation: Duplicate ID '" + attrVal + L"'. Element IDs must be unique within an HTML document", 2 });
+                                } else {
+                                    seenIds[attrVal] = { tagStartLine, tagStartCol };
+                                }
+                            }
+                            break;
                         }
                     }
                 }

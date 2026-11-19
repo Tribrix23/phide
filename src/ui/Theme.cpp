@@ -141,8 +141,13 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
 
     // Better Comments & Interactive TODO Brushes
     pRT->CreateSolidColorBrush(colors.commentAlert, &brushCommentAlert);
+    pRT->CreateSolidColorBrush(colors.commentUrgent, &brushCommentUrgent);
+    pRT->CreateSolidColorBrush(colors.commentAsap, &brushCommentAsap);
     pRT->CreateSolidColorBrush(colors.commentWarning, &brushCommentWarning);
     pRT->CreateSolidColorBrush(colors.commentTodo, &brushCommentTodo);
+    pRT->CreateSolidColorBrush(colors.commentHack, &brushCommentHack);
+    pRT->CreateSolidColorBrush(colors.commentNote, &brushCommentNote);
+    pRT->CreateSolidColorBrush(colors.commentReview, &brushCommentReview);
     pRT->CreateSolidColorBrush(colors.commentQuestion, &brushCommentQuestion);
     pRT->CreateSolidColorBrush(colors.commentImportant, &brushCommentImportant);
     pRT->CreateSolidColorBrush(colors.commentDone, &brushCommentDone);
@@ -584,8 +589,13 @@ void Theme::DiscardDeviceResources() {
     brushBracket2.Reset();
     brushBracket3.Reset();
     brushCommentAlert.Reset();
+    brushCommentUrgent.Reset();
+    brushCommentAsap.Reset();
     brushCommentWarning.Reset();
     brushCommentTodo.Reset();
+    brushCommentHack.Reset();
+    brushCommentNote.Reset();
+    brushCommentReview.Reset();
     brushCommentQuestion.Reset();
     brushCommentImportant.Reset();
     brushCommentDone.Reset();
@@ -677,6 +687,19 @@ void Theme::SetThemeMode(ThemeMode mode) {
         m_isDarkActive = true;
     }
 
+    // Always reset Better Comments defaults for dark-aesthetic themes before any Light overrides
+    colors.commentAlert     = D2D1::ColorF(1.000f, 0.333f, 0.333f, 1.0f);
+    colors.commentUrgent    = D2D1::ColorF(1.000f, 0.180f, 0.388f, 1.0f);
+    colors.commentAsap      = D2D1::ColorF(0.878f, 0.251f, 0.984f, 1.0f);
+    colors.commentWarning   = D2D1::ColorF(1.000f, 0.800f, 0.000f, 1.0f);
+    colors.commentTodo      = D2D1::ColorF(1.000f, 0.600f, 0.000f, 1.0f);
+    colors.commentHack      = D2D1::ColorF(1.000f, 0.478f, 0.349f, 1.0f);
+    colors.commentNote      = D2D1::ColorF(0.176f, 0.831f, 0.749f, 1.0f);
+    colors.commentReview    = D2D1::ColorF(0.702f, 0.533f, 1.000f, 1.0f);
+    colors.commentQuestion  = D2D1::ColorF(0.275f, 0.627f, 1.000f, 1.0f);
+    colors.commentImportant = D2D1::ColorF(0.380f, 0.840f, 0.455f, 1.0f);
+    colors.commentDone      = D2D1::ColorF(0.494f, 0.518f, 0.557f, 1.0f);
+
     if (!m_isDarkActive) {
         // Light Theme Colors (Modern, high-contrast, cohesive light IDE palette with clear surface hierarchy)
         colors.windowBg        = D2D1::ColorF(0.863f, 0.882f, 0.918f, 1.0f); // #DCE1EA Cool slate frame
@@ -722,6 +745,17 @@ void Theme::SetThemeMode(ThemeMode mode) {
         colors.bracket1        = D2D1::ColorF(0.482f, 0.122f, 0.635f, 1.0f); // #7B1FA2 Purple
         colors.bracket2        = D2D1::ColorF(0.750f, 0.400f, 0.000f, 1.0f); // #BF6600 Deep Gold
         colors.bracket3        = D2D1::ColorF(0.000f, 0.450f, 0.750f, 1.0f); // #0073BF Sky Blue
+        colors.commentAlert    = D2D1::ColorF(0.827f, 0.184f, 0.184f, 1.0f); // #D32F2F Deep Red
+        colors.commentUrgent   = D2D1::ColorF(0.784f, 0.063f, 0.282f, 1.0f); // #C81048 High-contrast Crimson
+        colors.commentAsap     = D2D1::ColorF(0.576f, 0.200f, 0.918f, 1.0f); // #9333EA Rich Violet
+        colors.commentWarning  = D2D1::ColorF(0.706f, 0.325f, 0.035f, 1.0f); // #B45309 Deep Amber
+        colors.commentTodo     = D2D1::ColorF(0.851f, 0.467f, 0.024f, 1.0f); // #D97706 Burnt Orange
+        colors.commentHack     = D2D1::ColorF(0.761f, 0.255f, 0.047f, 1.0f); // #C2410C Terracotta
+        colors.commentNote     = D2D1::ColorF(0.059f, 0.463f, 0.431f, 1.0f); // #0F766E Deep Teal
+        colors.commentReview   = D2D1::ColorF(0.427f, 0.157f, 0.851f, 1.0f); // #6D28D9 Indigo Violet
+        colors.commentQuestion = D2D1::ColorF(0.114f, 0.306f, 0.847f, 1.0f); // #1D4ED8 Deep Sky Blue
+        colors.commentImportant= D2D1::ColorF(0.082f, 0.502f, 0.239f, 1.0f); // #15803D Deep Mint Green
+        colors.commentDone     = D2D1::ColorF(0.420f, 0.455f, 0.522f, 1.0f); // #6B7485 Muted Slate
     } else if (m_mode == ThemeMode::Cyan) {
         // Cyan Cyber Theme
         colors.windowBg        = D2D1::ColorF(0.047f, 0.157f, 0.251f, 1.0f); // #0C2840 Vibrant Cyber Frame
@@ -1582,8 +1616,13 @@ void Theme::SetThemeMode(ThemeMode mode) {
     if (brushBracket2) brushBracket2->SetColor(colors.bracket2);
     if (brushBracket3) brushBracket3->SetColor(colors.bracket3);
     if (brushCommentAlert) brushCommentAlert->SetColor(colors.commentAlert);
+    if (brushCommentUrgent) brushCommentUrgent->SetColor(colors.commentUrgent);
+    if (brushCommentAsap) brushCommentAsap->SetColor(colors.commentAsap);
     if (brushCommentWarning) brushCommentWarning->SetColor(colors.commentWarning);
     if (brushCommentTodo) brushCommentTodo->SetColor(colors.commentTodo);
+    if (brushCommentHack) brushCommentHack->SetColor(colors.commentHack);
+    if (brushCommentNote) brushCommentNote->SetColor(colors.commentNote);
+    if (brushCommentReview) brushCommentReview->SetColor(colors.commentReview);
     if (brushCommentQuestion) brushCommentQuestion->SetColor(colors.commentQuestion);
     if (brushCommentImportant) brushCommentImportant->SetColor(colors.commentImportant);
     if (brushCommentDone) brushCommentDone->SetColor(colors.commentDone);

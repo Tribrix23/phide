@@ -1485,7 +1485,17 @@ private:
     bool m_isHoveredStatusBarStructuredView = false;
     D2D1_RECT_F m_rcStatusBarProblems{};
     bool m_isHoveredStatusBarProblems = false;
+    D2D1_RECT_F m_rcStatusBarCommentAnnots{};
+    bool m_isHoveredStatusBarCommentAnnots = false;
+    std::wstring m_statusCommentTooltip;
+    bool m_hasHoveredGutterComment = false;
+    ui::EditorCanvas::CommentIndicatorHit m_hoveredGutterComment{};
     bool m_isColumnSelecting = false;
+
+public:
+    bool JumpToNextCommentAnnotation();
+
+private:
 
     // Git Branch Switcher Dropdown (Status bar popup)
     bool m_showBranchDropdown = false;

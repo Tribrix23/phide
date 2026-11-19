@@ -90,6 +90,66 @@ struct LearningCourseDef {
  */
 class EditorCanvas {
 public:
+    enum class BetterCommentType {
+        Normal = 0,
+        Urgent,    ///< Crimson (#FF2E63) - !!, URGENT, CRITICAL, HOTFIX
+        Asap,      ///< Vivid Magenta (#E040FB) - ASAP, IMMEDIATE, PRIORITY
+        Alert,     ///< Red (#FF5555) - !, ERROR, FIXME, BUG
+        Todo,      ///< Orange (#FF9900) - TODO, [ ], []
+        Warning,   ///< Yellow (#FFCC00) - ^, WARNING, WARN, DEPRECATED
+        Hack,      ///< Warm Coral (#FF7A59) - HACK, WORKAROUND, TEMP, XXX, SECURITY
+        Note,      ///< Cyan-Teal (#2DD4BF) - NOTE, INFO, DOC
+        Review,    ///< Lavender (#B388FF) - REVIEW, OPTIMIZE, PERF, REFACTOR
+        Question,  ///< Sky Blue (#46A0FF) - ?, QUESTION, WHY
+        Important, ///< Mint Green (#61D674) - *, IMPORTANT
+        Done       ///< Muted Grey (#7E848E) - [x], [X] (strikethrough)
+    };
+
+    struct BetterCommentInfo {
+        BetterCommentType type = BetterCommentType::Normal;
+        bool hasCheckbox = false;
+        bool isChecked = false;
+        size_t checkboxCol = std::wstring::npos;
+        size_t checkboxLen = 0;
+        size_t tagCol = std::wstring::npos;
+        size_t tagLen = 0;
+    };
+
+    struct CommentAnnotationEntry {
+        size_t line = 0;
+        size_t tagCol = std::wstring::npos;
+        size_t tagLen = 0;
+        BetterCommentType type = BetterCommentType::Normal;
+        std::wstring tagLabel;
+        std::wstring preview;
+    };
+
+    struct CommentIndicatorHit {
+        D2D1_RECT_F bounds{};
+        size_t line = 0;
+        BetterCommentType type = BetterCommentType::Normal;
+        std::wstring tagLabel;
+        std::wstring preview;
+    };
+
+    struct DocCommentSummary {
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        std::wstring docExt;
+        size_t urgentCount = 0;
+        size_t asapCount = 0;
+        size_t alertCount = 0;
+        size_t todoCount = 0;
+        size_t warningCount = 0;
+        size_t hackCount = 0;
+        size_t noteCount = 0;
+        size_t reviewCount = 0;
+        size_t questionCount = 0;
+        size_t importantCount = 0;
+        std::vector<CommentAnnotationEntry> entries;
+        std::unordered_map<size_t, BetterCommentType> inheritedLineTypes;
+    };
+
     struct TodoCheckboxHit {
         D2D1_RECT_F bounds{};
         size_t line = 0;
@@ -673,6 +733,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSnapBarBgLightBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_pSnapSlotIdleBrush;
     std::vector<TodoCheckboxHit> m_visibleTodoCheckboxes;
+    std::vector<CommentIndicatorHit> m_visibleCommentIndicators;
 
     // Tab Drag & Drop State
     bool m_isRenderingFloatingWindow = false;
@@ -1065,6 +1126,7 @@ public:
         if (clearRenderCaches) {
             m_minimapBitmapCache.clear();
             m_minimapSearchCache.clear();
+            m_docCommentCache.clear();
             m_lineLayoutMap.clear();
             m_lineLayoutLru.clear();
             m_lineLayoutEnvSig = 0;
@@ -1074,6 +1136,7 @@ public:
         m_visibleColorSwatches.shrink_to_fit();
         m_scratchTabWidths.shrink_to_fit();
         m_visibleTodoCheckboxes.shrink_to_fit();
+        m_visibleCommentIndicators.shrink_to_fit();
         m_visibleStickyLines.clear();
         m_visibleStickyLines.shrink_to_fit();
         m_hoveredStickyIdx = -1;
@@ -1131,6 +1194,15 @@ public:
 
 
     [[nodiscard]] bool HitTestTodoCheckbox(POINT pt, TodoCheckboxHit& outHit) const noexcept;
+    [[nodiscard]] bool HitTestCommentIndicator(POINT pt, CommentIndicatorHit& outHit) const noexcept;
+    [[nodiscard]] const std::vector<CommentIndicatorHit>& GetVisibleCommentIndicators() const noexcept { return m_visibleCommentIndicators; }
+
+    [[nodiscard]] static BetterCommentInfo ClassifyBetterComment(
+        const std::wstring& lineStr, size_t startCol, size_t length,
+        BetterCommentType inheritedBlockType = BetterCommentType::Normal);
+    [[nodiscard]] static ID2D1Brush* ResolveBetterCommentBrush(const Theme& theme, BetterCommentType type) noexcept;
+    [[nodiscard]] static D2D1_COLOR_F GetBetterCommentColor(const Theme& theme, BetterCommentType type) noexcept;
+    [[nodiscard]] const DocCommentSummary& GetDocCommentSummary(const editor::Buffer& buffer, const std::wstring& ext) const;
     [[nodiscard]] const std::vector<TodoCheckboxHit>& GetVisibleTodoCheckboxes() const noexcept { return m_visibleTodoCheckboxes; }
     [[nodiscard]] const std::vector<ColorSwatchHit>& GetVisibleColorSwatches() const noexcept { return m_visibleColorSwatches; }
 
@@ -1721,6 +1793,7 @@ private:
         std::vector<size_t> matchLines;
     };
     std::vector<MinimapSearchMatchCacheEntry> m_minimapSearchCache;
+    mutable std::vector<DocCommentSummary> m_docCommentCache;
     StructuredViewRenderer m_structuredRenderer;
 
     // #35 Cached inline unified diff rows (avoids 60fps re-diff allocations, bounded to 50000 rows)

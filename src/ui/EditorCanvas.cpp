@@ -53,41 +53,105 @@ static int ClassifyMergeConflictLineRole(const editor::OpenDocument& doc, size_t
     return 0;
 }
 
-enum class BetterCommentType {
-    Normal,
-    Alert,       // Red (#FF5555) - starts with '!' or contains ERROR, FIXME, BUG
-    Warning,     // Yellow (#FFCC00) - starts with '^' or contains WARNING, WARN
-    Question,    // Sky Blue (#46A0FF) - starts with '?'
-    Important,   // Mint Green (#61D674) - starts with '*'
-    Todo,        // Orange (#FF9900) - contains TODO or '[ ]'
-    Done         // Grey (#7E848E) - contains '[x]' or '[X]', with strikethrough
-};
+namespace {
+[[nodiscard]] bool IsAsciiAllUpper(const std::wstring& s, size_t start, size_t len) noexcept {
+    bool hasAlpha = false;
+    for (size_t i = 0; i < len; ++i) {
+        const wchar_t ch = s[start + i];
+        if (ch >= L'a' && ch <= L'z') return false;
+        if (ch >= L'A' && ch <= L'Z') hasAlpha = true;
+    }
+    return hasAlpha;
+}
 
-struct BetterCommentInfo {
-    BetterCommentType type = BetterCommentType::Normal;
-    bool hasCheckbox = false;
-    bool isChecked = false;
-    size_t checkboxCol = std::wstring::npos;
-    size_t checkboxLen = 0;
-};
+[[nodiscard]] EditorCanvas::BetterCommentType LookupBetterCommentTagWord(const wchar_t* word, size_t len) noexcept {
+    struct TagEntry {
+        const wchar_t* name;
+        size_t len;
+        EditorCanvas::BetterCommentType type;
+    };
+    static constexpr TagEntry kTags[] = {
+        { L"URGENT",     6,  EditorCanvas::BetterCommentType::Urgent },
+        { L"CRITICAL",   8,  EditorCanvas::BetterCommentType::Urgent },
+        { L"HOTFIX",     6,  EditorCanvas::BetterCommentType::Urgent },
+        { L"ASAP",       4,  EditorCanvas::BetterCommentType::Asap },
+        { L"IMMEDIATE",  9,  EditorCanvas::BetterCommentType::Asap },
+        { L"PRIORITY",   8,  EditorCanvas::BetterCommentType::Asap },
+        { L"FIXME",      5,  EditorCanvas::BetterCommentType::Alert },
+        { L"ERROR",      5,  EditorCanvas::BetterCommentType::Alert },
+        { L"BUG",        3,  EditorCanvas::BetterCommentType::Alert },
+        { L"TODO",       4,  EditorCanvas::BetterCommentType::Todo },
+        { L"WARNING",    7,  EditorCanvas::BetterCommentType::Warning },
+        { L"WARN",       4,  EditorCanvas::BetterCommentType::Warning },
+        { L"DEPRECATED", 10, EditorCanvas::BetterCommentType::Warning },
+        { L"HACK",       4,  EditorCanvas::BetterCommentType::Hack },
+        { L"WORKAROUND", 10, EditorCanvas::BetterCommentType::Hack },
+        { L"SECURITY",   8,  EditorCanvas::BetterCommentType::Hack },
+        { L"TEMP",       4,  EditorCanvas::BetterCommentType::Hack },
+        { L"XXX",        3,  EditorCanvas::BetterCommentType::Hack },
+        { L"REVIEW",     6,  EditorCanvas::BetterCommentType::Review },
+        { L"OPTIMIZE",   8,  EditorCanvas::BetterCommentType::Review },
+        { L"PERF",       4,  EditorCanvas::BetterCommentType::Review },
+        { L"REFACTOR",   8,  EditorCanvas::BetterCommentType::Review },
+        { L"NOTE",       4,  EditorCanvas::BetterCommentType::Note },
+        { L"INFO",       4,  EditorCanvas::BetterCommentType::Note },
+        { L"DOC",        3,  EditorCanvas::BetterCommentType::Note },
+        { L"IMPORTANT",  9,  EditorCanvas::BetterCommentType::Important },
+        { L"QUESTION",   8,  EditorCanvas::BetterCommentType::Question },
+        { L"WHY",        3,  EditorCanvas::BetterCommentType::Question },
+    };
+    for (const auto& t : kTags) {
+        if (len == t.len && _wcsnicmp(word, t.name, len) == 0) {
+            return t.type;
+        }
+    }
+    return EditorCanvas::BetterCommentType::Normal;
+}
+} // namespace
 
-static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size_t startCol, size_t length) {
+EditorCanvas::BetterCommentInfo EditorCanvas::ClassifyBetterComment(
+    const std::wstring& lineStr, size_t startCol, size_t length, BetterCommentType inheritedBlockType) {
     BetterCommentInfo info;
     if (startCol >= lineStr.length() || length == 0) return info;
-    size_t endCol = (std::min)(lineStr.length(), startCol + length);
-    std::wstring comment = lineStr.substr(startCol, endCol - startCol);
+    const size_t endCol = (std::min)(lineStr.length(), startCol + length);
+    const std::wstring comment = lineStr.substr(startCol, endCol - startCol);
+    const size_t cLen = comment.length();
 
+    bool startsWithDelim = false;
+    bool isDocCommentBlock = false;
     size_t p = 0;
-    if (comment.rfind(L"<!--", 0) == 0) p = 4;
-    else if (comment.rfind(L"//", 0) == 0 || comment.rfind(L"/*", 0) == 0 || comment.rfind(L"--", 0) == 0) p = 2;
-    else if (!comment.empty() && (comment[0] == L'#' || comment[0] == L';')) p = 1;
+    if (comment.rfind(L"<!--", 0) == 0) {
+        p = 4;
+        startsWithDelim = true;
+    } else if (comment.rfind(L"//", 0) == 0 || comment.rfind(L"/*", 0) == 0 || comment.rfind(L"--", 0) == 0) {
+        p = 2;
+        startsWithDelim = true;
+        if (comment.rfind(L"/**", 0) == 0) {
+            isDocCommentBlock = true;
+            while (p < cLen && comment[p] == L'*') ++p;
+        }
+    } else if (!comment.empty() && (comment[0] == L'#' || comment[0] == L';')) {
+        p = 1;
+        startsWithDelim = true;
+    }
 
-    while (p < comment.length() && (comment[p] == L' ' || comment[p] == L'\t')) p++;
+    while (p < cLen && (comment[p] == L' ' || comment[p] == L'\t')) ++p;
+
+    // On block-comment continuation lines (e.g. " * TODO: ..."), skip the decorative leading '* '
+    if (!startsWithDelim && p < cLen && comment[p] == L'*' && (p + 1 >= cLen || comment[p + 1] != L'/')) {
+        ++p;
+        while (p < cLen && (comment[p] == L' ' || comment[p] == L'\t')) ++p;
+    }
+
+    // Strip optional closing comment tail ("-->" or "*/") from keyword matching bounds
+    size_t scanEnd = cLen;
+    if (scanEnd >= p + 3 && comment.compare(scanEnd - 3, 3, L"-->") == 0) scanEnd -= 3;
+    else if (scanEnd >= p + 2 && comment.compare(scanEnd - 2, 2, L"*/") == 0) scanEnd -= 2;
 
     // 1. Check for checkbox items: [x] or [X] (Done)
     size_t xPos = comment.find(L"[x]");
     if (xPos == std::wstring::npos) xPos = comment.find(L"[X]");
-    if (xPos != std::wstring::npos) {
+    if (xPos != std::wstring::npos && xPos < scanEnd) {
         info.type = BetterCommentType::Done;
         info.hasCheckbox = true;
         info.isChecked = true;
@@ -96,9 +160,9 @@ static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size
         return info;
     }
 
-    // 2. Check for empty checkbox items: [ ] (3 chars)
+    // 2. Check for empty checkbox items: [ ] (3 chars) or [] (2 chars)
     size_t emptyPos = comment.find(L"[ ]");
-    if (emptyPos != std::wstring::npos) {
+    if (emptyPos != std::wstring::npos && emptyPos < scanEnd) {
         info.type = BetterCommentType::Todo;
         info.hasCheckbox = true;
         info.isChecked = false;
@@ -106,10 +170,8 @@ static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size
         info.checkboxLen = 3;
         return info;
     }
-
-    // 3. Check for tight empty checkbox items: [] (2 chars)
     size_t tightEmptyPos = comment.find(L"[]");
-    if (tightEmptyPos != std::wstring::npos) {
+    if (tightEmptyPos != std::wstring::npos && tightEmptyPos < scanEnd) {
         info.type = BetterCommentType::Todo;
         info.hasCheckbox = true;
         info.isChecked = false;
@@ -118,52 +180,227 @@ static BetterCommentInfo ClassifyBetterComment(const std::wstring& lineStr, size
         return info;
     }
 
-    // 4. Check for TODO (without brackets) -> highlight in Todo orange, but NO checkbox overlay on top of letters!
-    std::wstring upperComment = comment;
-    for (auto& ch : upperComment) ch = towupper(ch);
-    size_t todoPos = upperComment.find(L"TODO");
-    if (todoPos != std::wstring::npos) {
-        info.type = BetterCommentType::Todo;
-        info.hasCheckbox = false;
-        return info;
+    // 3. Leading punctuation markers right after the comment opener: !!, !, ^, ?, *
+    if (p < scanEnd) {
+        if (comment[p] == L'!') {
+            if (p + 1 < scanEnd && comment[p + 1] == L'!') {
+                info.type = BetterCommentType::Urgent;
+                info.tagCol = startCol + p;
+                info.tagLen = 2;
+                return info;
+            }
+            if (p + 1 >= scanEnd || comment[p + 1] != L'=') {
+                info.type = BetterCommentType::Alert;
+                info.tagCol = startCol + p;
+                info.tagLen = 1;
+                return info;
+            }
+        }
+        if (comment[p] == L'^') {
+            info.type = BetterCommentType::Warning;
+            info.tagCol = startCol + p;
+            info.tagLen = 1;
+            return info;
+        }
+        if (comment[p] == L'?') {
+            info.type = BetterCommentType::Question;
+            info.tagCol = startCol + p;
+            info.tagLen = 1;
+            return info;
+        }
+        if (comment[p] == L'*' && startsWithDelim && !isDocCommentBlock &&
+            comment.rfind(L"/*", 0) != 0 && (p + 1 >= scanEnd || comment[p + 1] != L'/')) {
+            info.type = BetterCommentType::Important;
+            info.tagCol = startCol + p;
+            info.tagLen = 1;
+            return info;
+        }
     }
 
-    // 4. Alert: Starts with '!' or contains ERROR, FIXME, BUG
-    if (p < comment.length() && comment[p] == L'!') {
-        info.type = BetterCommentType::Alert;
-        return info;
-    }
-    if (upperComment.find(L"ERROR") != std::wstring::npos ||
-        upperComment.find(L"FIXME") != std::wstring::npos ||
-        upperComment.find(L"BUG") != std::wstring::npos) {
-        info.type = BetterCommentType::Alert;
-        return info;
+    // Skip optional bullet prefix ("- ") at opening position p
+    size_t leadPos = p;
+    if (leadPos + 1 < scanEnd && comment[leadPos] == L'-' && iswspace(comment[leadPos + 1])) {
+        leadPos++;
+        while (leadPos < scanEnd && iswspace(comment[leadPos])) ++leadPos;
     }
 
-    // 5. Warning: Starts with '^' or contains WARNING, WARN
-    if (p < comment.length() && comment[p] == L'^') {
-        info.type = BetterCommentType::Warning;
-        return info;
-    }
-    if (upperComment.find(L"WARNING") != std::wstring::npos ||
-        upperComment.find(L"WARN") != std::wstring::npos) {
-        info.type = BetterCommentType::Warning;
-        return info;
+    // 4. Match explicit keyword tags:
+    //   (a) Opening word of the comment (case-insensitive, e.g. "// urgent fix" or "// error: ...")
+    //   (b) Explicit structured inline tag ([URGENT], @asap, or ALL-CAPS + ':' / '!', e.g. "URGENT:")
+    // Normal lowercase words inside prose sentences (e.g. "...after a save or an error.") stay normal comment color.
+    size_t scanPos = p;
+    while (scanPos < scanEnd) {
+        if (!iswalnum(comment[scanPos]) && comment[scanPos] != L'_') {
+            ++scanPos;
+            continue;
+        }
+        const size_t wStart = scanPos;
+        while (scanPos < scanEnd && (iswalnum(comment[scanPos]) || comment[scanPos] == L'_')) {
+            ++scanPos;
+        }
+        const size_t wLen = scanPos - wStart;
+
+        const bool hasOpenBracket = (wStart > 0 && comment[wStart - 1] == L'[');
+        const bool hasCloseBracket = (scanPos < scanEnd && comment[scanPos] == L']');
+        const bool isBracketTag = (hasOpenBracket && hasCloseBracket);
+        const bool isAtTag = (wStart > 0 && comment[wStart - 1] == L'@');
+        const bool isOpeningWord = (wStart == leadPos) ||
+            ((hasOpenBracket || isAtTag) && (wStart - 1 == leadPos));
+        const bool hasTrailingPunct = (scanPos < scanEnd && (comment[scanPos] == L':' || comment[scanPos] == L'!'));
+        const bool isExplicitUpperTag = hasTrailingPunct && IsAsciiAllUpper(comment, wStart, wLen);
+
+        if (isOpeningWord || isBracketTag || isAtTag || isExplicitUpperTag) {
+            const BetterCommentType matched = LookupBetterCommentTagWord(comment.c_str() + wStart, wLen);
+            if (matched != BetterCommentType::Normal) {
+                info.type = matched;
+                size_t badgeStart = wStart;
+                size_t badgeEnd = scanPos;
+                if (isBracketTag) {
+                    badgeStart--;
+                    badgeEnd++;
+                } else if (isAtTag) {
+                    badgeStart--;
+                } else if (hasTrailingPunct && comment[scanPos] == L':') {
+                    badgeEnd++;
+                }
+                info.tagCol = startCol + badgeStart;
+                info.tagLen = badgeEnd - badgeStart;
+                return info;
+            }
+        }
     }
 
-    // 6. Question: Starts with '?'
-    if (p < comment.length() && comment[p] == L'?') {
-        info.type = BetterCommentType::Question;
-        return info;
+    // 5. Inherit multi-line block opener classification (only when opener line explicitly used a tag)
+    if (inheritedBlockType != BetterCommentType::Normal) {
+        info.type = inheritedBlockType;
     }
-
-    // 7. Important: Starts with '*'
-    if (p < comment.length() && comment[p] == L'*') {
-        info.type = BetterCommentType::Important;
-        return info;
-    }
-
     return info;
+}
+
+D2D1_COLOR_F EditorCanvas::GetBetterCommentColor(const Theme& theme, BetterCommentType type) noexcept {
+    switch (type) {
+        case BetterCommentType::Urgent:    return theme.colors.commentUrgent;
+        case BetterCommentType::Asap:      return theme.colors.commentAsap;
+        case BetterCommentType::Alert:     return theme.colors.commentAlert;
+        case BetterCommentType::Todo:      return theme.colors.commentTodo;
+        case BetterCommentType::Warning:   return theme.colors.commentWarning;
+        case BetterCommentType::Hack:      return theme.colors.commentHack;
+        case BetterCommentType::Note:      return theme.colors.commentNote;
+        case BetterCommentType::Review:    return theme.colors.commentReview;
+        case BetterCommentType::Question:  return theme.colors.commentQuestion;
+        case BetterCommentType::Important: return theme.colors.commentImportant;
+        case BetterCommentType::Done:      return theme.colors.commentDone;
+        default:                           return theme.colors.syntaxComment;
+    }
+}
+
+ID2D1Brush* EditorCanvas::ResolveBetterCommentBrush(const Theme& theme, BetterCommentType type) noexcept {
+    switch (type) {
+        case BetterCommentType::Urgent:    return theme.brushCommentUrgent ? theme.brushCommentUrgent.Get() : theme.brushCommentAlert.Get();
+        case BetterCommentType::Asap:      return theme.brushCommentAsap ? theme.brushCommentAsap.Get() : theme.brushCommentImportant.Get();
+        case BetterCommentType::Alert:     return theme.brushCommentAlert.Get();
+        case BetterCommentType::Todo:      return theme.brushCommentTodo.Get();
+        case BetterCommentType::Warning:   return theme.brushCommentWarning.Get();
+        case BetterCommentType::Hack:      return theme.brushCommentHack ? theme.brushCommentHack.Get() : theme.brushCommentTodo.Get();
+        case BetterCommentType::Note:      return theme.brushCommentNote ? theme.brushCommentNote.Get() : theme.brushCommentQuestion.Get();
+        case BetterCommentType::Review:    return theme.brushCommentReview ? theme.brushCommentReview.Get() : theme.brushCommentImportant.Get();
+        case BetterCommentType::Question:  return theme.brushCommentQuestion.Get();
+        case BetterCommentType::Important: return theme.brushCommentImportant.Get();
+        case BetterCommentType::Done:      return theme.brushCommentDone.Get();
+        default:                           return theme.brushSyntaxComment.Get();
+    }
+}
+
+const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
+    const editor::Buffer& buffer, const std::wstring& ext) const {
+    const uint64_t bufId = buffer.GetInstanceId();
+    const uint64_t bufVer = buffer.GetVersion();
+    for (size_t i = 0; i < m_docCommentCache.size(); ++i) {
+        if (m_docCommentCache[i].bufferInstanceId == bufId &&
+            m_docCommentCache[i].bufferVersion == bufVer &&
+            m_docCommentCache[i].docExt == ext) {
+            return m_docCommentCache[i];
+        }
+    }
+
+    DocCommentSummary summary;
+    summary.bufferInstanceId = bufId;
+    summary.bufferVersion = bufVer;
+    summary.docExt = ext;
+
+    const size_t totalLines = (std::min)(buffer.GetLineCount(), static_cast<size_t>(50000));
+    BetterCommentType activeBlockType = BetterCommentType::Normal;
+
+    for (size_t l = 0; l < totalLines; ++l) {
+        const auto& lineStr = buffer.GetLine(l);
+        const auto& toks = buffer.GetTokensForLineRef(l, ext);
+        const uint8_t entryState = buffer.GetLineEntryState(l);
+        const uint8_t nextState = (l + 1 < totalLines) ? buffer.GetLineEntryState(l + 1) : 0;
+        const bool inBlockContinuation = (entryState == 1 || entryState == 4);
+        if (!inBlockContinuation) {
+            activeBlockType = BetterCommentType::Normal;
+        }
+
+        BetterCommentType lineOpenedBlockType = activeBlockType;
+        for (const auto& tok : toks) {
+            if (tok.type != editor::TokenType::Comment) continue;
+            const BetterCommentType inherited = inBlockContinuation ? activeBlockType : BetterCommentType::Normal;
+            auto info = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inherited);
+
+            // Track whether line l's first comment opens a multi-line block for line l+1
+            if (nextState == 1 || nextState == 4) {
+                lineOpenedBlockType = info.type;
+            }
+
+            if (inherited != BetterCommentType::Normal && info.tagCol == std::wstring::npos && !info.hasCheckbox) {
+                summary.inheritedLineTypes[l] = inherited;
+            }
+
+            // Record an explicit annotation entry for gutter/minimap/scrollbar/statusbar indicators
+            if (info.type != BetterCommentType::Normal && info.type != BetterCommentType::Done &&
+                (info.tagLen > 0 || (info.hasCheckbox && !info.isChecked))) {
+                CommentAnnotationEntry ann;
+                ann.line = l;
+                ann.type = info.type;
+                ann.tagCol = info.tagCol;
+                ann.tagLen = info.tagLen;
+                if (info.tagCol != std::wstring::npos && info.tagCol + info.tagLen <= lineStr.length()) {
+                    ann.tagLabel = lineStr.substr(info.tagCol, info.tagLen);
+                } else {
+                    ann.tagLabel = L"TODO";
+                }
+                const size_t cEnd = (std::min)(lineStr.length(), tok.startCol + tok.length);
+                if (cEnd > tok.startCol) {
+                    std::wstring raw = lineStr.substr(tok.startCol, (std::min<size_t>)(cEnd - tok.startCol, 96));
+                    size_t fnb = raw.find_first_not_of(L" \t");
+                    ann.preview = (fnb != std::wstring::npos) ? raw.substr(fnb) : raw;
+                }
+                summary.entries.push_back(std::move(ann));
+
+                switch (info.type) {
+                    case BetterCommentType::Urgent:    summary.urgentCount++; break;
+                    case BetterCommentType::Asap:      summary.asapCount++; break;
+                    case BetterCommentType::Alert:     summary.alertCount++; break;
+                    case BetterCommentType::Todo:      summary.todoCount++; break;
+                    case BetterCommentType::Warning:   summary.warningCount++; break;
+                    case BetterCommentType::Hack:      summary.hackCount++; break;
+                    case BetterCommentType::Note:      summary.noteCount++; break;
+                    case BetterCommentType::Review:    summary.reviewCount++; break;
+                    case BetterCommentType::Question:  summary.questionCount++; break;
+                    case BetterCommentType::Important: summary.importantCount++; break;
+                    default: break;
+                }
+                break; // 1 primary indicator per line
+            }
+        }
+        activeBlockType = (nextState == 1 || nextState == 4) ? lineOpenedBlockType : BetterCommentType::Normal;
+    }
+
+    if (m_docCommentCache.size() >= 16) {
+        m_docCommentCache.erase(m_docCommentCache.begin());
+    }
+    m_docCommentCache.push_back(std::move(summary));
+    return m_docCommentCache.back();
 }
 
 
@@ -844,6 +1081,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     m_foldChevrons.clear();
     m_visibleColorSwatches.clear();
     m_visibleTodoCheckboxes.clear();
+    m_visibleCommentIndicators.clear();
     m_activeCodeLensActions.clear();
 
     struct MultiPaneRenderGuard {
@@ -3781,8 +4019,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         mixPtr(theme.brushSyntaxTag.Get());
         mixPtr(theme.brushSyntaxAttribute.Get());
         mixPtr(theme.brushCommentAlert.Get());
+        mixPtr(theme.brushCommentUrgent.Get());
+        mixPtr(theme.brushCommentAsap.Get());
         mixPtr(theme.brushCommentWarning.Get());
         mixPtr(theme.brushCommentTodo.Get());
+        mixPtr(theme.brushCommentHack.Get());
+        mixPtr(theme.brushCommentNote.Get());
+        mixPtr(theme.brushCommentReview.Get());
         mixPtr(theme.brushCommentQuestion.Get());
         mixPtr(theme.brushCommentImportant.Get());
         mixPtr(theme.brushCommentDone.Get());
@@ -3864,6 +4107,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
     }
 
+    const auto& docCommentSummary = GetDocCommentSummary(buffer, docExt);
+    std::unordered_map<size_t, const CommentAnnotationEntry*> visCommentsByLine;
+    for (const auto& ce : docCommentSummary.entries) {
+        if (ce.line >= minVisBufLine && ce.line <= maxVisBufLine &&
+            visCommentsByLine.find(ce.line) == visCommentsByLine.end()) {
+            visCommentsByLine.emplace(ce.line, &ce);
+        }
+    }
+
     uint64_t curDocSemVer = (!doc.semanticTokensData.empty())
         ? MixHash64(doc.semanticTokensVersion, doc.semanticTokensData.size())
         : UINT64_MAX;
@@ -3900,16 +4152,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             case editor::TokenType::Type:      return theme.brushSyntaxType.Get();
             case editor::TokenType::String:    return theme.brushSyntaxString.Get();
             case editor::TokenType::Comment: {
-                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
-                switch (cInfo.type) {
-                    case BetterCommentType::Alert:     return theme.brushCommentAlert.Get();
-                    case BetterCommentType::Warning:   return theme.brushCommentWarning.Get();
-                    case BetterCommentType::Todo:      return theme.brushCommentTodo.Get();
-                    case BetterCommentType::Question:  return theme.brushCommentQuestion.Get();
-                    case BetterCommentType::Important: return theme.brushCommentImportant.Get();
-                    case BetterCommentType::Done:      return theme.brushCommentDone.Get();
-                    default:                           return theme.brushSyntaxComment.Get();
-                }
+                BetterCommentType inh = BetterCommentType::Normal;
+                auto inhIt = docCommentSummary.inheritedLineTypes.find(bufLine);
+                if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
+                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
+                return ResolveBetterCommentBrush(theme, cInfo.type);
             }
             case editor::TokenType::Number:    return theme.brushSyntaxNumber.Get();
             case editor::TokenType::Operator:  return theme.brushSyntaxOperator.Get();
@@ -4473,6 +4720,34 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         if (!lineStr.empty()) {
+            // Render crisp pill badge behind priority/custom comment keyword tags (URGENT, ASAP, TODO, FIXME, etc.)
+            if (auto cIt = visCommentsByLine.find(vl.bufferLine); cIt != visCommentsByLine.end()) {
+                const auto* cAnn = cIt->second;
+                if (cAnn && cAnn->tagLen > 0 && cAnn->tagCol + cAnn->tagLen <= lineStr.length() &&
+                    cAnn->type != BetterCommentType::Normal && cAnn->type != BetterCommentType::Done) {
+                    float px1 = getColVisualX(cAnn->tagCol);
+                    float px2 = getColVisualX(cAnn->tagCol + cAnn->tagLen);
+                    float padH = config.ScaleF(3.0f);
+                    float padV = config.ScaleF(1.5f);
+                    float pillL = (std::max)(codeLeft, px1 - padH);
+                    float pillR = (std::min)(codeRight, px2 + padH);
+                    if (pillR > pillL + 2.0f) {
+                        D2D1_COLOR_F bc = GetBetterCommentColor(theme, cAnn->type);
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pillFill, pillStroke;
+                        float fillAlpha = (cAnn->type == BetterCommentType::Urgent || cAnn->type == BetterCommentType::Asap)
+                            ? (theme.IsDarkMode() ? 0.22f : 0.16f)
+                            : (theme.IsDarkMode() ? 0.14f : 0.11f);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(bc.r, bc.g, bc.b, fillAlpha), &pillFill);
+                        pRT->CreateSolidColorBrush(D2D1::ColorF(bc.r, bc.g, bc.b, 0.52f), &pillStroke);
+                        D2D1_ROUNDED_RECT rrcTag = D2D1::RoundedRect(
+                            D2D1::RectF(pillL, lineY + padV, pillR, lineY + lineH - padV),
+                            3.0f, 3.0f);
+                        if (pillFill) pRT->FillRoundedRectangle(rrcTag, pillFill.Get());
+                        if (pillStroke) pRT->DrawRoundedRectangle(rrcTag, pillStroke.Get(), 0.9f);
+                    }
+                }
+            }
+
             const size_t safeTabForVis = static_cast<size_t>((std::max)(1, config.tabSize));
             const float paneVisW = (std::max)(200.0f, codeRight - codeLeft);
             const size_t rawVisMinCol = (scrollX > config.ScaleF(64.0f) && charW > 0.0f)
@@ -5589,6 +5864,25 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
 
+            // Comment Priority Gutter Indicator Ribbon + Tooltip Registration (URGENT, ASAP, TODO, FIXME, NOTE, etc.)
+            if (auto cgIt = visCommentsByLine.find(vl.bufferLine); cgIt != visCommentsByLine.end()) {
+                const auto* cAnn = cgIt->second;
+                if (cAnn && cAnn->type != BetterCommentType::Normal && cAnn->type != BetterCommentType::Done) {
+                    D2D1_COLOR_F cc = GetBetterCommentColor(theme, cAnn->type);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cGutterBrush;
+                    pRT->CreateSolidColorBrush(cc, &cGutterBrush);
+                    if (cGutterBrush) {
+                        const float barL = canvasLeft + config.ScaleF(0.5f);
+                        const float barW = config.ScaleF(3.0f);
+                        pRT->FillRectangle(D2D1::RectF(barL, lineY + 1.5f, barL + barW, lineY + lineH - 1.5f), cGutterBrush.Get());
+                    }
+                    m_visibleCommentIndicators.push_back({
+                        D2D1::RectF(canvasLeft, lineY, canvasLeft + gutterW - config.ScaleF(10.0f), lineY + lineH),
+                        cAnn->line, cAnn->type, cAnn->tagLabel, cAnn->preview
+                    });
+                }
+            }
+
             // Line Bookmark Ribbon Marker in Gutter (#18)
             if (doc.HasBookmark(vl.bufferLine)) {
                 float bmX = canvasLeft + config.ScaleF(3.0f);
@@ -6004,16 +6298,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                             case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
                             case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
                             case editor::TokenType::Comment: {
-                                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length);
-                                switch (cInfo.type) {
-                                    case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
-                                    case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
-                                    case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
-                                    case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
-                                    case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
-                                    case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
-                                    default:                           brush = theme.brushSyntaxComment.Get(); break;
-                                }
+                                BetterCommentType inh = BetterCommentType::Normal;
+                                auto inhIt = docCommentSummary.inheritedLineTypes.find(b);
+                                if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
+                                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
+                                brush = ResolveBetterCommentBrush(theme, cInfo.type);
                                 break;
                             }
                             case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
@@ -6054,6 +6343,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             mixColor(theme.colors.syntaxKeyword);
             mixColor(theme.colors.syntaxString);
             mixColor(theme.colors.syntaxComment);
+            mixColor(theme.colors.commentUrgent);
+            mixColor(theme.colors.commentAsap);
+            mixColor(theme.colors.commentAlert);
+            mixColor(theme.colors.commentTodo);
+            mixColor(theme.colors.commentWarning);
+            mixColor(theme.colors.commentHack);
+            mixColor(theme.colors.commentNote);
+            mixColor(theme.colors.commentReview);
 
             const uint64_t mBufId = buffer.GetInstanceId();
             const uint64_t mBufVer = buffer.GetVersion();
@@ -6219,6 +6516,26 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
 
+            // 6b. Priority Comment Annotation Overview Ticks on Minimap (URGENT, ASAP, TODO, FIXME, WARNING, HACK, NOTE, REVIEW)
+            if (!docCommentSummary.entries.empty() && totalLines > 0) {
+                const float tickH = (std::max)(2.5f, (std::min)(config.ScaleF(4.0f), microH + 1.5f));
+                for (const auto& ce : docCommentSummary.entries) {
+                    if (ce.line >= totalLines) break;
+                    float my = topY + static_cast<float>(ce.line) * stepY;
+                    if (my + microH > clientHeight) break;
+                    ID2D1Brush* pCB = ResolveBetterCommentBrush(theme, ce.type);
+                    if (pCB) {
+                        const float barW = (ce.type == BetterCommentType::Urgent || ce.type == BetterCommentType::Asap)
+                            ? config.ScaleF(7.0f) : config.ScaleF(5.0f);
+                        pRT->FillRectangle(D2D1::RectF(
+                            doc.minimapTrack.right - barW - config.ScaleF(1.0f),
+                            my,
+                            doc.minimapTrack.right - config.ScaleF(1.0f),
+                            my + tickH), pCB);
+                    }
+                }
+            }
+
             // 7. Search highlight ticks on right side of minimap (cached per buffer version + query)
             if (!highlightQuery.empty() && hlTickBrush && totalLines > 0) {
                 const uint64_t sBufId = buffer.GetInstanceId();
@@ -6334,6 +6651,23 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         } else {
             doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+
+        // Priority Comment Annotation Overview Ticks inside Vertical Scrollbar Track (when Minimap is disabled)
+        const size_t sbTotalLines = buffer.GetLineCount();
+        if (!docCommentSummary.entries.empty() && sbTotalLines > 0) {
+            const float sbLeft = doc.scrollbarTrack.left + config.ScaleF(1.5f);
+            const float sbRight = doc.scrollbarTrack.right - config.ScaleF(1.5f);
+            const float tickH = config.ScaleF(2.5f);
+            for (const auto& ce : docCommentSummary.entries) {
+                if (ce.line >= sbTotalLines) break;
+                const float frac = static_cast<float>(ce.line) / static_cast<float>(sbTotalLines);
+                const float ty = topY + frac * (std::max)(0.0f, codeAreaH - tickH);
+                ID2D1Brush* pCB = ResolveBetterCommentBrush(theme, ce.type);
+                if (pCB && sbRight > sbLeft) {
+                    pRT->FillRectangle(D2D1::RectF(sbLeft, ty, sbRight, ty + tickH), pCB);
+                }
+            }
         }
     }
 
@@ -11603,16 +11937,8 @@ void EditorCanvas::RenderSyntaxTokensLine(ID2D1RenderTarget* pRT, Theme& theme, 
             case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
             case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
             case editor::TokenType::Comment: {
-                auto cInfo = ClassifyBetterComment(lineStr, startCol, length);
-                switch (cInfo.type) {
-                    case BetterCommentType::Alert:     brush = theme.brushCommentAlert.Get(); break;
-                    case BetterCommentType::Warning:   brush = theme.brushCommentWarning.Get(); break;
-                    case BetterCommentType::Todo:      brush = theme.brushCommentTodo.Get(); break;
-                    case BetterCommentType::Question:  brush = theme.brushCommentQuestion.Get(); break;
-                    case BetterCommentType::Important: brush = theme.brushCommentImportant.Get(); break;
-                    case BetterCommentType::Done:      brush = theme.brushCommentDone.Get(); break;
-                    default:                           brush = theme.brushSyntaxComment.Get(); break;
-                }
+                auto cInfo = EditorCanvas::ClassifyBetterComment(lineStr, startCol, length);
+                brush = EditorCanvas::ResolveBetterCommentBrush(theme, cInfo.type);
                 break;
             }
             case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
@@ -12874,6 +13200,19 @@ bool EditorCanvas::HitTestTodoCheckbox(POINT pt, TodoCheckboxHit& outHit) const 
         if (x >= cb.bounds.left - 4.0f && x <= cb.bounds.right + 4.0f &&
             y >= cb.bounds.top - 4.0f && y <= cb.bounds.bottom + 4.0f) {
             outHit = cb;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool EditorCanvas::HitTestCommentIndicator(POINT pt, CommentIndicatorHit& outHit) const noexcept {
+    const float x = static_cast<float>(pt.x);
+    const float y = static_cast<float>(pt.y);
+    for (const auto& ci : m_visibleCommentIndicators) {
+        if (x >= ci.bounds.left && x <= ci.bounds.right &&
+            y >= ci.bounds.top && y <= ci.bounds.bottom) {
+            outHit = ci;
             return true;
         }
     }

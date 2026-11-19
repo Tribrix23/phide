@@ -15234,6 +15234,9 @@ void Window::RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& t
     float anchorCx = (anchorBounds.left + anchorBounds.right) * 0.5f;
     float tipX = anchorCx - tipW * 0.5f;
     float tipY = anchorBounds.top - tipH - m_config.ScaleF(6.0f);
+    if (tipY < m_config.ScaleF(6.0f)) {
+        tipY = anchorBounds.bottom + m_config.ScaleF(6.0f);
+    }
 
     if (tipX < m_config.ScaleF(8.0f)) tipX = m_config.ScaleF(8.0f);
     if (tipX + tipW > clientW - m_config.ScaleF(8.0f)) tipX = clientW - tipW - m_config.ScaleF(8.0f);
@@ -15542,6 +15545,8 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     m_rcStatusBarGitBranch = {};
     m_rcStatusBarGitUser = {};
     m_rcStatusBarProblems = {};
+    m_rcStatusBarCommentAnnots = {};
+    m_statusCommentTooltip.clear();
     float curLeftX = (std::max)(m_config.ScaleF(32.0f), remoteEndX + m_config.ScaleF(6.0f));
     if (!m_cachedGitBranch.empty()) {
         const float branchIconSize = m_config.ScaleF(16.0f);
@@ -16100,6 +16105,115 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
+    // 4b. Priority Comment Annotations Summary Pill (Urgent / ASAP / TODO / Alert / Note - click to jump)
+    if (hasActiveDoc && !curDoc->isDiffView && !curDoc->isImageView && !curDoc->isFontView && !curDoc->isFolderView) {
+        std::wstring docExtStr;
+        try {
+            const std::wstring& target = curDoc->filePath.empty() ? curDoc->fileName : curDoc->filePath;
+            docExtStr = std::filesystem::path(target).extension().wstring();
+        } catch (...) {}
+        const auto& cSum = m_editor.GetDocCommentSummary(curDoc->buffer, docExtStr);
+        if (!cSum.entries.empty()) {
+            struct PillChip {
+                ui::EditorCanvas::BetterCommentType type;
+                size_t count;
+                std::wstring label;
+            };
+            std::vector<PillChip> chips;
+            auto pushChip = [&](ui::EditorCanvas::BetterCommentType t, size_t cnt, const wchar_t* name) {
+                if (cnt > 0) chips.push_back({ t, cnt, std::to_wstring(cnt) + L" " + name });
+            };
+            pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    cSum.urgentCount,    L"Urgent");
+            pushChip(ui::EditorCanvas::BetterCommentType::Asap,      cSum.asapCount,      L"ASAP");
+            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     cSum.alertCount,     L"Error");
+            pushChip(ui::EditorCanvas::BetterCommentType::Todo,      cSum.todoCount,      L"TODO");
+            pushChip(ui::EditorCanvas::BetterCommentType::Warning,   cSum.warningCount,   L"Warn");
+            pushChip(ui::EditorCanvas::BetterCommentType::Hack,      cSum.hackCount,      L"Hack");
+            pushChip(ui::EditorCanvas::BetterCommentType::Review,    cSum.reviewCount,    L"Review");
+            pushChip(ui::EditorCanvas::BetterCommentType::Note,      cSum.noteCount,      L"Note");
+            pushChip(ui::EditorCanvas::BetterCommentType::Important, cSum.importantCount, L"Imp");
+            pushChip(ui::EditorCanvas::BetterCommentType::Question,  cSum.questionCount,  L"Question");
+
+            if (!chips.empty()) {
+                m_statusCommentTooltip = L"Comment Annotations in file:";
+                for (size_t ci = 0; ci < chips.size(); ++ci) {
+                    m_statusCommentTooltip += (ci == 0 ? L" " : L" \x2022 ") + chips[ci].label;
+                }
+                m_statusCommentTooltip += L" (Click to jump to next)";
+
+                const size_t shown = (std::min<size_t>)(chips.size(), 3);
+                const float cPadX = m_config.ScaleF(6.0f);
+                const float cDotR = m_config.ScaleF(3.3f);
+                const float cDotD = cDotR * 2.0f;
+                const float cGap = m_config.ScaleF(4.0f);
+                const float cChipGap = m_config.ScaleF(7.0f);
+
+                auto measureChipStr = [&](const std::wstring& s) -> float {
+                    float w = m_config.ScaleF(7.5f) * static_cast<float>(s.length());
+                    if (pFmt && m_theme.dwriteFactory && !s.empty()) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+                        if (SUCCEEDED(m_theme.dwriteFactory->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.length()), pFmt, 200.0f, itemH, &lay)) && lay) {
+                            DWRITE_TEXT_METRICS tm{};
+                            if (SUCCEEDED(lay->GetMetrics(&tm))) w = tm.widthIncludingTrailingWhitespace;
+                        }
+                    }
+                    return w;
+                };
+
+                float pillW = cPadX * 2.0f;
+                std::vector<float> textWidths(shown, 0.0f);
+                for (size_t i = 0; i < shown; ++i) {
+                    textWidths[i] = measureChipStr(chips[i].label);
+                    pillW += cDotD + cGap + textWidths[i];
+                    if (i + 1 < shown) pillW += cChipGap;
+                }
+                std::wstring extraLabel;
+                float extraW = 0.0f;
+                if (chips.size() > shown) {
+                    extraLabel = L"+" + std::to_wstring(chips.size() - shown);
+                    extraW = measureChipStr(extraLabel);
+                    pillW += cChipGap + extraW;
+                }
+
+                // Render only if sufficient horizontal room remains before right-aligned status items
+                if (curLeftX + pillW + m_config.ScaleF(10.0f) < curRightX) {
+                    m_rcStatusBarCommentAnnots = D2D1::RectF(curLeftX, itemY, curLeftX + pillW, itemY + itemH);
+                    if (m_isHoveredStatusBarCommentAnnots) {
+                        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcStatusBarCommentAnnots, m_config.ScaleF(3.5f), m_config.ScaleF(3.5f));
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hoverBg;
+                        m_pRenderTarget->CreateSolidColorBrush(
+                            m_theme.IsDarkMode() ? D2D1::ColorF(0.20f, 0.22f, 0.26f, 0.90f) : D2D1::ColorF(0.88f, 0.90f, 0.94f, 0.90f),
+                            &hoverBg);
+                        if (hoverBg) m_pRenderTarget->FillRoundedRectangle(rrc, hoverBg.Get());
+                    }
+
+                    float drawX = curLeftX + cPadX;
+                    const float midY = itemY + itemH * 0.5f;
+                    for (size_t i = 0; i < shown; ++i) {
+                        D2D1_COLOR_F col = ui::EditorCanvas::GetBetterCommentColor(m_theme, chips[i].type);
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> chipBrush;
+                        m_pRenderTarget->CreateSolidColorBrush(col, &chipBrush);
+                        if (chipBrush) {
+                            m_pRenderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(drawX + cDotR, midY), cDotR, cDotR), chipBrush.Get());
+                        }
+                        drawX += cDotD + cGap;
+                        if (pFmt) {
+                            D2D1_RECT_F rcLbl = D2D1::RectF(drawX, itemY, drawX + textWidths[i] + m_config.ScaleF(2.0f), itemY + itemH);
+                            m_pRenderTarget->DrawText(chips[i].label.c_str(), static_cast<UINT32>(chips[i].label.length()),
+                                                      pFmt, rcLbl, chipBrush ? static_cast<ID2D1Brush*>(chipBrush.Get()) : textBrush);
+                        }
+                        drawX += textWidths[i] + cChipGap;
+                    }
+                    if (!extraLabel.empty() && pFmt && textBrush) {
+                        D2D1_RECT_F rcExt = D2D1::RectF(drawX, itemY, drawX + extraW + m_config.ScaleF(2.0f), itemY + itemH);
+                        m_pRenderTarget->DrawText(extraLabel.c_str(), static_cast<UINT32>(extraLabel.length()), pFmt, rcExt, textBrush);
+                    }
+                    curLeftX += pillW + rightPillGap;
+                }
+            }
+        }
+    }
+
     // Plugin & Extension Status Bar Items (left-aligned and right-aligned contributions)
     auto& pluginStatusItems = phide::plugin::PluginManager::Instance().GetStatusBarItemsMutable();
     const phide::plugin::PluginStatusBarItem* hoveredPluginItem = nullptr;
@@ -16155,6 +16269,15 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         std::wstring tip = L"Problems: " + std::to_wstring(m_totalProblemErrors) + L" Errors, " +
                            std::to_wstring(m_totalProblemWarnings) + L" Warnings (Ctrl+Shift+M to toggle)";
         RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_rcStatusBarProblems, clientW);
+    } else if (m_isHoveredStatusBarCommentAnnots && !m_statusCommentTooltip.empty() &&
+               m_rcStatusBarCommentAnnots.right > m_rcStatusBarCommentAnnots.left) {
+        RenderFloatingTooltip(m_pRenderTarget.Get(), m_statusCommentTooltip, m_rcStatusBarCommentAnnots, clientW);
+    } else if (m_hasHoveredGutterComment) {
+        std::wstring tip = m_hoveredGutterComment.tagLabel + L" (Line " + std::to_wstring(m_hoveredGutterComment.line + 1) + L")";
+        if (!m_hoveredGutterComment.preview.empty()) {
+            tip += L" — " + m_hoveredGutterComment.preview;
+        }
+        RenderFloatingTooltip(m_pRenderTarget.Get(), tip, m_hoveredGutterComment.bounds, clientW);
     } else if (m_isHoveredStatusBarGitUser) {
         std::wstring nameDisplay = !m_cachedGitUserName.empty() ? m_cachedGitUserName : m_cachedGitHubName;
         std::wstring tip = L"Git Author: " + nameDisplay;
@@ -17279,6 +17402,18 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    // Track gutter comment priority indicator hover for floating preview tooltip
+    {
+        ui::EditorCanvas::CommentIndicatorHit hitGutterComment;
+        const bool nowOver = (!m_drawer.IsMouseOverDrawer() && m_editor.HitTestCommentIndicator(clientPt, hitGutterComment));
+        if (nowOver != m_hasHoveredGutterComment ||
+            (nowOver && m_hoveredGutterComment.line != hitGutterComment.line)) {
+            m_hasHoveredGutterComment = nowOver;
+            if (nowOver) m_hoveredGutterComment = hitGutterComment;
+            needRepaint = true;
+        }
+    }
+
     if (pActiveDoc && !pActiveDoc->isSpecialView && !pActiveDoc->isDiffView &&
         (m_config.enableGitLens || m_config.gitShowInlineBlame) && !pActiveDoc->gitBlameMap.empty()) {
         size_t prevBlameHover = pActiveDoc->hoveredBlameLine;
@@ -17841,6 +17976,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         bool inProblems = PtInRectF(clientPt, m_rcStatusBarProblems);
         if (inProblems != m_isHoveredStatusBarProblems) {
             m_isHoveredStatusBarProblems = inProblems;
+            needRepaint = true;
+        }
+
+        bool inCommentAnnots = PtInRectF(clientPt, m_rcStatusBarCommentAnnots);
+        if (inCommentAnnots != m_isHoveredStatusBarCommentAnnots) {
+            m_isHoveredStatusBarCommentAnnots = inCommentAnnots;
             needRepaint = true;
         }
 
@@ -21855,6 +21996,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
         return;
     }
 
+    if (m_config.showStatusBar && PtInRectF(clientPt, m_rcStatusBarCommentAnnots)) {
+        JumpToNextCommentAnnotation();
+        return;
+    }
+
     // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (real git checkout)
     if (m_config.showStatusBar &&
         (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
@@ -23134,7 +23280,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             (m_rcStatusBarGitUser.right > m_rcStatusBarGitUser.left &&
                              pt.x >= m_rcStatusBarGitUser.left && pt.x <= m_rcStatusBarGitUser.right &&
                              pt.y >= m_rcStatusBarGitUser.top && pt.y <= m_rcStatusBarGitUser.bottom) ||
-                            PtInRectF(pt, m_rcStatusBarProblems)) {
+                            PtInRectF(pt, m_rcStatusBarProblems) ||
+                            PtInRectF(pt, m_rcStatusBarCommentAnnots)) {
                             SetCursor(LoadCursor(nullptr, IDC_HAND));
                             return TRUE;
                         }
@@ -31376,6 +31523,38 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
             delete payload;
         }
     }).detach();
+}
+
+bool Window::JumpToNextCommentAnnotation() {
+    auto* pDoc = GetActiveDoc();
+    if (!pDoc || pDoc->isSpecialView || pDoc->isDiffView) return false;
+    std::wstring ext;
+    try {
+        const std::wstring& target = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
+        ext = std::filesystem::path(target).extension().wstring();
+    } catch (...) {}
+    const auto& summary = m_editor.GetDocCommentSummary(pDoc->buffer, ext);
+    if (summary.entries.empty()) return false;
+
+    const size_t curLine = pDoc->buffer.GetCursor().line;
+    const ui::EditorCanvas::CommentAnnotationEntry* nextEntry = &summary.entries.front();
+    for (const auto& e : summary.entries) {
+        if (e.line > curLine) {
+            nextEntry = &e;
+            break;
+        }
+    }
+
+    const size_t targetCol = (nextEntry->tagCol != std::wstring::npos) ? nextEntry->tagCol : 0;
+    pDoc->buffer.SetCursor(nextEntry->line, targetCol);
+    pDoc->ClearSelection();
+    pDoc->targetHighlightLine = nextEntry->line;
+    pDoc->targetHighlightCol = targetCol;
+    pDoc->targetHighlightLen = nextEntry->tagLen;
+    pDoc->targetHighlightTime = GetTickCount64();
+    EnsureCursorVisible();
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    return true;
 }
 
 void Window::ToggleProblemsPanel(bool forceOpen) {

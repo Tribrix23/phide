@@ -1263,8 +1263,17 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
         return kEmptyTokens;
     }
 
-    const bool isPhp = (ext == L".php" || ext == L"php");
-    const bool isPython = (ext == L".py" || ext == L"py");
+    const bool isPhp = (_wcsicmp(ext.c_str(), L".php") == 0 || _wcsicmp(ext.c_str(), L"php") == 0 ||
+                        _wcsicmp(ext.c_str(), L".phtml") == 0 || _wcsicmp(ext.c_str(), L"phtml") == 0);
+    const bool isPython = (_wcsicmp(ext.c_str(), L".py") == 0 || _wcsicmp(ext.c_str(), L"py") == 0);
+    const bool isHtmlLike = isPhp ||
+        _wcsicmp(ext.c_str(), L".html") == 0 || _wcsicmp(ext.c_str(), L"html") == 0 ||
+        _wcsicmp(ext.c_str(), L".htm") == 0 || _wcsicmp(ext.c_str(), L"htm") == 0 ||
+        _wcsicmp(ext.c_str(), L".xhtml") == 0 || _wcsicmp(ext.c_str(), L"xhtml") == 0 ||
+        _wcsicmp(ext.c_str(), L".xml") == 0 || _wcsicmp(ext.c_str(), L"xml") == 0 ||
+        _wcsicmp(ext.c_str(), L".svg") == 0 || _wcsicmp(ext.c_str(), L"svg") == 0 ||
+        _wcsicmp(ext.c_str(), L".vue") == 0 || _wcsicmp(ext.c_str(), L"vue") == 0 ||
+        _wcsicmp(ext.c_str(), L".svelte") == 0 || _wcsicmp(ext.c_str(), L"svelte") == 0;
 
     // Recompute per-line entry states in a single O(N) pass ONLY when buffer version or extension changes
     if (m_cachedTokenVersion != m_version || m_cachedTokenExt != ext || m_lineEntryStates.size() != m_lines.size()) {
@@ -1277,9 +1286,11 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
         }
 
         bool inBlock = false;
+        bool inHtmlComment = false;
+        bool inPhpTag = false;
         wchar_t inQuote = 0;
         for (size_t l = 0; l < m_lines.size(); ++l) {
-            uint8_t newState = inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0));
+            uint8_t newState = inHtmlComment ? 4 : (inBlock ? 1 : (inQuote == L'"' ? 2 : (inQuote == L'\'' ? 3 : 0)));
             if (!fullClear && m_lineEntryStates[l] != newState) {
                 m_tokenCache.erase(l);
             }
@@ -1288,7 +1299,12 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
             size_t len = (std::min)(prevLine.length(), static_cast<size_t>(16384));
             for (size_t i = 0; i < len; ++i) {
                 wchar_t c = prevLine[i];
-                if (inBlock) {
+                if (inHtmlComment) {
+                    if (c == L'-' && i + 2 < len && prevLine[i + 1] == L'-' && prevLine[i + 2] == L'>') {
+                        inHtmlComment = false;
+                        i += 2;
+                    }
+                } else if (inBlock) {
                     if (c == L'*' && i + 1 < len && prevLine[i + 1] == L'/') {
                         inBlock = false;
                         ++i;
@@ -1305,16 +1321,35 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
                             break; // Python # comment
                         }
                     } else {
-                        if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/') {
+                        if (isPhp && c == L'<' && i + 1 < len && prevLine[i + 1] == L'?') {
+                            if (i + 5 > len || _wcsnicmp(prevLine.c_str() + i, L"<?xml", 5) != 0) {
+                                inPhpTag = true;
+                                ++i;
+                                continue;
+                            }
+                        }
+                        if (isPhp && inPhpTag && c == L'?' && i + 1 < len && prevLine[i + 1] == L'>') {
+                            inPhpTag = false;
+                            ++i;
+                            continue;
+                        }
+                        if (isHtmlLike && (!isPhp || !inPhpTag) &&
+                            c == L'<' && i + 3 < len && prevLine[i + 1] == L'!' &&
+                            prevLine[i + 2] == L'-' && prevLine[i + 3] == L'-') {
+                            inHtmlComment = true;
+                            i += 3;
+                            continue;
+                        }
+                        if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'/' && (i == 0 || prevLine[i - 1] != L':')) {
                             break; // Single-line comment
                         }
-                        if (isPhp && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
+                        if (isPhp && inPhpTag && c == L'#' && (i + 1 >= len || prevLine[i + 1] != L'[')) {
                             break; // PHP # comment
                         }
                         if (c == L'/' && i + 1 < len && prevLine[i + 1] == L'*') {
                             inBlock = true;
                             ++i;
-                        } else if (isPhp && (c == L'"' || c == L'\'')) {
+                        } else if (isPhp && inPhpTag && (c == L'"' || c == L'\'')) {
                             inQuote = c;
                         }
                     }
@@ -1330,6 +1365,7 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
 
     const uint8_t entryState = m_lineEntryStates[lineIdx];
     const bool inBlockComment = (entryState == 1);
+    const bool inHtmlComment = (entryState == 4);
     const wchar_t inMultiLineQuote = (entryState == 2) ? L'"' : ((entryState == 3) ? L'\'' : 0);
 
     const auto& line = m_lines[lineIdx];
@@ -1341,7 +1377,22 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
     const size_t lexLen = isHugeLine ? static_cast<size_t>(8192) : len;
 
     std::vector<SyntaxToken> resultTokens;
-    if (inBlockComment) {
+    if (inHtmlComment) {
+        size_t closePos = line.find(L"-->");
+        if (closePos == std::wstring::npos || closePos >= lexLen) {
+            resultTokens = { { TokenType::Comment, 0, len } };
+        } else {
+            size_t afterComment = closePos + 3;
+            resultTokens.push_back({ TokenType::Comment, 0, afterComment });
+            if (afterComment < lexLen) {
+                auto rest = m_lexer.TokenizeLine(line.substr(afterComment, lexLen - afterComment), ext);
+                for (auto& t : rest) {
+                    t.startCol += afterComment;
+                    resultTokens.push_back(t);
+                }
+            }
+        }
+    } else if (inBlockComment) {
         size_t closePos = line.find(L"*/");
         if (closePos == std::wstring::npos || closePos >= lexLen) {
             resultTokens = { { TokenType::Comment, 0, len } };

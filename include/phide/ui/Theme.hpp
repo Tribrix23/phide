@@ -116,11 +116,16 @@ struct ThemeColors {
     D2D1_COLOR_F bracket3        = D2D1::ColorF(0.000f, 0.898f, 1.000f, 1.0f);  // #00E5FF (Electric Cyan / Sky Blue)
 
     // Better Comments & Interactive TODO Palettes
-    D2D1_COLOR_F commentAlert    = D2D1::ColorF(1.000f, 0.333f, 0.333f, 1.0f);  // #FF5555 Bright Red (!, ERROR)
-    D2D1_COLOR_F commentWarning  = D2D1::ColorF(1.000f, 0.800f, 0.000f, 1.0f);  // #FFCC00 Bright Yellow (WARNING, WARN)
+    D2D1_COLOR_F commentAlert    = D2D1::ColorF(1.000f, 0.333f, 0.333f, 1.0f);  // #FF5555 Bright Red (!, ERROR, FIXME, BUG)
+    D2D1_COLOR_F commentUrgent   = D2D1::ColorF(1.000f, 0.180f, 0.388f, 1.0f);  // #FF2E63 Neon Crimson (!!, URGENT, CRITICAL, HOTFIX)
+    D2D1_COLOR_F commentAsap     = D2D1::ColorF(0.878f, 0.251f, 0.984f, 1.0f);  // #E040FB Vivid Magenta (ASAP, IMMEDIATE, PRIORITY)
+    D2D1_COLOR_F commentWarning  = D2D1::ColorF(1.000f, 0.800f, 0.000f, 1.0f);  // #FFCC00 Bright Yellow (^, WARNING, WARN, DEPRECATED)
     D2D1_COLOR_F commentTodo     = D2D1::ColorF(1.000f, 0.600f, 0.000f, 1.0f);  // #FF9900 Bright Orange (TODO, [ ])
-    D2D1_COLOR_F commentQuestion = D2D1::ColorF(0.275f, 0.627f, 1.000f, 1.0f);  // #46A0FF Sky Blue (?)
-    D2D1_COLOR_F commentImportant= D2D1::ColorF(0.380f, 0.840f, 0.455f, 1.0f);  // #61D674 Mint Green (*)
+    D2D1_COLOR_F commentHack     = D2D1::ColorF(1.000f, 0.478f, 0.349f, 1.0f);  // #FF7A59 Warm Coral (HACK, WORKAROUND, XXX, TEMP, SECURITY)
+    D2D1_COLOR_F commentNote     = D2D1::ColorF(0.176f, 0.831f, 0.749f, 1.0f);  // #2DD4BF Cyan-Teal (NOTE, INFO, DOC)
+    D2D1_COLOR_F commentReview   = D2D1::ColorF(0.702f, 0.533f, 1.000f, 1.0f);  // #B388FF Lavender (REVIEW, OPTIMIZE, PERF, REFACTOR)
+    D2D1_COLOR_F commentQuestion = D2D1::ColorF(0.275f, 0.627f, 1.000f, 1.0f);  // #46A0FF Sky Blue (?, QUESTION, WHY)
+    D2D1_COLOR_F commentImportant= D2D1::ColorF(0.380f, 0.840f, 0.455f, 1.0f);  // #61D674 Mint Green (*, IMPORTANT)
     D2D1_COLOR_F commentDone     = D2D1::ColorF(0.494f, 0.518f, 0.557f, 1.0f);  // #7E848E Muted Grey ([x], completed)
 };
 
@@ -248,8 +253,13 @@ public:
 
     // Better Comments & Interactive TODO Brushes
     ComPtr<ID2D1SolidColorBrush> brushCommentAlert;
+    ComPtr<ID2D1SolidColorBrush> brushCommentUrgent;
+    ComPtr<ID2D1SolidColorBrush> brushCommentAsap;
     ComPtr<ID2D1SolidColorBrush> brushCommentWarning;
     ComPtr<ID2D1SolidColorBrush> brushCommentTodo;
+    ComPtr<ID2D1SolidColorBrush> brushCommentHack;
+    ComPtr<ID2D1SolidColorBrush> brushCommentNote;
+    ComPtr<ID2D1SolidColorBrush> brushCommentReview;
     ComPtr<ID2D1SolidColorBrush> brushCommentQuestion;
     ComPtr<ID2D1SolidColorBrush> brushCommentImportant;
     ComPtr<ID2D1SolidColorBrush> brushCommentDone;
