@@ -814,7 +814,9 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     }
 
     // 1b. Render ambient theme visual effects (3D neon perspective grid, stars, matrix rain) across canvas
-    RenderCanvasThemeEffects(pRT, theme, config, canvasLeft, canvasWidth, headerH + config.ScaleF(34.0f), clientHeight);
+    const bool hideSingleFloatTab = (groups.size() == 1 && ShouldHideTabBar(groups.size(), groups[0].docs.size()));
+    const float bgTabOffset = hideSingleFloatTab ? 0.0f : config.ScaleF(34.0f);
+    RenderCanvasThemeEffects(pRT, theme, config, canvasLeft, canvasWidth, headerH + bgTabOffset, clientHeight);
 
     // Lazily initialize cached drag & snap D2D brushes (zero per-frame heap/COM allocations)
     if (!m_pDropZoneFillBrush) {
@@ -1119,9 +1121,23 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
         return;
     }
 
-    const float tabH = config.ScaleF(34.0f);
-    RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused,
-               tabScrollOffset, totalTabsWidth, groupIdx, outTrack, outThumb, pLastScrolledActiveDocIdx, isDraggingTabScroll);
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    const bool hideTabBar = ShouldHideTabBar(groupCount, docs.size());
+    const float tabH = hideTabBar ? 0.0f : config.ScaleF(34.0f);
+    if (!hideTabBar) {
+        RenderTabs(pRT, theme, config, canvasLeft, canvasWidth, headerH, docs, docIdx, hasLeftDrawer, isPaneFocused,
+                   tabScrollOffset, totalTabsWidth, groupIdx, outTrack, outThumb, pLastScrolledActiveDocIdx, isDraggingTabScroll);
+    } else {
+        totalTabsWidth = 0.0f;
+        tabScrollOffset = 0.0f;
+        if (outTrack) *outTrack = {};
+        if (outThumb) *outThumb = {};
+        for (auto& d : docs) {
+            d.tabBounds = {};
+            d.closeBounds = {};
+            d.undockBounds = {};
+        }
+    }
 
     auto& activeDoc = docs[docIdx];
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
@@ -1359,6 +1375,19 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                               float& tabScrollOffset, float& totalTabsWidth, int groupIdx,
                               D2D1_RECT_F* outTrack, D2D1_RECT_F* outThumb,
                               int* pLastScrolledActiveDocIdx, bool isDraggingTabScroll) {
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    if (ShouldHideTabBar(groupCount, docs.size())) {
+        totalTabsWidth = 0.0f;
+        tabScrollOffset = 0.0f;
+        if (outTrack) *outTrack = {};
+        if (outThumb) *outThumb = {};
+        for (auto& d : docs) {
+            d.tabBounds = {};
+            d.closeBounds = {};
+            d.undockBounds = {};
+        }
+        return;
+    }
     const float tabH = config.ScaleF(34.0f);
     const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
 
@@ -7038,9 +7067,12 @@ void EditorCanvas::RenderInlineDiffView(ID2D1RenderTarget* pRT, Theme& theme, co
 }
 
 int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    if (ShouldHideTabBar(groupCount, docs.size())) return -1;
     for (size_t i = 0; i < docs.size(); ++i) {
         const auto& b = docs[i].tabBounds;
-        if (pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
+        if (b.right > b.left && b.bottom > b.top &&
+            pt.x >= b.left && pt.x <= b.right && pt.y >= b.top && pt.y <= b.bottom) {
             return static_cast<int>(i);
         }
     }
@@ -7048,6 +7080,8 @@ int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& 
 }
 
 int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    if (ShouldHideTabBar(groupCount, docs.size())) return -1;
     for (size_t i = 0; i < docs.size(); ++i) {
         const auto& b = docs[i].closeBounds;
         if (b.right > b.left && pt.x >= b.left - 1 && pt.x <= b.right + 3 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
@@ -7058,6 +7092,8 @@ int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocume
 }
 
 int EditorCanvas::HitTestTabUndock(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    if (ShouldHideTabBar(groupCount, docs.size())) return -1;
     for (size_t i = 0; i < docs.size(); ++i) {
         const auto& b = docs[i].undockBounds;
         if (b.right > b.left && pt.x >= b.left - 1 && pt.x <= b.right + 1 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
@@ -7161,7 +7197,18 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
             }
         }
     }
-    const float tabH    = config.ScaleF(34.0f);
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    size_t docCount = 1;
+    if (m_pCurrentGroups) {
+        for (const auto& grp : *m_pCurrentGroups) {
+            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size()) &&
+                &grp.docs[grp.activeDocIdx] == &doc) {
+                docCount = grp.docs.size();
+                break;
+            }
+        }
+    }
+    const float tabH    = ShouldHideTabBar(groupCount, docCount) ? 0.0f : config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
     float topY    = paneTop + tabH + breadcrumbH;
     if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);
@@ -7244,7 +7291,18 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
             }
         }
     }
-    const float tabH    = config.ScaleF(34.0f);
+    const size_t groupCount = m_pCurrentGroups ? m_pCurrentGroups->size() : 1;
+    size_t docCount = 1;
+    if (m_pCurrentGroups) {
+        for (const auto& grp : *m_pCurrentGroups) {
+            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size()) &&
+                &grp.docs[grp.activeDocIdx] == &doc) {
+                docCount = grp.docs.size();
+                break;
+            }
+        }
+    }
+    const float tabH    = ShouldHideTabBar(groupCount, docCount) ? 0.0f : config.ScaleF(34.0f);
     const float breadcrumbH = config.showBreadcrumbs ? config.ScaleF(24.0f) : 0.0f;
     float topY    = paneTop + tabH + breadcrumbH;
     if (doc.hasExternalDiskConflict) topY += config.ScaleF(34.0f);

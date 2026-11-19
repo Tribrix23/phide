@@ -1565,7 +1565,8 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
     const std::vector<SqlTableInfo>& tables,
     const std::vector<ErdNodeLayout>& nodes,
     ErdNotation notation,
-    bool inferImplicitFks) {
+    bool inferImplicitFks,
+    bool showManyToManyBadges) {
 
     if (nodes.empty()) return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"400\" height=\"200\"></svg>";
 
@@ -1739,7 +1740,9 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
             }
         }
 
-        const std::wstring roleBadge = (ni < interp.entities.size()) ? interp.entities[ni].badgeLabel : L"";
+        const bool isJunction = (ni < interp.entities.size() && interp.entities[ni].role == ErdEntityRole::Junction);
+        const std::wstring roleBadge = (ni < interp.entities.size() && (showManyToManyBadges || !isJunction))
+            ? interp.entities[ni].badgeLabel : L"";
         svg << "  <rect x=\"" << x << "\" y=\"" << y << "\" width=\"" << n.width << "\" height=\"" << n.height
             << "\" rx=\"" << rx << "\" fill=\"#181C24\" stroke=\"#313A4B\" stroke-width=\"1.2\" />\n";
         svg << "  <rect x=\"" << x << "\" y=\"" << y << "\" width=\"" << n.width << "\" height=\"" << hdrH
@@ -1748,7 +1751,7 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
             << "\" y2=\"" << (y + hdrH) << "\" stroke=\"#313A4B\" stroke-width=\"1.0\" />\n";
 
         if (notation == ErdNotation::Uml) {
-            const std::wstring stereo = (ni < interp.entities.size() && interp.entities[ni].role == ErdEntityRole::Junction)
+            const std::wstring stereo = (isJunction && showManyToManyBadges)
                 ? L"<<junction>>" : L"<<entity>>";
             svg << "  <text x=\"" << (x + n.width * 0.5f) << "\" y=\"" << (y + 13.0f)
                 << "\" text-anchor=\"middle\" fill=\"#94A3B8\" font-family=\"Segoe UI\" font-size=\"10.5\">"

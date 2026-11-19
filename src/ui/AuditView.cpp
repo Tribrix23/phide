@@ -96,6 +96,11 @@ void AuditView::StopWorker() {
     m_isRunning.store(false, std::memory_order_relaxed);
 }
 
+void AuditView::SetStatusNotice(const std::wstring& msg, ULONGLONG durationMs) {
+    m_statusNotice = msg;
+    m_statusExpireTick = msg.empty() ? 0ull : (GetTickCount64() + durationMs);
+}
+
 void AuditView::StartAuditAsync(const std::wstring& workspaceRoot) {
     StopWorker();
     m_workspaceRoot = workspaceRoot;
@@ -131,13 +136,14 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 
     const bool dark = theme.IsDarkMode();
     ComPtr<ID2D1SolidColorBrush> brBg, brCard, brHdr, brBorder, brBtnBg, brBtnHover,
-                                  brExport, brCss, brDep, brEnv;
+                                  brImport, brExport, brCss, brDep, brEnv;
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x111318) : D2D1::ColorF(0xF6F8FB), &brBg);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x181B22) : D2D1::ColorF(0xFFFFFF), &brCard);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1C2029) : D2D1::ColorF(0xEAEEF5), &brHdr);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x2D333F) : D2D1::ColorF(0xCBD5E1), &brBorder);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x232834) : D2D1::ColorF(0xFFFFFF), &brBtnBg);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x2E3545) : D2D1::ColorF(0xDCE3EE), &brBtnHover);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x14B8A6) : D2D1::ColorF(0x0F766E), &brImport);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0xF59E0B) : D2D1::ColorF(0xB45309), &brExport);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x38BDF8) : D2D1::ColorF(0x0369A1), &brCss);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0xA855F7) : D2D1::ColorF(0x7E22CE), &brDep);
@@ -193,7 +199,7 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 
     // Subtitle / Status Notice
     std::wstring sub = running
-        ? L"Scanning workspace exports, CSS selectors, package dependencies, and .env keys..."
+        ? L"Scanning workspace imports, exports, CSS selectors, package dependencies, and .env keys..."
         : (std::to_wstring(snap.filesScanned) + L" files scanned in " + std::to_wstring(snap.elapsedMs) +
            L" ms  |  " + std::to_wstring(snap.findings.size()) + L" findings");
     if (!m_statusNotice.empty() && GetTickCount64() < m_statusExpireTick) sub = m_statusNotice;
@@ -202,6 +208,7 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 
     // 2. Category Filter Tabs + Search Box
     float tx = canvasLeft + pad;
+    m_rcTabAll = m_rcTabImports = m_rcTabExports = m_rcTabCss = m_rcTabDeps = m_rcTabEnv = {};
     auto addTab = [&](D2D1_RECT_F& outRc, const std::wstring& lbl, float minW, int idx, int hid) {
         const float w = MeasureAuditBtnW(theme, config, lbl, minW);
         if (tx + w > maxR) { outRc = {}; return; }
@@ -211,11 +218,12 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
         tx += w + config.ScaleF(7.0f);
     };
 
-    addTab(m_rcTabAll,     L"All (" + std::to_wstring(snap.findings.size()) + L")",       72.0f, 0, 10);
-    addTab(m_rcTabExports, L"Exports (" + std::to_wstring(snap.unusedExportCount) + L")", 92.0f, 1, 11);
-    addTab(m_rcTabCss,     L"CSS (" + std::to_wstring(snap.unusedCssCount) + L")",        74.0f, 2, 12);
-    addTab(m_rcTabDeps,    L"Deps (" + std::to_wstring(snap.unusedDepCount) + L")",       82.0f, 3, 13);
-    addTab(m_rcTabEnv,     L".env (" + std::to_wstring(snap.envDriftCount) + L")",        80.0f, 4, 14);
+    addTab(m_rcTabAll,     L"All (" + std::to_wstring(snap.findings.size()) + L")",        72.0f, 0, 10);
+    addTab(m_rcTabImports, L"Imports (" + std::to_wstring(snap.unusedImportCount) + L")",  88.0f, 5, 15);
+    addTab(m_rcTabExports, L"Exports (" + std::to_wstring(snap.unusedExportCount) + L")",  88.0f, 1, 11);
+    addTab(m_rcTabCss,     L"CSS (" + std::to_wstring(snap.unusedCssCount) + L")",         72.0f, 2, 12);
+    addTab(m_rcTabDeps,    L"Deps (" + std::to_wstring(snap.unusedDepCount) + L")",        80.0f, 3, 13);
+    addTab(m_rcTabEnv,     L".env (" + std::to_wstring(snap.envDriftCount) + L")",         78.0f, 4, 14);
 
     const float searchW = (std::min)(config.ScaleF(180.0f), maxR - tx);
     if (searchW >= config.ScaleF(70.0f)) {
@@ -246,6 +254,7 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
         if (m_filterTab == 2 && f.category != AuditCategory::UnusedCssSelector) continue;
         if (m_filterTab == 3 && f.category != AuditCategory::UnusedDependency) continue;
         if (m_filterTab == 4 && f.category != AuditCategory::EnvDrift) continue;
+        if (m_filterTab == 5 && f.category != AuditCategory::UnusedImport) continue;
         if (!qLow.empty()) {
             if (ToLowerW(f.symbol).find(qLow) == std::wstring::npos &&
                 ToLowerW(f.displayPath).find(qLow) == std::wstring::npos &&
@@ -261,8 +270,16 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     if (visibleIndices.empty()) {
         std::wstring emptyTxt = running ? L"Audit in progress..." : L"No audit findings match the current filter.";
         DrawClipText(pRT, pFmt, emptyTxt,
-                     D2D1::RectF(m_rcViewport.left, m_rcViewport.top + config.ScaleF(16.0f), m_rcViewport.right, m_rcViewport.top + config.ScaleF(40.0f)),
-                     txtSec);
+                     D2D1::RectF(m_rcViewport.left, m_rcViewport.top + config.ScaleF(14.0f), m_rcViewport.right, m_rcViewport.top + config.ScaleF(36.0f)),
+                     txtPri);
+        if (!running) {
+            std::wstring helpTxt =
+                L"Audit checks dead imports/functions, unreferenced exports, unused CSS selectors, unused package dependencies, and missing .env variables.  "
+                L"'Sync Keys to .env.example' copies only key names from .env (never secret values) into .env.example.";
+            DrawClipText(pRT, pFmt, helpTxt,
+                         D2D1::RectF(m_rcViewport.left, m_rcViewport.top + config.ScaleF(40.0f), m_rcViewport.right, m_rcViewport.top + config.ScaleF(64.0f)),
+                         txtSec);
+        }
         m_maxScrollY = 0.0f;
     } else {
         const float rowH = config.ScaleF(46.0f);
@@ -284,7 +301,8 @@ void AuditView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
 
                 const wchar_t* tagTxt = L"EXPORT";
                 ID2D1Brush* tagBr = brExport.Get();
-                if (f.category == AuditCategory::UnusedCssSelector) { tagTxt = L"CSS"; tagBr = brCss.Get(); }
+                if (f.category == AuditCategory::UnusedImport) { tagTxt = L"IMPORT"; tagBr = brImport.Get(); }
+                else if (f.category == AuditCategory::UnusedCssSelector) { tagTxt = L"CSS"; tagBr = brCss.Get(); }
                 else if (f.category == AuditCategory::UnusedDependency) { tagTxt = L"DEP"; tagBr = brDep.Get(); }
                 else if (f.category == AuditCategory::EnvDrift) { tagTxt = L".ENV"; tagBr = brEnv.Get(); }
 
@@ -343,6 +361,7 @@ bool AuditView::HandleLButtonDown(POINT clientPt, HWND /*hwnd*/, const app::AppC
     }
 
     if (PtInRectF(clientPt, m_rcTabAll))     { m_filterTab = 0; m_scrollY = 0.0f; return true; }
+    if (PtInRectF(clientPt, m_rcTabImports)) { m_filterTab = 5; m_scrollY = 0.0f; return true; }
     if (PtInRectF(clientPt, m_rcTabExports)) { m_filterTab = 1; m_scrollY = 0.0f; return true; }
     if (PtInRectF(clientPt, m_rcTabCss))     { m_filterTab = 2; m_scrollY = 0.0f; return true; }
     if (PtInRectF(clientPt, m_rcTabDeps))    { m_filterTab = 3; m_scrollY = 0.0f; return true; }
@@ -373,6 +392,7 @@ bool AuditView::HandleMouseMove(POINT clientPt) {
     if (PtInRectF(clientPt, m_rcBtnRerun)) btn = 1;
     else if (PtInRectF(clientPt, m_rcBtnSyncEnv)) btn = 2;
     else if (PtInRectF(clientPt, m_rcTabAll)) btn = 10;
+    else if (PtInRectF(clientPt, m_rcTabImports)) btn = 15;
     else if (PtInRectF(clientPt, m_rcTabExports)) btn = 11;
     else if (PtInRectF(clientPt, m_rcTabCss)) btn = 12;
     else if (PtInRectF(clientPt, m_rcTabDeps)) btn = 13;
@@ -422,7 +442,8 @@ bool AuditView::HandleKeyDown(WPARAM vk) {
 
 LPCWSTR AuditView::GetCursorForPoint(POINT clientPt) const noexcept {
     if (PtInRectF(clientPt, m_rcBtnRerun) || PtInRectF(clientPt, m_rcBtnSyncEnv) ||
-        PtInRectF(clientPt, m_rcTabAll) || PtInRectF(clientPt, m_rcTabExports) ||
+        PtInRectF(clientPt, m_rcTabAll) || PtInRectF(clientPt, m_rcTabImports) ||
+        PtInRectF(clientPt, m_rcTabExports) ||
         PtInRectF(clientPt, m_rcTabCss) || PtInRectF(clientPt, m_rcTabDeps) ||
         PtInRectF(clientPt, m_rcTabEnv)) {
         return IDC_HAND;

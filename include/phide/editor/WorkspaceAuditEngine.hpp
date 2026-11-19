@@ -26,7 +26,8 @@ enum class AuditCategory {
     UnusedExport = 0,
     UnusedCssSelector = 1,
     UnusedDependency = 2,
-    EnvDrift = 3
+    EnvDrift = 3,
+    UnusedImport = 4
 };
 
 /**
@@ -61,6 +62,7 @@ struct EnvKeyEntry {
 struct WorkspaceAuditReport {
     std::vector<AuditFinding> findings;
     size_t filesScanned = 0;
+    size_t unusedImportCount = 0;
     size_t unusedExportCount = 0;
     size_t unusedCssCount = 0;
     size_t unusedDepCount = 0;

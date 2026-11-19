@@ -105,6 +105,14 @@ public:
     [[nodiscard]] const phide::db::ErdSchemaInterpretation& GetInterpretation() const noexcept { return m_interp; }
     [[nodiscard]] const std::vector<phide::db::ErdRoutedEdge>& GetRoutedEdges() const noexcept { return m_routedEdges; }
 
+    /** @brief Enables or disables rendering of M:N junction badges and <<junction>> stereotypes (disabled by default). */
+    void SetShowManyToManyBadges(bool show) noexcept {
+        m_showManyToManyBadges = show;
+        RecalculateNodeHeights();
+    }
+    [[nodiscard]] bool GetShowManyToManyBadges() const noexcept { return m_showManyToManyBadges; }
+    [[nodiscard]] const D2D1_RECT_F& GetManyToManyButtonBounds() const noexcept { return m_rcBtnShowM2N; }
+
 private:
     void EnsureRoutesUpToDate();
     void AutoArrangeNodes();
@@ -126,6 +134,7 @@ private:
     std::vector<phide::db::ErdRoutedEdge> m_routedEdges;
     bool m_routesDirty = true;
     bool m_inferImplicitFks = false;
+    bool m_showManyToManyBadges = false;
     bool m_userMovedNodes = false;
 
     phide::db::ErdNotation m_notation = phide::db::ErdNotation::CrowsFoot;
@@ -188,6 +197,7 @@ private:
     D2D1_RECT_F m_rcBtnToggleDiff{};
     D2D1_RECT_F m_rcBtnExportSvg{};
     D2D1_RECT_F m_rcBtnInferFks{};
+    D2D1_RECT_F m_rcBtnShowM2N{};
     D2D1_RECT_F m_rcBtnOpenMigConsole{};
     D2D1_RECT_F m_rcBtnCopyMigration{};
     D2D1_RECT_F m_rcSearchBox{};

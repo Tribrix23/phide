@@ -68,6 +68,7 @@ struct Window::ScopedFloatingEditorContext {
     HWND prevHwnd = nullptr;
     int prevFocusedGroup = 0;
     editor::EditorSplitState prevSplitState{};
+    bool prevHideTabBar = false;
     bool active = false;
 
     ScopedFloatingEditorContext(Window& win, FloatingDockWindow& floatWin)
@@ -77,6 +78,7 @@ struct Window::ScopedFloatingEditorContext {
         , prevHwnd(win.m_hwnd.load())
         , prevFocusedGroup(win.m_focusedGroupIdx)
         , prevSplitState(win.m_splitState)
+        , prevHideTabBar(win.m_editor.IsFloatingTabBarHidden())
         , active(true) {
         w.m_activeFloatingWindow = &fw;
         w.m_hwnd.store(fw.hwnd);
@@ -86,6 +88,9 @@ struct Window::ScopedFloatingEditorContext {
             std::swap(w.m_editorGroups, fw.editorGroups);
             w.m_focusedGroupIdx = fw.focusedGroupIdx;
             w.m_splitState = fw.splitState;
+            w.m_editor.SetFloatingTabBarHidden(w.ShouldHideFloatingTabBar());
+        } else {
+            w.m_editor.SetFloatingTabBarHidden(false);
         }
     }
 
@@ -96,6 +101,7 @@ struct Window::ScopedFloatingEditorContext {
     void Restore() {
         if (!active) return;
         active = false;
+        w.m_editor.SetFloatingTabBarHidden(prevHideTabBar);
         if (fw.kind == FloatingDockKind::EditorGroup) {
             fw.focusedGroupIdx = w.m_focusedGroupIdx;
             fw.splitState = w.m_splitState;
@@ -14229,7 +14235,7 @@ void Window::OnPaint() {
                 float pLeft = group.bounds.left;
                 float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
                 float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
-                float tabH = m_config.ScaleF(34.0f);
+                float tabH = EffectiveTabBarHeight();
                 float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
                 float topY = group.bounds.top + tabH + breadcrumbH;
                 float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
@@ -16624,7 +16630,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             const float termGap = (!m_config.zenMode && m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0)
                 ? m_config.ScaleF(6.0f) : 0.0f;
             const float editorH = (std::max)(headerH + 40.0f, clientH - statusBarH - termH - termGap);
-            const float tabH = m_config.ScaleF(34.0f);
+            const float tabH = EffectiveTabBarHeight();
 
             m_hoveredSnapBarSlot = -1;
             m_tabSnapZone = editor::TabSnapZone::None;
@@ -16816,7 +16822,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
             const float headerH = EffectiveHeaderHeight();
-            const float tabH = m_config.ScaleF(34.0f);
+            const float tabH = EffectiveTabBarHeight();
 
             float currentTermH = GetCurrentTerminalHeight(clientH);
             const float termGap = (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen()) ? m_config.ScaleF(6.0f) : 0.0f;
@@ -20689,7 +20695,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         float leftX = paneCanvasLeft;
                         float dividerX = leftX + halfW;
                         float rightX = dividerX + dividerW;
-                        const float tabH = m_config.ScaleF(34.0f);
+                        const float tabH = EffectiveTabBarHeight();
                         const float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
                         float codeTopY = group.bounds.top + tabH + breadcrumbH + subHeaderH;
 
@@ -22251,7 +22257,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
             const int railW = m_config.Scale(m_config.railWidth);
             const int drawerW = static_cast<int>(m_config.Scale(m_config.drawerWidth) * m_drawerAnimProgress);
             const float headerH = EffectiveHeaderHeight();
-            const float tabH = m_config.ScaleF(34.0f);
+            const float tabH = EffectiveTabBarHeight();
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
             if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
@@ -22517,10 +22523,10 @@ void Window::HandleRButtonDown(POINT clientPt) {
         }
     }
 
-    const float tabH = m_config.ScaleF(34.0f);
+    const float tabH = EffectiveTabBarHeight();
 
     // 2. Right-click inside Editor Tab Bar (any split pane's tab strip)
-    for (size_t g = 0; g < m_editorGroups.size(); ++g) {
+    for (size_t g = 0; tabH > 0.0f && g < m_editorGroups.size(); ++g) {
         const auto& grp = m_editorGroups[g];
         if (grp.docs.empty()) continue;
         D2D1_RECT_F gBounds = (grp.bounds.right > grp.bounds.left && grp.bounds.bottom > grp.bounds.top)
@@ -23247,7 +23253,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     float paneBottom = hasHoverPaneBounds ? hoverPaneBounds.bottom : (clientH - statusBarH - termH);
 
                     float gutterW = m_config.showLineNumbers ? m_config.ScaleF(50.0f) : m_config.ScaleF(12.0f);
-                    float tabH    = m_config.ScaleF(34.0f);
+                    float tabH    = EffectiveTabBarHeight();
                     float breadcrumbH = m_config.showBreadcrumbs ? m_config.ScaleF(24.0f) : 0.0f;
                     float topY    = paneTop + tabH + breadcrumbH;
                     if (pHoverPaneDoc->hasExternalDiskConflict) topY += m_config.ScaleF(34.0f);
@@ -23647,8 +23653,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             GetCanvasLayout(clientW, canvasLeft, canvasW);
 
             // 1b. Scroll Tab Strip horizontally if mouse is over Tab Bar (User request: "since i do many tag it many now there should be a scrol bar so i could scroll throught them")
-            const float tabH = m_config.ScaleF(34.0f);
-            if (pt.y >= headerH && pt.x >= canvasLeft && canvasW > 10.0f && !m_editorGroups.empty()) {
+            const float tabH = EffectiveTabBarHeight();
+            if (tabH > 0.0f && pt.y >= headerH && pt.x >= canvasLeft && canvasW > 10.0f && !m_editorGroups.empty()) {
                 UpdateEditorGroupBounds();
                 int targetG = FindEditorGroupAtPoint(pt);
                 if (targetG >= 0 && targetG < static_cast<int>(m_editorGroups.size())) {
@@ -29657,22 +29663,30 @@ void Window::RefreshEnvDriftDiagnostics() {
 
 void Window::DoSyncEnvKeysToExample() {
     if (!m_drawer.HasOpenFolder()) {
-        m_drawer.ShowGitNotification(L"Open a workspace folder first to sync .env keys to .env.example.");
+        const std::wstring msg = L"Open a workspace folder first to sync .env keys to .env.example.";
+        m_drawer.ShowGitNotification(msg);
+        m_editor.GetAuditView().SetStatusNotice(msg);
+        m_editor.ShowRefactorPopup(msg);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
     int addedCount = 0;
     const std::wstring wsRoot = m_drawer.GetOpenFolderPath();
+    std::wstring msg;
     if (editor::EnvAuditEngine::SyncEnvExampleKeys(wsRoot, addedCount)) {
         RefreshWorkspaceEnvVars();
         if (addedCount > 0) {
-            m_drawer.ShowGitNotification(L"Synced " + std::to_wstring(addedCount) + L" key name(s) to .env.example (values omitted)");
+            msg = L"Synced " + std::to_wstring(addedCount) + L" key name(s) to .env.example (values omitted)";
         } else {
-            m_drawer.ShowGitNotification(L".env.example already contains all keys from .env");
+            msg = L".env.example already contains all keys from .env";
         }
+        m_editor.GetAuditView().StartAuditAsync(wsRoot);
     } else {
-        m_drawer.ShowGitNotification(L"No .env file found in workspace root to sync.");
+        msg = L"No .env file found in workspace root to sync.";
     }
+    m_drawer.ShowGitNotification(msg);
+    m_editor.GetAuditView().SetStatusNotice(msg);
+    m_editor.ShowRefactorPopup(msg);
     if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -33300,16 +33314,13 @@ void Window::RenderFloatingTitleBar(ID2D1RenderTarget* pRT, FloatingDockWindow& 
     fw.rcMinBtn = D2D1::RectF(fw.rcMaxBtn.left - capW, 0.0f, fw.rcMaxBtn.left, titleH);
     fw.rcDockBtn = D2D1::RectF(fw.rcMinBtn.left - dockGap - dockW, dockY, fw.rcMinBtn.left - dockGap, dockY + dockH);
 
-    // Background + bottom separator
+    // Background (seamless bottom edge matching main IDE purple header — no extra horizontal divider line)
     if (fw.theme.brushHeaderBg) {
         pRT->FillRectangle(fw.rcTitleBar, fw.theme.brushHeaderBg.Get());
     }
-    if (fw.theme.brushBorderSubtle) {
-        pRT->DrawLine(D2D1::Point2F(0.0f, titleH - 0.5f), D2D1::Point2F(clientW, titleH - 0.5f),
-                      fw.theme.brushBorderSubtle.Get(), 1.0f);
-    }
 
-    // Left badge + title text (clipped strictly left of [↙ Attach] to prevent overlap)
+    // Left badge + title text (horizontally & vertically centered across the header when space permits,
+    // gracefully clamping left of [↙ Attach] on narrow windows to guarantee zero text overlap)
     float padL = m_config.ScaleF(12.0f);
     float badgeSize = m_config.ScaleF(8.0f);
     D2D1_RECT_F badgeRc = D2D1::RectF(padL, (titleH - badgeSize) * 0.5f, padL + badgeSize, (titleH + badgeSize) * 0.5f);
@@ -33334,14 +33345,18 @@ void Window::RenderFloatingTitleBar(ID2D1RenderTarget* pRT, FloatingDockWindow& 
         titleText = docLabel + L" \x2014 Phide";
     }
 
-    float titleRight = (std::max)(padL + m_config.ScaleF(24.0f), fw.rcDockBtn.left - m_config.ScaleF(10.0f));
-    D2D1_RECT_F rcText = D2D1::RectF(badgeRc.right + m_config.ScaleF(8.0f), 0.0f, titleRight, titleH);
+    const float leftMin = badgeRc.right + m_config.ScaleF(10.0f);
+    const float rightMax = (std::max)(leftMin + m_config.ScaleF(20.0f), fw.rcDockBtn.left - m_config.ScaleF(10.0f));
+    const float symMargin = (std::max)(leftMin, clientW - rightMax);
+    D2D1_RECT_F rcText = ((clientW - 2.0f * symMargin) >= m_config.ScaleF(140.0f))
+        ? D2D1::RectF(symMargin, 0.0f, clientW - symMargin, titleH)
+        : D2D1::RectF(leftMin, 0.0f, rightMax, titleH);
+    fw.rcTitleText = rcText;
     if (fw.theme.fontTitle && fw.theme.brushHeaderIcon && rcText.right > rcText.left) {
         pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        D2D1_RECT_F rcTextDraw = D2D1::RectF(rcText.left, m_config.ScaleF(8.0f), rcText.right, titleH);
         pRT->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.size()),
-                      fw.theme.fontTitle.Get(), rcTextDraw, fw.theme.brushHeaderIcon.Get(),
-                      D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+                      fw.theme.fontTitle.Get(), rcText, fw.theme.brushHeaderIcon.Get(),
+                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
         pRT->PopAxisAlignedClip();
     }
 

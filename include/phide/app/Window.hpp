@@ -266,6 +266,7 @@ public:
 
         // Custom frameless floating titlebar bounds & hover tracking
         D2D1_RECT_F rcTitleBar{};
+        D2D1_RECT_F rcTitleText{}; ///< Centered title text layout rect
         D2D1_RECT_F rcDockBtn{};   ///< "Attach" pill button (docks back into main window)
         D2D1_RECT_F rcMinBtn{};    ///< Minimize button (-)
         D2D1_RECT_F rcMaxBtn{};    ///< Maximize/Restore button (□)
@@ -298,6 +299,15 @@ public:
     [[nodiscard]] const FloatingDockWindow* FindFloatingWindow(HWND hwnd) const noexcept;
     [[nodiscard]] const std::vector<std::unique_ptr<FloatingDockWindow>>& GetFloatingWindows() const noexcept { return m_floatingWindows; }
     [[nodiscard]] bool IsProblemsPanelFloated() const noexcept { return m_problemsPanelFloated; }
+    [[nodiscard]] bool ShouldHideFloatingTabBar() const noexcept {
+        return m_activeFloatingWindow &&
+               m_activeFloatingWindow->kind == FloatingDockKind::EditorGroup &&
+               m_editorGroups.size() == 1 &&
+               m_editorGroups[0].docs.size() <= 1;
+    }
+    [[nodiscard]] float EffectiveTabBarHeight() const noexcept {
+        return ShouldHideFloatingTabBar() ? 0.0f : m_config.ScaleF(34.0f);
+    }
     [[nodiscard]] HWND GetMainPostHwnd() const noexcept { return m_mainHwnd ? m_mainHwnd : m_hwnd.load(); }
     void InvalidateFloatingWindows() noexcept;
     void DestroyAllFloatingWindows() noexcept;

@@ -444,7 +444,9 @@ void ErdView::RecalculateNodeHeights() {
         }
         const float estNameW = std::clamp(static_cast<float>(maxNameLen) * 7.4f, 92.0f, 164.0f);
         const float estTypeW = std::clamp(static_cast<float>(maxTypeLen) * 7.3f, 62.0f, 106.0f);
-        const float badgeSpace = (i < interp.entities.size() && !interp.entities[i].badgeLabel.empty()) ? 44.0f : 0.0f;
+        const bool showRoleBadge = (i < interp.entities.size() && !interp.entities[i].badgeLabel.empty() &&
+                                    (m_showManyToManyBadges || interp.entities[i].role != phide::db::ErdEntityRole::Junction));
+        const float badgeSpace = showRoleBadge ? 44.0f : 0.0f;
         const float estTitleW = static_cast<float>(tbl.name.size()) * 6.5f + 22.0f + badgeSpace;
         m_nodes[i].width = std::clamp((std::max)(36.0f + estNameW + 12.0f + estTypeW + 10.0f, estTitleW),
                                       256.0f, 316.0f);
@@ -525,7 +527,7 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     m_rcBtnCrowsFoot = m_rcBtnUml = m_rcBtnChen = m_rcBtnBarker = m_rcBtnChenAttrs = {};
     m_rcBtnAutoLayout = m_rcBtnZoomFit = m_rcBtnRefresh = {};
     m_rcBtnDetect = m_rcBtnEmptyRefresh = {};
-    m_rcBtnToggleDiff = m_rcBtnLoadSql = m_rcBtnExportSvg = m_rcBtnInferFks = {};
+    m_rcBtnToggleDiff = m_rcBtnLoadSql = m_rcBtnExportSvg = m_rcBtnInferFks = m_rcBtnShowM2N = {};
     m_rcSearchBox = {};
 
     auto measureBtnW = [&](const wchar_t* lbl) -> float {
@@ -589,6 +591,7 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
         { &m_rcBtnRefresh,    L"Refresh",     8, false,          measureBtnW(L"Refresh") },
         { &m_rcBtnToggleDiff, L"Schema Diff", 9, m_showDiffPanel,   measureBtnW(L"Schema Diff") },
         { &m_rcBtnInferFks,   L"Infer *_id",  16, m_inferImplicitFks, measureBtnW(L"Infer *_id") },
+        { &m_rcBtnShowM2N,    L"M:N Badges",  17, m_showManyToManyBadges, measureBtnW(L"M:N Badges") },
         { &m_rcBtnLoadSql,    L"Load .sql",   10, false,            measureBtnW(L"Load .sql") },
         { &m_rcBtnExportSvg,  L"Export SVG",  11, false,            measureBtnW(L"Export SVG") },
     };
@@ -968,11 +971,13 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
             if (brCardHdr) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHdr, radius, radius), brCardHdr.Get());
             pRT->DrawLine(D2D1::Point2F(rcNode.left, rcHdr.bottom), D2D1::Point2F(rcNode.right, rcHdr.bottom), brBorder.Get(), 1.0f);
 
-            const std::wstring roleBadge = (i < m_interp.entities.size()) ? m_interp.entities[i].badgeLabel : L"";
+            const bool isJunction = (i < m_interp.entities.size() && m_interp.entities[i].role == phide::db::ErdEntityRole::Junction);
+            const std::wstring roleBadge = (i < m_interp.entities.size() && (m_showManyToManyBadges || !isJunction))
+                ? m_interp.entities[i].badgeLabel : L"";
             const float hdrRightPad = roleBadge.empty() ? 12.0f : 56.0f;
 
             if (m_notation == ErdNotation::Uml) {
-                const std::wstring stereo = (i < m_interp.entities.size() && m_interp.entities[i].role == phide::db::ErdEntityRole::Junction)
+                const std::wstring stereo = (isJunction && m_showManyToManyBadges)
                     ? L"<<junction>>" : L"<<entity>>";
                 DrawSmallText(pRT, pUiFmt, stereo,
                               D2D1::RectF(rcHdr.left + 8.0f, rcHdr.top + 2.0f, rcHdr.right - 8.0f, rcHdr.top + 17.0f),
@@ -1265,6 +1270,12 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
         SetToast(m_inferImplicitFks ? L"Inferred *_id relationships enabled" : L"Showing explicit FK constraints only");
         return true;
     }
+    if (PtInRectF(clientPt, m_rcBtnShowM2N)) {
+        m_showManyToManyBadges = !m_showManyToManyBadges;
+        RecalculateNodeHeights();
+        SetToast(m_showManyToManyBadges ? L"M:N junction badges enabled" : L"M:N junction badges hidden");
+        return true;
+    }
 
     if (PtInRectF(clientPt, m_rcBtnZoomFit)) {
         if (!m_nodes.empty()) {
@@ -1325,7 +1336,7 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
         if (m_callbacks.onPromptSaveSvgFile) {
             std::wstring outPath = m_callbacks.onPromptSaveSvgFile(L"schema_erd.svg");
             if (!outPath.empty()) {
-                std::string svg = ErdAndMigrationEngine::ExportErdToSvg(m_tables, m_nodes, m_notation, m_inferImplicitFks);
+                std::string svg = ErdAndMigrationEngine::ExportErdToSvg(m_tables, m_nodes, m_notation, m_inferImplicitFks, m_showManyToManyBadges);
                 std::ofstream ofs(outPath, std::ios::binary | std::ios::trunc);
                 if (ofs.is_open()) {
                     ofs.write(svg.data(), static_cast<std::streamsize>(svg.size()));
@@ -1410,6 +1421,7 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
     else if (PtInRectF(clientPt, m_rcBtnDetect)) h = 14;
     else if (PtInRectF(clientPt, m_rcBtnEmptyRefresh)) h = 15;
     else if (PtInRectF(clientPt, m_rcBtnInferFks)) h = 16;
+    else if (PtInRectF(clientPt, m_rcBtnShowM2N)) h = 17;
 
     int hp = -1;
     for (size_t i = 0; i < m_profileHits.size(); ++i) {
@@ -1458,6 +1470,7 @@ LPCWSTR ErdView::GetCursorForPoint(POINT clientPt) const noexcept {
         PtInRectF(clientPt, m_rcBtnDetect) || PtInRectF(clientPt, m_rcBtnEmptyRefresh) ||
         PtInRectF(clientPt, m_rcBtnToggleDiff) || PtInRectF(clientPt, m_rcBtnLoadSql) ||
         PtInRectF(clientPt, m_rcBtnExportSvg) || PtInRectF(clientPt, m_rcBtnInferFks) ||
+        PtInRectF(clientPt, m_rcBtnShowM2N) ||
         PtInRectF(clientPt, m_rcBtnOpenMigConsole) || PtInRectF(clientPt, m_rcBtnCopyMigration)) {
         return IDC_HAND;
     }

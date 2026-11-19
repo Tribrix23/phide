@@ -4,6 +4,8 @@
  */
 
 #include "phide/editor/WorkspaceAuditEngine.hpp"
+#include "phide/editor/Buffer.hpp"
+#include "phide/editor/SyntaxValidator.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -230,6 +232,60 @@ static void ExtractExportedSymbols(const std::wstring& lowerExt, const std::wstr
                 }
             }
         }
+    }
+}
+
+static size_t CountWholeWordOccurrences(const std::wstring& text, const std::wstring& sym) {
+    if (sym.empty() || text.size() < sym.size()) return 0;
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = text.find(sym, pos)) != std::wstring::npos) {
+        const bool leftOk = (pos == 0) || !IsIdentChar(text[pos - 1]);
+        const size_t endPos = pos + sym.size();
+        const bool rightOk = (endPos >= text.size()) || !IsIdentChar(text[endPos]);
+        if (leftOk && rightOk) ++count;
+        pos = endPos;
+    }
+    return count;
+}
+
+static void ExtractPythonDeadCandidateDefs(const std::vector<std::wstring>& lines,
+                                           std::vector<std::pair<std::wstring, size_t>>& outSymbols) {
+    outSymbols.clear();
+    bool prevWasDecorator = false;
+    for (size_t li = 0; li < lines.size(); ++li) {
+        const std::wstring& ln = lines[li];
+        size_t first = ln.find_first_not_of(L" \t");
+        if (first == std::wstring::npos) continue;
+        std::wstring tr = ln.substr(first);
+        if (tr[0] == L'#') continue;
+        if (first == 0 && tr[0] == L'@') {
+            prevWasDecorator = true;
+            continue;
+        }
+        if (first == 0) {
+            std::wstring rest = tr;
+            if (rest.rfind(L"async ", 0) == 0) {
+                rest = rest.substr(6);
+                size_t p = rest.find_first_not_of(L" \t");
+                rest = (p != std::wstring::npos) ? rest.substr(p) : L"";
+            }
+            const size_t kwLen = (rest.rfind(L"def ", 0) == 0) ? 4 : ((rest.rfind(L"class ", 0) == 0) ? 6 : 0);
+            if (kwLen > 0 && !prevWasDecorator) {
+                size_t s = kwLen;
+                while (s < rest.size() && iswspace(rest[s])) ++s;
+                size_t e = s;
+                while (e < rest.size() && IsIdentChar(rest[e])) ++e;
+                if (e > s) {
+                    std::wstring sym = rest.substr(s, e - s);
+                    if (sym.size() >= 2 && sym[0] != L'_' && sym != L"main" && sym != L"setup" &&
+                        sym.rfind(L"test_", 0) != 0) {
+                        outSymbols.emplace_back(std::move(sym), li);
+                    }
+                }
+            }
+        }
+        prevWasDecorator = false;
     }
 }
 
@@ -692,11 +748,53 @@ WorkspaceAuditReport WorkspaceAuditEngine::RunFullAudit(
         }
     }
 
-    // 1. Unused Exports (JS/TS/PHP)
+    // 1. Unused Exports (JS/TS/PHP), Dead Top-Level Python Defs, & Unused Imports (.py/.js/.jsx/.ts/.tsx/.php)
     for (size_t fi = 0; fi < files.size(); ++fi) {
         if (isCancelled()) { report.cancelled = true; return report; }
         const auto& f = files[fi];
         auto lines = SplitLines(f.text);
+
+        // 1a. Unused imports via SyntaxValidator::CollectUnusedSymbolHints (checks all code files incl. main.py/index.php)
+        const bool isImportCheckedLang =
+            (f.extLower == L".py" || f.extLower == L".js" || f.extLower == L".mjs" || f.extLower == L".cjs" ||
+             f.extLower == L".ts" || f.extLower == L".jsx" || f.extLower == L".tsx" || f.extLower == L".php");
+        if (isImportCheckedLang && !f.text.empty()) {
+            Buffer tmpBuf(f.text);
+            auto hints = SyntaxValidator::CollectUnusedSymbolHints(f.fullPath, tmpBuf);
+            for (const auto& h : hints) {
+                if (h.code != L"unused-import" && h.code != L"unused-use") continue;
+                std::wstring symLabel;
+                if (h.line < lines.size()) {
+                    const std::wstring& lnStr = lines[h.line];
+                    if (h.col < lnStr.size() && h.length > 0) {
+                        size_t takeLen = (std::min)(h.length, lnStr.size() - h.col);
+                        symLabel = lnStr.substr(h.col, takeLen);
+                        while (!symLabel.empty() && iswspace(symLabel.front())) symLabel.erase(symLabel.begin());
+                        while (!symLabel.empty() && iswspace(symLabel.back())) symLabel.pop_back();
+                    }
+                }
+                if (symLabel.empty() || symLabel.size() > 72) {
+                    size_t q1 = h.message.find(L'\'');
+                    size_t q2 = (q1 != std::wstring::npos) ? h.message.find(L'\'', q1 + 1) : std::wstring::npos;
+                    symLabel = (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1)
+                        ? h.message.substr(q1 + 1, q2 - q1 - 1)
+                        : L"unused import";
+                }
+                AuditFinding af;
+                af.category = AuditCategory::UnusedImport;
+                af.severity = 2;
+                af.symbol = std::move(symLabel);
+                af.filePath = f.fullPath;
+                af.displayPath = f.relDisplay;
+                af.line0 = h.line;
+                af.col0 = h.col;
+                af.message = h.message;
+                report.findings.push_back(std::move(af));
+                report.unusedImportCount++;
+            }
+        }
+
+        // 1b. Cross-file Unused Exports (JS/TS/PHP)
         std::vector<std::pair<std::wstring, size_t>> exports;
         ExtractExportedSymbols(f.extLower, ToLowerW(f.fullPath), lines, exports);
         for (const auto& [sym, ln] : exports) {
@@ -718,6 +816,33 @@ WorkspaceAuditReport WorkspaceAuditEngine::RunFullAudit(
                 af.message = L"Exported symbol '" + sym + L"' has no references in other workspace files";
                 report.findings.push_back(std::move(af));
                 report.unusedExportCount++;
+            }
+        }
+
+        // 1c. Unreferenced top-level non-decorated Python defs/classes (0 calls internally and externally)
+        if (f.extLower == L".py") {
+            std::vector<std::pair<std::wstring, size_t>> pyDefs;
+            ExtractPythonDeadCandidateDefs(lines, pyDefs);
+            for (const auto& [sym, ln] : pyDefs) {
+                bool usedElsewhere = false;
+                auto itTok = codeTokenFiles.find(sym);
+                if (itTok != codeTokenFiles.end()) {
+                    for (size_t occFile : itTok->second) {
+                        if (occFile != fi) { usedElsewhere = true; break; }
+                    }
+                }
+                if (!usedElsewhere && CountWholeWordOccurrences(f.text, sym) <= 1) {
+                    AuditFinding af;
+                    af.category = AuditCategory::UnusedExport;
+                    af.severity = 2;
+                    af.symbol = sym;
+                    af.filePath = f.fullPath;
+                    af.displayPath = f.relDisplay;
+                    af.line0 = ln;
+                    af.message = L"Python symbol '" + sym + L"' is defined but never called or referenced";
+                    report.findings.push_back(std::move(af));
+                    report.unusedExportCount++;
+                }
             }
         }
     }

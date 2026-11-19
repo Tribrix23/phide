@@ -234,6 +234,11 @@ public:
      */
     void SetRenderingFloatingWindow(bool isFloating) noexcept { m_isRenderingFloatingWindow = isFloating; }
     [[nodiscard]] bool IsRenderingFloatingWindow() const noexcept { return m_isRenderingFloatingWindow; }
+    void SetFloatingTabBarHidden(bool hidden) noexcept { m_floatingTabBarHidden = hidden; }
+    [[nodiscard]] bool IsFloatingTabBarHidden() const noexcept { return m_floatingTabBarHidden; }
+    [[nodiscard]] bool ShouldHideTabBar(size_t groupCount, size_t paneDocCount) const noexcept {
+        return m_floatingTabBarHidden || (m_isRenderingFloatingWindow && groupCount == 1 && paneDocCount <= 1);
+    }
     void SetSuppressFloatingOverlays(bool suppress) noexcept { m_suppressFloatingOverlays = suppress; }
     [[nodiscard]] bool IsSuppressingFloatingOverlays() const noexcept { return m_suppressFloatingOverlays; }
 
@@ -671,6 +676,7 @@ private:
 
     // Tab Drag & Drop State
     bool m_isRenderingFloatingWindow = false;
+    bool m_floatingTabBarHidden = false;
     bool m_suppressFloatingOverlays = false;
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;

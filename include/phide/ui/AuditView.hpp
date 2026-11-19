@@ -57,6 +57,12 @@ public:
      */
     void StartAuditAsync(const std::wstring& workspaceRoot);
 
+    /**
+     * @brief Displays a timed informational notice banner below the Workspace Audit header
+     *        (e.g., feedback after Sync Keys to .env.example).
+     */
+    void SetStatusNotice(const std::wstring& msg, ULONGLONG durationMs = 4500ull);
+
     void DiscardDeviceResources() noexcept {}
 
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -81,7 +87,7 @@ private:
     std::atomic<bool> m_cancelFlag{ false };
     std::thread m_worker;
 
-    int m_filterTab = 0; // 0=All, 1=Exports, 2=CSS, 3=Deps, 4=EnvDrift
+    int m_filterTab = 0; // 0=All, 1=Exports, 2=CSS, 3=Deps, 4=EnvDrift, 5=Imports
     bool m_searchFocused = false;
     std::wstring m_searchText;
     float m_scrollY = 0.0f;
@@ -102,6 +108,7 @@ private:
     D2D1_RECT_F m_rcBtnRerun{};
     D2D1_RECT_F m_rcBtnSyncEnv{};
     D2D1_RECT_F m_rcTabAll{};
+    D2D1_RECT_F m_rcTabImports{};
     D2D1_RECT_F m_rcTabExports{};
     D2D1_RECT_F m_rcTabCss{};
     D2D1_RECT_F m_rcTabDeps{};

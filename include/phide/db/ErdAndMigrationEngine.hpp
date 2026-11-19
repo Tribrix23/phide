@@ -232,12 +232,14 @@ public:
 
     /**
      * @brief Exports the ERD layout (in the selected notation) as a self-contained UTF-8 SVG document.
+     * @param showManyToManyBadges When false (default), hides M:N junction badges / <<junction>> stereotypes.
      */
     [[nodiscard]] static std::string ExportErdToSvg(
         const std::vector<SqlTableInfo>& tables,
         const std::vector<ErdNodeLayout>& nodes,
         ErdNotation notation,
-        bool inferImplicitFks = false);
+        bool inferImplicitFks = false,
+        bool showManyToManyBadges = false);
 };
 
 } // namespace phide::db
