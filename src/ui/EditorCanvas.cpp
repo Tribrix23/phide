@@ -535,6 +535,7 @@ EditorCanvas::~EditorCanvas() {
 }
 
 void EditorCanvas::DiscardDeviceResources() {
+    m_pPhideLogoBitmap.Reset();
     m_pWatermarkBitmap.Reset();
     m_pWatermarkBitmapLight.Reset();
     m_pCanvasGeometry.Reset();
@@ -601,6 +602,7 @@ void EditorCanvas::DiscardDeviceResources() {
     m_cachedInlineDiffRows.shrink_to_fit();
     m_structuredRenderer.DiscardDeviceResources();
     m_notebookView.DiscardDeviceResources();
+    m_packageManagerView.DiscardDeviceResources();
     m_erdView.DiscardDeviceResources();
     m_auditView.DiscardDeviceResources();
     m_cachedTestTaskRT = nullptr;
@@ -628,6 +630,23 @@ void EditorCanvas::EnsureCachedEditorBrushes(ID2D1RenderTarget* pRT, const Theme
     if (!pRT) return;
     const bool isDark = theme.IsDarkMode();
     if (m_hasCachedEditorBrushes && m_cachedEditorBrushRT == pRT && m_cachedEditorBrushDark == isDark) return;
+    if (m_cachedEditorBrushRT != nullptr && m_cachedEditorBrushRT != pRT) {
+        // Switching between main and floating window render targets: drop target-bound caches cleanly
+        m_pPhideLogoBitmap.Reset();
+        m_pWatermarkBitmap.Reset();
+        m_pWatermarkBitmapLight.Reset();
+        m_pDropZoneFillBrush.Reset();
+        m_pDragShadowBrush.Reset();
+        m_pDragPillBgDarkBrush.Reset();
+        m_pDragPillBgLightBrush.Reset();
+        m_pSnapBarBgDarkBrush.Reset();
+        m_pSnapBarBgLightBrush.Reset();
+        m_pSnapSlotIdleBrush.Reset();
+        m_learningHubBitmaps.clear();
+        m_packageManagerView.DiscardDeviceResources();
+        m_erdView.DiscardDeviceResources();
+        m_auditView.DiscardDeviceResources();
+    }
     m_cachedEditorBrushRT = pRT;
     m_cachedEditorBrushDark = isDark;
     m_hasCachedEditorBrushes = true;
@@ -784,6 +803,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     m_pCurrentGroups = &groups;
     m_visibleGutterTests.clear();
+    EnsureCachedEditorBrushes(pRT, theme);
 
     // 1. Fill dark workspace surface (#1E1E1E) with geometry curved ONLY at upper-left
     if (m_pCanvasGeometry) {
@@ -946,37 +966,40 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         }
     }
 
-    // Render floating refactor balloon popover if visible (Image 5)
-    if (m_showRefactorPopup) {
-        RenderRefactorPopup(pRT, theme, config, clientHeight);
-    }
+    // Render floating interactive overlays only for the HWND that currently owns them
+    if (!m_suppressFloatingOverlays) {
+        // Render floating refactor balloon popover if visible (Image 5)
+        if (m_showRefactorPopup) {
+            RenderRefactorPopup(pRT, theme, config, clientHeight);
+        }
 
-    // Render floating autocomplete suggestions popup (Image 5)
-    if (m_showAutocomplete && !m_autocompleteItems.empty()) {
-        RenderAutocompletePopup(pRT, theme, config, canvasLeft + canvasWidth, clientHeight);
-    }
+        // Render floating autocomplete suggestions popup (Image 5)
+        if (m_showAutocomplete && !m_autocompleteItems.empty()) {
+            RenderAutocompletePopup(pRT, theme, config, canvasLeft + canvasWidth, clientHeight);
+        }
 
-    // Section 2 interactive overlays (Peek / References / Call Hierarchy / Metrics, Inline Find Bar, Rename Widget, Breadcrumb Dropdown)
-    if (m_peekPanel.isOpen) {
-        RenderInlinePeekPanel(pRT, theme, config, clientHeight);
-    }
-    if (m_findBar.isOpen) {
-        RenderInlineFindBar(pRT, theme, config);
-    }
-    if (m_renameWidget.isOpen) {
-        RenderInlineRenameWidget(pRT, theme, config, clientHeight);
-    }
-    if (m_breadcrumbDropdownOpen) {
-        RenderBreadcrumbDropdown(pRT, theme, config, clientHeight);
-    }
-    if (m_codeActionMenu.visible) {
-        RenderCodeActionMenu(pRT, theme, config, clientHeight);
-    }
-    if (m_sigHelpPopup.visible) {
-        RenderSignatureHelpPopup(pRT, theme, config, clientHeight);
-    }
-    if (m_hoverCard.visible) {
-        RenderRichHoverCard(pRT, theme, config, clientHeight);
+        // Section 2 interactive overlays (Peek / References / Call Hierarchy / Metrics, Inline Find Bar, Rename Widget, Breadcrumb Dropdown)
+        if (m_peekPanel.isOpen) {
+            RenderInlinePeekPanel(pRT, theme, config, clientHeight);
+        }
+        if (m_findBar.isOpen) {
+            RenderInlineFindBar(pRT, theme, config);
+        }
+        if (m_renameWidget.isOpen) {
+            RenderInlineRenameWidget(pRT, theme, config, clientHeight);
+        }
+        if (m_breadcrumbDropdownOpen) {
+            RenderBreadcrumbDropdown(pRT, theme, config, clientHeight);
+        }
+        if (m_codeActionMenu.visible) {
+            RenderCodeActionMenu(pRT, theme, config, clientHeight);
+        }
+        if (m_sigHelpPopup.visible) {
+            RenderSignatureHelpPopup(pRT, theme, config, clientHeight);
+        }
+        if (m_hoverCard.visible) {
+            RenderRichHoverCard(pRT, theme, config, clientHeight);
+        }
     }
 
     if (m_floatingDebugActive && config.debugFloatingToolbar) {
@@ -1049,6 +1072,30 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         if (theme.brushTextSecondary) {
             pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
             pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
+        }
+
+        // Visual hint when dragging outside host window to undock/re-attach
+        if (m_tabSnapZone == editor::TabSnapZone::FloatingWindow) {
+            std::wstring floatHint = m_isRenderingFloatingWindow
+                ? L"Release over Main Window to Attach (or outside for New Window)"
+                : L"Release outside window to Undock into Floating Window";
+            const float hintW = config.ScaleF(m_isRenderingFloatingWindow ? 330.0f : 280.0f);
+            const float hintH = config.ScaleF(24.0f);
+            float hintX = std::clamp(m_dragTabPos.x - hintW * 0.5f, canvasLeft + config.ScaleF(8.0f),
+                                     (std::max)(canvasLeft + config.ScaleF(8.0f), canvasRight - hintW - config.ScaleF(8.0f)));
+            float hintY = std::clamp(m_dragTabPos.y + pillH * 0.5f + config.ScaleF(6.0f), headerH + config.ScaleF(6.0f),
+                                     (std::max)(headerH + config.ScaleF(6.0f), clientHeight - hintH - config.ScaleF(6.0f)));
+            D2D1_RECT_F rcHint = D2D1::RectF(hintX, hintY, hintX + hintW, hintY + hintH);
+            D2D1_ROUNDED_RECT rrcHint = D2D1::RoundedRect(rcHint, config.ScaleF(4.0f), config.ScaleF(4.0f));
+            if (pPillBg) pRT->FillRoundedRectangle(rrcHint, pPillBg);
+            if (theme.brushBrandAccent) pRT->DrawRoundedRectangle(rrcHint, theme.brushBrandAccent.Get(), 1.2f);
+            IDWriteTextFormat* pHintFmt = theme.fontHint ? theme.fontHint.Get() : pFmt;
+            if (pHintFmt && theme.brushTextPrimary) {
+                DWRITE_TEXT_ALIGNMENT prevA = pHintFmt->GetTextAlignment();
+                pHintFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pRT->DrawText(floatHint.c_str(), static_cast<UINT32>(floatHint.size()), pHintFmt, rcHint, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                pHintFmt->SetTextAlignment(prevA);
+            }
         }
     }
 }
@@ -1341,11 +1388,11 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         std::wstring title = doc.fileName.empty() ? L"Untitled-1" : doc.fileName;
         float textW = static_cast<float>(title.length()) * config.ScaleF(7.5f);
 
-        float tabW = config.ScaleF(16.0f + 16.0f + 42.0f) + textW;
+        float tabW = config.ScaleF(16.0f + 16.0f + 58.0f) + textW;
         if (tabCurve > 0.0f) {
             tabW += config.ScaleF(6.0f);
         }
-        tabW = (std::clamp)(tabW, config.ScaleF(100.0f), config.ScaleF(220.0f));
+        tabW = (std::clamp)(tabW, config.ScaleF(122.0f), config.ScaleF(244.0f));
         tabWidths[i] = tabW;
         sumW += tabW;
     }
@@ -1551,9 +1598,18 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
+        // Close & Undock Button Layout (reserve exact horizontal width so title & status dots never overlap)
+        const float closeSize = config.ScaleF(16.0f);
+        const float closeX = rcTab.right - config.ScaleF(20.0f);
+        const float closeY = headerH + (tabH - closeSize) / 2.0f;
+        const float undockX = closeX - config.ScaleF(19.0f);
+        bool hasErrors = !doc.diagnostics.empty();
+        float dotReserveW = (doc.isDirty && hasErrors) ? config.ScaleF(22.0f)
+                          : ((doc.isDirty || hasErrors) ? config.ScaleF(12.0f) : config.ScaleF(2.0f));
+
         // Title: preview tabs use fontTabPreview (italic), pinned tabs use fontTab (regular)
         float textStartX = rcTab.left + ((tabCurve > 0.0f) ? config.ScaleF(36.0f) : config.ScaleF(32.0f));
-        float textMaxW   = (std::max)(10.0f, rcTab.right - config.ScaleF(36.0f) - textStartX);
+        float textMaxW   = (std::max)(10.0f, undockX - dotReserveW - textStartX);
         D2D1_RECT_F rcTitle = D2D1::RectF(
             textStartX,
             headerH,
@@ -1563,7 +1619,6 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         IDWriteTextFormat* pTextFmt = doc.isPreview ? 
             (theme.fontTabPreview ? theme.fontTabPreview.Get() : theme.fontMenuItem.Get()) :
             (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
-        bool hasErrors = !doc.diagnostics.empty();
         ID2D1Brush* pTextBrush = hasErrors ?
             (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
             (isActive ? 
@@ -1576,16 +1631,15 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             pRT->PopAxisAlignedClip();
         }
 
-        // Close Tab Button (×)
-        const float closeSize = config.ScaleF(16.0f);
-        const float closeX = rcTab.right - config.ScaleF(20.0f);
-        const float closeY = headerH + (tabH - closeSize) / 2.0f;
+        D2D1_RECT_F rcUndock = D2D1::RectF(undockX, closeY, undockX + closeSize, closeY + closeSize);
+        doc.undockBounds = rcUndock;
+
         D2D1_RECT_F rcClose = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
         doc.closeBounds = rcClose;
 
         // Red Error Indicator on Tab (Image 3)
         if (hasErrors) {
-            float errDotX = closeX - config.ScaleF(doc.isDirty ? 18.0f : 9.0f);
+            float errDotX = undockX - config.ScaleF(doc.isDirty ? 16.0f : 7.0f);
             float errDotY = headerH + tabH / 2.0f;
             float errDotR = config.ScaleF(3.5f);
             D2D1_ELLIPSE elErr = D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR);
@@ -1594,11 +1648,43 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)
         if (doc.isDirty) {
-            float dotX = closeX - config.ScaleF(9.0f);
+            float dotX = undockX - config.ScaleF(7.0f);
             float dotY = headerH + tabH / 2.0f;
             float dotRadius = config.ScaleF(3.5f);
             D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius);
             pRT->FillEllipse(dot, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushBrandAccent.Get());
+        }
+
+        // Undock (↗) / Dock-Back (↙) Toggle Glyph on Tab
+        {
+            ID2D1Brush* uBrush = isActive ? theme.brushTextPrimary.Get() : theme.brushTextMuted.Get();
+            if (uBrush) {
+                const float ucx = undockX + closeSize * 0.5f;
+                const float ucy = closeY + closeSize * 0.5f;
+                const float ur = config.ScaleF(4.0f);
+                // Base mini-window frame outline (open top-right corner for Undock or subtle box for Dock-Back)
+                pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx, ucy - ur), uBrush, 1.15f);
+                pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx - ur, ucy + ur), uBrush, 1.15f);
+                pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy + ur), uBrush, 1.15f);
+                pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy), uBrush, 1.15f);
+                if (!m_isRenderingFloatingWindow) {
+                    // Pop-out diagonal arrow pointing up-right (↗)
+                    pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(0.5f), ucy + config.ScaleF(0.5f)),
+                                  D2D1::Point2F(ucx + ur, ucy - ur), uBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur),
+                                  D2D1::Point2F(ucx + ur - config.ScaleF(3.2f), ucy - ur), uBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur),
+                                  D2D1::Point2F(ucx + ur, ucy - ur + config.ScaleF(3.2f)), uBrush, 1.3f);
+                } else {
+                    // Dock-back diagonal arrow pointing down-left into frame (↙)
+                    pRT->DrawLine(D2D1::Point2F(ucx + ur + config.ScaleF(0.5f), ucy - ur - config.ScaleF(0.5f)),
+                                  D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)), uBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)),
+                                  D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy - config.ScaleF(2.0f)), uBrush, 1.3f);
+                    pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)),
+                                  D2D1::Point2F(ucx + config.ScaleF(2.0f), ucy + config.ScaleF(1.0f)), uBrush, 1.3f);
+                }
+            }
         }
 
         // Pin glyph (when pinned: click unpins) or Vector '×' close mark
@@ -6964,7 +7050,17 @@ int EditorCanvas::HitTestTab(POINT pt, const std::vector<editor::OpenDocument>& 
 int EditorCanvas::HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
     for (size_t i = 0; i < docs.size(); ++i) {
         const auto& b = docs[i].closeBounds;
-        if (pt.x >= b.left - 4 && pt.x <= b.right + 4 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
+        if (b.right > b.left && pt.x >= b.left - 1 && pt.x <= b.right + 3 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int EditorCanvas::HitTestTabUndock(POINT pt, const std::vector<editor::OpenDocument>& docs) const {
+    for (size_t i = 0; i < docs.size(); ++i) {
+        const auto& b = docs[i].undockBounds;
+        if (b.right > b.left && pt.x >= b.left - 1 && pt.x <= b.right + 1 && pt.y >= b.top - 4 && pt.y <= b.bottom + 4) {
             return static_cast<int>(i);
         }
     }
@@ -9892,10 +9988,16 @@ void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, c
     // Canvas background
     pRT->FillRectangle(rcView, theme.brushCanvasBg.Get());
 
+    if (doc.pImageBitmap && doc.pImageBitmapRT != pRT) {
+        doc.pImageBitmap.Reset();
+        doc.pImageBitmapRT = nullptr;
+    }
+
     // Load icon bitmap if not yet cached
     if (!doc.pImageBitmap) {
         std::wstring iconFile = L"assets\\extensions\\" + meta.id + L"\\icon.png";
         doc.pImageBitmap = CanvasLoadPngBitmap(pRT, iconFile);
+        if (doc.pImageBitmap) doc.pImageBitmapRT = pRT;
     }
 
     // DirectWrite fonts

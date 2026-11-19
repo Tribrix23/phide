@@ -221,6 +221,23 @@ public:
     [[nodiscard]] int HitTestTabClose(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
 
     /**
+     * @brief Tests if mouse clicked any tab's undock/dock toggle button (↗ / ↙).
+     * @param pt Mouse point in client coordinates.
+     * @param docs Collection of open documents in the target pane.
+     * @return Tab index (0-based) or -1 if no undock/dock button hit.
+     */
+    [[nodiscard]] int HitTestTabUndock(POINT pt, const std::vector<editor::OpenDocument>& docs) const;
+
+    /**
+     * @brief Sets whether EditorCanvas is currently rendering inside a floating/undocked window
+     *        so per-tab controls display Dock-Back (↙) instead of Undock (↗).
+     */
+    void SetRenderingFloatingWindow(bool isFloating) noexcept { m_isRenderingFloatingWindow = isFloating; }
+    [[nodiscard]] bool IsRenderingFloatingWindow() const noexcept { return m_isRenderingFloatingWindow; }
+    void SetSuppressFloatingOverlays(bool suppress) noexcept { m_suppressFloatingOverlays = suppress; }
+    [[nodiscard]] bool IsSuppressingFloatingOverlays() const noexcept { return m_suppressFloatingOverlays; }
+
+    /**
      * @brief Tests if mouse clicked on the vertical scrollbar track or thumb.
      * @param pt Mouse point in client coordinates.
      * @param doc Active document containing scrollbar geometry.
@@ -653,6 +670,8 @@ private:
     std::vector<TodoCheckboxHit> m_visibleTodoCheckboxes;
 
     // Tab Drag & Drop State
+    bool m_isRenderingFloatingWindow = false;
+    bool m_suppressFloatingOverlays = false;
     bool m_isDraggingTab = false;
     int m_dragTabGroup = -1;
     int m_dragTabIdx = -1;

@@ -1347,7 +1347,8 @@ void PopupMenu::OpenTabContextMenu(float x, float y, const app::AppConfig& confi
                                     bool isPinned, bool hasFilePath,
                                     bool canCloseOthers, bool canCloseRight,
                                     bool canCloseSaved, bool canToggleStructured,
-                                    float clientW, float clientH) {
+                                    float clientW, float clientH,
+                                    bool isFloatingWindow) {
     m_isOpen = true;
     m_hoveredMainIdx = -1;
     m_activeSubmenuIdx = -1;
@@ -1365,6 +1366,11 @@ void PopupMenu::OpenTabContextMenu(float x, float y, const app::AppConfig& confi
     }
     m_items.push_back({ MenuActionId::None,                L"",                          L"",       true,  false, false, false, {}, {} });
     m_items.push_back({ MenuActionId::TabSplitRight,       L"Split Right",               L"Ctrl+\\", false, false, false, true, {}, {} });
+    if (isFloatingWindow) {
+        m_items.push_back({ MenuActionId::TabDockToMainWindow, L"Attach / Dock to Main Window", L"", false, false, false, true, {}, {} });
+    } else {
+        m_items.push_back({ MenuActionId::TabUndockFloating,   L"Undock Tab to Floating Window", L"", false, false, false, true, {}, {} });
+    }
     m_items.push_back({ MenuActionId::TabMoveNewWindow,    L"Move into New Window",      L"",       false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::TabCopyNewWindow,    L"Copy into New Window",      L"",       false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::None,                L"",                          L"",       true,  false, false, false, {}, {} });

@@ -3135,6 +3135,9 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
     float nr = config.ScaleF(4.0f);
 
     if (m_showToolbar) {
+        const float rightControlsReserve = config.ScaleF(m_isDebugActive ? 344.0f : 136.0f);
+        const float tabStripMaxX = (std::max)(curX + config.ScaleF(20.0f), x + w - rightControlsReserve);
+        pRT->PushAxisAlignedClip(D2D1::RectF(curX, y, tabStripMaxX, y + h), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         // Tabs List: "Local x", "Local (2) x"
         for (size_t i = 0; i < m_tabs.size(); ++i) {
             auto& tab = m_tabs[i];
@@ -3227,6 +3230,7 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         float sr = config.ScaleF(3.0f);
         pRT->DrawLine(D2D1::Point2F(scx - sr, scy - sr * 0.5f), D2D1::Point2F(scx, scy + sr * 0.7f), theme.brushTextSecondary.Get(), 1.3f);
         pRT->DrawLine(D2D1::Point2F(scx, scy + sr * 0.7f), D2D1::Point2F(scx + sr, scy - sr * 0.5f), theme.brushTextSecondary.Get(), 1.3f);
+        pRT->PopAxisAlignedClip();
     } else {
         m_newTabBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
         m_shellDropdownBtnBounds = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
@@ -3270,6 +3274,41 @@ void TerminalPanel::RenderHeader(ID2D1RenderTarget* pRT, Theme& theme, const app
         // Draw restore double overlapping boxes
         pRT->DrawRectangle(D2D1::RectF(fcx - fSize + 2.0f, fcy - fSize - 2.0f, fcx + fSize + 2.0f, fcy + fSize - 2.0f), theme.brushTextSecondary.Get(), 1.0f);
         pRT->DrawRectangle(D2D1::RectF(fcx - fSize - 1.0f, fcy - fSize + 1.0f, fcx + fSize - 1.0f, fcy + fSize + 1.0f), theme.brushTextSecondary.Get(), 1.2f);
+    }
+
+    // Undock (↗) / Dock-Back (↙) Floating Window Button
+    rightX -= (btnSize + config.ScaleF(4.0f));
+    m_undockBtnBounds = D2D1::RectF(rightX, btnY, rightX + btnSize, btnY + btnSize);
+    if (m_hoverUndock || m_dockPosition == 3) {
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_undockBtnBounds, 3.0f, 3.0f);
+        pRT->FillRoundedRectangle(rrc, (m_dockPosition == 3) ? theme.brushBrandAccent.Get() : theme.brushItemHover.Get());
+    }
+    {
+        ID2D1Brush* uBrush = (m_dockPosition == 3) ? theme.brushTextWhite.Get() : theme.brushTextSecondary.Get();
+        float ucx = rightX + btnSize * 0.5f;
+        float ucy = btnY + btnSize * 0.5f;
+        float ur = config.ScaleF(4.3f);
+        pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx, ucy - ur), uBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx - ur, ucy + ur), uBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy + ur), uBrush, 1.2f);
+        pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy), uBrush, 1.2f);
+        if (m_dockPosition != 3) {
+            // Up-right arrow (↗) to undock into floating window
+            pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(0.5f), ucy + config.ScaleF(0.5f)),
+                          D2D1::Point2F(ucx + ur, ucy - ur), uBrush, 1.35f);
+            pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur),
+                          D2D1::Point2F(ucx + ur - config.ScaleF(3.3f), ucy - ur), uBrush, 1.35f);
+            pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur),
+                          D2D1::Point2F(ucx + ur, ucy - ur + config.ScaleF(3.3f)), uBrush, 1.35f);
+        } else {
+            // Down-left arrow (↙) to dock back into main window
+            pRT->DrawLine(D2D1::Point2F(ucx + ur + config.ScaleF(0.5f), ucy - ur - config.ScaleF(0.5f)),
+                          D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)), uBrush, 1.35f);
+            pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)),
+                          D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy - config.ScaleF(2.2f)), uBrush, 1.35f);
+            pRT->DrawLine(D2D1::Point2F(ucx - config.ScaleF(1.0f), ucy + config.ScaleF(1.0f)),
+                          D2D1::Point2F(ucx + config.ScaleF(2.2f), ucy + config.ScaleF(1.0f)), uBrush, 1.35f);
+        }
     }
 
     // Split Terminal Button [|] (Images 4 & 5)
@@ -4234,9 +4273,10 @@ void TerminalPanel::RenderOptionsMenu(ID2D1RenderTarget* pRT, Theme& theme, cons
         std::vector<std::wstring> moveItems = {
             (m_dockPosition == 0 ? L"✓ Panel (Bottom)" : L"  Panel (Bottom)"),
             (m_dockPosition == 1 ? L"✓ Editor Area" : L"  Editor Area"),
-            (m_dockPosition == 2 ? L"✓ Right Side" : L"  Right Side")
+            (m_dockPosition == 2 ? L"✓ Right Side" : L"  Right Side"),
+            (m_dockPosition == 3 ? L"✓ Floating Window" : L"  Floating Window")
         };
-        drawSubmenu(moveItems, m_optionsItemBounds[7].top, config.ScaleF(150.0f),
+        drawSubmenu(moveItems, m_optionsItemBounds[7].top, config.ScaleF(158.0f),
                     m_moveToSubmenuBounds, m_moveToSubmenuItemBounds, m_hoveredMoveToSubmenuItem);
     }
 
@@ -4354,7 +4394,7 @@ bool TerminalPanel::HitTest(POINT pt) const noexcept {
 
 bool TerminalPanel::HitTestSplitter(POINT pt) const noexcept {
     if (!m_isOpen) return false;
-    if (m_dockPosition == 1) return false; // Editor area: no resize splitter
+    if (m_dockPosition == 1 || m_dockPosition == 3) return false; // Editor area / Floating window: no dock splitter
     if (m_dockPosition == 2) {
         // Right side: vertical splitter
         return pt.x >= static_cast<LONG>(m_splitterBounds.left - 4.0f) &&
@@ -6166,6 +6206,7 @@ bool TerminalPanel::HitTestButtons(POINT pt) const noexcept {
     }
     if (inRect(pt, m_newTabBtnBounds) || inRect(pt, m_shellDropdownBtnBounds) ||
         inRect(pt, m_splitBtnBounds) || inRect(pt, m_optionsBtnBounds) ||
+        inRect(pt, m_undockBtnBounds) ||
         inRect(pt, m_fullScreenBtnBounds) || inRect(pt, m_minimizeBtnBounds) ||
         inRect(pt, m_clearConsoleBtnBounds)) {
         return true;
@@ -6594,6 +6635,15 @@ bool TerminalPanel::OnMouseDown(POINT pt, const app::AppConfig& config, const st
         }
     }
 
+    // Check Undock / Dock Floating Window Button (↗ / ↙)
+    if (inRect(pt, m_undockBtnBounds)) {
+        m_dockPosition = (m_dockPosition == 3) ? 0 : 3;
+        if (m_onMoveToPosition) {
+            m_onMoveToPosition(m_dockPosition);
+        }
+        return true;
+    }
+
     // Check Full Screen / Maximize Button
     if (inRect(pt, m_fullScreenBtnBounds)) {
         ToggleFullScreen();
@@ -6727,6 +6777,7 @@ bool TerminalPanel::OnMouseMove(POINT pt, bool isLButtonDown, float clientH) {
     m_hoverShellDropdown = inRect(pt, m_shellDropdownBtnBounds);
     m_hoverSplitBtn = inRect(pt, m_splitBtnBounds);
     m_hoverOptions = inRect(pt, m_optionsBtnBounds);
+    m_hoverUndock = inRect(pt, m_undockBtnBounds);
     m_hoverFullScreen = inRect(pt, m_fullScreenBtnBounds);
     m_hoverMinimize = inRect(pt, m_minimizeBtnBounds);
     m_hoverClearConsole = inRect(pt, m_clearConsoleBtnBounds);

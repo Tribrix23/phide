@@ -51,6 +51,7 @@ struct OpenDocument {
     std::wstring viewType;       ///< Special view identifier (e.g. L"keybindings", L"course")
     std::wstring courseId;       ///< Course identifier for course special views (e.g. L"python-1")
     D2D1_RECT_F tabBounds{};     ///< Screen bounding box of the tab
+    D2D1_RECT_F undockBounds{};  ///< Screen bounding box of the tab undock/dock toggle button
     D2D1_RECT_F closeBounds{};   ///< Screen bounding box of the tab close button (×)
     D2D1_RECT_F splitTabBounds{};   ///< Screen bounding box of the tab in secondary/right split pane
     D2D1_RECT_F splitCloseBounds{}; ///< Screen bounding box of tab close button in right split pane
@@ -1337,6 +1338,7 @@ struct OpenDocument {
     bool isFontView = false;            ///< True if this document is displaying a font asset (.ttf/.otf/.woff/.woff2)
     bool svgSplitPreview = false;       ///< True if .svg file displays live Direct2D preview side-by-side with XML
     Microsoft::WRL::ComPtr<ID2D1Bitmap> pImageBitmap; ///< Decoded Direct2D bitmap
+    ID2D1RenderTarget* pImageBitmapRT = nullptr;      ///< Render target owning pImageBitmap (for safe multi-window domain invalidation)
     UINT imageWidth = 0;                ///< Pixel width of the decoded image
     UINT imageHeight = 0;               ///< Pixel height of the decoded image
     uint64_t imageFileSize = 0;         ///< File size on disk in bytes
@@ -1697,6 +1699,7 @@ struct OpenDocument {
         structuredView.reset();
         assetView.reset();
         pImageBitmap.Reset();
+        pImageBitmapRT = nullptr;
         buffer.RunGarbageCollection();
     }
 
@@ -1762,7 +1765,8 @@ enum class TabSnapZone : int {
     BottomLeft = 8,         ///< Snap to Bottom-Left quadrant (LeftSplitRightFull / Grid2x2)
     TopRight = 9,           ///< Snap to Top-Right quadrant (LeftFullRightSplit / Grid2x2)
     BottomRight = 10,       ///< Snap to Bottom-Right quadrant (LeftFullRightSplit / Grid2x2)
-    SnapBarSlot = 11        ///< Dropped directly onto a slot in the top-center Windows Snap Layout Bar
+    SnapBarSlot = 11,       ///< Dropped directly onto a slot in the top-center Windows Snap Layout Bar
+    FloatingWindow = 12     ///< Dragged outside host window to undock/re-attach into a floating window
 };
 
 /**

@@ -574,6 +574,12 @@ void AssetViewerRenderer::RenderRasterImageView(ID2D1RenderTarget* pRT, Theme& t
         st->pixelFormatName.clear();
     }
 
+    // Drop stale bitmap if rendering onto a different floating/main HWND render target
+    if (doc.pImageBitmap && doc.pImageBitmapRT != pRT) {
+        doc.pImageBitmap.Reset();
+        doc.pImageBitmapRT = nullptr;
+    }
+
     // Load WIC bitmap + pixel metadata + quantized dominant color palette once
     if ((!doc.pImageBitmap || !st->imageMetadataLoaded) && !doc.filePath.empty()) {
         ComPtr<IWICImagingFactory> pWicFactory;
@@ -613,7 +619,9 @@ void AssetViewerRenderer::RenderRasterImageView(ID2D1RenderTarget* pRT, Theme& t
                                                              WICBitmapDitherTypeNone, nullptr, 0.0,
                                                              WICBitmapPaletteTypeCustom))) {
                             if (!doc.pImageBitmap) {
-                                pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &doc.pImageBitmap);
+                                if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &doc.pImageBitmap))) {
+                                    doc.pImageBitmapRT = pRT;
+                                }
                             }
                             if (!st->imageMetadataLoaded) {
                                 ExtractDominantColors(pConverter.Get(), doc.imageWidth, doc.imageHeight, st->dominantColors);

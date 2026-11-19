@@ -54,6 +54,65 @@
 
 namespace phide::app {
 
+/**
+ * @brief RAII scope guard that temporarily binds Window's active HWND, RenderTarget,
+ *        Theme brushes, and EditorGroup collection to a secondary FloatingDockWindow.
+ *
+ * Ensures Direct2D resources remain strictly isolated per RenderTarget and guarantees
+ * restoration of main-window state on every return path (including early returns).
+ */
+struct Window::ScopedFloatingEditorContext {
+    Window& w;
+    FloatingDockWindow& fw;
+    FloatingDockWindow* prevActive = nullptr;
+    HWND prevHwnd = nullptr;
+    int prevFocusedGroup = 0;
+    editor::EditorSplitState prevSplitState{};
+    bool active = false;
+
+    ScopedFloatingEditorContext(Window& win, FloatingDockWindow& floatWin)
+        : w(win)
+        , fw(floatWin)
+        , prevActive(win.m_activeFloatingWindow)
+        , prevHwnd(win.m_hwnd.load())
+        , prevFocusedGroup(win.m_focusedGroupIdx)
+        , prevSplitState(win.m_splitState)
+        , active(true) {
+        w.m_activeFloatingWindow = &fw;
+        w.m_hwnd.store(fw.hwnd);
+        std::swap(w.m_pRenderTarget, fw.pRenderTarget);
+        std::swap(w.m_theme, fw.theme);
+        if (fw.kind == FloatingDockKind::EditorGroup) {
+            std::swap(w.m_editorGroups, fw.editorGroups);
+            w.m_focusedGroupIdx = fw.focusedGroupIdx;
+            w.m_splitState = fw.splitState;
+        }
+    }
+
+    ~ScopedFloatingEditorContext() {
+        Restore();
+    }
+
+    void Restore() {
+        if (!active) return;
+        active = false;
+        if (fw.kind == FloatingDockKind::EditorGroup) {
+            fw.focusedGroupIdx = w.m_focusedGroupIdx;
+            fw.splitState = w.m_splitState;
+            std::swap(w.m_editorGroups, fw.editorGroups);
+            w.m_focusedGroupIdx = prevFocusedGroup;
+            w.m_splitState = prevSplitState;
+        }
+        std::swap(w.m_theme, fw.theme);
+        std::swap(w.m_pRenderTarget, fw.pRenderTarget);
+        w.m_hwnd.store(prevHwnd);
+        w.m_activeFloatingWindow = prevActive;
+    }
+
+    ScopedFloatingEditorContext(const ScopedFloatingEditorContext&) = delete;
+    ScopedFloatingEditorContext& operator=(const ScopedFloatingEditorContext&) = delete;
+};
+
 struct CachedCssTextEntry {
     std::filesystem::file_time_type mtime{};
     std::wstring text;
@@ -389,6 +448,7 @@ Window::Window() {
 
 Window::~Window() {
     m_isDestroying.store(true);
+    DestroyAllFloatingWindows();
     m_lsp.SetDiagnosticsCallback(nullptr);
     m_lsp.Shutdown();
     {
@@ -1176,10 +1236,11 @@ void Window::StartWorkspaceWatcher(const std::wstring& folderPath) {
                 if (hasTreeStructChange || hasContentModify || hasGitMetaChange) {
                     // Coalesce rapid disk events (debounced quiet period: 200ms)
                     Sleep(200);
-                    if (self->m_hwnd) {
+                    HWND postHwnd = self->GetMainPostHwnd();
+                    if (postHwnd && !self->m_isDestroying.load()) {
                         WPARAM kind = hasTreeStructChange ? 0 : (hasContentModify ? 2 : 1);
                         LPARAM envFlag = hasEnvChange ? 1 : 0;
-                        PostMessageW(self->m_hwnd, WM_USER + 202, kind, envFlag);
+                        PostMessageW(postHwnd, WM_USER + 202, kind, envFlag);
                     }
                 }
             } else {
@@ -1209,6 +1270,10 @@ void Window::StopWorkspaceWatcher() {
 }
 
 void Window::SaveSessionState() {
+    // Do not overwrite main session.json when temporarily executing inside a floating dock context
+    if (m_activeFloatingWindow != nullptr) {
+        return;
+    }
     // If opened as a clean new window and user hasn't opened any folder or files, do not overwrite primary session state
     if (m_isCleanNewWindow && !m_drawer.HasOpenFolder() && GetActiveGroup().docs.empty()) {
         return;
@@ -2301,6 +2366,12 @@ void Window::ToggleZenMode() {
 }
 
 void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const {
+    if (m_activeFloatingWindow) {
+        // Editor-only floating window occupies 100% of width (no rail, drawer, or right sidebar)
+        outCanvasLeft = 0.0f;
+        outCanvasWidth = (std::max)(100.0f, clientW);
+        return;
+    }
     const float railW = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.railWidth));
     const float currentDrawerW = m_config.zenMode ? 0.0f : (m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress);
 
@@ -2338,8 +2409,8 @@ void Window::UpdateEditorGroupBounds() noexcept {
     const float clientH = static_cast<float>(rc.bottom - rc.top);
     float canvasLeft = 0.0f, canvasWidth = 0.0f;
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
-    const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    const float headerH = EffectiveHeaderHeight();
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode && !m_activeFloatingWindow) ? m_config.ScaleF(22.0f) : 0.0f;
     const float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
     const float termGap = (!m_config.zenMode && ((m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0) || IsBottomProblemsVisible()))
         ? m_config.ScaleF(6.0f) : 0.0f;
@@ -2382,8 +2453,8 @@ int Window::HitTestEditorSplitter(POINT pt) const noexcept {
     const float clientH = static_cast<float>(rc.bottom - rc.top);
     float canvasLeft = 0.0f, canvasWidth = 0.0f;
     GetCanvasLayout(clientW, canvasLeft, canvasWidth);
-    const float headerH = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
-    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
+    const float headerH = EffectiveHeaderHeight();
+    const float statusBarH = (m_config.showStatusBar && !m_config.zenMode && !m_activeFloatingWindow) ? m_config.ScaleF(22.0f) : 0.0f;
     const float termH = m_config.zenMode ? 0.0f : GetCurrentBottomDockHeight(clientH);
     const float termGap = (!m_config.zenMode && ((m_terminalAnimProgress > 0.001f && m_terminal.IsOpen() && m_terminal.GetDockPosition() == 0) || IsBottomProblemsVisible()))
         ? m_config.ScaleF(6.0f) : 0.0f;
@@ -3636,7 +3707,7 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
         std::wstring repoDir = m_drawer.GetOpenFolderPath();
         if (repoDir.empty()) repoDir = L".";
 
-        std::thread([this, hwnd = m_hwnd, gen, commitHash, relPath, repoDir, commitMsg, author, dateStr, commitFiles]() mutable {
+        std::thread([this, hwnd = GetMainPostHwnd(), gen, commitHash, relPath, repoDir, commitMsg, author, dateStr, commitFiles]() mutable {
             try {
                 if (m_isDestroying.load()) return;
 
@@ -4719,6 +4790,25 @@ void Window::CloseDocument(int groupIdx, int docIdx, bool forceClosePinned) {
     }
 
     CollapseEmptyEditorGroups();
+    if (m_activeFloatingWindow) {
+        bool anyDocsRemaining = false;
+        for (const auto& g : m_editorGroups) {
+            if (!g.docs.empty()) {
+                anyDocsRemaining = true;
+                break;
+            }
+        }
+        if (!anyDocsRemaining) {
+            PendingFloatingAction act{};
+            act.kind = PendingFloatingAction::Kind::CloseFloatingEditor;
+            act.winId = m_activeFloatingWindow->id;
+            m_pendingFloatingActions.push_back(act);
+            if (HWND postHwnd = GetMainPostHwnd()) {
+                PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+            }
+            return;
+        }
+    }
     ClearExplorerSelectionOverride();
     SyncActiveTabWithDrawer();
     UpdateDrawerDirtyFiles();
@@ -6058,7 +6148,17 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
     if (actionCmd == L"cmd_move_editor_new_window") {
         if (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size())) {
-            DetachEditorToNewWindow(m_focusedGroupIdx, m_editorGroups[m_focusedGroupIdx].activeDocIdx, true);
+            int docIdx = m_editorGroups[m_focusedGroupIdx].activeDocIdx;
+            if (m_activeFloatingWindow) {
+                PendingFloatingAction act{};
+                act.kind = PendingFloatingAction::Kind::DockOneTabToMain;
+                act.winId = m_activeFloatingWindow->id;
+                act.groupIdx = m_focusedGroupIdx;
+                act.docIdx = docIdx;
+                m_pendingFloatingActions.push_back(act);
+            } else {
+                UndockTabToFloatingWindow(m_focusedGroupIdx, docIdx);
+            }
         }
         return;
     }
@@ -6595,7 +6695,7 @@ void Window::RefreshActiveFileHistoryAsync(const std::wstring& fullPath) {
         if (m_isDestroying.load()) return;
         ++m_activeBgWorkers;
     }
-    HWND hwnd = m_hwnd;
+    HWND hwnd = GetMainPostHwnd();
     std::thread([this, fullPath, relPath, repoDir, hwnd]() {
         struct Guard {
             Window* self;
@@ -6797,34 +6897,42 @@ void Window::UpdateDrawerDirtyFiles() {
     for (auto& c : normRoot) if (c == L'/') c = L'\\';
 
     std::vector<std::wstring> dirtyPaths;
-    for (const auto& group : m_editorGroups) {
-        for (const auto& doc : group.docs) {
-            // Must have a real file on disk and not be virtual/special/untitled
-            if (doc.filePath.empty() || doc.isSpecialView) continue;
-            if (doc.fileName.rfind(L"Untitled", 0) == 0 || doc.filePath.rfind(L"Untitled", 0) == 0) continue;
+    auto collectDirty = [&](const std::vector<editor::EditorGroup>& groups) {
+        for (const auto& group : groups) {
+            for (const auto& doc : group.docs) {
+                // Must have a real file on disk and not be virtual/special/untitled
+                if (doc.filePath.empty() || doc.isSpecialView) continue;
+                if (doc.fileName.rfind(L"Untitled", 0) == 0 || doc.filePath.rfind(L"Untitled", 0) == 0) continue;
 
-            // Must strictly reside inside the workspace project folder
-            std::wstring normPath = doc.filePath;
-            for (auto& c : normPath) if (c == L'/') c = L'\\';
+                // Must strictly reside inside the workspace project folder
+                std::wstring normPath = doc.filePath;
+                for (auto& c : normPath) if (c == L'/') c = L'\\';
 
-            if (normPath.length() <= normRoot.length() + 1 ||
-                _wcsnicmp(normPath.c_str(), normRoot.c_str(), normRoot.length()) != 0 ||
-                normPath[normRoot.length()] != L'\\') {
-                continue; // Outside project folder, never track in Git
+                if (normPath.length() <= normRoot.length() + 1 ||
+                    _wcsnicmp(normPath.c_str(), normRoot.c_str(), normRoot.length()) != 0 ||
+                    normPath[normRoot.length()] != L'\\') {
+                    continue; // Outside project folder, never track in Git
+                }
+
+                // Never track internal IDE or git metadata files
+                std::wstring rel = normPath.substr(normRoot.length() + 1);
+                if (rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
+                    rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
+                    continue;
+                }
+
+                if (doc.isDirty) {
+                    if (doc.isDiffView && doc.diffHunks.empty()) continue;
+                    if (!doc.isDiffView && !doc.originalDiskText.empty() && doc.buffer.GetText() == doc.originalDiskText) continue;
+                    dirtyPaths.push_back(doc.filePath);
+                }
             }
-
-            // Never track internal IDE or git metadata files
-            std::wstring rel = normPath.substr(normRoot.length() + 1);
-            if (rel == L".git" || rel.rfind(L".git\\", 0) == 0 ||
-                rel == L".phide" || rel.rfind(L".phide\\", 0) == 0) {
-                continue;
-            }
-
-            if (doc.isDirty) {
-                if (doc.isDiffView && doc.diffHunks.empty()) continue;
-                if (!doc.isDiffView && !doc.originalDiskText.empty() && doc.buffer.GetText() == doc.originalDiskText) continue;
-                dirtyPaths.push_back(doc.filePath);
-            }
+        }
+    };
+    collectDirty(m_editorGroups);
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            collectDirty(fw->editorGroups);
         }
     }
     m_drawer.SetDirtyFiles(dirtyPaths);
@@ -6832,18 +6940,26 @@ void Window::UpdateDrawerDirtyFiles() {
 
 void Window::UpdateDrawerErrorFiles() {
     std::map<std::wstring, size_t> errorFiles;
-    for (const auto& group : m_editorGroups) {
-        for (const auto& doc : group.docs) {
-            if (!doc.diagnostics.empty() && !doc.isSpecialView) {
-                size_t actionableCount = 0;
-                for (const auto& d : doc.diagnostics) {
-                    if (!d.isUnnecessary && d.severity <= 2) ++actionableCount;
-                }
-                std::wstring key = !doc.filePath.empty() ? doc.filePath : doc.fileName;
-                if (!key.empty() && actionableCount > 0) {
-                    errorFiles[key] = actionableCount;
+    auto collectErrors = [&](const std::vector<editor::EditorGroup>& groups) {
+        for (const auto& group : groups) {
+            for (const auto& doc : group.docs) {
+                if (!doc.diagnostics.empty() && !doc.isSpecialView) {
+                    size_t actionableCount = 0;
+                    for (const auto& d : doc.diagnostics) {
+                        if (!d.isUnnecessary && d.severity <= 2) ++actionableCount;
+                    }
+                    std::wstring key = !doc.filePath.empty() ? doc.filePath : doc.fileName;
+                    if (!key.empty() && actionableCount > 0) {
+                        errorFiles[key] = actionableCount;
+                    }
                 }
             }
+        }
+    };
+    collectErrors(m_editorGroups);
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            collectErrors(fw->editorGroups);
         }
     }
     m_drawer.SetErrorFiles(errorFiles);
@@ -7611,33 +7727,39 @@ void Window::DoCommandPalette() {
 }
 
 void Window::DoZoomIn() {
-    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
+    if (!m_drawer.HasOpenFolder() && m_floatingWindows.empty()) return; // Disabled when no project is open
     if (m_config.fontSize < 36.0f) {
         m_config.fontSize += 2.0f;
         m_config.zoomLevel = m_config.fontSize / 15.0f;
         m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
         m_editor.ResetCharWidth();
+        SyncThemeAndFontToFloatingWindows();
+        if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoZoomOut() {
-    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
+    if (!m_drawer.HasOpenFolder() && m_floatingWindows.empty()) return; // Disabled when no project is open
     if (m_config.fontSize > 8.0f) {
         m_config.fontSize -= 2.0f;
         m_config.zoomLevel = m_config.fontSize / 15.0f;
         m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
         m_editor.ResetCharWidth();
+        SyncThemeAndFontToFloatingWindows();
+        if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 }
 
 void Window::DoResetZoom() {
-    if (!m_drawer.HasOpenFolder()) return; // Disabled when no project is open
+    if (!m_drawer.HasOpenFolder() && m_floatingWindows.empty()) return; // Disabled when no project is open
     m_config.fontSize = 15.0f;
     m_config.zoomLevel = 1.0f;
     m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
     m_editor.ResetCharWidth();
+    SyncThemeAndFontToFloatingWindows();
+    if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
@@ -7968,10 +8090,12 @@ static void OpenInlineFindOrReplace(editor::OpenDocument* pDoc, ui::EditorCanvas
 }
 
 void Window::DoFind() {
+    m_editorOverlayOwnerHwnd = m_hwnd.load();
     OpenInlineFindOrReplace(GetActiveDoc(), m_editor, m_hwnd, false, [this]() { DoShowSearch(); });
 }
 
 void Window::DoReplace() {
+    m_editorOverlayOwnerHwnd = m_hwnd.load();
     OpenInlineFindOrReplace(GetActiveDoc(), m_editor, m_hwnd, true, [this]() { DoShowReplace(); });
 }
 
@@ -8167,6 +8291,14 @@ void Window::DoShowSourceControl() {
 
 void Window::AnimateTerminalOpen() {
     m_bottomProblemsActive = false;
+    if (m_terminal.GetDockPosition() == 3) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(true);
+        UndockTerminalToFloatingWindow();
+        return;
+    }
     if (m_terminal.GetDockPosition() == 1) {
         m_targetTerminalProgress = 0.0f;
         m_terminalAnimProgress = 0.0f;
@@ -8190,6 +8322,14 @@ void Window::AnimateTerminalOpen() {
 }
 
 void Window::AnimateTerminalClose() {
+    if (m_terminal.GetDockPosition() == 3) {
+        m_targetTerminalProgress = 0.0f;
+        m_terminalAnimProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        DockTerminalToMainWindow(0);
+        m_terminal.SetIsOpen(false);
+        return;
+    }
     if (m_terminal.GetDockPosition() == 1) {
         m_targetTerminalProgress = 0.0f;
         m_terminalAnimProgress = 0.0f;
@@ -8226,6 +8366,33 @@ void Window::DoCreateTerminal() {
     std::wstring dir;
     if (m_drawer.HasOpenFolder()) {
         dir = m_drawer.GetOpenFolderPath();
+    }
+    if (m_terminal.GetDockPosition() == 3) {
+        FloatingDockWindow* existingTermFw = nullptr;
+        for (const auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::TerminalPanel) {
+                existingTermFw = fw.get();
+                break;
+            }
+        }
+        if (existingTermFw && existingTermFw->hwnd && IsWindowVisible(existingTermFw->hwnd)) {
+            if (GetForegroundWindow() != existingTermFw->hwnd) {
+                if (IsIconic(existingTermFw->hwnd)) ShowWindow(existingTermFw->hwnd, SW_RESTORE);
+                SetForegroundWindow(existingTermFw->hwnd);
+                SetFocus(existingTermFw->hwnd);
+            } else {
+                PendingFloatingAction act{};
+                act.kind = PendingFloatingAction::Kind::CloseFloatingTerminal;
+                act.winId = existingTermFw->id;
+                m_pendingFloatingActions.push_back(act);
+                ProcessPendingFloatingActions();
+            }
+        } else {
+            UndockTerminalToFloatingWindow();
+        }
+        SaveSessionState();
+        if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+        return;
     }
     if (m_terminal.GetDockPosition() == 1) {
         OpenSpecialView(L"terminal", L"Terminal");
@@ -10642,8 +10809,8 @@ void Window::ExecuteDiscardOrRestoreAsync(const std::wstring& targetPath, const 
         return;
     }
 
-    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
-    HWND hwnd = m_hwnd;
+    SetTimer(GetMainPostHwnd(), m_animTimerId, 16, nullptr);
+    HWND hwnd = GetMainPostHwnd();
     std::thread([this, hwnd, targetPath, targetFileName, targetStatus]() {
         auto tStart = std::chrono::steady_clock::now();
 
@@ -10751,8 +10918,8 @@ void Window::ExecuteDeleteAsync(const std::wstring& targetPath, bool isFolder) {
         return;
     }
 
-    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
-    HWND hwnd = m_hwnd;
+    SetTimer(GetMainPostHwnd(), m_animTimerId, 16, nullptr);
+    HWND hwnd = GetMainPostHwnd();
     std::thread([this, hwnd, targetPath, isFolder]() {
         auto tStart = std::chrono::steady_clock::now();
 
@@ -10805,8 +10972,8 @@ void Window::ExecuteDeleteBatchAsync(const std::vector<std::wstring>& targetPath
         return;
     }
 
-    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
-    HWND hwnd = m_hwnd;
+    SetTimer(GetMainPostHwnd(), m_animTimerId, 16, nullptr);
+    HWND hwnd = GetMainPostHwnd();
     std::thread([this, hwnd, targetPaths]() {
         auto tStart = std::chrono::steady_clock::now();
         std::vector<std::wstring> deletedPaths;
@@ -10887,8 +11054,9 @@ void Window::ShowGitError(const std::wstring& cmd, const std::wstring& output, c
         std::lock_guard<std::mutex> lock(m_gitErrorMutex);
         m_pendingGitError = { cmd, output, repoDir };
     }
-    if (m_hwnd) {
-        PostMessageW(m_hwnd, WM_USER + 203, 0, 0);
+    HWND postHwnd = GetMainPostHwnd();
+    if (postHwnd && !m_isDestroying.load()) {
+        PostMessageW(postHwnd, WM_USER + 203, 0, 0);
     }
 }
 
@@ -12524,6 +12692,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     );
 
     if (!m_hwnd) return false;
+    m_mainHwnd = m_hwnd.load();
+    EnsureFloatingWindowClassRegistered(hInstance);
 
     if (hAppIcon) {
         SendMessageW(m_hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hAppIcon));
@@ -12559,8 +12729,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Register callback for immediate terminal output repainting (marshal safely from reader thread to UI thread)
     m_terminal.SetOutputCallback([this]() {
-        if (m_hwnd && !m_terminalRepaintPosted.exchange(true)) {
-            if (!PostMessageW(m_hwnd, WM_USER + 201, 0, 0)) {
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_terminalRepaintPosted.exchange(true)) {
+            if (!PostMessageW(postHwnd, WM_USER + 201, 0, 0)) {
                 m_terminalRepaintPosted.store(false);
             }
         }
@@ -12709,14 +12880,16 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         });
 
         m_terminal.SetOnDebugEnded([this]() {
-            if (m_hwnd && !m_isDestroying.load()) {
-                PostMessageW(m_hwnd, WM_USER + 230, 0, 0);
+            HWND postHwnd = GetMainPostHwnd();
+            if (postHwnd && !m_isDestroying.load()) {
+                PostMessageW(postHwnd, WM_USER + 230, 0, 0);
             }
         });
 
         m_terminal.SetOnDebugResumed([this]() {
-            if (m_hwnd && !m_isDestroying.load()) {
-                PostMessageW(m_hwnd, WM_USER + 230, 1, 0);
+            HWND postHwnd = GetMainPostHwnd();
+            if (postHwnd && !m_isDestroying.load()) {
+                PostMessageW(postHwnd, WM_USER + 230, 1, 0);
             }
         });
 
@@ -12728,8 +12901,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 m_pendingDebugPausedLine = lineNum1;
                 m_hasPendingDebugPaused = true;
             }
-            if (m_hwnd && !m_isDestroying.load()) {
-                PostMessageW(m_hwnd, WM_USER + 229, 0, 0);
+            HWND postHwnd = GetMainPostHwnd();
+            if (postHwnd && !m_isDestroying.load()) {
+                PostMessageW(postHwnd, WM_USER + 229, 0, 0);
             }
         });
 
@@ -12778,9 +12952,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
         // #30 Real-Time Problem Matcher Diagnostics & Clickable Links
         m_terminal.SetOnProblemMatched([this](const phide::dev::ProblemMatch& pm) {
-            if (!m_hwnd || m_isDestroying.load()) return;
+            HWND postHwnd = GetMainPostHwnd();
+            if (!postHwnd || m_isDestroying.load()) return;
             auto* copy = new phide::dev::ProblemMatch(pm);
-            if (!PostMessageW(m_hwnd, WM_USER + 218, 0, reinterpret_cast<LPARAM>(copy))) {
+            if (!PostMessageW(postHwnd, WM_USER + 218, 0, reinterpret_cast<LPARAM>(copy))) {
                 delete copy;
             }
         });
@@ -13011,6 +13186,15 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     // Animate terminal close when '-' minimize button is clicked in integrated terminal
     m_terminal.SetOnMinimize([this]() {
         m_isTerminalFocused = false;
+        if (m_terminal.GetDockPosition() == 3) {
+            for (const auto& fw : m_floatingWindows) {
+                if (fw && fw->kind == FloatingDockKind::TerminalPanel && fw->hwnd) {
+                    ShowWindow(fw->hwnd, SW_MINIMIZE);
+                    break;
+                }
+            }
+            return;
+        }
         if (m_terminal.GetDockPosition() == 1) {
             CloseTerminalEditorTab();
             m_terminal.SetDockPosition(0);
@@ -13036,12 +13220,61 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Animate terminal maximize / restore smoothly (User requirement)
     m_terminal.SetOnToggleFullScreen([this](bool isFs) {
+        if (m_terminal.GetDockPosition() == 3) {
+            for (const auto& fw : m_floatingWindows) {
+                if (fw && fw->kind == FloatingDockKind::TerminalPanel && fw->hwnd) {
+                    ShowWindow(fw->hwnd, isFs ? SW_MAXIMIZE : SW_RESTORE);
+                    break;
+                }
+            }
+            return;
+        }
         m_targetTermFullScreen = isFs ? 1.0f : 0.0f;
         m_isTermFullScreenAnimating = true;
         SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
     });
 
     m_terminal.SetOnMoveToPosition([this](int pos) {
+        // Defer closing any active floating Terminal HWND if currently dispatching inside its own mouse handler
+        bool hasFloatingTerm = false;
+        uint64_t floatingTermId = 0;
+        for (const auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::TerminalPanel) {
+                hasFloatingTerm = true;
+                floatingTermId = fw->id;
+                break;
+            }
+        }
+        if (pos == 3) {
+            if (m_terminal.IsFullScreen()) {
+                m_terminal.ToggleFullScreen();
+                m_targetTermFullScreen = 0.0f;
+                m_isTermFullScreenAnimating = false;
+                m_termFullScreenProgress = 0.0f;
+            }
+            CloseTerminalEditorTab();
+            m_targetTerminalProgress = 0.0f;
+            m_terminalAnimProgress = 0.0f;
+            m_isTerminalAnimating = false;
+            m_terminal.SetDockPosition(3);
+            m_terminal.SetIsOpen(true);
+            UndockTerminalToFloatingWindow();
+            m_config.terminalDockPosition = 3;
+            SaveSessionState();
+            if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+            return;
+        }
+        if (hasFloatingTerm) {
+            PendingFloatingAction act{};
+            act.kind = PendingFloatingAction::Kind::DockTerminal;
+            act.winId = floatingTermId;
+            act.targetGroupIdx = pos;
+            m_pendingFloatingActions.push_back(act);
+            if (HWND postHwnd = GetMainPostHwnd()) {
+                PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+            }
+            return;
+        }
         if (pos == 0) {
             // Panel (Bottom)
             CloseTerminalEditorTab();
@@ -13128,7 +13361,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     });
     m_drawer.SetOnGitCommitSucceeded([this]() {
-        if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 227, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) PostMessageW(postHwnd, WM_USER + 227, 0, 0);
     });
     m_drawer.SetOnOpenWorktreeFolder([this](const std::wstring& wtPath) {
         DoOpenFolderFromPath(wtPath);
@@ -13210,8 +13444,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
 
     // Register callback for reactive git state updates (dispatched safely to UI thread via WM_USER + 206)
     m_drawer.SetOnGitStateChanged([this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 206, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 206, 0, 0);
         }
     });
 
@@ -13345,8 +13580,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             std::lock_guard<std::mutex> lock(m_pendingLspDiagMutex);
             m_pendingLspDiags.push_back(PendingLspDiagUpdate{ filePath, std::move(diags) });
         }
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 210, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 210, 0, 0);
         }
     });
     m_editor.GetPackageManagerView().SetOnInstallCallback([this](const std::wstring& pkgName, const std::wstring& cmd, phide::ui::PkgInstallScope scope) {
@@ -13478,7 +13714,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             }
 
             m_extensionsPanel.UpdateProcessTask(taskTitle, 0.40f, L"Running: " + runCmd);
-            if (m_hwnd) PostMessageW(m_hwnd, WM_PAINT, 0, 0);
+            if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
+                PostMessageW(postHwnd, WM_USER + 233, 0, 0);
+            }
 
             STARTUPINFOW si{};
             si.cb = sizeof(si);
@@ -13503,7 +13741,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 while (WaitForSingleObject(pi.hProcess, 350) == WAIT_TIMEOUT) {
                     prog = (std::min)(0.92f, prog + 0.08f);
                     m_extensionsPanel.UpdateProcessTask(taskTitle, prog, (isUninstall ? L"Removing " : L"Downloading and installing ") + pkgName + L"...");
-                    if (m_hwnd) PostMessageW(m_hwnd, WM_PAINT, 0, 0);
+                    if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
+                        PostMessageW(postHwnd, WM_USER + 233, 0, 0);
+                    }
                 }
                 GetExitCodeProcess(pi.hProcess, &exitCode);
                 CloseHandle(pi.hProcess);
@@ -13552,10 +13792,12 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     m_editor.GetWelcomeView().SetOnThemeSelected([this](ui::ThemeMode mode) {
         m_theme.SetThemeMode(mode);
         BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
-        DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
-        SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        DwmSetWindowAttribute(GetMainPostHwnd(), DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+        SetWindowPos(GetMainPostHwnd(), nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        SyncThemeAndFontToFloatingWindows();
         UpdateDrawerErrorFiles();
         SaveSessionState();
+        if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
@@ -13563,7 +13805,9 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         m_config.fontFamily = fontName;
         m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
         m_editor.ResetCharWidth();
+        SyncThemeAndFontToFloatingWindows();
         SaveSessionState();
+        if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
@@ -13663,6 +13907,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         hostCb.executeBuiltinCommand = [this](const std::wstring& cmdId) {
             if (cmdId == L"cmd_reload_plugins") {
                 m_theme.SetThemeMode(m_theme.GetThemeMode());
+                SyncThemeAndFontToFloatingWindows();
+                if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
                 if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
             } else {
                 ExecuteQuickOpenAction(cmdId);
@@ -13954,6 +14200,13 @@ void Window::OnPaint() {
     float terminalLeft = static_cast<float>(effectiveRailW);
 
     if (editorH > headerH + 2.0f) {
+        if (curDoc && curDoc->isSpecialView && curDoc->viewType == L"packages") {
+            m_editor.GetPackageManagerView().SetHwnd(m_mainHwnd ? m_mainHwnd : m_hwnd.load());
+        }
+        m_editor.SetRenderingFloatingWindow(false);
+        const bool suppressMainOverlays = (m_editorOverlayOwnerHwnd != nullptr &&
+                                           m_editorOverlayOwnerHwnd != (m_mainHwnd ? m_mainHwnd : m_hwnd.load()));
+        m_editor.SetSuppressFloatingOverlays(suppressMainOverlays);
         m_editor.SetFloatingDebugState(m_terminal.IsDebugActive(), m_terminal.IsDebugPaused());
         m_editor.SetSplitState(m_splitState);
         D2D1_RECT_F editorClip = D2D1::RectF(canvasLeft, headerH, canvasLeft + canvasWidth, editorH);
@@ -13963,6 +14216,7 @@ void Window::OnPaint() {
                         searchHL, hlMatchCase, hlWholeWord, hlUseRegex,
                         suppressEditorCaret);
         m_pRenderTarget->PopAxisAlignedClip();
+        m_editor.SetSuppressFloatingOverlays(false);
     }
 
     // 1b. Render Explorer Drag-and-Drop Insertion Caret / Target Indicator
@@ -14306,8 +14560,8 @@ void Window::OnPaint() {
         m_header.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, IsZoomed(m_hwnd));
     }
 
-    // 5. Render Active Popup Dropdown Menu Overlay
-    if (m_popupMenu.IsOpen()) {
+    // 5. Render Active Popup Dropdown Menu Overlay (only in the HWND that owns the popup)
+    if (m_popupMenu.IsOpen() && (m_popupMenuOwnerHwnd == nullptr || m_popupMenuOwnerHwnd == m_hwnd.load())) {
         m_popupMenu.Render(m_pRenderTarget.Get(), m_theme, m_config);
     }
 
@@ -15999,55 +16253,57 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
 }
 
 void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
-    if (m_showBranchDropdown) {
-        HandleBranchDropdownMouseMove(clientPt);
-    }
-    if (m_drawer.IsGitHubLoginModalOpen()) {
-        if (m_drawer.HandleGitHubLoginMouseMove(clientPt)) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (!m_activeFloatingWindow) {
+        if (m_showBranchDropdown) {
+            HandleBranchDropdownMouseMove(clientPt);
         }
-        return;
-    }
-
-    if (m_drawer.IsPublishRepoModalOpen()) {
-        if (m_drawer.HandlePublishRepoMouseMove(clientPt)) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (m_drawer.IsGitHubLoginModalOpen()) {
+            if (m_drawer.HandleGitHubLoginMouseMove(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
         }
-        return;
-    }
 
-    if (m_drawer.IsGitPromptModalOpen()) {
-        if (m_drawer.HandleGitPromptMouseMove(clientPt)) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (m_drawer.IsPublishRepoModalOpen()) {
+            if (m_drawer.HandlePublishRepoMouseMove(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
         }
-        return;
-    }
 
-    if (m_dbSettingsModal.IsOpen()) {
-        m_dbSettingsModal.OnMouseMove(clientPt);
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
-    }
-
-    if (m_drawer.HasTooManyChangesToast()) {
-        POINT pt = { clientPt.x, clientPt.y };
-        if (m_drawer.HandleToastMouseMove(pt)) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (m_drawer.IsGitPromptModalOpen()) {
+            if (m_drawer.HandleGitPromptMouseMove(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
         }
-    }
 
-    if (m_confirmDiscardModal.IsOpen()) {
-        if (m_confirmDiscardModal.HandleMouseMove(clientPt)) {
+        if (m_dbSettingsModal.IsOpen()) {
+            m_dbSettingsModal.OnMouseMove(clientPt);
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
         }
-        return;
-    }
 
-    if (m_gitErrorModal.IsOpen()) {
-        if (m_gitErrorModal.HandleMouseMove(clientPt)) {
-            InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (m_drawer.HasTooManyChangesToast()) {
+            POINT pt = { clientPt.x, clientPt.y };
+            if (m_drawer.HandleToastMouseMove(pt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
         }
-        return;
+
+        if (m_confirmDiscardModal.IsOpen()) {
+            if (m_confirmDiscardModal.HandleMouseMove(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+
+        if (m_gitErrorModal.IsOpen()) {
+            if (m_gitErrorModal.HandleMouseMove(clientPt)) {
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            }
+            return;
+        }
     }
 
     if (!m_trackingMouse) {
@@ -16056,7 +16312,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         m_trackingMouse = true;
     }
 
-    if (m_isResizingProblemsPanel) {
+    if (!m_activeFloatingWindow && m_isResizingProblemsPanel) {
         if ((wParam & MK_LBUTTON) == 0) {
             m_isResizingProblemsPanel = false;
             ReleaseCapture();
@@ -16373,6 +16629,38 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             m_hoveredSnapBarSlot = -1;
             m_tabSnapZone = editor::TabSnapZone::None;
             m_tabSnapPreviewRect = {};
+
+            // Detect dragging a tab outside the window (undock to new floating window) or back over the main IDE window
+            const bool dragOutsideWindow = (clientPt.x < -16 || clientPt.y < -16 ||
+                                            clientPt.x > clientRc.right + 16 || clientPt.y > clientRc.bottom + 16);
+            bool dragOverMainWindow = false;
+            if (m_activeFloatingWindow && m_mainHwnd && IsWindow(m_mainHwnd)) {
+                POINT scrPt = clientPt;
+                ClientToScreen(m_hwnd, &scrPt);
+                RECT mainRc{};
+                GetWindowRect(m_mainHwnd, &mainRc);
+                if (PtInRect(&mainRc, scrPt)) {
+                    dragOverMainWindow = true;
+                }
+            }
+            const bool triggerFloatingSnap =
+                (!m_activeFloatingWindow && dragOutsideWindow) ||
+                (m_activeFloatingWindow && (dragOverMainWindow ||
+                    (dragOutsideWindow && m_dragTabGroup >= 0 &&
+                     m_dragTabGroup < static_cast<int>(m_editorGroups.size()) &&
+                     m_editorGroups[m_dragTabGroup].docs.size() > 1)));
+
+            if (triggerFloatingSnap) {
+                m_tabSnapZone = editor::TabSnapZone::FloatingWindow;
+                m_tabSnapPreviewRect = D2D1::RectF(
+                    static_cast<float>(clientPt.x) - m_config.ScaleF(95.0f),
+                    static_cast<float>(clientPt.y) - m_config.ScaleF(16.0f),
+                    static_cast<float>(clientPt.x) + m_config.ScaleF(95.0f),
+                    static_cast<float>(clientPt.y) + m_config.ScaleF(16.0f));
+                m_editor.SetTabSnapPreview(m_tabSnapZone, m_tabSnapPreviewRect, -1);
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
 
             // 1. Check if cursor is over the top-center Windows 11 Snap Layout Bar
             editor::SnapBarSlot snapSlots[16]{};
@@ -16831,8 +17119,8 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     UpdateCssPeekHover(clientPt);
     ScheduleHoverLookup(clientPt);
 
-    // Check Popup Menu hover first if open
-    if (m_popupMenu.IsOpen()) {
+    // Check Popup Menu hover first if open (owned by active HWND)
+    if (m_popupMenu.IsOpen() && (m_popupMenuOwnerHwnd == nullptr || m_popupMenuOwnerHwnd == m_hwnd.load())) {
         RECT rc;
         GetClientRect(m_hwnd, &rc);
         float clientW = static_cast<float>(rc.right - rc.left);
@@ -16841,8 +17129,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             needRepaint = true;
         }
         if (m_popupMenu.HitTestMenuArea(clientPt)) {
-            if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
-            m_rail.SetHoveredTab(ui::RailTabId::None);
+            if (!m_activeFloatingWindow) {
+                if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
+                m_rail.SetHoveredTab(ui::RailTabId::None);
+            }
             if (needRepaint) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
             }
@@ -17075,9 +17365,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
-    UpdateExecutionButtonStates();
+    if (!m_activeFloatingWindow) {
+        UpdateExecutionButtonStates();
 
-    // Check Header menu, execution buttons, split editor button, zoom buttons, and caption button hover
+        // Check Header menu, execution buttons, split editor button, zoom buttons, and caption button hover
     auto hoveredMenu = m_header.HitTestMenu(clientPt);
     auto hoveredCaption = m_header.HitTestCaptionButton(clientPt);
     auto hoveredExec = m_header.HitTestExecButton(clientPt);
@@ -17363,6 +17654,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
         }
     }
+    } // end if (!m_activeFloatingWindow)
 
     // Update Diff View hovered hunk so Stage/Unstage/Revert buttons appear only on hover
     for (auto& grp : m_editorGroups) {
@@ -17741,7 +18033,19 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         int activeIdx = (m_focusedGroupIdx >= 0 && m_focusedGroupIdx < static_cast<int>(m_editorGroups.size()))
                                       ? m_editorGroups[m_focusedGroupIdx].activeDocIdx : -1;
                         if (activeIdx >= 0) {
-                            DetachEditorToNewWindow(m_focusedGroupIdx, activeIdx, action == ui::MenuActionId::LayoutMoveNewWindow);
+                            if (action == ui::MenuActionId::LayoutMoveNewWindow) {
+                                if (m_activeFloatingWindow) {
+                                    PendingFloatingAction act{};
+                                    act.kind = PendingFloatingAction::Kind::DockAllEditorToMain;
+                                    act.winId = m_activeFloatingWindow->id;
+                                    m_pendingFloatingActions.push_back(act);
+                                    if (HWND postHwnd = GetMainPostHwnd()) PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+                                } else {
+                                    UndockTabToFloatingWindow(m_focusedGroupIdx, activeIdx);
+                                }
+                            } else {
+                                DetachEditorToNewWindow(m_focusedGroupIdx, activeIdx, false);
+                            }
                         } else {
                             DoNewWindow();
                         }
@@ -18430,8 +18734,32 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::TabSplitRight:
                         SplitTabRight(m_tabContextGroupIdx, m_tabContextDocIdx);
                         break;
+                    case ui::MenuActionId::TabUndockFloating:
                     case ui::MenuActionId::TabMoveNewWindow:
-                        DetachEditorToNewWindow(m_tabContextGroupIdx, m_tabContextDocIdx, true);
+                        if (m_activeFloatingWindow) {
+                            if (action == ui::MenuActionId::TabMoveNewWindow) {
+                                PendingFloatingAction act{};
+                                act.kind = PendingFloatingAction::Kind::DockOneTabToMain;
+                                act.winId = m_activeFloatingWindow->id;
+                                act.groupIdx = m_tabContextGroupIdx;
+                                act.docIdx = m_tabContextDocIdx;
+                                m_pendingFloatingActions.push_back(act);
+                                if (HWND postHwnd = GetMainPostHwnd()) PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+                            }
+                        } else {
+                            UndockTabToFloatingWindow(m_tabContextGroupIdx, m_tabContextDocIdx);
+                        }
+                        break;
+                    case ui::MenuActionId::TabDockToMainWindow:
+                        if (m_activeFloatingWindow) {
+                            PendingFloatingAction act{};
+                            act.kind = PendingFloatingAction::Kind::DockOneTabToMain;
+                            act.winId = m_activeFloatingWindow->id;
+                            act.groupIdx = m_tabContextGroupIdx;
+                            act.docIdx = m_tabContextDocIdx;
+                            m_pendingFloatingActions.push_back(act);
+                            if (HWND postHwnd = GetMainPostHwnd()) PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+                        }
                         break;
                     case ui::MenuActionId::TabCopyNewWindow:
                         DetachEditorToNewWindow(m_tabContextGroupIdx, m_tabContextDocIdx, false);
@@ -18468,6 +18796,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                 }
                 m_popupMenu.Close();
+                m_popupMenuOwnerHwnd = nullptr;
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return true;
@@ -18478,6 +18807,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
             // Click was outside the popup menu area: dismiss the menu and consume click
             auto activeMenu = m_header.GetActiveMenu();
             m_popupMenu.Close();
+            m_popupMenuOwnerHwnd = nullptr;
             m_header.SetActiveMenu(ui::HeaderMenuId::None);
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return false;
@@ -18488,49 +18818,58 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
 
 
 void Window::HandleLButtonDown(POINT clientPt) {
-    // 0. Popup Menu overlay (highest priority: if click hits open popup/context menu, consume and return)
+    // 0. Popup Menu overlay (highest priority: if click hits open popup/context menu on owner HWND, consume and return)
     if (m_popupMenu.IsOpen()) {
-        if (HandlePopupMenuClick(clientPt)) {
-            return;
-        }
-    }
-
-    // 0b. Server / Database Dropdowns & Buttons overlay check
-    if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
-        if (m_header.HitTestDbSettings(clientPt)) {
-            auto& srvDb = m_header.GetServerDatabaseConfig();
-            srvDb.phpMyAdminEnabled = true;
-            srvDb.dontRunDatabase = false;
-            DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
-            return;
-        }
-        if (m_header.HitTestServerSettings(clientPt)) {
-            DoOpenServerSettings();
-            return;
-        }
-        if (m_header.HandleDropdownClick(clientPt)) {
-            auto& srvDb = m_header.GetServerDatabaseConfig();
-            if (srvDb.dontRunDatabase) {
-                if (m_isPmaRunning) StopPmaServer();
+        if (m_popupMenuOwnerHwnd == nullptr || m_popupMenuOwnerHwnd == m_hwnd.load()) {
+            if (HandlePopupMenuClick(clientPt)) {
+                return;
             }
-            InvalidateRect(m_hwnd, nullptr, FALSE);
-            return;
-        }
-        m_header.CloseServerDatabaseDropdowns();
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-    }
-    if (m_showBranchDropdown) {
-        if (HandleBranchDropdownMouseDown(clientPt)) {
-            return;
+        } else {
+            HWND oldOwner = m_popupMenuOwnerHwnd;
+            m_popupMenu.Close();
+            m_popupMenuOwnerHwnd = nullptr;
+            if (oldOwner && IsWindow(oldOwner)) InvalidateRect(oldOwner, nullptr, FALSE);
         }
     }
 
-    // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (works reliably whether sidebar is open or closed)
-    if (m_config.showStatusBar &&
-        (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
-         clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom)) {
-        ToggleBranchDropdown();
-        return;
+    if (!m_activeFloatingWindow) {
+        // 0b. Server / Database Dropdowns & Buttons overlay check
+        if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
+            if (m_header.HitTestDbSettings(clientPt)) {
+                auto& srvDb = m_header.GetServerDatabaseConfig();
+                srvDb.phpMyAdminEnabled = true;
+                srvDb.dontRunDatabase = false;
+                DoOpenDatabaseSettings(ui::DatabaseModalTab::PhpMyAdmin);
+                return;
+            }
+            if (m_header.HitTestServerSettings(clientPt)) {
+                DoOpenServerSettings();
+                return;
+            }
+            if (m_header.HandleDropdownClick(clientPt)) {
+                auto& srvDb = m_header.GetServerDatabaseConfig();
+                if (srvDb.dontRunDatabase) {
+                    if (m_isPmaRunning) StopPmaServer();
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            m_header.CloseServerDatabaseDropdowns();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        if (m_showBranchDropdown) {
+            if (HandleBranchDropdownMouseDown(clientPt)) {
+                return;
+            }
+        }
+
+        // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (works reliably whether sidebar is open or closed)
+        if (m_config.showStatusBar &&
+            (clientPt.x >= m_rcStatusBarGitBranch.left && clientPt.x <= m_rcStatusBarGitBranch.right &&
+             clientPt.y >= m_rcStatusBarGitBranch.top && clientPt.y <= m_rcStatusBarGitBranch.bottom)) {
+            ToggleBranchDropdown();
+            return;
+        }
     }
 
     // Check NEXT: Cross-File Prediction Pill Click (Image 4)
@@ -18554,6 +18893,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             pActiveDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
         }
     }
+    if (!m_activeFloatingWindow) {
     if (m_drawer.IsGitHubLoginModalOpen()) {
         if (m_drawer.HandleGitHubLoginMouseDown(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -19030,6 +19370,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             return;
         }
     }
+    } // end if (!m_activeFloatingWindow) main modals
 
     // Check Autocomplete Popup Click first so it is not blocked by terminal
     if (m_editor.IsAutocompleteVisible()) {
@@ -19077,7 +19418,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_editor.DismissSignatureHelp();
     }
 
-    if (IsBottomProblemsVisible()) {
+    if (!m_activeFloatingWindow && IsBottomProblemsVisible()) {
         if (HandleProblemsPanelMouseDown(clientPt)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
@@ -19085,30 +19426,33 @@ void Window::HandleLButtonDown(POINT clientPt) {
         m_problemsSearchFocused = false;
     }
 
-    // Check Terminal Panel Clicks (Image 1, 2, 3, 4)
-    bool isTermClosingDown = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
-    int visibleTermGrp = (m_terminal.GetDockPosition() == 1) ? FindVisibleTerminalEditorGroup() : -1;
-    bool isTermTabInactive = (m_terminal.GetDockPosition() == 1 && visibleTermGrp < 0);
-    if (m_terminal.IsOpen() && !isTermClosingDown && !isTermTabInactive &&
-        !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
-        (m_terminal.HitTest(clientPt) || m_terminal.HitTestMenuArea(clientPt))) {
-        if (m_terminal.GetDockPosition() == 1 && visibleTermGrp >= 0) {
-            m_focusedGroupIdx = visibleTermGrp;
+    // Check Terminal Panel Clicks (Image 1, 2, 3, 4) - only when docked inside main window
+    if (!m_activeFloatingWindow && m_terminal.GetDockPosition() != 3) {
+        bool isTermClosingDown = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
+        int visibleTermGrp = (m_terminal.GetDockPosition() == 1) ? FindVisibleTerminalEditorGroup() : -1;
+        bool isTermTabInactive = (m_terminal.GetDockPosition() == 1 && visibleTermGrp < 0);
+        if (m_terminal.IsOpen() && !isTermClosingDown && !isTermTabInactive &&
+            !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
+            (m_terminal.HitTest(clientPt) || m_terminal.HitTestMenuArea(clientPt))) {
+            if (m_terminal.GetDockPosition() == 1 && visibleTermGrp >= 0) {
+                m_focusedGroupIdx = visibleTermGrp;
+            }
+            m_isTerminalFocused = true;
+            std::wstring dir;
+            if (m_drawer.HasOpenFolder()) dir = m_drawer.GetOpenFolderPath();
+            m_terminal.OnMouseDown(clientPt, m_config, dir);
+            if (m_terminal.IsResizing()) {
+                SetCapture(m_hwnd);
+            }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        } else if (!m_terminal.HasOpenMenu()) {
+            m_isTerminalFocused = false;
+            m_terminal.CloseMenus();
         }
-        m_isTerminalFocused = true;
-        std::wstring dir;
-        if (m_drawer.HasOpenFolder()) dir = m_drawer.GetOpenFolderPath();
-        m_terminal.OnMouseDown(clientPt, m_config, dir);
-        if (m_terminal.IsResizing()) {
-            SetCapture(m_hwnd);
-        }
-        InvalidateRect(m_hwnd, nullptr, FALSE);
-        return;
-    } else if (!m_terminal.HasOpenMenu()) {
-        m_isTerminalFocused = false;
-        m_terminal.CloseMenus();
     }
 
+    if (!m_activeFloatingWindow) {
     // 0a. Floating commit card click check (card is positioned outside drawer over editor canvas)
     if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt)) {
         std::wstring openFile;
@@ -19205,8 +19549,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
             BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
             DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
             SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            SyncThemeAndFontToFloatingWindows();
             UpdateDrawerErrorFiles();
-    SaveSessionState();
+            SaveSessionState();
         }
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
@@ -19239,6 +19584,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    } // end if (!m_activeFloatingWindow) main picker/quickopen modals
 
     // Popup menu click is handled at the start of HandleLButtonDown
 
@@ -19322,6 +19668,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    if (!m_activeFloatingWindow) {
     // 1. Caption Button Clicks (Minimize, Maximize, Close)
     auto captionHit = m_header.HitTestCaptionButton(clientPt);
     if (captionHit != ui::CaptionButtonType::None) {
@@ -19492,6 +19839,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
             m_header.SetActiveMenu(ui::HeaderMenuId::Help);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
+        if (m_popupMenu.IsOpen()) {
+            m_popupMenuOwnerHwnd = m_hwnd.load();
+        }
         return;
     }
 
@@ -19555,6 +19905,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         SetCapture(m_hwnd);
         return;
     }
+    } // end if (!m_activeFloatingWindow) header/sidebar controls
 
     // 2D Editor Split Divider Drag Initiation (Vertical, Horizontal, or 2D Intersection)
     {
@@ -19568,6 +19919,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    if (!m_activeFloatingWindow) {
     if (m_config.debugFloatingToolbar && m_terminal.IsDebugActive() &&
         m_editor.HandleFloatingDebugLButtonDown(clientPt)) {
         if (m_editor.IsDraggingFloatingDebug()) {
@@ -19585,6 +19937,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             return;
         }
     }
+    } // end if (!m_activeFloatingWindow) debug toolbar & extensions panel
 
     RECT clientRc;
     GetClientRect(m_hwnd, &clientRc);
@@ -19594,9 +19947,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     // If clicking inside the editor canvas area, unfocus drawer search and git commit inputs immediately
     if (clientPt.x >= static_cast<LONG>(canvasLeft)) {
-        m_drawer.SetSearchFocus(0);
-        m_drawer.SetGitCommitBoxFocus(0);
-        m_drawer.ClearDebugFocus();
+        m_lastActiveEditorHwnd = m_hwnd.load();
+        m_editorOverlayOwnerHwnd = m_hwnd.load();
+        if (!m_activeFloatingWindow) {
+            m_drawer.SetSearchFocus(0);
+            m_drawer.SetGitCommitBoxFocus(0);
+            m_drawer.ClearDebugFocus();
+        }
     }
     const float headerH = EffectiveHeaderHeight();
     const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
@@ -19650,6 +20007,23 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
                 }
+            }
+
+            // 4a2. Tab Undock / Dock-Back Button Click in this group ([↗] on main tab, [↙] on floating tab)
+            int undockIdx = m_editor.HitTestTabUndock(clientPt, group.docs);
+            if (undockIdx >= 0) {
+                if (m_activeFloatingWindow) {
+                    PendingFloatingAction act{};
+                    act.kind = PendingFloatingAction::Kind::DockOneTabToMain;
+                    act.winId = m_activeFloatingWindow->id;
+                    act.groupIdx = targetGroup;
+                    act.docIdx = undockIdx;
+                    m_pendingFloatingActions.push_back(act);
+                    if (HWND postHwnd = GetMainPostHwnd()) PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+                } else {
+                    UndockTabToFloatingWindow(targetGroup, undockIdx);
+                }
+                return;
             }
 
             // 4b. Tab Close Button Click in this group
@@ -19900,21 +20274,30 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 m_config.zoomLevel = m_config.fontSize / 15.0f;
                                 m_theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
                                 m_editor.ResetCharWidth();
+                                SyncThemeAndFontToFloatingWindows();
                             } else if (modifiedId == L"terminal.integrated.dockPosition") {
                                 if (m_config.terminalDockPosition != 1 && HasAnyTerminalEditorTab()) {
                                     CloseTerminalEditorTab();
                                 }
-                                m_terminal.SetDockPosition(m_config.terminalDockPosition);
-                                if (m_config.terminalDockPosition == 1) {
-                                    m_terminalAnimProgress = 0.0f;
-                                    m_targetTerminalProgress = 0.0f;
-                                    m_isTerminalAnimating = false;
-                                    m_terminal.ClearBounds();
+                                if (m_config.terminalDockPosition == 3) {
+                                    UndockTerminalToFloatingWindow();
                                 } else {
-                                    const float prog = m_terminal.IsOpen() ? 1.0f : 0.0f;
-                                    m_terminalAnimProgress = prog;
-                                    m_targetTerminalProgress = prog;
-                                    m_isTerminalAnimating = false;
+                                    if (m_terminal.GetDockPosition() == 3) {
+                                        DockTerminalToMainWindow(m_config.terminalDockPosition);
+                                    } else {
+                                        m_terminal.SetDockPosition(m_config.terminalDockPosition);
+                                    }
+                                    if (m_config.terminalDockPosition == 1) {
+                                        m_terminalAnimProgress = 0.0f;
+                                        m_targetTerminalProgress = 0.0f;
+                                        m_isTerminalAnimating = false;
+                                        m_terminal.ClearBounds();
+                                    } else {
+                                        const float prog = m_terminal.IsOpen() ? 1.0f : 0.0f;
+                                        m_terminalAnimProgress = prog;
+                                        m_targetTerminalProgress = prog;
+                                        m_isTerminalAnimating = false;
+                                    }
                                 }
                             } else if (modifiedId == L"terminal.integrated.defaultHeight") {
                                 m_terminal.SetHeight(m_config.terminalHeight);
@@ -19937,8 +20320,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 ToggleZenMode();
                             } else if (modifiedId == L"workbench.colorTheme") {
                                 BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
-                                DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
-                                SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                                DwmSetWindowAttribute(GetMainPostHwnd(), DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+                                SetWindowPos(GetMainPostHwnd(), nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                                SyncThemeAndFontToFloatingWindows();
                                 UpdateDrawerErrorFiles();
                             }
                             if (m_editor.GetSettingsView().GetActiveScope() == 2) {
@@ -20730,6 +21114,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         }
     }
 
+    if (!m_activeFloatingWindow) {
     // 5. Handle inline tree rename commit on click outside
     if (m_drawer.IsRenaming()) {
         const auto& rcBox = m_drawer.GetRenameBox();
@@ -21264,6 +21649,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 clientW,
                 clientH
             );
+            m_popupMenuOwnerHwnd = m_hwnd.load();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -21289,10 +21675,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
         }
         UpdateDrawerErrorFiles();
-    SaveSessionState();
+        SaveSessionState();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
+    } // end if (!m_activeFloatingWindow) sidebar/status bar/rail clicks
 }
 
 void Window::HandleLButtonUp(POINT clientPt) {
@@ -21763,6 +22150,71 @@ void Window::HandleLButtonUp(POINT clientPt) {
                 } else {
                     moveDocToTargetGroup(targetGrp, -1, !layoutChanged);
                 }
+            } else if (m_tabSnapZone == editor::TabSnapZone::FloatingWindow) {
+                POINT scrDrop = clientPt;
+                ClientToScreen(m_hwnd, &scrDrop);
+                // Reset drag state cleanly before mutating groups / creating floating windows
+                m_isDraggingTab = false;
+                m_dragTabGroup = -1;
+                m_dragTabIdx = -1;
+                m_tabDropTargetGroup = -1;
+                m_tabDropTargetIdx = -1;
+                m_tabSnapZone = editor::TabSnapZone::None;
+                m_hoveredSnapBarSlot = -1;
+                m_tabSnapPreviewRect = D2D1::RectF(0, 0, 0, 0);
+                m_editor.SetTabDragState(false, -1, -1, -1, -1);
+                m_editor.SetTabSnapPreview(editor::TabSnapZone::None, D2D1::RectF(0, 0, 0, 0), -1);
+                ReleaseCapture();
+                SetCursor(LoadCursor(nullptr, IDC_ARROW));
+
+                // Check if dropped onto another floating editor window
+                HWND dropTargetFloating = nullptr;
+                for (const auto& fw : m_floatingWindows) {
+                    if (!fw || fw->kind != FloatingDockKind::EditorGroup || !fw->hwnd || fw->hwnd == m_hwnd.load()) continue;
+                    RECT fRc{};
+                    if (GetWindowRect(fw->hwnd, &fRc) && PtInRect(&fRc, scrDrop)) {
+                        dropTargetFloating = fw->hwnd;
+                        break;
+                    }
+                }
+                if (m_activeFloatingWindow) {
+                    PendingFloatingAction act{};
+                    act.winId = m_activeFloatingWindow->id;
+                    act.groupIdx = srcGroup;
+                    act.docIdx = from;
+                    act.screenPt = scrDrop;
+                    if (dropTargetFloating) {
+                        if (auto* pDst = FindFloatingWindow(dropTargetFloating)) {
+                            act.kind = PendingFloatingAction::Kind::MoveFloatingTabToOtherFloating;
+                            act.targetWinId = pDst->id;
+                        }
+                    } else {
+                        RECT mainRc{};
+                        if (m_mainHwnd && GetWindowRect(m_mainHwnd, &mainRc) && PtInRect(&mainRc, scrDrop)) {
+                            act.kind = PendingFloatingAction::Kind::DockOneTabToMain;
+                        } else {
+                            // Dragged one tab out of a multi-tab floating window to desktop -> spawn new floating window
+                            act.kind = PendingFloatingAction::Kind::MoveFloatingTabToOtherFloating;
+                            act.targetWinId = 0;
+                        }
+                    }
+                    m_pendingFloatingActions.push_back(act);
+                    if (HWND postHwnd = GetMainPostHwnd()) PostMessageW(postHwnd, WM_USER + 235, 0, 0);
+                } else {
+                    if (dropTargetFloating) {
+                        // Detach to a new floating window or move directly into target floating window
+                        if (UndockTabToFloatingWindow(srcGroup, from, &scrDrop)) {
+                            // Newly created floating window is at back of m_floatingWindows; merge into dropTargetFloating
+                            HWND newlyCreated = (!m_floatingWindows.empty() && m_floatingWindows.back()) ? m_floatingWindows.back()->hwnd : nullptr;
+                            if (newlyCreated && newlyCreated != dropTargetFloating) {
+                                DockFloatingTabToFloatingWindow(newlyCreated, 0, 0, dropTargetFloating);
+                            }
+                        }
+                    } else {
+                        UndockTabToFloatingWindow(srcGroup, from, &scrDrop);
+                    }
+                }
+                return;
             } else if (m_tabSnapZone == editor::TabSnapZone::Center ||
                        (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()))) {
                 int targetG = (m_tabDropTargetGroup >= 0 && m_tabDropTargetGroup < static_cast<int>(m_editorGroups.size()))
@@ -21995,8 +22447,11 @@ void Window::HandleLButtonUp(POINT clientPt) {
 
 void Window::HandleRButtonDown(POINT clientPt) {
     if (m_popupMenu.IsOpen()) {
+        HWND oldOwner = m_popupMenuOwnerHwnd;
         m_popupMenu.Close();
+        m_popupMenuOwnerHwnd = nullptr;
         m_header.SetActiveMenu(ui::HeaderMenuId::None);
+        if (oldOwner && IsWindow(oldOwner)) InvalidateRect(oldOwner, nullptr, FALSE);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
@@ -22010,8 +22465,9 @@ void Window::HandleRButtonDown(POINT clientPt) {
     float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
     float headerH = EffectiveHeaderHeight();
 
-    // 1. Right-click inside Drawer Explorer
-    if (!m_config.zenMode && m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
+    // 1. Right-click inside Drawer Explorer (main window only)
+    if (!m_activeFloatingWindow && !m_config.zenMode && m_drawerAnimProgress > 0.001f &&
+        clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
         int hitIdx = m_drawer.HitTest(clientPt, m_config);
         const ui::DrawerTreeItem* pItem = (hitIdx >= 0) ? m_drawer.GetItem(hitIdx) : nullptr;
         bool isFolder = false;
@@ -22055,6 +22511,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 clientH,
                 multiCount
             );
+            m_popupMenuOwnerHwnd = m_hwnd.load();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -22107,8 +22564,10 @@ void Window::HandleRButtonDown(POINT clientPt) {
                 canCloseSaved,
                 canToggleStructured,
                 clientW,
-                clientH
+                clientH,
+                m_activeFloatingWindow != nullptr
             );
+            m_popupMenuOwnerHwnd = m_hwnd.load();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -22117,6 +22576,8 @@ void Window::HandleRButtonDown(POINT clientPt) {
     // 3. Right-click inside Editor Canvas / Code Area (Image 4: Editor Context Menu)
     if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH + tabH) {
         // Focus the editor group containing click & position cursor
+        m_lastActiveEditorHwnd = m_hwnd.load();
+        m_editorOverlayOwnerHwnd = m_hwnd.load();
         for (size_t g = 0; g < m_editorGroups.size(); ++g) {
             const auto& b = m_editorGroups[g].bounds;
             if (clientPt.x >= b.left && clientPt.x < b.right && clientPt.y >= b.top && clientPt.y < b.bottom) {
@@ -22150,6 +22611,7 @@ void Window::HandleRButtonDown(POINT clientPt) {
             clientW,
             clientH
         );
+        m_popupMenuOwnerHwnd = m_hwnd.load();
         InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
     }
@@ -22204,7 +22666,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // 00.0 GitHub Login Modal
+                // 00.0 GitHub Login Modal & main-window modals (skipped in floating windows)
+                if (!m_activeFloatingWindow) {
                 if (m_drawer.IsGitHubLoginModalOpen()) {
                     if (m_drawer.HitTestGitHubLoginModalButtons(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -22299,9 +22762,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
+                } // end if (!m_activeFloatingWindow) main-window modals
 
                 // 0b. Popup Menu Dropdowns (File, Edit, View, Context Menus)
-                if (m_popupMenu.IsOpen()) {
+                if (m_popupMenu.IsOpen() && (m_popupMenuOwnerHwnd == nullptr || m_popupMenuOwnerHwnd == m_hwnd.load())) {
                     if (m_popupMenu.HitTestMenuArea(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
@@ -22311,8 +22775,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Sidebar Splitters (Left Drawer & Right Runtimes)
-                if (m_isDraggingLeftSidebar || m_isDraggingRightSidebar ||
-                    HitTestLeftSidebarSplitter(pt) || HitTestRightSidebarSplitter(pt)) {
+                if (!m_activeFloatingWindow && (m_isDraggingLeftSidebar || m_isDraggingRightSidebar ||
+                    HitTestLeftSidebarSplitter(pt) || HitTestRightSidebarSplitter(pt))) {
                     SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
                     return TRUE;
                 }
@@ -22398,13 +22862,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                // 0c. Theme Picker Catalog Modal
+                if (!m_activeFloatingWindow) {
+                // 0c. Theme Picker Catalog Modal & Color Picker
                 if (m_colorPicker.IsOpen()) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
 
-            if (m_themePicker.IsOpen()) {
+                if (m_themePicker.IsOpen()) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -22425,6 +22890,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
+                } // end if (!m_activeFloatingWindow) rail/git overlays
 
                 // Performance Monitor & Activity Heatmap interactive elements (including split panes)
                 auto* pMonitorActiveDoc = GetActiveDoc();
@@ -22477,6 +22943,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Provide pointer hand cursor over caption buttons, menus, execution buttons, split editor, quick open, extensions, and zoom buttons
+                if (!m_activeFloatingWindow) {
                 if (m_header.HitTestCaptionButton(pt) != ui::CaptionButtonType::None ||
                     m_header.HitTestMenu(pt) != ui::HeaderMenuId::None ||
                     m_header.HitTestExecButton(pt) != ui::HeaderExecId::None ||
@@ -22504,6 +22971,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
+                } // end if (!m_activeFloatingWindow) header/right-sidebar
 
                 // Tab horizontal scrollbar thumb and track (User requirement: "i cant still drag the scroll bar")
                 for (const auto& grp : m_editorGroups) {
@@ -22521,9 +22989,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Tab bar tabs, close buttons or folding chevrons
+                // Tab bar tabs, undock/attach buttons, close buttons or folding chevrons
                 for (const auto& grp : m_editorGroups) {
-                    if (m_editor.HitTestTab(pt, grp.docs) >= 0 || m_editor.HitTestTabClose(pt, grp.docs) >= 0) {
+                    if (m_editor.HitTestTab(pt, grp.docs) >= 0 ||
+                        m_editor.HitTestTabClose(pt, grp.docs) >= 0 ||
+                        m_editor.HitTestTabUndock(pt, grp.docs) >= 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -22592,6 +23062,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                if (!m_activeFloatingWindow) {
                 // Open Folder button in drawer when empty
                 if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -22628,6 +23099,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         return TRUE;
                     }
                 }
+                } // end if (!m_activeFloatingWindow) drawer cursor
 
                 // Autocomplete popup cursor handling (Images 2, 5)
                 if (m_editor.IsAutocompleteVisible()) {
@@ -22638,7 +23110,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                if (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen()) {
+                if (!m_activeFloatingWindow && (m_header.IsDatabaseDropdownOpen() || m_header.IsServerDropdownOpen())) {
                     if (m_header.HitTestDropdowns(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
@@ -22650,7 +23122,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
 
-                if (IsBottomProblemsVisible() && PtInRectF(pt, m_rcProblemsPanel)) {
+                if (!m_activeFloatingWindow && IsBottomProblemsVisible() && PtInRectF(pt, m_rcProblemsPanel)) {
                     if (PtInRectF(pt, m_rcProblemsResizeBorder)) {
                         SetCursor(LoadCursor(nullptr, IDC_SIZENS));
                         return TRUE;
@@ -22664,7 +23136,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         PtInRectF(pt, m_rcProblemsFilterWarn) || PtInRectF(pt, m_rcProblemsFilterInfo) ||
                         PtInRectF(pt, m_rcProblemsCurFileBtn) || PtInRectF(pt, m_rcProblemsGroupBtn) ||
                         PtInRectF(pt, m_rcProblemsSarifBtn) || PtInRectF(pt, m_rcProblemsRefreshBtn) ||
-                        PtInRectF(pt, m_rcProblemsCloseBtn);
+                        PtInRectF(pt, m_rcProblemsUndockBtn) || PtInRectF(pt, m_rcProblemsCloseBtn);
                     if (!overClickable) {
                         for (const auto& rb : m_problemsRowBounds) {
                             if (PtInRectF(pt, rb)) { overClickable = true; break; }
@@ -22677,7 +23149,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Terminal Panel cursor handling (Images 1, 2, 3, 4, 5)
                 bool isTermClosingCursor = (m_isTerminalAnimating && m_targetTerminalProgress <= 0.001f);
                 bool isTermCursorInactive = (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0);
-                if (m_terminal.IsOpen() && !isTermClosingCursor && !isTermCursorInactive &&
+                if (!m_activeFloatingWindow && m_terminal.GetDockPosition() != 3 &&
+                    m_terminal.IsOpen() && !isTermClosingCursor && !isTermCursorInactive &&
                     !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
                     m_terminal.HitTest(pt)) {
                     if (m_terminal.HitTestMenuArea(pt)) {
@@ -23085,13 +23558,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             m_hoverDwellPending = false;
 
-            if (IsBottomProblemsVisible() && HandleProblemsPanelMouseWheel(pt, delta)) {
+            if (!m_activeFloatingWindow && IsBottomProblemsVisible() && HandleProblemsPanelMouseWheel(pt, delta)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
             }
 
             bool isTermWheelInactive = (m_terminal.GetDockPosition() == 1 && FindVisibleTerminalEditorGroup() < 0);
-            if (m_terminal.IsOpen() && !isTermWheelInactive &&
+            if (!m_activeFloatingWindow && m_terminal.GetDockPosition() != 3 &&
+                m_terminal.IsOpen() && !isTermWheelInactive &&
                 !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0) &&
                 m_terminal.HitTest(pt)) {
                 if (m_terminal.OnMouseWheel(pt, delta)) {
@@ -23100,7 +23574,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            if (m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(pt)) {
+            if (!m_activeFloatingWindow && m_rightSidebarAnimProgress > 0.001f && m_extensionsPanel.IsOpen() && m_extensionsPanel.HitTest(pt)) {
                 if (m_extensionsPanel.HandleMouseWheel(delta)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -23123,43 +23597,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 0a. Scroll Remote Window Modal if open
-            if (m_remoteModal.IsOpen()) {
-                if (m_remoteModal.HandleMouseWheel(delta)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
+            const float headerH = EffectiveHeaderHeight();
 
-            // 0a2. Scroll Quick Open search results if modal is open (Image 5)
-            if (m_quickOpen.IsOpen()) {
-                if (m_quickOpen.HandleMouseWheel(delta)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+            if (!m_activeFloatingWindow) {
+                // 0a. Scroll Remote Window Modal if open
+                if (m_remoteModal.IsOpen()) {
+                    if (m_remoteModal.HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
-            }
 
-            // 0b. Scroll Theme Picker Catalog if modal is open
-            if (m_themePicker.IsOpen()) {
-                if (m_themePicker.HandleMouseWheel(delta)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+                // 0a2. Scroll Quick Open search results if modal is open (Image 5)
+                if (m_quickOpen.IsOpen()) {
+                    if (m_quickOpen.HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
-            }
 
-            float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-            float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-            float headerH = EffectiveHeaderHeight();
-
-            // 1. Scroll Drawer Panel tree if mouse is over sidebar
-            if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
-                if (m_config.activeRailTab == 0 && m_drawer.ScrollOutline(delta)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+                // 0b. Scroll Theme Picker Catalog if modal is open
+                if (m_themePicker.IsOpen()) {
+                    if (m_themePicker.HandleMouseWheel(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
-                if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y))) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+
+                float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+                float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+
+                // 1. Scroll Drawer Panel tree if mouse is over sidebar
+                if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                    if (m_config.activeRailTab == 0 && m_drawer.ScrollOutline(delta)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -23400,85 +23877,90 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            if (m_drawer.IsPublishRepoModalOpen()) {
-                if (m_drawer.HandlePublishRepoChar(static_cast<wchar_t>(wParam))) {
+            if (!m_activeFloatingWindow) {
+                if (m_drawer.IsPublishRepoModalOpen()) {
+                    if (m_drawer.HandlePublishRepoChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+                if (m_bpPromptOpen) {
+                    wchar_t ch = static_cast<wchar_t>(wParam);
+                    if (ch == L'\r' || ch == L'\n') {
+                        SubmitBreakpointConditionPrompt();
+                    } else if (ch == 27) {
+                        m_bpPromptOpen = false;
+                    } else if (ch == L'\b') {
+                        if (!m_bpPromptInput.empty()) m_bpPromptInput.pop_back();
+                    } else if (ch >= 32) {
+                        m_bpPromptInput.push_back(ch);
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
-                return 0;
-            }
-            if (m_bpPromptOpen) {
-                wchar_t ch = static_cast<wchar_t>(wParam);
-                if (ch == L'\r' || ch == L'\n') {
-                    SubmitBreakpointConditionPrompt();
-                } else if (ch == 27) {
-                    m_bpPromptOpen = false;
-                } else if (ch == L'\b') {
-                    if (!m_bpPromptInput.empty()) m_bpPromptInput.pop_back();
-                } else if (ch >= 32) {
-                    m_bpPromptInput.push_back(ch);
-                }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
 
-            if (m_drawer.IsGitPromptModalOpen()) {
-                if (m_drawer.HandleGitPromptChar(static_cast<wchar_t>(wParam))) {
+                if (m_drawer.IsGitPromptModalOpen()) {
+                    if (m_drawer.HandleGitPromptChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
+                if (m_dbSettingsModal.IsOpen()) {
+                    if (m_dbSettingsModal.OnChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
+                if (IsBottomProblemsVisible() && m_problemsSearchFocused) {
+                    if (HandleProblemsPanelChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
+                // Integrated Terminal keystroke input (Image 1) - completely swallowed when terminal is focused!
+                auto* curDocChar = GetActiveDoc();
+                bool isTermCharInactive = (m_terminal.GetDockPosition() == 1 && (!curDocChar || !curDocChar->isSpecialView || curDocChar->viewType != L"terminal"));
+                if (m_terminal.GetDockPosition() != 3 && m_terminal.IsOpen() && m_isTerminalFocused && !isTermCharInactive &&
+                    !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0)) {
+                    m_terminal.OnChar(static_cast<wchar_t>(wParam));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
-                return 0;
-            }
 
-            if (m_dbSettingsModal.IsOpen()) {
-                if (m_dbSettingsModal.OnChar(static_cast<wchar_t>(wParam))) {
+                // 0. Remote Window Quick Pick input
+                if (m_remoteModal.IsOpen()) {
+                    if (m_remoteModal.HandleChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+
+                // 0b. Quick Open file search input (Image 5)
+                if (m_quickOpen.IsOpen()) {
+                    if (m_quickOpen.HandleChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+
+                if (m_drawer.IsRenaming()) {
+                    m_drawer.HandleRenameChar(static_cast<wchar_t>(wParam));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
                 }
-                return 0;
-            }
 
-            if (IsBottomProblemsVisible() && m_problemsSearchFocused) {
-                if (HandleProblemsPanelChar(static_cast<wchar_t>(wParam))) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-
-            // Integrated Terminal keystroke input (Image 1) - completely swallowed when terminal is focused!
-            auto* curDocChar = GetActiveDoc();
-            bool isTermCharInactive = (m_terminal.GetDockPosition() == 1 && (!curDocChar || !curDocChar->isSpecialView || curDocChar->viewType != L"terminal"));
-            if (m_terminal.IsOpen() && m_isTerminalFocused && !isTermCharInactive &&
-                !(IsBottomProblemsVisible() && m_terminal.GetDockPosition() == 0)) {
-                m_terminal.OnChar(static_cast<wchar_t>(wParam));
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
-
-            // 0. Remote Window Quick Pick input
-            if (m_remoteModal.IsOpen()) {
-                if (m_remoteModal.HandleChar(static_cast<wchar_t>(wParam))) {
+                if (m_drawer.IsCreating()) {
+                    m_drawer.HandleCreateChar(static_cast<wchar_t>(wParam));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
             }
 
-            // 0b. Quick Open file search input (Image 5)
-            if (m_quickOpen.IsOpen()) {
-                if (m_quickOpen.HandleChar(static_cast<wchar_t>(wParam))) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
-                }
-            }
-
-            if (m_drawer.IsRenaming()) {
-                m_drawer.HandleRenameChar(static_cast<wchar_t>(wParam));
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
-
-            if (m_drawer.IsCreating()) {
-                m_drawer.HandleCreateChar(static_cast<wchar_t>(wParam));
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
+            m_lastActiveEditorHwnd = m_hwnd.load();
+            m_editorOverlayOwnerHwnd = m_hwnd.load();
 
             if (m_editor.GetRenameWidget().isOpen) {
                 if (m_editor.HandleRenameChar(static_cast<wchar_t>(wParam))) {
@@ -23497,26 +23979,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
-            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
-                m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
-
-            // 1b. If Git commit message input has focus, typed characters MUST route to Git input
-            if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
-                m_drawer.HandleGitChar(static_cast<wchar_t>(wParam));
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-                return 0;
-            }
-
-            // 1c. If Debug sidebar Watch input has focus, route typed characters there
-            if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
-                m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
-                if (m_drawer.HandleDebugChar(static_cast<wchar_t>(wParam))) {
+            if (!m_activeFloatingWindow) {
+                // 1. If Code Search in drawer has focus, typed characters MUST route to Code Search
+                if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+                    m_drawer.HandleSearchChar(static_cast<wchar_t>(wParam));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
+                }
+
+                // 1b. If Git commit message input has focus, typed characters MUST route to Git input
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
+                    m_drawer.HandleGitChar(static_cast<wchar_t>(wParam));
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return 0;
+                }
+
+                // 1c. If Debug sidebar Watch input has focus, route typed characters there
+                if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
+                    m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
+                    if (m_drawer.HandleDebugChar(static_cast<wchar_t>(wParam))) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -23928,6 +24412,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     FlushPendingAutoSaves();
                 }
             } else {
+                m_lastActiveEditorHwnd = m_mainHwnd ? m_mainHwnd : m_hwnd.load();
+                m_editorOverlayOwnerHwnd = m_lastActiveEditorHwnd;
                 CheckOpenDocumentsDiskChanges();
             }
             return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
@@ -24054,50 +24540,55 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (pActDoc && pActDoc->hoveredDiagnosticLine != static_cast<size_t>(-1)) {
                 pActDoc->hoveredDiagnosticLine = static_cast<size_t>(-1);
             }
-            if (m_drawer.IsGitHubLoginModalOpen()) {
-                if (m_drawer.HandleGitHubLoginKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-
-            if (m_drawer.IsPublishRepoModalOpen()) {
-                if (m_drawer.HandlePublishRepoKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-            if (m_bpPromptOpen) {
-                if (wParam == VK_ESCAPE) {
-                    m_bpPromptOpen = false;
-                    m_suppressNextChar = true;
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                } else if (wParam == VK_RETURN) {
-                    SubmitBreakpointConditionPrompt();
-                    m_suppressNextChar = true;
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-
-            if (m_drawer.IsGitPromptModalOpen()) {
-                if (m_drawer.HandleGitPromptKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-
-            if (m_dbSettingsModal.IsOpen()) {
-                if (m_dbSettingsModal.OnKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+            if (!m_activeFloatingWindow) {
+                if (m_drawer.IsGitHubLoginModalOpen()) {
+                    if (m_drawer.HandleGitHubLoginKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
                     return 0;
                 }
-                if (wParam == VK_ESCAPE) {
-                    m_dbSettingsModal.Close();
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
+
+                if (m_drawer.IsPublishRepoModalOpen()) {
+                    if (m_drawer.HandlePublishRepoKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
                     return 0;
                 }
+                if (m_bpPromptOpen) {
+                    if (wParam == VK_ESCAPE) {
+                        m_bpPromptOpen = false;
+                        m_suppressNextChar = true;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    } else if (wParam == VK_RETURN) {
+                        SubmitBreakpointConditionPrompt();
+                        m_suppressNextChar = true;
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
+                if (m_drawer.IsGitPromptModalOpen()) {
+                    if (m_drawer.HandleGitPromptKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+
+                if (m_dbSettingsModal.IsOpen()) {
+                    if (m_dbSettingsModal.OnKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (wParam == VK_ESCAPE) {
+                        m_dbSettingsModal.Close();
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
             }
+
+            m_lastActiveEditorHwnd = m_hwnd.load();
+            m_editorOverlayOwnerHwnd = m_hwnd.load();
 
             // Keybinding Recorder interception (#49) - runs before global F-keys/chords so ANY key can be recorded
             if (auto* pKeyRecDoc = GetActiveDoc();
@@ -24174,7 +24665,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            if (IsBottomProblemsVisible() && m_problemsSearchFocused) {
+            if (!m_activeFloatingWindow && IsBottomProblemsVisible() && m_problemsSearchFocused) {
                 if (HandleProblemsPanelKeyDown(wParam)) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -24241,9 +24732,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
             // Dynamic user-remapped keyboard shortcut overrides (#49) - evaluated before global F-keys/chords when no modal/rename is active
             {
-                bool modalBlocking = m_confirmDiscardModal.IsOpen() || m_gitErrorModal.IsOpen() ||
-                    m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_drawer.IsRenaming() ||
-                    m_drawer.IsCreating() || m_colorPicker.IsOpen() ||
+                bool modalBlocking = (!m_activeFloatingWindow &&
+                    (m_confirmDiscardModal.IsOpen() || m_gitErrorModal.IsOpen() ||
+                     m_remoteModal.IsOpen() || m_quickOpen.IsOpen() || m_drawer.IsRenaming() ||
+                     m_drawer.IsCreating() || m_colorPicker.IsOpen())) ||
                     m_editor.GetRenameWidget().isOpen || m_editor.GetPeekPanel().isOpen;
                 bool isCtrlOv = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                 bool isShiftOv = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -24252,9 +24744,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     wParam == VK_DELETE || wParam == VK_INSERT || wParam == VK_HOME || wParam == VK_END ||
                     wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_RETURN || wParam == VK_ESCAPE;
                 auto* pOvDoc = GetActiveDoc();
-                bool inlineInputFocused = (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) ||
-                    (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) ||
-                    (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) && m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) ||
+                bool inlineInputFocused =
+                    (!m_activeFloatingWindow &&
+                     ((m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) ||
+                      (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) ||
+                      (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) && m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()))) ||
                     (m_editor.GetFindBar().isOpen && m_editor.GetFindBar().focusedInput > 0) ||
                     (pOvDoc && pOvDoc->isSpecialView && pOvDoc->viewType == L"keybindings" && m_editor.GetKeyboardShortcutsView().IsSearchFocused()) ||
                     (pOvDoc && pOvDoc->isSpecialView && pOvDoc->viewType == L"settings" && m_editor.GetSettingsView().IsSearchFocused());
@@ -24262,9 +24756,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     (isCtrlOv || isAltOv || isSpecialOv)) {
                     bool hasEd = (pOvDoc && !pOvDoc->isSpecialView && !pOvDoc->isFolderView);
                     bool isDbg = m_terminal.IsDebugActive();
-                    bool isTermFoc = m_terminal.IsOpen() && m_isTerminalFocused;
-                    bool isExpFoc = IsExplorerKeyboardFocused();
-                    bool isScmFoc = (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused());
+                    bool isTermFoc = !m_activeFloatingWindow && m_terminal.IsOpen() && m_isTerminalFocused;
+                    bool isExpFoc = !m_activeFloatingWindow && IsExplorerKeyboardFocused();
+                    bool isScmFoc = (!m_activeFloatingWindow && m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused());
                     std::wstring overrideAct = m_editor.GetKeyboardShortcutsView().ResolveOverrideActionForKey(
                         isCtrlOv, isShiftOv, isAltOv, static_cast<UINT>(wParam), hasEd, isDbg, isTermFoc, isExpFoc, isScmFoc);
                     if (!overrideAct.empty()) {
@@ -24471,6 +24965,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
+            if (!m_activeFloatingWindow && m_terminal.GetDockPosition() != 3) {
             // Split active terminal via Ctrl+Shift+5 or Ctrl+Shift+\ (Images 4 & 5)
             if (m_terminal.IsOpen() && m_isTerminalFocused && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) &&
                 ((wParam == '5' && m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_split_terminal")) ||
@@ -24523,7 +25018,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return 0;
                 }
             }
+            } // end if (!m_activeFloatingWindow && dockPosition != 3)
 
+            if (!m_activeFloatingWindow) {
             // 0a. Confirm Discard / Restore / Delete / Notice modal keyboard handling (Images 2, 3, 4, 5)
             if (m_confirmDiscardModal.IsOpen()) {
                 if (m_confirmDiscardModal.IsLoading()) {
@@ -24720,13 +25217,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 DoDeleteSelectedExplorerItem();
                 return 0;
             }
+            } // end if (!m_activeFloatingWindow) main modals & explorer keys
 
             if (wParam == VK_ESCAPE) {
-                if (m_showBranchDropdown) {
+                if (!m_activeFloatingWindow && m_showBranchDropdown) {
                     CloseBranchDropdown();
                     return 0;
                 }
-                if (m_isDraggingExplorerFile) {
+                if (!m_activeFloatingWindow && m_isDraggingExplorerFile) {
                     m_isDraggingExplorerFile = false;
                     m_pendingSingleSelectOnRelease = false;
                     m_dragCandidatePath.clear();
@@ -24741,13 +25239,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
-                if (IsExplorerKeyboardFocused() && m_drawer.GetSelectedCount() > 1) {
+                if (!m_activeFloatingWindow && IsExplorerKeyboardFocused() && m_drawer.GetSelectedCount() > 1) {
                     std::wstring keep = !m_selectedExplorerPath.empty() ? m_selectedExplorerPath : m_drawer.GetSelectedPaths().back();
                     m_drawer.SetSingleSelection(keep);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
-                m_drawer.DismissCommitCard();
+                if (!m_activeFloatingWindow) m_drawer.DismissCommitCard();
                 auto* pCurDoc = GetActiveDoc();
                 if (pCurDoc && (pCurDoc->HasSelection() || pCurDoc->HasAnyMultiCursor())) {
                     pCurDoc->ClearSelection();
@@ -24755,12 +25253,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
                 }
-                if (m_config.zenMode) {
+                if (!m_activeFloatingWindow && m_config.zenMode) {
                     ToggleZenMode();
                     return 0;
                 }
             }
-            if (m_colorPicker.IsOpen()) {
+            if (!m_activeFloatingWindow && m_colorPicker.IsOpen()) {
                 if (m_colorPicker.HandleKeyDown(wParam)) {
                     if (auto* pDoc = GetActiveDoc()) {
                         MarkDocumentModified(pDoc);
@@ -24771,7 +25269,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            if (m_themePicker.IsOpen()) {
+            if (!m_activeFloatingWindow && m_themePicker.IsOpen()) {
                 if (wParam == VK_ESCAPE) {
                     m_themePicker.Close();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -24780,6 +25278,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             if (wParam == VK_ESCAPE && m_popupMenu.IsOpen()) {
                 m_popupMenu.Close();
+                m_popupMenuOwnerHwnd = nullptr;
                 m_header.SetActiveMenu(ui::HeaderMenuId::None);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -24867,29 +25366,31 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
             }
 
-            // 1. If Code Search in drawer is focused, navigation keys route to Code Search
-            if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
-                if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
-                    m_drawer.HandleSearchKeyDown(wParam);
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+            if (!m_activeFloatingWindow) {
+                // 1. If Code Search in drawer is focused, navigation keys route to Code Search
+                if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f && m_drawer.IsSearchFocused()) {
+                    if (wParam == VK_BACK || wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_RETURN) {
+                        m_drawer.HandleSearchKeyDown(wParam);
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
-            }
 
-            // 1b. If Git commit message in drawer is focused, navigation keys route to Git input
-            if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
-                if (m_drawer.HandleGitKeyDown(wParam, m_hwnd)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+                // 1b. If Git commit message in drawer is focused, navigation keys route to Git input
+                if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f && m_drawer.IsGitCommitBoxFocused()) {
+                    if (m_drawer.HandleGitKeyDown(wParam, m_hwnd)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
-            }
 
-            // 1c. If Debug Watch input in drawer is focused, navigation keys route to Debug pane
-            if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
-                m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
-                if (m_drawer.HandleDebugKeyDown(wParam)) {
-                    InvalidateRect(m_hwnd, nullptr, FALSE);
-                    return 0;
+                // 1c. If Debug Watch input in drawer is focused, navigation keys route to Debug pane
+                if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) &&
+                    m_drawerAnimProgress > 0.001f && m_drawer.IsDebugSideWatchFocused()) {
+                    if (m_drawer.HandleDebugKeyDown(wParam)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                 }
             }
 
@@ -26080,15 +26581,32 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_TIMER: {
             if (wParam == m_caretTimerId) {
-                // Real-time telemetry auto-refresh for Performance Monitor (every 1 second)
+                // Real-time telemetry auto-refresh for Performance Monitor (every 1 second) across main and floating windows
+                bool monitorActiveVisible = false;
                 auto* pMonitorDoc = GetActiveDoc();
                 if (pMonitorDoc && pMonitorDoc->isSpecialView && pMonitorDoc->viewType == L"monitor") {
+                    monitorActiveVisible = true;
+                } else {
+                    for (const auto& fw : m_floatingWindows) {
+                        if (!fw || fw->kind != FloatingDockKind::EditorGroup) continue;
+                        for (const auto& fg : fw->editorGroups) {
+                            if (fg.activeDocIdx >= 0 && fg.activeDocIdx < static_cast<int>(fg.docs.size()) &&
+                                fg.docs[fg.activeDocIdx].isSpecialView && fg.docs[fg.activeDocIdx].viewType == L"monitor") {
+                                monitorActiveVisible = true;
+                                break;
+                            }
+                        }
+                        if (monitorActiveVisible) break;
+                    }
+                }
+                if (monitorActiveVisible) {
                     static ULONGLONG s_lastMonitorTick = 0;
                     ULONGLONG nowTick = GetTickCount64();
                     if (nowTick - s_lastMonitorTick >= 1000) {
                         s_lastMonitorTick = nowTick;
                         m_editor.RefreshMonitorTelemetry();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
+                        InvalidateFloatingWindows();
                     }
                 }
 
@@ -26102,6 +26620,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     m_dbSettingsModal.ToggleCaret();
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+                InvalidateFloatingWindows();
             } else if (wParam == m_throttleTimerId) {
                 ULONGLONG now = GetTickCount64();
                 if (m_hoverDwellPending && now >= m_hoverDwellTargetTime) {
@@ -26140,20 +26659,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Poll active visible Log Tail viewer tabs (zero background work unless active tab uses follow mode)
                 {
                     bool logUpdated = false;
-                    for (auto& grp : m_editorGroups) {
-                        if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
-                            auto& visDoc = grp.docs[grp.activeDocIdx];
-                            if (visDoc.structuredView && visDoc.structuredView->isActive &&
-                                visDoc.structuredView->mode == ui::StructuredViewMode::LogTail &&
-                                visDoc.structuredView->logFollow && !visDoc.filePath.empty()) {
-                                if (visDoc.structuredView->PollLogTail(visDoc.filePath, now)) {
-                                    logUpdated = true;
+                    auto pollGroupLogTail = [&](std::vector<editor::EditorGroup>& groups) {
+                        for (auto& grp : groups) {
+                            if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                                auto& visDoc = grp.docs[grp.activeDocIdx];
+                                if (visDoc.structuredView && visDoc.structuredView->isActive &&
+                                    visDoc.structuredView->mode == ui::StructuredViewMode::LogTail &&
+                                    visDoc.structuredView->logFollow && !visDoc.filePath.empty()) {
+                                    if (visDoc.structuredView->PollLogTail(visDoc.filePath, now)) {
+                                        logUpdated = true;
+                                    }
                                 }
                             }
+                        }
+                    };
+                    pollGroupLogTail(m_editorGroups);
+                    for (auto& fw : m_floatingWindows) {
+                        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                            pollGroupLogTail(fw->editorGroups);
                         }
                     }
                     if (logUpdated) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
+                        InvalidateFloatingWindows();
                     }
                 }
 
@@ -26173,17 +26701,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         }
                         if (!pDoc) {
                             editor::OpenDocument* firstMatch = nullptr;
-                            for (auto& grp : m_editorGroups) {
-                                for (auto& d : grp.docs) {
-                                    if (!d.isSpecialView && (!d.filePath.empty() ? d.filePath : d.fileName) == targetKey) {
-                                        if (!firstMatch) firstMatch = &d;
-                                        if (d.isDirty) {
-                                            pDoc = &d;
-                                            break;
+                            auto findDocInGroups = [&](std::vector<editor::EditorGroup>& groups) {
+                                for (auto& grp : groups) {
+                                    for (auto& d : grp.docs) {
+                                        if (!d.isSpecialView && (!d.filePath.empty() ? d.filePath : d.fileName) == targetKey) {
+                                            if (!firstMatch) firstMatch = &d;
+                                            if (d.isDirty) {
+                                                pDoc = &d;
+                                                return;
+                                            }
                                         }
                                     }
                                 }
-                                if (pDoc) break;
+                            };
+                            findDocInGroups(m_editorGroups);
+                            if (!pDoc) {
+                                for (auto& fw : m_floatingWindows) {
+                                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                                        findDocInGroups(fw->editorGroups);
+                                        if (pDoc) break;
+                                    }
+                                }
                             }
                             if (!pDoc) pDoc = firstMatch;
                         }
@@ -26249,6 +26787,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         UpdateDrawerDirtyFiles();
                         SaveDirtyBuffersRecovery();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
+                        InvalidateFloatingWindows();
                     }
                 }
 
@@ -26482,6 +27021,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 201: {
             m_terminalRepaintPosted.store(false);
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            InvalidateFloatingWindows();
             return 0;
         }
 
@@ -26680,31 +27220,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             if (!updates.empty()) {
                 bool changed = false;
-                for (const auto& u : updates) {
-                    for (auto& grp : m_editorGroups) {
-                        for (auto& doc : grp.docs) {
-                            if (doc.isSpecialView || doc.filePath.empty()) continue;
-                            if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0) {
-                                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
-                                RunExtraDocDiagnostics(doc, doc.diagnostics);
-                                for (const auto& ld : u.diags) {
-                                    bool dup = false;
-                                    for (const auto& existing : doc.diagnostics) {
-                                        if (existing.line == ld.line && existing.message == ld.message) {
-                                            dup = true;
-                                            break;
+                auto applyDiagsToGroups = [&](std::vector<editor::EditorGroup>& groups) {
+                    for (const auto& u : updates) {
+                        for (auto& grp : groups) {
+                            for (auto& doc : grp.docs) {
+                                if (doc.isSpecialView || doc.filePath.empty()) continue;
+                                if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0) {
+                                    doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                                    RunExtraDocDiagnostics(doc, doc.diagnostics);
+                                    for (const auto& ld : u.diags) {
+                                        bool dup = false;
+                                        for (const auto& existing : doc.diagnostics) {
+                                            if (existing.line == ld.line && existing.message == ld.message) {
+                                                dup = true;
+                                                break;
+                                            }
                                         }
+                                        if (!dup) doc.diagnostics.push_back(ld);
                                     }
-                                    if (!dup) doc.diagnostics.push_back(ld);
+                                    changed = true;
                                 }
-                                changed = true;
                             }
                         }
+                    }
+                };
+                applyDiagsToGroups(m_editorGroups);
+                for (auto& fw : m_floatingWindows) {
+                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                        applyDiagsToGroups(fw->editorGroups);
                     }
                 }
                 if (changed) {
                     UpdateDrawerErrorFiles();
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    InvalidateFloatingWindows();
                 }
             }
             return 0;
@@ -26718,6 +27267,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_cachedLspCompletions.col = res->col;
                 m_cachedLspCompletions.items = std::move(res->lspItems);
 
+                std::unique_ptr<ScopedFloatingEditorContext> floatCtx;
+                if (m_lastActiveEditorHwnd && m_lastActiveEditorHwnd != GetMainPostHwnd()) {
+                    if (auto* pLastFw = FindFloatingWindow(m_lastActiveEditorHwnd);
+                        pLastFw && pLastFw->kind == FloatingDockKind::EditorGroup) {
+                        floatCtx = std::make_unique<ScopedFloatingEditorContext>(*this, *pLastFw);
+                    }
+                }
+
                 auto* pDoc = GetActiveDoc();
                 if (res->gen == m_lspCompletionGen.load() &&
                     pDoc && !pDoc->isSpecialView && !pDoc->filePath.empty() &&
@@ -26729,6 +27286,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         const auto& lineText = pDoc->buffer.GetLine(curPos.line);
                         auto items = QueryCombinedCompletions(pDoc, lineText, curPos.col);
                         if (!items.empty()) {
+                            m_editorOverlayOwnerHwnd = m_hwnd.load();
                             m_editor.ShowAutocomplete(items);
                             std::wstring prefix = editor::IntelliSenseEngine::ExtractQueryPrefix(lineText, curPos.col);
                             const std::wstring& topLabel = items[0].label;
@@ -26774,7 +27332,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 213: {
             std::unique_ptr<PendingLspHoverResult> res(reinterpret_cast<PendingLspHoverResult*>(lParam));
             if (!res || m_isDestroying.load() || res->gen != m_lspHoverGen.load()) return 0;
-            if (!m_config.enableLspHover || IsOverlayBlockingHover() || m_editor.HitTestCodeLens(res->clientPt) >= 0) {
+            std::unique_ptr<ScopedFloatingEditorContext> floatCtx;
+            if (m_lastActiveEditorHwnd && m_lastActiveEditorHwnd != GetMainPostHwnd()) {
+                if (auto* pLastFw = FindFloatingWindow(m_lastActiveEditorHwnd);
+                    pLastFw && pLastFw->kind == FloatingDockKind::EditorGroup) {
+                    floatCtx = std::make_unique<ScopedFloatingEditorContext>(*this, *pLastFw);
+                }
+            }
+            if (!m_config.enableLspHover || (!m_activeFloatingWindow && IsOverlayBlockingHover()) || m_editor.HitTestCodeLens(res->clientPt) >= 0) {
                 m_editor.DismissHoverCard();
                 return 0;
             }
@@ -26791,6 +27356,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
             if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
             if (!res->hover.markdown.empty()) {
+                m_editorOverlayOwnerHwnd = m_hwnd.load();
                 m_editor.ShowHoverCard(res->line, res->col, res->clientPt, res->hover.markdown);
                 if (m_editor.IsHoverCardVisible() && targetGrpIdx >= 0 &&
                     targetGrpIdx < static_cast<int>(m_editorGroups.size())) {
@@ -26806,11 +27372,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 214: {
             std::unique_ptr<PendingLspSigHelpResult> res(reinterpret_cast<PendingLspSigHelpResult*>(lParam));
             if (!res || m_isDestroying.load() || res->gen != m_lspSigHelpGen.load()) return 0;
+            std::unique_ptr<ScopedFloatingEditorContext> floatCtx;
+            if (m_lastActiveEditorHwnd && m_lastActiveEditorHwnd != GetMainPostHwnd()) {
+                if (auto* pLastFw = FindFloatingWindow(m_lastActiveEditorHwnd);
+                    pLastFw && pLastFw->kind == FloatingDockKind::EditorGroup) {
+                    floatCtx = std::make_unique<ScopedFloatingEditorContext>(*this, *pLastFw);
+                }
+            }
             auto* pDoc = GetActiveDoc();
             if (!pDoc || pDoc->isSpecialView) return 0;
             std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
             if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
             if (m_config.enableSignatureHelp && !res->sigHelp.signatures.empty()) {
+                m_editorOverlayOwnerHwnd = m_hwnd.load();
                 m_editor.ShowSignatureHelp(res->sigHelp);
             } else {
                 m_editor.DismissSignatureHelp();
@@ -26822,12 +27396,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 215: {
             std::unique_ptr<PendingLspCodeActionResult> res(reinterpret_cast<PendingLspCodeActionResult*>(lParam));
             if (!res || m_isDestroying.load() || res->gen != m_lspCodeActionGen.load()) return 0;
+            std::unique_ptr<ScopedFloatingEditorContext> floatCtx;
+            if (m_lastActiveEditorHwnd && m_lastActiveEditorHwnd != GetMainPostHwnd()) {
+                if (auto* pLastFw = FindFloatingWindow(m_lastActiveEditorHwnd);
+                    pLastFw && pLastFw->kind == FloatingDockKind::EditorGroup) {
+                    floatCtx = std::make_unique<ScopedFloatingEditorContext>(*this, *pLastFw);
+                }
+            }
             auto* pDoc = GetActiveDoc();
             if (!pDoc || pDoc->isSpecialView) return 0;
             std::wstring docPath = pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath;
             if (!AreRecentPathsEqual(docPath, res->filePath)) return 0;
             m_editor.SetLightbulbState(!res->actions.empty(), res->line);
             if (res->openMenu) {
+                m_editorOverlayOwnerHwnd = m_hwnd.load();
                 if (!res->actions.empty()) {
                     m_editor.ShowCodeActionMenu(res->line, res->actions, res->isRefactorMode);
                 } else {
@@ -26841,29 +27423,37 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 216: {
             std::unique_ptr<PendingLangIntelUpdate> res(reinterpret_cast<PendingLangIntelUpdate*>(lParam));
             if (!res || m_isDestroying.load()) return 0;
-            for (auto& grp : m_editorGroups) {
-                for (auto& d : grp.docs) {
-                    if (d.isSpecialView || d.isDiffView) continue;
-                    std::wstring dPath = d.filePath.empty() ? d.fileName : d.filePath;
-                    if (!AreRecentPathsEqual(dPath, res->filePath)) continue;
-                    if (m_config.enableInlayHints) {
-                        d.inlayHints = res->inlayHints;
-                    } else {
-                        d.inlayHints.clear();
+            auto applyIntelToGroups = [&](std::vector<editor::EditorGroup>& groups) {
+                for (auto& grp : groups) {
+                    for (auto& d : grp.docs) {
+                        if (d.isSpecialView || d.isDiffView) continue;
+                        std::wstring dPath = d.filePath.empty() ? d.fileName : d.filePath;
+                        if (!AreRecentPathsEqual(dPath, res->filePath)) continue;
+                        if (m_config.enableInlayHints) {
+                            d.inlayHints = res->inlayHints;
+                        } else {
+                            d.inlayHints.clear();
+                        }
+                        d.codeLensMap = res->codeLensMap;
+                        if (d.buffer.GetVersion() == res->docVersion) {
+                            if (res->hasSemanticTokens) {
+                                d.semanticTokensData = res->semanticTokensData;
+                                d.semanticTokensVersion = res->docVersion;
+                            }
+                            if (res->hasLspFolds) {
+                                d.lspFoldingRanges = res->lspFoldingRanges;
+                            }
+                            if (res->hasLspCodeLenses) {
+                                d.lspCodeLenses = res->lspCodeLenses;
+                            }
+                        }
                     }
-                    d.codeLensMap = res->codeLensMap;
-                    if (d.buffer.GetVersion() == res->docVersion) {
-                        if (res->hasSemanticTokens) {
-                            d.semanticTokensData = res->semanticTokensData;
-                            d.semanticTokensVersion = res->docVersion;
-                        }
-                        if (res->hasLspFolds) {
-                            d.lspFoldingRanges = res->lspFoldingRanges;
-                        }
-                        if (res->hasLspCodeLenses) {
-                            d.lspCodeLenses = res->lspCodeLenses;
-                        }
-                    }
+                }
+            };
+            applyIntelToGroups(m_editorGroups);
+            for (auto& fw : m_floatingWindows) {
+                if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                    applyIntelToGroups(fw->editorGroups);
                 }
             }
             if (res->hasLinterResults) {
@@ -26893,6 +27483,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 UpdateDrawerErrorFiles();
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            InvalidateFloatingWindows();
             return 0;
         }
 
@@ -26987,18 +27578,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 SyncActiveSqlSchemaToIntelliSense();
                 const std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
                 (void)wsRoot;
-                for (auto& grp : m_editorGroups) {
-                    for (auto& doc : grp.docs) {
-                        if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
-                            std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
-                            doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
-                            RunExtraDocDiagnostics(doc, doc.diagnostics);
+                auto revalidateGroups = [&](std::vector<editor::EditorGroup>& groups) {
+                    for (auto& grp : groups) {
+                        for (auto& doc : grp.docs) {
+                            if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
+                                std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
+                                doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
+                                RunExtraDocDiagnostics(doc, doc.diagnostics);
+                            }
                         }
+                    }
+                };
+                revalidateGroups(m_editorGroups);
+                for (auto& fw : m_floatingWindows) {
+                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                        revalidateGroups(fw->editorGroups);
                     }
                 }
                 RebuildProblemsCache();
                 UpdateDrawerErrorFiles();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+                InvalidateFloatingWindows();
             }
             return 0;
         }
@@ -27088,21 +27688,38 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_USER + 235: {
+            if (!m_isDestroying.load()) {
+                ProcessPendingFloatingActions();
+            }
+            return 0;
+        }
+
         case WM_CLOSE: {
             if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
             }
             if (m_config.hotExit == L"off") {
                 bool hasUnsaved = false;
-                for (const auto& grp : m_editorGroups) {
-                    for (const auto& doc : grp.docs) {
-                        if (!doc.isSpecialView && !doc.isFolderView && !doc.isImageView && !doc.isUnsupportedBinary &&
-                            !doc.isDiffView && doc.isDirty) {
-                            hasUnsaved = true;
-                            break;
+                auto checkUnsavedInGroups = [&](const std::vector<editor::EditorGroup>& groups) {
+                    for (const auto& grp : groups) {
+                        for (const auto& doc : grp.docs) {
+                            if (!doc.isSpecialView && !doc.isFolderView && !doc.isImageView && !doc.isUnsupportedBinary &&
+                                !doc.isDiffView && doc.isDirty) {
+                                hasUnsaved = true;
+                                return;
+                            }
                         }
                     }
-                    if (hasUnsaved) break;
+                };
+                checkUnsavedInGroups(m_editorGroups);
+                if (!hasUnsaved) {
+                    for (const auto& fw : m_floatingWindows) {
+                        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                            checkUnsavedInGroups(fw->editorGroups);
+                            if (hasUnsaved) break;
+                        }
+                    }
                 }
                 if (hasUnsaved) {
                     int res = MessageBoxW(
@@ -27124,6 +27741,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 }
                             }
                         }
+                        for (auto& fw : m_floatingWindows) {
+                            if (!fw || fw->kind != FloatingDockKind::EditorGroup) continue;
+                            for (auto& grp : fw->editorGroups) {
+                                for (size_t di = 0; di < grp.docs.size(); ++di) {
+                                    auto& doc = grp.docs[di];
+                                    if (!doc.isSpecialView && !doc.isFolderView && !doc.isImageView && !doc.isUnsupportedBinary &&
+                                        !doc.isDiffView && doc.isDirty && !doc.filePath.empty()) {
+                                        ApplySaveHooks(doc, doc.filePath, true);
+                                        if (doc.buffer.SaveToFile(doc.filePath)) {
+                                            doc.isDirty = false;
+                                            OnDocumentDiskSaved(doc);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 ClearDirtyBuffersRecovery();
@@ -27133,6 +27766,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             UpdateDrawerErrorFiles();
             SaveSessionState();
             SaveUserKeybindings();
+            DestroyAllFloatingWindows();
             DestroyWindow(m_hwnd);
             return 0;
         }
@@ -27143,6 +27777,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             phide::plugin::PluginManager::Instance().DispatchEvent(L"onShutdown");
             m_isDestroying.store(true);
+            DestroyAllFloatingWindows();
             StopWorkspaceWatcher();
             m_lsp.SetDiagnosticsCallback(nullptr);
             m_lsp.Shutdown();
@@ -27998,9 +28633,10 @@ void Window::SetupRemoteCallbacks() {
         OpenRemoteContainerFile(container, remoteFilePath, localCachePath);
     };
     drawerCbs.onOpenDockerLogsTab = [this](const std::wstring& title, const std::wstring& content) {
-        if (!m_hwnd) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (!postHwnd || m_isDestroying.load()) return;
         auto* payload = new std::pair<std::wstring, std::wstring>(title, content);
-        if (!PostMessageW(m_hwnd, WM_USER + 209, 1, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 209, 1, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     };
@@ -28008,13 +28644,15 @@ void Window::SetupRemoteCallbacks() {
         OpenOrCreateDevContainerConfig();
     };
     drawerCbs.onRemoteTargetsChanged = [this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 208, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 208, 0, 0);
         }
     };
     drawerCbs.onRequestRepaint = [this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 201, 0, 0);
         }
     };
     m_drawer.SetRemoteCallbacks(std::move(drawerCbs));
@@ -28265,13 +28903,15 @@ void Window::SetupRemoteCallbacks() {
         OpenOrCreateDevContainerConfig();
     };
     modalCbs.onTargetsUpdated = [this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 208, 1, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 208, 1, 0);
         }
     };
     modalCbs.onRequestRepaint = [this]() {
-        if (m_hwnd) {
-            PostMessageW(m_hwnd, WM_USER + 201, 0, 0);
+        HWND postHwnd = GetMainPostHwnd();
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 201, 0, 0);
         }
     };
     m_remoteModal.SetCallbacks(std::move(modalCbs));
@@ -28334,7 +28974,8 @@ void Window::ConnectRemoteSshTerminal(const ui::remote::SshHostEntry& host, cons
 }
 
 void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::wstring& remotePath, const std::wstring& localCachePath) {
-    if (!m_hwnd) return;
+    HWND hwnd = GetMainPostHwnd();
+    if (!hwnd) return;
     std::wstring resolvedCache = localCachePath;
     if (resolvedCache.empty()) {
         ui::remote::RemoteWorkspaceSession tmpSess;
@@ -28342,7 +28983,6 @@ void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::
         tmpSess.sshHost = host;
         resolvedCache = ui::remote::ResolveRemoteVfsCachePath(tmpSess, remotePath);
     }
-    HWND hwnd = m_hwnd;
     std::thread([host, remotePath, resolvedCache, hwnd]() {
         auto* pRes = new RemoteFileOpenResult();
         pRes->isContainer = false;
@@ -28359,7 +28999,8 @@ void Window::OpenRemoteSshFile(const ui::remote::SshHostEntry& host, const std::
 }
 
 void Window::OpenRemoteContainerFile(const ui::remote::DevContainerEntry& container, const std::wstring& remotePath, const std::wstring& localCachePath) {
-    if (!m_hwnd || container.id.empty()) return;
+    HWND hwnd = GetMainPostHwnd();
+    if (!hwnd || container.id.empty()) return;
     std::wstring resolvedCache = localCachePath;
     if (resolvedCache.empty()) {
         ui::remote::RemoteWorkspaceSession tmpSess;
@@ -28367,7 +29008,6 @@ void Window::OpenRemoteContainerFile(const ui::remote::DevContainerEntry& contai
         tmpSess.container = container;
         resolvedCache = ui::remote::ResolveRemoteVfsCachePath(tmpSess, remotePath);
     }
-    HWND hwnd = m_hwnd;
     std::thread([container, remotePath, resolvedCache, hwnd]() {
         auto* pRes = new RemoteFileOpenResult();
         pRes->isContainer = true;
@@ -28438,7 +29078,7 @@ void Window::SyncRemoteDocumentIfNeeded(const editor::OpenDocument& doc) {
 
     std::wstring localPath = doc.filePath;
     std::wstring remotePath = doc.remoteFilePath;
-    HWND hwnd = m_hwnd;
+    HWND hwnd = GetMainPostHwnd();
     std::thread([sess, localPath, remotePath, hwnd]() {
         static std::mutex s_remoteUploadMutex;
         std::lock_guard<std::mutex> lock(s_remoteUploadMutex);
@@ -29322,7 +29962,8 @@ void Window::RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const 
         if (m_isDestroying.load() || m_lspCompletionGen.load() != gen) return;
 
         auto lspItems = m_lsp.RequestCompletions(filePath, line, col);
-        if (lspItems.empty() || m_isDestroying.load() || m_lspCompletionGen.load() != gen || !m_hwnd) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (lspItems.empty() || m_isDestroying.load() || m_lspCompletionGen.load() != gen || !postHwnd) return;
 
         auto* payload = new PendingLspCompletionResult();
         payload->gen = gen;
@@ -29330,7 +29971,7 @@ void Window::RequestLspCompletionsAsync(const editor::OpenDocument* pDoc, const 
         payload->line = line;
         payload->col = col;
         payload->lspItems = std::move(lspItems);
-        if (!PostMessageW(m_hwnd, WM_USER + 211, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 211, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     }).detach();
@@ -29737,7 +30378,8 @@ bool Window::StartPreCommitCheckAsync(const std::wstring& commitMsg) {
             return;
         }
         auto findings = CollectPreCommitFindings(wsRoot, commitMsg, isPublish);
-        if (m_isDestroying.load() || !m_hwnd) {
+        HWND postHwnd = GetMainPostHwnd();
+        if (m_isDestroying.load() || !postHwnd) {
             m_preCommitScanInFlight.store(false);
             return;
         }
@@ -29746,7 +30388,7 @@ bool Window::StartPreCommitCheckAsync(const std::wstring& commitMsg) {
         payload->publishChoice = publishChoice;
         payload->commitMsg = commitMsg;
         payload->findings = std::move(findings);
-        if (!PostMessageW(m_hwnd, WM_USER + 212, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 212, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
             m_preCommitScanInFlight.store(false);
         }
@@ -30001,7 +30643,8 @@ void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t c
         if (!hoverRes.isValid || hoverRes.markdown.empty()) {
             hoverRes = editor::HoverAndSignatureHelper::LookupStaticHover(filePath, lines, line, col);
         }
-        if (m_isDestroying.load() || m_lspHoverGen.load() != gen || !m_hwnd) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (m_isDestroying.load() || m_lspHoverGen.load() != gen || !postHwnd) return;
 
         auto* payload = new PendingLspHoverResult();
         payload->gen = gen;
@@ -30011,7 +30654,7 @@ void Window::RequestHoverAsync(editor::OpenDocument* pDoc, size_t line, size_t c
         payload->col = col;
         payload->clientPt = clientPt;
         payload->hover = std::move(hoverRes);
-        if (!PostMessageW(m_hwnd, WM_USER + 213, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 213, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     }).detach();
@@ -30047,13 +30690,14 @@ void Window::TriggerSignatureHelpAsync(editor::OpenDocument* pDoc, bool forceSho
         if (!sigRes.isValid || sigRes.signatures.empty()) {
             sigRes = editor::HoverAndSignatureHelper::LookupStaticSignatureHelp(filePath, lines, line, col);
         }
-        if (m_isDestroying.load() || m_lspSigHelpGen.load() != gen || !m_hwnd) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (m_isDestroying.load() || m_lspSigHelpGen.load() != gen || !postHwnd) return;
 
         auto* payload = new PendingLspSigHelpResult();
         payload->gen = gen;
         payload->filePath = filePath;
         payload->sigHelp = std::move(sigRes);
-        if (!PostMessageW(m_hwnd, WM_USER + 214, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 214, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     }).detach();
@@ -30121,7 +30765,8 @@ void Window::RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, 
             });
         }
 
-        if (m_isDestroying.load() || m_lspCodeActionGen.load() != gen || !m_hwnd) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (m_isDestroying.load() || m_lspCodeActionGen.load() != gen || !postHwnd) return;
         auto* payload = new PendingLspCodeActionResult();
         payload->gen = gen;
         payload->filePath = filePath;
@@ -30129,7 +30774,7 @@ void Window::RequestCodeActionsAsync(editor::OpenDocument* pDoc, bool openMenu, 
         payload->openMenu = openMenu;
         payload->isRefactorMode = isRefactorMode;
         payload->actions = std::move(merged);
-        if (!PostMessageW(m_hwnd, WM_USER + 215, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 215, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     }).detach();
@@ -30348,17 +30993,37 @@ void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool r
             payload->linterProblems = editor::ExternalLinterEngine::RunLintersForFile(filePath, wsRoot, forceFreshLinters);
         }
 
-        if (m_isDestroying.load() || !m_hwnd) {
+        HWND postHwnd = GetMainPostHwnd();
+        if (m_isDestroying.load() || !postHwnd) {
             delete payload;
             return;
         }
-        if (!PostMessageW(m_hwnd, WM_USER + 216, 0, reinterpret_cast<LPARAM>(payload))) {
+        if (!PostMessageW(postHwnd, WM_USER + 216, 0, reinterpret_cast<LPARAM>(payload))) {
             delete payload;
         }
     }).detach();
 }
 
 void Window::ToggleProblemsPanel(bool forceOpen) {
+    if (m_problemsPanelFloated) {
+        FloatingDockWindow* existingProb = nullptr;
+        for (const auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::ProblemsPanel) {
+                existingProb = fw.get();
+                break;
+            }
+        }
+        if (forceOpen && existingProb && existingProb->hwnd) {
+            RebuildProblemsCache();
+            if (IsIconic(existingProb->hwnd)) ShowWindow(existingProb->hwnd, SW_RESTORE);
+            SetForegroundWindow(existingProb->hwnd);
+            InvalidateRect(existingProb->hwnd, nullptr, FALSE);
+        } else {
+            DockProblemsToMainWindow();
+            if (!forceOpen) CloseProblemsPanel();
+        }
+        return;
+    }
     if (forceOpen || !IsBottomProblemsVisible()) {
         m_problemsPanelOpen = true;
         m_bottomProblemsActive = true;
@@ -30371,11 +31036,24 @@ void Window::ToggleProblemsPanel(bool forceOpen) {
 }
 
 void Window::CloseProblemsPanel() {
+    if (m_problemsPanelFloated) {
+        for (const auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::ProblemsPanel) {
+                PendingFloatingAction act{};
+                act.kind = PendingFloatingAction::Kind::CloseFloatingProblems;
+                act.winId = fw->id;
+                m_pendingFloatingActions.push_back(act);
+                ProcessPendingFloatingActions();
+                break;
+            }
+        }
+    }
+    m_problemsPanelFloated = false;
     m_problemsPanelOpen = false;
     m_bottomProblemsActive = false;
     m_problemsSearchFocused = false;
     m_isResizingProblemsPanel = false;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_mainHwnd) InvalidateRect(m_mainHwnd, nullptr, FALSE);
 }
 
 void Window::SwitchBottomDockToTerminal() {
@@ -30401,35 +31079,43 @@ void Window::RebuildProblemsCache() {
         return p;
     };
 
-    for (const auto& grp : m_editorGroups) {
-        for (const auto& d : grp.docs) {
-            if (d.isSpecialView || d.isDiffView) continue;
-            std::wstring fp = d.filePath.empty() ? d.fileName : d.filePath;
-            std::wstring key = normKey(fp);
-            if (!seenFiles.insert(key).second) continue;
+    auto collectGroupDiags = [&](const std::vector<editor::EditorGroup>& groups) {
+        for (const auto& grp : groups) {
+            for (const auto& d : grp.docs) {
+                if (d.isSpecialView || d.isDiffView) continue;
+                std::wstring fp = d.filePath.empty() ? d.fileName : d.filePath;
+                std::wstring key = normKey(fp);
+                if (!seenFiles.insert(key).second) continue;
 
-            std::wstring disp = m_drawer.HasOpenFolder()
-                ? GetRelativePath(fp, m_drawer.GetOpenFolderPath())
-                : std::filesystem::path(fp).filename().wstring();
-            if (disp.empty()) disp = fp;
+                std::wstring disp = m_drawer.HasOpenFolder()
+                    ? GetRelativePath(fp, m_drawer.GetOpenFolderPath())
+                    : std::filesystem::path(fp).filename().wstring();
+                if (disp.empty()) disp = fp;
 
-            for (const auto& diag : d.diagnostics) {
-                if (diag.isUnnecessary && diag.severity >= 4) continue;
-                editor::ProblemEntry pe;
-                pe.filePath = fp;
-                pe.displayPath = disp;
-                pe.line = diag.line;
-                pe.col = diag.col;
-                pe.length = (std::max<size_t>)(1, diag.length);
-                pe.severity = (diag.severity >= 1 && diag.severity <= 3) ? diag.severity : 3;
-                pe.message = diag.message;
-                pe.source = !diag.source.empty()
-                    ? diag.source
-                    : ((diag.message.find(L"Runtime:") != std::wstring::npos) ? L"Runtime"
-                       : (!diag.code.empty() ? L"LSP" : L"Syntax"));
-                pe.code = diag.code;
-                all.push_back(std::move(pe));
+                for (const auto& diag : d.diagnostics) {
+                    if (diag.isUnnecessary && diag.severity >= 4) continue;
+                    editor::ProblemEntry pe;
+                    pe.filePath = fp;
+                    pe.displayPath = disp;
+                    pe.line = diag.line;
+                    pe.col = diag.col;
+                    pe.length = (std::max<size_t>)(1, diag.length);
+                    pe.severity = (diag.severity >= 1 && diag.severity <= 3) ? diag.severity : 3;
+                    pe.message = diag.message;
+                    pe.source = !diag.source.empty()
+                        ? diag.source
+                        : ((diag.message.find(L"Runtime:") != std::wstring::npos) ? L"Runtime"
+                           : (!diag.code.empty() ? L"LSP" : L"Syntax"));
+                    pe.code = diag.code;
+                    all.push_back(std::move(pe));
+                }
             }
+        }
+    };
+    collectGroupDiags(m_editorGroups);
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            collectGroupDiags(fw->editorGroups);
         }
     }
 
@@ -30539,13 +31225,26 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     float panelRight = clientW;
     if (panelRight - panelLeft < 100.0f || dockH < 60.0f) return;
 
-    m_rcProblemsPanel = D2D1::RectF(panelLeft, panelTop, panelRight, panelBottom);
-    m_rcProblemsResizeBorder = D2D1::RectF(panelLeft, panelTop - m_config.ScaleF(3.0f), panelRight, panelTop + m_config.ScaleF(4.0f));
+    RenderProblemsPanelInRect(pRT, m_theme, D2D1::RectF(panelLeft, panelTop, panelRight, panelBottom), false);
+}
+
+void Window::RenderProblemsPanelInRect(ID2D1RenderTarget* pRT, ui::Theme& theme, const D2D1_RECT_F& panelRect, bool isFloating) {
+    if (!pRT) return;
+    float panelLeft = panelRect.left;
+    float panelTop = panelRect.top;
+    float panelRight = panelRect.right;
+    float panelBottom = panelRect.bottom;
+    if (panelRight - panelLeft < 100.0f || panelBottom - panelTop < 60.0f) return;
+
+    m_rcProblemsPanel = panelRect;
+    m_rcProblemsResizeBorder = isFloating
+        ? D2D1_RECT_F{}
+        : D2D1::RectF(panelLeft, panelTop - m_config.ScaleF(3.0f), panelRight, panelTop + m_config.ScaleF(4.0f));
     m_problemsRowBounds.clear();
     m_problemsFixBtnBounds.clear();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush, headerBgBrush, borderBrush, activePillBrush, pillBgBrush, selRowBrush, accentBrush, errBrush, warnBrush, infoBrush;
-    if (m_theme.IsDarkMode()) {
+    if (theme.IsDarkMode()) {
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.095f, 0.100f, 0.115f, 1.0f), &bgBrush);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.125f, 0.130f, 0.148f, 1.0f), &headerBgBrush);
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.21f, 0.22f, 0.26f, 1.0f), &borderBrush);
@@ -30579,17 +31278,17 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     pRT->DrawLine(D2D1::Point2F(panelLeft, panelTop), D2D1::Point2F(panelRight, panelTop), borderBrush.Get(), 1.0f);
     pRT->DrawLine(D2D1::Point2F(panelLeft, panelTop + headerH), D2D1::Point2F(panelRight, panelTop + headerH), borderBrush.Get(), 1.0f);
 
-    IDWriteTextFormat* uiFmt = m_theme.fontMenuItem ? m_theme.fontMenuItem.Get() : m_theme.fontBody.Get();
-    IDWriteTextFormat* bodyFmt = m_theme.fontBody ? m_theme.fontBody.Get() : uiFmt;
-    ID2D1Brush* textPrim = m_theme.brushTextPrimary.Get();
-    ID2D1Brush* textSec = m_theme.brushTextSecondary ? m_theme.brushTextSecondary.Get() : textPrim;
-    ID2D1Brush* textWht = m_theme.brushTextWhite ? m_theme.brushTextWhite.Get() : textPrim;
+    IDWriteTextFormat* uiFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* bodyFmt = theme.fontBody ? theme.fontBody.Get() : uiFmt;
+    ID2D1Brush* textPrim = theme.brushTextPrimary.Get();
+    ID2D1Brush* textSec = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : textPrim;
+    ID2D1Brush* textWht = theme.brushTextWhite ? theme.brushTextWhite.Get() : textPrim;
 
     auto measureTextW = [&](const std::wstring& s) -> float {
         float w = static_cast<float>(s.length()) * m_config.ScaleF(7.0f);
-        if (uiFmt && m_theme.dwriteFactory && !s.empty()) {
+        if (uiFmt && theme.dwriteFactory && !s.empty()) {
             Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
-            if (SUCCEEDED(m_theme.dwriteFactory->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.length()), uiFmt, 400.0f, headerH, &lay)) && lay) {
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.length()), uiFmt, 400.0f, headerH, &lay)) && lay) {
                 DWRITE_TEXT_METRICS tm{};
                 if (SUCCEEDED(lay->GetMetrics(&tm))) w = tm.widthIncludingTrailingWhitespace;
             }
@@ -30609,17 +31308,21 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     if (accentBrush) pRT->DrawLine(D2D1::Point2F(m_rcProblemsTabBtn.left, panelTop + headerH - 1.5f), D2D1::Point2F(m_rcProblemsTabBtn.right, panelTop + headerH - 1.5f), accentBrush.Get(), 2.0f);
     curX += probTabW + m_config.ScaleF(8.0f);
 
-    // Tab 2: TERMINAL
-    std::wstring termTabLabel = L"TERMINAL";
-    float termTabW = measureTextW(termTabLabel) + m_config.ScaleF(12.0f);
-    m_rcProblemsTermTabBtn = D2D1::RectF(curX, panelTop + m_config.ScaleF(2.0f), curX + termTabW, panelTop + headerH);
-    if (uiFmt && textSec) pRT->DrawText(termTabLabel.c_str(), static_cast<UINT32>(termTabLabel.size()), uiFmt, m_rcProblemsTermTabBtn, textSec);
-    curX += termTabW + m_config.ScaleF(16.0f);
+    // Tab 2: TERMINAL (only shown in docked bottom mode where Problems & Terminal share the bottom dock)
+    if (!isFloating) {
+        std::wstring termTabLabel = L"TERMINAL";
+        float termTabW = measureTextW(termTabLabel) + m_config.ScaleF(12.0f);
+        m_rcProblemsTermTabBtn = D2D1::RectF(curX, panelTop + m_config.ScaleF(2.0f), curX + termTabW, panelTop + headerH);
+        if (uiFmt && textSec) pRT->DrawText(termTabLabel.c_str(), static_cast<UINT32>(termTabLabel.size()), uiFmt, m_rcProblemsTermTabBtn, textSec);
+        curX += termTabW + m_config.ScaleF(16.0f);
+    } else {
+        m_rcProblemsTermTabBtn = {};
+    }
 
     auto drawFilterPill = [&](const std::wstring& lbl, bool active, D2D1_RECT_F& outRc) {
         float w = measureTextW(lbl) + m_config.ScaleF(16.0f);
         outRc = D2D1::RectF(curX, pillY, curX + w, pillY + pillH);
-        if (curX + w < panelRight - m_config.ScaleF(260.0f)) {
+        if (curX + w < panelRight - m_config.ScaleF(285.0f)) {
             ID2D1Brush* bg = active ? activePillBrush.Get() : pillBgBrush.Get();
             if (bg) pRT->FillRoundedRectangle(D2D1::RoundedRect(outRc, 4.0f, 4.0f), bg);
             if (uiFmt) {
@@ -30639,14 +31342,36 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     drawFilterPill(L"Current File", m_problemsFilter.currentFileOnly, m_rcProblemsCurFileBtn);
     drawFilterPill(L"Group by File", m_problemsFilter.groupByFile, m_rcProblemsGroupBtn);
 
-    // Right controls: Close X, Search box, Export SARIF, Run Linters button
+    // Right controls: Close X, Undock ↗, Search box, Export SARIF, Run Linters button
     float rightX = panelRight - m_config.ScaleF(10.0f);
-    float closeW = m_config.ScaleF(24.0f);
-    m_rcProblemsCloseBtn = D2D1::RectF(rightX - closeW, pillY, rightX, pillY + pillH);
-    if (uiFmt && textSec) {
-        pRT->DrawText(L" \x00D7", 2, uiFmt, m_rcProblemsCloseBtn, textSec);
+    if (!isFloating) {
+        float closeW = m_config.ScaleF(24.0f);
+        m_rcProblemsCloseBtn = D2D1::RectF(rightX - closeW, pillY, rightX, pillY + pillH);
+        if (uiFmt && textSec) {
+            pRT->DrawText(L" \x00D7", 2, uiFmt, m_rcProblemsCloseBtn, textSec);
+        }
+        rightX -= (closeW + m_config.ScaleF(4.0f));
+
+        float undockW = m_config.ScaleF(22.0f);
+        m_rcProblemsUndockBtn = D2D1::RectF(rightX - undockW, pillY, rightX, pillY + pillH);
+        if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcProblemsUndockBtn, 4.0f, 4.0f), pillBgBrush.Get());
+        if (textSec) {
+            float ucx = (m_rcProblemsUndockBtn.left + m_rcProblemsUndockBtn.right) * 0.5f;
+            float ucy = (m_rcProblemsUndockBtn.top + m_rcProblemsUndockBtn.bottom) * 0.5f;
+            float ur = m_config.ScaleF(4.2f);
+            pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx, ucy - ur), textSec, 1.2f);
+            pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy - ur), D2D1::Point2F(ucx - ur, ucy + ur), textSec, 1.2f);
+            pRT->DrawLine(D2D1::Point2F(ucx - ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy + ur), textSec, 1.2f);
+            pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy + ur), D2D1::Point2F(ucx + ur, ucy), textSec, 1.2f);
+            pRT->DrawLine(D2D1::Point2F(ucx - m_config.ScaleF(0.5f), ucy + m_config.ScaleF(0.5f)), D2D1::Point2F(ucx + ur, ucy - ur), textPrim ? textPrim : textSec, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur), D2D1::Point2F(ucx + ur - m_config.ScaleF(3.0f), ucy - ur), textPrim ? textPrim : textSec, 1.3f);
+            pRT->DrawLine(D2D1::Point2F(ucx + ur, ucy - ur), D2D1::Point2F(ucx + ur, ucy - ur + m_config.ScaleF(3.0f)), textPrim ? textPrim : textSec, 1.3f);
+        }
+        rightX -= (undockW + m_config.ScaleF(6.0f));
+    } else {
+        m_rcProblemsCloseBtn = {};
+        m_rcProblemsUndockBtn = {};
     }
-    rightX -= (closeW + m_config.ScaleF(8.0f));
 
     float searchW = (std::min)(m_config.ScaleF(180.0f), (std::max)(m_config.ScaleF(100.0f), (panelRight - panelLeft) * 0.15f));
     m_rcProblemsSearchBox = D2D1::RectF(rightX - searchW, pillY, rightX, pillY + pillH);
@@ -30786,15 +31511,19 @@ void Window::RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, fl
     pRT->PopAxisAlignedClip();
 }
 
-bool Window::HandleProblemsPanelMouseDown(POINT pt) {
-    if (!IsBottomProblemsVisible()) return false;
-    if (PtInRectF(pt, m_rcProblemsResizeBorder)) {
+bool Window::HandleProblemsPanelMouseDown(POINT pt, bool isFloatingOverride) {
+    if (!isFloatingOverride && !IsBottomProblemsVisible()) return false;
+    if (!isFloatingOverride && PtInRectF(pt, m_rcProblemsResizeBorder)) {
         m_isResizingProblemsPanel = true;
         SetCapture(m_hwnd);
         return true;
     }
     if (!PtInRectF(pt, m_rcProblemsPanel)) return false;
 
+    if (!isFloatingOverride && PtInRectF(pt, m_rcProblemsUndockBtn)) {
+        UndockProblemsToFloatingWindow();
+        return true;
+    }
     if (PtInRectF(pt, m_rcProblemsCloseBtn)) {
         CloseProblemsPanel();
         return true;
@@ -31434,7 +32163,7 @@ void Window::RefreshWorkspaceTestsAsync() {
                 m_workspaceTestSummary = {};
                 m_workspaceTestSummary.total = static_cast<int>(m_workspaceTests.size());
             }
-            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 0, 0);
+            if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) PostMessageW(postHwnd, WM_USER + 217, 0, 0);
         }
         std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
         if (m_activeBgWorkers > 0) --m_activeBgWorkers;
@@ -31516,7 +32245,7 @@ void Window::RunWorkspaceTestsAsync(const std::wstring& filterName,
                 m_workspaceTests = std::move(items);
                 m_workspaceTestSummary = std::move(summary);
             }
-            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 1, 0);
+            if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) PostMessageW(postHwnd, WM_USER + 217, 1, 0);
         }
         m_testsRunningAsync.store(false);
         std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
@@ -31596,7 +32325,7 @@ void Window::RunFailedWorkspaceTestsAsync() {
                 m_workspaceTests = std::move(currentSnapshot);
                 m_workspaceTestSummary = std::move(summary);
             }
-            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 217, 1, 0);
+            if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) PostMessageW(postHwnd, WM_USER + 217, 1, 0);
         }
         m_testsRunningAsync.store(false);
         std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
@@ -31621,7 +32350,7 @@ void Window::RefreshWorkspaceCoverageAsync() {
                 std::lock_guard<std::mutex> lk(m_covMutex);
                 m_workspaceCoverage = std::move(cov);
             }
-            if (m_hwnd) PostMessageW(m_hwnd, WM_USER + 231, 0, 0);
+            if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) PostMessageW(postHwnd, WM_USER + 231, 0, 0);
         }
         std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
         if (m_activeBgWorkers > 0) --m_activeBgWorkers;
@@ -31684,6 +32413,1468 @@ void Window::SyncMarkdownCompanionScroll(const editor::OpenDocument& changedDoc,
                 }
             }
         }
+    }
+}
+
+// =============================================================================
+// In-Process Floating Dock / Undock Window Engine (Tabs, Views, Terminal, Problems)
+// =============================================================================
+
+namespace {
+constexpr const wchar_t* kFloatingDockClassName = L"PhideFloatingDockWindowClass";
+} // namespace
+
+Window::FloatingDockWindow* Window::FindFloatingWindow(HWND hwnd) noexcept {
+    if (!hwnd) return nullptr;
+    for (auto& fw : m_floatingWindows) {
+        if (fw && fw->hwnd == hwnd) return fw.get();
+    }
+    return nullptr;
+}
+
+const Window::FloatingDockWindow* Window::FindFloatingWindow(HWND hwnd) const noexcept {
+    if (!hwnd) return nullptr;
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->hwnd == hwnd) return fw.get();
+    }
+    return nullptr;
+}
+
+void Window::InvalidateFloatingWindows() noexcept {
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->hwnd && IsWindow(fw->hwnd)) {
+            InvalidateRect(fw->hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+void Window::DestroyAllFloatingWindows() noexcept {
+    // Discard D2D resources and destroy HWNDs before clearing unique_ptr vector so
+    // WM_DESTROY never mutates m_floatingWindows during iteration.
+    for (auto& fw : m_floatingWindows) {
+        if (!fw) continue;
+        HWND h = fw->hwnd;
+        fw->DiscardDeviceResources();
+        if (h && IsWindow(h)) {
+            SetWindowLongPtrW(h, GWLP_USERDATA, 0);
+            DestroyWindow(h);
+        }
+        fw->hwnd = nullptr;
+    }
+    m_floatingWindows.clear();
+    m_pendingFloatingActions.clear();
+    m_activeFloatingWindow = nullptr;
+    m_problemsPanelFloated = false;
+    if (m_terminal.GetDockPosition() == 3) {
+        m_terminal.SetDockPosition(0);
+    }
+}
+
+void Window::SyncThemeAndFontToFloatingWindows() {
+    for (auto& fw : m_floatingWindows) {
+        if (!fw) continue;
+        fw->theme.SetThemeMode(m_theme.GetThemeMode());
+        fw->theme.SetDpiScale(m_config.dpiScale);
+        fw->theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+        if (fw->hwnd && IsWindow(fw->hwnd)) {
+            BOOL dm = m_theme.IsDarkMode() ? TRUE : FALSE;
+            DwmSetWindowAttribute(fw->hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dm, sizeof(dm));
+            SetWindowPos(fw->hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+            InvalidateRect(fw->hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+bool Window::EnsureFloatingWindowClassRegistered(HINSTANCE hInst) {
+    if (!hInst) hInst = GetModuleHandleW(nullptr);
+    WNDCLASSEXW existing{};
+    if (GetClassInfoExW(hInst, kFloatingDockClassName, &existing)) {
+        return true;
+    }
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wc.lpfnWndProc = Window::FloatingWndProc;
+    wc.hInstance = hInst;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIcon(hInst, MAKEINTRESOURCE(101));
+    wc.hIconSm = LoadIcon(hInst, MAKEINTRESOURCE(101));
+    wc.hbrBackground = nullptr;
+    wc.lpszClassName = kFloatingDockClassName;
+    return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+HWND Window::CreateFloatingDockHwnd(FloatingDockWindow& fw, const std::wstring& title,
+                                    int width, int height, const POINT* pScreenPos) {
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    if (!EnsureFloatingWindowClassRegistered(hInst)) return nullptr;
+
+    int scaledW = m_config.Scale(width);
+    int scaledH = m_config.Scale(height);
+    int posX = 120;
+    int posY = 90;
+
+    RECT workArea{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    int workW = (std::max)(480, static_cast<int>(workArea.right - workArea.left));
+    int workH = (std::max)(320, static_cast<int>(workArea.bottom - workArea.top));
+    scaledW = (std::min)(scaledW, workW);
+    scaledH = (std::min)(scaledH, workH);
+
+    if (pScreenPos) {
+        posX = pScreenPos->x - scaledW / 4;
+        posY = pScreenPos->y - m_config.Scale(18);
+    } else if (m_mainHwnd && IsWindow(m_mainHwnd)) {
+        RECT mainRc{};
+        GetWindowRect(m_mainHwnd, &mainRc);
+        int stagger = static_cast<int>(m_floatingWindows.size() % 5) * m_config.Scale(28);
+        posX = mainRc.left + m_config.Scale(80) + stagger;
+        posY = mainRc.top + m_config.Scale(70) + stagger;
+    } else {
+        int stagger = static_cast<int>(m_floatingWindows.size() % 5) * 28;
+        posX = workArea.left + 80 + stagger;
+        posY = workArea.top + 70 + stagger;
+    }
+
+    posX = (std::clamp)(posX, static_cast<int>(workArea.left), (std::max)(static_cast<int>(workArea.left), static_cast<int>(workArea.right) - scaledW));
+    posY = (std::clamp)(posY, static_cast<int>(workArea.top), (std::max)(static_cast<int>(workArea.top), static_cast<int>(workArea.bottom) - scaledH));
+
+    // Top-level independent overlapped window with custom frameless chrome:
+    // supports native Minimize, Maximize/Restore, Aero Snap, Alt+Tab & taskbar entry.
+    HWND hwnd = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        kFloatingDockClassName,
+        title.c_str(),
+        WS_OVERLAPPEDWINDOW,
+        posX, posY, scaledW, scaledH,
+        nullptr, nullptr, hInst, &fw
+    );
+    if (!hwnd) return nullptr;
+
+    fw.hwnd = hwnd;
+
+    BOOL darkMode = m_theme.IsDarkMode() ? TRUE : FALSE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    MARGINS margins = { 0, 0, 1, 0 };
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    SetWindowDisplayAffinity(hwnd, WDA_NONE);
+
+    if (m_mainHwnd && IsWindowVisible(m_mainHwnd)) {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(hwnd);
+    } else {
+        // Keep headless/unit-test environments non-disruptive while realizing client rect
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    UpdateWindow(hwnd);
+    return hwnd;
+}
+
+HRESULT Window::CreateFloatingDeviceResources(FloatingDockWindow& fw) {
+    if (fw.pRenderTarget) return S_OK;
+    if (!fw.hwnd || !IsWindow(fw.hwnd)) return E_FAIL;
+
+    if (!m_pD2DFactory) {
+        HRESULT hrF = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_pD2DFactory.GetAddressOf());
+        if (FAILED(hrF)) return hrF;
+    }
+    if (!m_pDWriteFactory) {
+        HRESULT hrW = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                          reinterpret_cast<IUnknown**>(m_pDWriteFactory.GetAddressOf()));
+        if (FAILED(hrW)) return hrW;
+    }
+
+    RECT rc{};
+    GetClientRect(fw.hwnd, &rc);
+    D2D1_SIZE_U size = D2D1::SizeU(
+        (std::max)(1U, static_cast<UINT>(rc.right - rc.left)),
+        (std::max)(1U, static_cast<UINT>(rc.bottom - rc.top))
+    );
+
+    D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
+        fw.hwnd, size, D2D1_PRESENT_OPTIONS_IMMEDIATELY
+    );
+
+    HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &fw.pRenderTarget);
+    if (FAILED(hr)) return hr;
+
+    fw.pRenderTarget->SetDpi(96.0f, 96.0f);
+    fw.theme.SetThemeMode(m_theme.GetThemeMode());
+    fw.theme.SetDpiScale(m_config.dpiScale);
+    HRESULT hrTheme = fw.theme.CreateDeviceResources(fw.pRenderTarget.Get(), m_pDWriteFactory.Get());
+    if (FAILED(hrTheme)) {
+        fw.pRenderTarget.Reset();
+        return hrTheme;
+    }
+    fw.theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+    m_editor.ResetCharWidth();
+    return S_OK;
+}
+
+bool Window::UndockTabToFloatingWindow(int groupIdx, int docIdx, const POINT* pScreenPos) {
+    if (groupIdx < 0 || groupIdx >= static_cast<int>(m_editorGroups.size())) return false;
+    auto& grp = m_editorGroups[groupIdx];
+    if (docIdx < 0 || docIdx >= static_cast<int>(grp.docs.size())) return false;
+
+    editor::OpenDocument movedDoc = std::move(grp.docs[docIdx]);
+    grp.docs.erase(grp.docs.begin() + docIdx);
+    grp.docs.shrink_to_fit();
+
+    // Release render-target-bound bitmaps/brushes before moving to a new HWND/RenderTarget
+    movedDoc.pImageBitmap.Reset();
+    movedDoc.pImageBitmapRT = nullptr;
+    if (movedDoc.assetView) movedDoc.assetView->DiscardDeviceResources();
+    movedDoc.isSelecting = false;
+    movedDoc.isDraggingScrollbar = false;
+    movedDoc.isDraggingMinimap = false;
+    movedDoc.isDraggingHScrollbar = false;
+
+    if (grp.docs.empty()) {
+        grp.activeDocIdx = -1;
+    } else if (grp.activeDocIdx >= static_cast<int>(grp.docs.size())) {
+        grp.activeDocIdx = static_cast<int>(grp.docs.size()) - 1;
+    } else if (docIdx < grp.activeDocIdx && grp.activeDocIdx > 0) {
+        grp.activeDocIdx--;
+    }
+
+    CollapseEmptyEditorGroups();
+    if (m_editorGroups.empty()) {
+        m_editorGroups.emplace_back();
+        m_focusedGroupIdx = 0;
+        m_splitState.layout = editor::EditorSplitLayout::Single;
+    }
+
+    auto fw = std::make_unique<FloatingDockWindow>();
+    fw->id = m_nextFloatingWinId++;
+    fw->kind = FloatingDockKind::EditorGroup;
+    fw->owner = this;
+    fw->theme.SetThemeMode(m_theme.GetThemeMode());
+    fw->theme.SetDpiScale(m_config.dpiScale);
+    fw->theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+    fw->splitState.layout = editor::EditorSplitLayout::Single;
+    fw->focusedGroupIdx = 0;
+
+    std::wstring title = (movedDoc.fileName.empty() ? L"Untitled" : movedDoc.fileName) + L" \x2014 Phide";
+    const bool isPkgView = (movedDoc.isSpecialView && movedDoc.viewType == L"packages");
+    const bool isApiView = (movedDoc.isSpecialView && movedDoc.viewType == L"api");
+
+    editor::EditorGroup fg;
+    fg.docs.push_back(std::move(movedDoc));
+    fg.activeDocIdx = 0;
+    fw->editorGroups.push_back(std::move(fg));
+
+    HWND hwnd = CreateFloatingDockHwnd(*fw, title, 980, 680, pScreenPos);
+    if (!hwnd) {
+        // Rollback gracefully if OS window creation failed
+        m_editorGroups[0].docs.push_back(std::move(fw->editorGroups[0].docs[0]));
+        m_editorGroups[0].activeDocIdx = static_cast<int>(m_editorGroups[0].docs.size()) - 1;
+        UpdateEditorGroupBounds();
+        return false;
+    }
+
+    if (isPkgView) m_editor.GetPackageManagerView().SetHwnd(hwnd);
+    if (isApiView) m_editor.GetApiTesterView().SetHwnd(hwnd);
+
+    m_lastActiveEditorHwnd = hwnd;
+    m_editorOverlayOwnerHwnd = hwnd;
+    m_floatingWindows.push_back(std::move(fw));
+
+    ClearExplorerSelectionOverride();
+    SyncActiveTabWithDrawer();
+    UpdateEditorGroupBounds();
+    UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
+    SaveSessionState();
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
+}
+
+bool Window::DockFloatingEditorToMainWindow(HWND floatHwnd, int floatGroupIdx, int floatDocIdx, int targetMainGroupIdx) {
+    auto it = std::find_if(m_floatingWindows.begin(), m_floatingWindows.end(), [&](const auto& p) {
+        return p && p->hwnd == floatHwnd && p->kind == FloatingDockKind::EditorGroup;
+    });
+    if (it == m_floatingWindows.end()) return false;
+    FloatingDockWindow* fw = it->get();
+
+    if (m_editorGroups.empty()) {
+        m_editorGroups.emplace_back();
+        m_splitState.layout = editor::EditorSplitLayout::Single;
+    }
+    int dstGroup = (targetMainGroupIdx >= 0 && targetMainGroupIdx < static_cast<int>(m_editorGroups.size()))
+        ? targetMainGroupIdx : (std::clamp)(m_focusedGroupIdx, 0, static_cast<int>(m_editorGroups.size()) - 1);
+
+    auto attachDocToMain = [&](editor::OpenDocument&& doc) {
+        doc.pImageBitmap.Reset();
+        doc.pImageBitmapRT = nullptr;
+        if (doc.assetView) doc.assetView->DiscardDeviceResources();
+        doc.isSelecting = false;
+        doc.isDraggingScrollbar = false;
+        doc.isDraggingMinimap = false;
+        doc.isDraggingHScrollbar = false;
+
+        if (doc.isSpecialView && doc.viewType == L"packages") {
+            m_editor.GetPackageManagerView().SetHwnd(GetMainPostHwnd());
+        } else if (doc.isSpecialView && doc.viewType == L"api") {
+            m_editor.GetApiTesterView().SetHwnd(GetMainPostHwnd());
+        }
+
+        m_editorGroups[dstGroup].docs.push_back(std::move(doc));
+        m_editorGroups[dstGroup].activeDocIdx = static_cast<int>(m_editorGroups[dstGroup].docs.size()) - 1;
+    };
+
+    if (floatGroupIdx >= 0 && floatGroupIdx < static_cast<int>(fw->editorGroups.size()) &&
+        floatDocIdx >= 0 && floatDocIdx < static_cast<int>(fw->editorGroups[floatGroupIdx].docs.size())) {
+        // Attach a single specific tab back into main window
+        auto& fg = fw->editorGroups[floatGroupIdx];
+        editor::OpenDocument doc = std::move(fg.docs[floatDocIdx]);
+        fg.docs.erase(fg.docs.begin() + floatDocIdx);
+        fg.docs.shrink_to_fit();
+        if (fg.docs.empty()) {
+            fw->editorGroups.erase(fw->editorGroups.begin() + floatGroupIdx);
+        } else if (fg.activeDocIdx >= static_cast<int>(fg.docs.size())) {
+            fg.activeDocIdx = static_cast<int>(fg.docs.size()) - 1;
+        }
+        attachDocToMain(std::move(doc));
+    } else {
+        // Attach all groups/tabs in this floating window back into main window
+        for (auto& fg : fw->editorGroups) {
+            for (auto& d : fg.docs) {
+                attachDocToMain(std::move(d));
+            }
+            fg.docs.clear();
+        }
+        fw->editorGroups.clear();
+    }
+
+    bool emptyNow = true;
+    for (const auto& fg : fw->editorGroups) {
+        if (!fg.docs.empty()) {
+            emptyNow = false;
+            break;
+        }
+    }
+
+    if (emptyNow) {
+        // Extract ownership before DestroyWindow so WM_DESTROY never touches m_floatingWindows
+        std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+        m_floatingWindows.erase(it);
+        HWND deadHwnd = deadWin->hwnd;
+        if (m_lastActiveEditorHwnd == deadHwnd) m_lastActiveEditorHwnd = m_mainHwnd;
+        if (m_editorOverlayOwnerHwnd == deadHwnd) m_editorOverlayOwnerHwnd = m_mainHwnd;
+        if (m_popupMenuOwnerHwnd == deadHwnd) {
+            m_popupMenu.Close();
+            m_popupMenuOwnerHwnd = nullptr;
+        }
+        deadWin->DiscardDeviceResources();
+        if (deadHwnd && IsWindow(deadHwnd)) {
+            SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+            DestroyWindow(deadHwnd);
+        }
+        deadWin->hwnd = nullptr;
+    } else if (fw->hwnd && IsWindow(fw->hwnd)) {
+        InvalidateRect(fw->hwnd, nullptr, FALSE);
+    }
+
+    m_focusedGroupIdx = dstGroup;
+    UpdateEditorGroupBounds();
+    RefreshActiveDocOutlineAndBreadcrumbs();
+    SyncActiveTabWithDrawer();
+    UpdateDrawerDirtyFiles();
+    UpdateDrawerErrorFiles();
+    SaveSessionState();
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) {
+        if (IsWindowVisible(m_mainHwnd)) {
+            if (IsIconic(m_mainHwnd)) ShowWindow(m_mainHwnd, SW_RESTORE);
+            SetForegroundWindow(m_mainHwnd);
+        }
+        InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+bool Window::DockFloatingTabToFloatingWindow(HWND srcFloatHwnd, int srcGroupIdx, int srcDocIdx,
+                                             HWND dstFloatHwnd, int targetGroupIdx) {
+    if (!srcFloatHwnd || !dstFloatHwnd || srcFloatHwnd == dstFloatHwnd) return false;
+    auto itSrc = std::find_if(m_floatingWindows.begin(), m_floatingWindows.end(), [&](const auto& p) {
+        return p && p->hwnd == srcFloatHwnd && p->kind == FloatingDockKind::EditorGroup;
+    });
+    auto itDst = std::find_if(m_floatingWindows.begin(), m_floatingWindows.end(), [&](const auto& p) {
+        return p && p->hwnd == dstFloatHwnd && p->kind == FloatingDockKind::EditorGroup;
+    });
+    if (itSrc == m_floatingWindows.end() || itDst == m_floatingWindows.end()) return false;
+
+    FloatingDockWindow* srcFw = itSrc->get();
+    FloatingDockWindow* dstFw = itDst->get();
+    if (srcGroupIdx < 0 || srcGroupIdx >= static_cast<int>(srcFw->editorGroups.size())) return false;
+    auto& srcGrp = srcFw->editorGroups[srcGroupIdx];
+    if (srcDocIdx < 0 || srcDocIdx >= static_cast<int>(srcGrp.docs.size())) return false;
+
+    editor::OpenDocument movedDoc = std::move(srcGrp.docs[srcDocIdx]);
+    srcGrp.docs.erase(srcGrp.docs.begin() + srcDocIdx);
+    movedDoc.pImageBitmap.Reset();
+    movedDoc.pImageBitmapRT = nullptr;
+    if (movedDoc.assetView) movedDoc.assetView->DiscardDeviceResources();
+    if (movedDoc.isSpecialView && movedDoc.viewType == L"packages") {
+        m_editor.GetPackageManagerView().SetHwnd(dstFw->hwnd);
+    } else if (movedDoc.isSpecialView && movedDoc.viewType == L"api") {
+        m_editor.GetApiTesterView().SetHwnd(dstFw->hwnd);
+    }
+
+    if (dstFw->editorGroups.empty()) {
+        dstFw->editorGroups.emplace_back();
+    }
+    int dstG = (targetGroupIdx >= 0 && targetGroupIdx < static_cast<int>(dstFw->editorGroups.size())) ? targetGroupIdx : 0;
+    dstFw->editorGroups[dstG].docs.push_back(std::move(movedDoc));
+    dstFw->editorGroups[dstG].activeDocIdx = static_cast<int>(dstFw->editorGroups[dstG].docs.size()) - 1;
+    dstFw->focusedGroupIdx = dstG;
+
+    if (srcGrp.docs.empty()) {
+        srcFw->editorGroups.erase(srcFw->editorGroups.begin() + srcGroupIdx);
+    } else if (srcGrp.activeDocIdx >= static_cast<int>(srcGrp.docs.size())) {
+        srcGrp.activeDocIdx = static_cast<int>(srcGrp.docs.size()) - 1;
+    }
+
+    bool srcEmpty = true;
+    for (const auto& fg : srcFw->editorGroups) {
+        if (!fg.docs.empty()) { srcEmpty = false; break; }
+    }
+    if (srcEmpty) {
+        std::unique_ptr<FloatingDockWindow> deadWin = std::move(*itSrc);
+        m_floatingWindows.erase(itSrc);
+        HWND deadHwnd = deadWin->hwnd;
+        deadWin->DiscardDeviceResources();
+        if (deadHwnd && IsWindow(deadHwnd)) {
+            SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+            DestroyWindow(deadHwnd);
+        }
+        deadWin->hwnd = nullptr;
+    } else if (srcFw->hwnd && IsWindow(srcFw->hwnd)) {
+        InvalidateRect(srcFw->hwnd, nullptr, FALSE);
+    }
+
+    m_lastActiveEditorHwnd = dstFw->hwnd;
+    m_editorOverlayOwnerHwnd = dstFw->hwnd;
+    if (dstFw->hwnd && IsWindow(dstFw->hwnd)) {
+        InvalidateRect(dstFw->hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+bool Window::UndockTerminalToFloatingWindow(const POINT* pScreenPos) {
+    // Reuse existing floating Terminal window if already undocked
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::TerminalPanel && fw->hwnd && IsWindow(fw->hwnd)) {
+            m_terminal.SetDockPosition(3);
+            m_terminal.SetIsOpen(true);
+            m_terminalAnimProgress = 0.0f;
+            m_targetTerminalProgress = 0.0f;
+            m_isTerminalAnimating = false;
+            if (IsWindowVisible(fw->hwnd)) {
+                if (IsIconic(fw->hwnd)) ShowWindow(fw->hwnd, SW_RESTORE);
+                SetForegroundWindow(fw->hwnd);
+            }
+            InvalidateRect(fw->hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
+
+    CloseTerminalEditorTab();
+    if (m_terminal.IsFullScreen()) {
+        m_terminal.ToggleFullScreen();
+        m_targetTermFullScreen = 0.0f;
+        m_termFullScreenProgress = 0.0f;
+        m_isTermFullScreenAnimating = false;
+    }
+    if (!m_terminal.IsOpen()) {
+        std::wstring wsDir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+        m_terminal.Open(wsDir);
+    }
+    m_terminal.SetDockPosition(3);
+    m_terminal.SetIsOpen(true);
+    m_terminalAnimProgress = 0.0f;
+    m_targetTerminalProgress = 0.0f;
+    m_isTerminalAnimating = false;
+    m_config.terminalDockPosition = 3;
+
+    auto fw = std::make_unique<FloatingDockWindow>();
+    fw->id = m_nextFloatingWinId++;
+    fw->kind = FloatingDockKind::TerminalPanel;
+    fw->owner = this;
+    fw->theme.SetThemeMode(m_theme.GetThemeMode());
+    fw->theme.SetDpiScale(m_config.dpiScale);
+    fw->theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+
+    HWND hwnd = CreateFloatingDockHwnd(*fw, L"Terminal \x2014 Phide", 920, 520, pScreenPos);
+    if (!hwnd) {
+        m_terminal.SetDockPosition(0);
+        m_config.terminalDockPosition = 0;
+        return false;
+    }
+
+    m_floatingWindows.push_back(std::move(fw));
+    SaveSessionState();
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
+}
+
+bool Window::DockTerminalToMainWindow(int targetDockPos) {
+    if (targetDockPos < 0 || targetDockPos > 2) targetDockPos = 0;
+
+    for (auto it = m_floatingWindows.begin(); it != m_floatingWindows.end();) {
+        if (*it && (*it)->kind == FloatingDockKind::TerminalPanel) {
+            std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+            it = m_floatingWindows.erase(it);
+            HWND deadHwnd = deadWin->hwnd;
+            deadWin->DiscardDeviceResources();
+            if (deadHwnd && IsWindow(deadHwnd)) {
+                SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+                DestroyWindow(deadHwnd);
+            }
+            deadWin->hwnd = nullptr;
+        } else {
+            ++it;
+        }
+    }
+
+    if (targetDockPos == 0) {
+        CloseTerminalEditorTab();
+        m_terminal.SetDockPosition(0);
+        m_terminal.SetHeight(m_config.ScaleF(360.0f));
+        m_terminal.SetIsOpen(true);
+        m_terminalAnimProgress = 1.0f;
+        m_targetTerminalProgress = 1.0f;
+        m_isTerminalAnimating = false;
+        m_isTerminalFocused = true;
+    } else if (targetDockPos == 1) {
+        m_terminal.SetDockPosition(1);
+        m_terminalAnimProgress = 0.0f;
+        m_targetTerminalProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(true);
+        m_isTerminalFocused = true;
+        OpenSpecialView(L"terminal", L"Terminal");
+    } else if (targetDockPos == 2) {
+        CloseTerminalEditorTab();
+        m_terminal.SetDockPosition(2);
+        m_terminalAnimProgress = 0.0f;
+        m_targetTerminalProgress = 0.0f;
+        m_isTerminalAnimating = false;
+        m_terminal.SetIsOpen(true);
+        m_isTerminalFocused = true;
+    }
+
+    m_config.terminalDockPosition = targetDockPos;
+    SaveSessionState();
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) {
+        if (IsWindowVisible(m_mainHwnd)) {
+            if (IsIconic(m_mainHwnd)) ShowWindow(m_mainHwnd, SW_RESTORE);
+            SetForegroundWindow(m_mainHwnd);
+        }
+        InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+bool Window::UndockProblemsToFloatingWindow(const POINT* pScreenPos) {
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::ProblemsPanel && fw->hwnd && IsWindow(fw->hwnd)) {
+            m_problemsPanelOpen = true;
+            m_bottomProblemsActive = false;
+            m_problemsPanelFloated = true;
+            RebuildProblemsCache();
+            if (IsWindowVisible(fw->hwnd)) {
+                if (IsIconic(fw->hwnd)) ShowWindow(fw->hwnd, SW_RESTORE);
+                SetForegroundWindow(fw->hwnd);
+            }
+            InvalidateRect(fw->hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
+
+    m_problemsPanelOpen = true;
+    m_bottomProblemsActive = false;
+    m_problemsPanelFloated = true;
+    RebuildProblemsCache();
+
+    auto fw = std::make_unique<FloatingDockWindow>();
+    fw->id = m_nextFloatingWinId++;
+    fw->kind = FloatingDockKind::ProblemsPanel;
+    fw->owner = this;
+    fw->theme.SetThemeMode(m_theme.GetThemeMode());
+    fw->theme.SetDpiScale(m_config.dpiScale);
+    fw->theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+
+    HWND hwnd = CreateFloatingDockHwnd(*fw, L"Problems \x2014 Phide", 880, 480, pScreenPos);
+    if (!hwnd) {
+        m_problemsPanelFloated = false;
+        return false;
+    }
+
+    m_floatingWindows.push_back(std::move(fw));
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
+}
+
+bool Window::DockProblemsToMainWindow() {
+    for (auto it = m_floatingWindows.begin(); it != m_floatingWindows.end();) {
+        if (*it && (*it)->kind == FloatingDockKind::ProblemsPanel) {
+            std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+            it = m_floatingWindows.erase(it);
+            HWND deadHwnd = deadWin->hwnd;
+            deadWin->DiscardDeviceResources();
+            if (deadHwnd && IsWindow(deadHwnd)) {
+                SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+                DestroyWindow(deadHwnd);
+            }
+            deadWin->hwnd = nullptr;
+        } else {
+            ++it;
+        }
+    }
+
+    m_problemsPanelFloated = false;
+    m_problemsPanelOpen = true;
+    m_bottomProblemsActive = true;
+    RebuildProblemsCache();
+    if (m_mainHwnd && IsWindow(m_mainHwnd)) {
+        if (IsWindowVisible(m_mainHwnd)) {
+            if (IsIconic(m_mainHwnd)) ShowWindow(m_mainHwnd, SW_RESTORE);
+            SetForegroundWindow(m_mainHwnd);
+        }
+        InvalidateRect(m_mainHwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+void Window::ProcessPendingFloatingActions() {
+    if (m_processingFloatingActions || m_pendingFloatingActions.empty()) return;
+    m_processingFloatingActions = true;
+
+    std::vector<PendingFloatingAction> actions;
+    actions.swap(m_pendingFloatingActions);
+
+    for (const auto& act : actions) {
+        auto findById = [&](uint64_t id) -> FloatingDockWindow* {
+            for (auto& fw : m_floatingWindows) {
+                if (fw && fw->id == id) return fw.get();
+            }
+            return nullptr;
+        };
+
+        switch (act.kind) {
+            case PendingFloatingAction::Kind::DockAllEditorToMain: {
+                if (auto* fw = findById(act.winId)) {
+                    DockFloatingEditorToMainWindow(fw->hwnd, -1, -1, act.targetGroupIdx);
+                }
+                break;
+            }
+            case PendingFloatingAction::Kind::DockOneTabToMain: {
+                if (auto* fw = findById(act.winId)) {
+                    DockFloatingEditorToMainWindow(fw->hwnd, act.groupIdx, act.docIdx, act.targetGroupIdx);
+                }
+                break;
+            }
+            case PendingFloatingAction::Kind::CloseFloatingEditor: {
+                for (auto it = m_floatingWindows.begin(); it != m_floatingWindows.end(); ++it) {
+                    if (*it && (*it)->id == act.winId && (*it)->kind == FloatingDockKind::EditorGroup) {
+                        std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+                        m_floatingWindows.erase(it);
+
+                        // Prompt on unsaved docs if hotExit is off before closing
+                        if (m_config.hotExit == L"off") {
+                            bool hasDirty = false;
+                            for (const auto& fg : deadWin->editorGroups) {
+                                for (const auto& d : fg.docs) {
+                                    if (!d.isSpecialView && !d.isFolderView && !d.isImageView &&
+                                        !d.isUnsupportedBinary && !d.isDiffView && d.isDirty) {
+                                        hasDirty = true;
+                                        break;
+                                    }
+                                }
+                                if (hasDirty) break;
+                            }
+                            if (hasDirty) {
+                                int res = MessageBoxW(
+                                    deadWin->hwnd ? deadWin->hwnd : GetMainPostHwnd(),
+                                    L"You have unsaved changes in this floating window.\nSave all modified files before closing?",
+                                    L"phide",
+                                    MB_YESNOCANCEL | MB_ICONWARNING
+                                );
+                                if (res == IDCANCEL) {
+                                    m_floatingWindows.push_back(std::move(deadWin));
+                                    break;
+                                }
+                                if (res == IDYES) {
+                                    for (auto& fg : deadWin->editorGroups) {
+                                        for (auto& d : fg.docs) {
+                                            if (!d.isSpecialView && !d.isFolderView && !d.isImageView &&
+                                                !d.isUnsupportedBinary && !d.isDiffView && d.isDirty && !d.filePath.empty()) {
+                                                ApplySaveHooks(d, d.filePath, true);
+                                                if (d.buffer.SaveToFile(d.filePath)) {
+                                                    d.isDirty = false;
+                                                    OnDocumentDiskSaved(d);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Record non-special tabs in ClosedTabHistory so Ctrl+Shift+T can reopen them
+                        for (auto& fg : deadWin->editorGroups) {
+                            for (auto& d : fg.docs) {
+                                if (!d.isSpecialView && !d.filePath.empty()) {
+                                    auto cur = d.buffer.GetCursor();
+                                    m_closedTabHistory.push_back(ClosedTabEntry{
+                                        d.filePath, 0, cur.line, cur.col, d.scrollLine, d.scrollOffsetX
+                                    });
+                                    if (d.viewType == L"packages") m_editor.GetPackageManagerView().SetHwnd(GetMainPostHwnd());
+                                    if (d.viewType == L"api") m_editor.GetApiTesterView().SetHwnd(GetMainPostHwnd());
+                                }
+                            }
+                        }
+
+                        HWND deadHwnd = deadWin->hwnd;
+                        if (m_lastActiveEditorHwnd == deadHwnd) m_lastActiveEditorHwnd = m_mainHwnd;
+                        if (m_editorOverlayOwnerHwnd == deadHwnd) m_editorOverlayOwnerHwnd = m_mainHwnd;
+                        if (m_popupMenuOwnerHwnd == deadHwnd) {
+                            m_popupMenu.Close();
+                            m_popupMenuOwnerHwnd = nullptr;
+                        }
+                        deadWin->DiscardDeviceResources();
+                        if (deadHwnd && IsWindow(deadHwnd)) {
+                            SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+                            DestroyWindow(deadHwnd);
+                        }
+                        deadWin->hwnd = nullptr;
+                        UpdateDrawerDirtyFiles();
+                        UpdateDrawerErrorFiles();
+                        SaveSessionState();
+                        break;
+                    }
+                }
+                break;
+            }
+            case PendingFloatingAction::Kind::DockTerminal: {
+                int targetPos = (act.targetGroupIdx >= 0 && act.targetGroupIdx <= 2) ? act.targetGroupIdx : 0;
+                DockTerminalToMainWindow(targetPos);
+                break;
+            }
+            case PendingFloatingAction::Kind::CloseFloatingTerminal: {
+                for (auto it = m_floatingWindows.begin(); it != m_floatingWindows.end();) {
+                    if (*it && (*it)->kind == FloatingDockKind::TerminalPanel) {
+                        std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+                        it = m_floatingWindows.erase(it);
+                        HWND deadHwnd = deadWin->hwnd;
+                        deadWin->DiscardDeviceResources();
+                        if (deadHwnd && IsWindow(deadHwnd)) {
+                            SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+                            DestroyWindow(deadHwnd);
+                        }
+                        deadWin->hwnd = nullptr;
+                    } else {
+                        ++it;
+                    }
+                }
+                m_terminal.Close();
+                m_terminal.SetDockPosition(0);
+                m_config.terminalDockPosition = 0;
+                m_terminalAnimProgress = 0.0f;
+                m_targetTerminalProgress = 0.0f;
+                m_isTerminalAnimating = false;
+                m_isTerminalFocused = false;
+                SaveSessionState();
+                if (m_mainHwnd && IsWindow(m_mainHwnd)) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+                break;
+            }
+            case PendingFloatingAction::Kind::DockProblems: {
+                DockProblemsToMainWindow();
+                break;
+            }
+            case PendingFloatingAction::Kind::CloseFloatingProblems: {
+                for (auto it = m_floatingWindows.begin(); it != m_floatingWindows.end();) {
+                    if (*it && (*it)->kind == FloatingDockKind::ProblemsPanel) {
+                        std::unique_ptr<FloatingDockWindow> deadWin = std::move(*it);
+                        it = m_floatingWindows.erase(it);
+                        HWND deadHwnd = deadWin->hwnd;
+                        deadWin->DiscardDeviceResources();
+                        if (deadHwnd && IsWindow(deadHwnd)) {
+                            SetWindowLongPtrW(deadHwnd, GWLP_USERDATA, 0);
+                            DestroyWindow(deadHwnd);
+                        }
+                        deadWin->hwnd = nullptr;
+                    } else {
+                        ++it;
+                    }
+                }
+                m_problemsPanelFloated = false;
+                m_problemsPanelOpen = false;
+                m_bottomProblemsActive = false;
+                m_problemsSearchFocused = false;
+                if (m_mainHwnd && IsWindow(m_mainHwnd)) InvalidateRect(m_mainHwnd, nullptr, FALSE);
+                break;
+            }
+            case PendingFloatingAction::Kind::UndockTabFromMain: {
+                UndockTabToFloatingWindow(act.groupIdx, act.docIdx, &act.screenPt);
+                break;
+            }
+            case PendingFloatingAction::Kind::MoveFloatingTabToOtherFloating: {
+                auto* srcFw = findById(act.winId);
+                if (!srcFw || act.groupIdx < 0 || act.groupIdx >= static_cast<int>(srcFw->editorGroups.size())) break;
+                auto& fg = srcFw->editorGroups[act.groupIdx];
+                if (act.docIdx < 0 || act.docIdx >= static_cast<int>(fg.docs.size())) break;
+
+                if (act.targetWinId != 0) {
+                    if (auto* dstFw = findById(act.targetWinId)) {
+                        DockFloatingTabToFloatingWindow(srcFw->hwnd, act.groupIdx, act.docIdx, dstFw->hwnd, act.targetGroupIdx);
+                    }
+                } else {
+                    // Split tab out of a multi-tab floating window into its own standalone floating window
+                    editor::OpenDocument movedDoc = std::move(fg.docs[act.docIdx]);
+                    fg.docs.erase(fg.docs.begin() + act.docIdx);
+                    movedDoc.pImageBitmap.Reset();
+                    movedDoc.pImageBitmapRT = nullptr;
+                    if (movedDoc.assetView) movedDoc.assetView->DiscardDeviceResources();
+                    if (fg.docs.empty()) {
+                        srcFw->editorGroups.erase(srcFw->editorGroups.begin() + act.groupIdx);
+                    } else if (fg.activeDocIdx >= static_cast<int>(fg.docs.size())) {
+                        fg.activeDocIdx = static_cast<int>(fg.docs.size()) - 1;
+                    }
+
+                    auto newFw = std::make_unique<FloatingDockWindow>();
+                    newFw->id = m_nextFloatingWinId++;
+                    newFw->kind = FloatingDockKind::EditorGroup;
+                    newFw->owner = this;
+                    newFw->theme.SetThemeMode(m_theme.GetThemeMode());
+                    newFw->theme.SetDpiScale(m_config.dpiScale);
+                    newFw->theme.SetEditorFont(m_config.fontFamily, m_config.fontSize);
+                    newFw->splitState.layout = editor::EditorSplitLayout::Single;
+                    newFw->focusedGroupIdx = 0;
+
+                    std::wstring newTitle = (movedDoc.fileName.empty() ? L"Untitled" : movedDoc.fileName) + L" \x2014 Phide";
+                    editor::EditorGroup nfg;
+                    nfg.docs.push_back(std::move(movedDoc));
+                    nfg.activeDocIdx = 0;
+                    newFw->editorGroups.push_back(std::move(nfg));
+
+                    HWND newHwnd = CreateFloatingDockHwnd(*newFw, newTitle, 940, 640, &act.screenPt);
+                    if (newHwnd) {
+                        m_lastActiveEditorHwnd = newHwnd;
+                        m_editorOverlayOwnerHwnd = newHwnd;
+                        m_floatingWindows.push_back(std::move(newFw));
+                        if (srcFw->hwnd && IsWindow(srcFw->hwnd)) InvalidateRect(srcFw->hwnd, nullptr, FALSE);
+                        InvalidateRect(newHwnd, nullptr, FALSE);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    m_processingFloatingActions = false;
+}
+
+void Window::RenderFloatingTitleBar(ID2D1RenderTarget* pRT, FloatingDockWindow& fw, float clientW) {
+    if (!pRT) return;
+    const float titleH = m_config.ScaleF(34.0f);
+    const float capW = m_config.ScaleF(42.0f);
+    const float dockW = m_config.ScaleF(86.0f);
+    const float dockH = m_config.ScaleF(22.0f);
+    const float dockY = (titleH - dockH) * 0.5f;
+    const float dockGap = m_config.ScaleF(6.0f);
+
+    fw.rcTitleBar = D2D1::RectF(0.0f, 0.0f, clientW, titleH);
+    fw.rcCloseBtn = D2D1::RectF(clientW - capW, 0.0f, clientW, titleH);
+    fw.rcMaxBtn = D2D1::RectF(fw.rcCloseBtn.left - capW, 0.0f, fw.rcCloseBtn.left, titleH);
+    fw.rcMinBtn = D2D1::RectF(fw.rcMaxBtn.left - capW, 0.0f, fw.rcMaxBtn.left, titleH);
+    fw.rcDockBtn = D2D1::RectF(fw.rcMinBtn.left - dockGap - dockW, dockY, fw.rcMinBtn.left - dockGap, dockY + dockH);
+
+    // Background + bottom separator
+    if (fw.theme.brushHeaderBg) {
+        pRT->FillRectangle(fw.rcTitleBar, fw.theme.brushHeaderBg.Get());
+    }
+    if (fw.theme.brushBorderSubtle) {
+        pRT->DrawLine(D2D1::Point2F(0.0f, titleH - 0.5f), D2D1::Point2F(clientW, titleH - 0.5f),
+                      fw.theme.brushBorderSubtle.Get(), 1.0f);
+    }
+
+    // Left badge + title text (clipped strictly left of [↙ Attach] to prevent overlap)
+    float padL = m_config.ScaleF(12.0f);
+    float badgeSize = m_config.ScaleF(8.0f);
+    D2D1_RECT_F badgeRc = D2D1::RectF(padL, (titleH - badgeSize) * 0.5f, padL + badgeSize, (titleH + badgeSize) * 0.5f);
+    if (fw.theme.brushBrandAccent) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(badgeRc, badgeSize * 0.5f, badgeSize * 0.5f), fw.theme.brushBrandAccent.Get());
+    }
+
+    std::wstring titleText;
+    if (fw.kind == FloatingDockKind::TerminalPanel) {
+        titleText = L"Terminal \x2014 Floating Window";
+    } else if (fw.kind == FloatingDockKind::ProblemsPanel) {
+        titleText = L"Problems (" + std::to_wstring(m_cachedFilteredProblems.size()) + L") \x2014 Floating Window";
+    } else {
+        std::wstring docLabel = L"Floating Editor";
+        if (fw.focusedGroupIdx >= 0 && fw.focusedGroupIdx < static_cast<int>(fw.editorGroups.size())) {
+            const auto& fg = fw.editorGroups[fw.focusedGroupIdx];
+            if (fg.activeDocIdx >= 0 && fg.activeDocIdx < static_cast<int>(fg.docs.size())) {
+                docLabel = fg.docs[fg.activeDocIdx].fileName;
+                if (fg.docs[fg.activeDocIdx].isDirty) docLabel += L" \x25CF";
+            }
+        }
+        titleText = docLabel + L" \x2014 Phide";
+    }
+
+    float titleRight = (std::max)(padL + m_config.ScaleF(24.0f), fw.rcDockBtn.left - m_config.ScaleF(10.0f));
+    D2D1_RECT_F rcText = D2D1::RectF(badgeRc.right + m_config.ScaleF(8.0f), 0.0f, titleRight, titleH);
+    if (fw.theme.fontTitle && fw.theme.brushHeaderIcon && rcText.right > rcText.left) {
+        pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        D2D1_RECT_F rcTextDraw = D2D1::RectF(rcText.left, m_config.ScaleF(8.0f), rcText.right, titleH);
+        pRT->DrawText(titleText.c_str(), static_cast<UINT32>(titleText.size()),
+                      fw.theme.fontTitle.Get(), rcTextDraw, fw.theme.brushHeaderIcon.Get(),
+                      D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+        pRT->PopAxisAlignedClip();
+    }
+
+    // [↙ Attach] Pill Button
+    ComPtr<ID2D1SolidColorBrush> attachBgBrush;
+    D2D1_COLOR_F attachCol = (fw.hoveredCaptionBtn == 1)
+        ? D2D1::ColorF(fw.theme.colors.brandAccent.r, fw.theme.colors.brandAccent.g, fw.theme.colors.brandAccent.b, 0.30f)
+        : D2D1::ColorF(fw.theme.colors.headerIcon.r, fw.theme.colors.headerIcon.g, fw.theme.colors.headerIcon.b, 0.12f);
+    pRT->CreateSolidColorBrush(attachCol, &attachBgBrush);
+    if (attachBgBrush) {
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(fw.rcDockBtn, m_config.ScaleF(5.0f), m_config.ScaleF(5.0f)), attachBgBrush.Get());
+    }
+    if (fw.hoveredCaptionBtn == 1 && fw.theme.brushBrandAccent) {
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(fw.rcDockBtn, m_config.ScaleF(5.0f), m_config.ScaleF(5.0f)), fw.theme.brushBrandAccent.Get(), 1.0f);
+    } else if (fw.theme.brushBorderSubtle) {
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(fw.rcDockBtn, m_config.ScaleF(5.0f), m_config.ScaleF(5.0f)), fw.theme.brushBorderSubtle.Get(), 1.0f);
+    }
+    IDWriteTextFormat* attachFmt = fw.theme.fontCounterBadge ? fw.theme.fontCounterBadge.Get() : fw.theme.fontTitle.Get();
+    if (attachFmt && fw.theme.brushHeaderIcon) {
+        const wchar_t* attachTxt = L"\x2199 Attach";
+        pRT->DrawText(attachTxt, 8, attachFmt, fw.rcDockBtn, fw.theme.brushHeaderIcon.Get());
+    }
+
+    // Caption Hover Highlights ([─], [□], [✕])
+    if (fw.hoveredCaptionBtn == 2 && fw.theme.brushCaptionHover) {
+        pRT->FillRectangle(fw.rcMinBtn, fw.theme.brushCaptionHover.Get());
+    } else if (fw.hoveredCaptionBtn == 3 && fw.theme.brushCaptionHover) {
+        pRT->FillRectangle(fw.rcMaxBtn, fw.theme.brushCaptionHover.Get());
+    } else if (fw.hoveredCaptionBtn == 4 && fw.theme.brushCloseHoverBg) {
+        pRT->FillRectangle(fw.rcCloseBtn, fw.theme.brushCloseHoverBg.Get());
+    }
+
+    ID2D1Brush* glyphBrush = fw.theme.brushHeaderIcon.Get();
+    ID2D1Brush* closeGlyphBrush = (fw.hoveredCaptionBtn == 4 && fw.theme.brushTextWhite)
+        ? fw.theme.brushTextWhite.Get() : glyphBrush;
+
+    // Minimize glyph
+    if (glyphBrush) {
+        float cx = (fw.rcMinBtn.left + fw.rcMinBtn.right) * 0.5f;
+        float cy = (fw.rcMinBtn.top + fw.rcMinBtn.bottom) * 0.5f;
+        float half = m_config.ScaleF(5.0f);
+        pRT->DrawLine(D2D1::Point2F(cx - half, cy), D2D1::Point2F(cx + half, cy), glyphBrush, 1.2f);
+    }
+    // Maximize / Restore glyph
+    if (glyphBrush) {
+        float cx = (fw.rcMaxBtn.left + fw.rcMaxBtn.right) * 0.5f;
+        float cy = (fw.rcMaxBtn.top + fw.rcMaxBtn.bottom) * 0.5f;
+        float r = m_config.ScaleF(4.8f);
+        if (fw.hwnd && IsZoomed(fw.hwnd)) {
+            float o = m_config.ScaleF(1.8f);
+            pRT->DrawRectangle(D2D1::RectF(cx - r + o, cy - r - o, cx + r + o, cy + r - o), glyphBrush, 1.1f);
+            pRT->FillRectangle(D2D1::RectF(cx - r - o, cy - r + o, cx + r - o, cy + r + o),
+                               fw.theme.brushHeaderBg ? fw.theme.brushHeaderBg.Get() : glyphBrush);
+            pRT->DrawRectangle(D2D1::RectF(cx - r - o, cy - r + o, cx + r - o, cy + r + o), glyphBrush, 1.1f);
+        } else {
+            pRT->DrawRectangle(D2D1::RectF(cx - r, cy - r, cx + r, cy + r), glyphBrush, 1.2f);
+        }
+    }
+    // Close [✕] glyph
+    if (closeGlyphBrush) {
+        float cx = (fw.rcCloseBtn.left + fw.rcCloseBtn.right) * 0.5f;
+        float cy = (fw.rcCloseBtn.top + fw.rcCloseBtn.bottom) * 0.5f;
+        float r = m_config.ScaleF(4.8f);
+        pRT->DrawLine(D2D1::Point2F(cx - r, cy - r), D2D1::Point2F(cx + r, cy + r), closeGlyphBrush, 1.3f);
+        pRT->DrawLine(D2D1::Point2F(cx + r, cy - r), D2D1::Point2F(cx - r, cy + r), closeGlyphBrush, 1.3f);
+    }
+}
+
+void Window::RenderFloatingWindow(FloatingDockWindow& fw) {
+    if (!fw.hwnd || !IsWindow(fw.hwnd)) return;
+
+    PAINTSTRUCT ps{};
+    BeginPaint(fw.hwnd, &ps);
+
+    if (FAILED(CreateFloatingDeviceResources(fw))) {
+        EndPaint(fw.hwnd, &ps);
+        return;
+    }
+
+    D2D1_SIZE_F rtSize = fw.pRenderTarget->GetSize();
+    const float clientW = rtSize.width;
+    const float clientH = rtSize.height;
+    const float titleH = m_config.ScaleF(34.0f);
+
+    fw.pRenderTarget->BeginDraw();
+    fw.pRenderTarget->Clear(fw.theme.colors.windowBg);
+
+    if (fw.kind == FloatingDockKind::EditorGroup) {
+        ScopedFloatingEditorContext ctx(*this, fw);
+        UpdateEditorGroupBounds();
+
+        auto* curDoc = GetActiveDoc();
+        if (curDoc && curDoc->isSpecialView && curDoc->viewType == L"packages") {
+            m_editor.GetPackageManagerView().SetHwnd(fw.hwnd);
+        } else if (curDoc && curDoc->isSpecialView && curDoc->viewType == L"api") {
+            m_editor.GetApiTesterView().SetHwnd(fw.hwnd);
+        }
+
+        std::wstring searchHL;
+        bool hlMatchCase = false;
+        bool hlWholeWord = false;
+        bool hlUseRegex = false;
+        const auto& findBar = m_editor.GetFindBar();
+        if (findBar.isOpen && !findBar.query.empty()) {
+            searchHL = findBar.query;
+            hlMatchCase = findBar.matchCase;
+            hlWholeWord = findBar.wholeWord;
+            hlUseRegex = findBar.useRegex;
+        } else if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f) {
+            searchHL = m_drawer.GetSearchQuery();
+            hlMatchCase = m_drawer.GetMatchCase();
+            hlWholeWord = m_drawer.GetMatchWholeWord();
+            hlUseRegex = m_drawer.GetUseRegex();
+        }
+
+        bool suppressOverlays = (m_editorOverlayOwnerHwnd != nullptr && m_editorOverlayOwnerHwnd != fw.hwnd);
+        bool suppressCaret = (GetForegroundWindow() != fw.hwnd);
+
+        m_editor.SetRenderingFloatingWindow(true);
+        m_editor.SetSuppressFloatingOverlays(suppressOverlays);
+        m_editor.SetFloatingDebugState(m_terminal.IsDebugActive(), m_terminal.IsDebugPaused());
+        m_editor.SetSplitState(m_splitState);
+
+        if (clientH > titleH + 2.0f) {
+            D2D1_RECT_F editorClip = D2D1::RectF(0.0f, titleH, clientW, clientH);
+            m_pRenderTarget->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            m_editor.Render(m_pRenderTarget.Get(), m_theme, m_config, m_editorGroups, m_focusedGroupIdx,
+                            0.0f, clientW, clientH, false,
+                            searchHL, hlMatchCase, hlWholeWord, hlUseRegex, suppressCaret);
+            m_pRenderTarget->PopAxisAlignedClip();
+        }
+        m_editor.SetSuppressFloatingOverlays(false);
+        m_editor.SetRenderingFloatingWindow(false);
+
+        if (m_popupMenu.IsOpen() && m_popupMenuOwnerHwnd == fw.hwnd) {
+            m_popupMenu.Render(m_pRenderTarget.Get(), m_theme, m_config);
+        }
+    } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+        ScopedFloatingEditorContext ctx(*this, fw);
+        if (clientH > titleH + 2.0f) {
+            D2D1_RECT_F termClip = D2D1::RectF(0.0f, titleH, clientW, clientH);
+            m_pRenderTarget->PushAxisAlignedClip(termClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            m_terminal.RenderBounds(m_pRenderTarget.Get(), m_theme, m_config,
+                                    termClip, clientH, false);
+            m_pRenderTarget->PopAxisAlignedClip();
+        }
+    } else if (fw.kind == FloatingDockKind::ProblemsPanel) {
+        ScopedFloatingEditorContext ctx(*this, fw);
+        if (clientH > titleH + 2.0f) {
+            RenderProblemsPanelInRect(m_pRenderTarget.Get(), m_theme,
+                                      D2D1::RectF(0.0f, titleH, clientW, clientH), true);
+        }
+    }
+
+    RenderFloatingTitleBar(fw.pRenderTarget.Get(), fw, clientW);
+
+    HRESULT hrEnd = fw.pRenderTarget->EndDraw();
+    if (hrEnd == D2DERR_RECREATE_TARGET) {
+        fw.DiscardDeviceResources();
+    }
+    EndPaint(fw.hwnd, &ps);
+}
+
+LRESULT CALLBACK Window::FloatingWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    FloatingDockWindow* pFw = nullptr;
+    if (uMsg == WM_NCCREATE) {
+        auto* pCs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        pFw = reinterpret_cast<FloatingDockWindow*>(pCs->lpCreateParams);
+        if (pFw) {
+            pFw->hwnd = hwnd;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pFw));
+        }
+    } else {
+        pFw = reinterpret_cast<FloatingDockWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    if (pFw && pFw->owner) {
+        return pFw->owner->HandleFloatingMessage(*pFw, uMsg, wParam, lParam);
+    }
+    return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+}
+
+LRESULT Window::HandleFloatingMessage(FloatingDockWindow& fw, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    const float titleH = m_config.ScaleF(34.0f);
+
+    switch (uMsg) {
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            HMONITOR hMon = MonitorFromWindow(fw.hwnd ? fw.hwnd : GetMainPostHwnd(), MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{ sizeof(MONITORINFO) };
+            if (GetMonitorInfoW(hMon, &mi)) {
+                mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+            }
+            mmi->ptMinTrackSize.x = m_config.Scale(420);
+            mmi->ptMinTrackSize.y = m_config.Scale(260);
+            return 0;
+        }
+
+        case WM_NCCALCSIZE: {
+            if (wParam == TRUE && IsZoomed(fw.hwnd)) {
+                auto* pParams = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                HMONITOR hMon = MonitorFromWindow(fw.hwnd, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi{ sizeof(MONITORINFO) };
+                if (GetMonitorInfoW(hMon, &mi)) {
+                    pParams->rgrc[0] = mi.rcWork;
+                }
+            }
+            return 0;
+        }
+
+        case WM_NCHITTEST: {
+            POINT scrPt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            RECT wndRc{};
+            GetWindowRect(fw.hwnd, &wndRc);
+            if (!IsZoomed(fw.hwnd)) {
+                const int bw = m_config.Scale(6);
+                bool left = scrPt.x >= wndRc.left && scrPt.x < wndRc.left + bw;
+                bool right = scrPt.x <= wndRc.right && scrPt.x >= wndRc.right - bw;
+                bool top = scrPt.y >= wndRc.top && scrPt.y < wndRc.top + bw;
+                bool bottom = scrPt.y <= wndRc.bottom && scrPt.y >= wndRc.bottom - bw;
+                if (top && left) return HTTOPLEFT;
+                if (top && right) return HTTOPRIGHT;
+                if (bottom && left) return HTBOTTOMLEFT;
+                if (bottom && right) return HTBOTTOMRIGHT;
+                if (left) return HTLEFT;
+                if (right) return HTRIGHT;
+                if (top) return HTTOP;
+                if (bottom) return HTBOTTOM;
+            }
+            POINT clientPt = scrPt;
+            ScreenToClient(fw.hwnd, &clientPt);
+            if (clientPt.y >= 0 && clientPt.y < static_cast<LONG>(titleH)) {
+                if (PtInRectF(clientPt, fw.rcDockBtn) ||
+                    PtInRectF(clientPt, fw.rcMinBtn) ||
+                    PtInRectF(clientPt, fw.rcMaxBtn) ||
+                    PtInRectF(clientPt, fw.rcCloseBtn)) {
+                    return HTCLIENT;
+                }
+                return HTCAPTION;
+            }
+            return HTCLIENT;
+        }
+
+        case WM_SIZE: {
+            if (fw.pRenderTarget && wParam != SIZE_MINIMIZED) {
+                fw.pRenderTarget->Resize(D2D1::SizeU(LOWORD(lParam), HIWORD(lParam)));
+            }
+            InvalidateRect(fw.hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_PAINT: {
+            RenderFloatingWindow(fw);
+            return 0;
+        }
+
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                if (GetCapture() == fw.hwnd) ReleaseCapture();
+                if (fw.kind == FloatingDockKind::EditorGroup && ShouldAutoSaveOnWindowChange()) {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    FlushPendingAutoSaves();
+                }
+            } else if (fw.kind == FloatingDockKind::EditorGroup) {
+                m_lastActiveEditorHwnd = fw.hwnd;
+                m_editorOverlayOwnerHwnd = fw.hwnd;
+            }
+            InvalidateRect(fw.hwnd, nullptr, FALSE);
+            return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_SETFOCUS: {
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                m_lastActiveEditorHwnd = fw.hwnd;
+                m_editorOverlayOwnerHwnd = fw.hwnd;
+            }
+            InvalidateRect(fw.hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_MOUSELEAVE: {
+            if (fw.hoveredCaptionBtn != 0) {
+                fw.hoveredCaptionBtn = 0;
+                InvalidateRect(fw.hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_SETCURSOR: {
+            if (LOWORD(lParam) == HTCLIENT) {
+                POINT pt{};
+                GetCursorPos(&pt);
+                ScreenToClient(fw.hwnd, &pt);
+                if (pt.y >= 0 && pt.y < static_cast<LONG>(titleH) &&
+                    (PtInRectF(pt, fw.rcDockBtn) || PtInRectF(pt, fw.rcMinBtn) ||
+                     PtInRectF(pt, fw.rcMaxBtn) || PtInRectF(pt, fw.rcCloseBtn))) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+                if (fw.kind == FloatingDockKind::EditorGroup) {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    return HandleMessage(WM_SETCURSOR, wParam, lParam);
+                } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                    if (m_terminal.HitTestMenuArea(pt) || m_terminal.HitTestButtons(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                    if (m_terminal.HitTestTerminalSplitter(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+                        return TRUE;
+                    }
+                    if (m_terminal.HitTestTextArea(pt)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                } else if (fw.kind == FloatingDockKind::ProblemsPanel) {
+                    if (PtInRectF(pt, m_rcProblemsSearchBox)) {
+                        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                        return TRUE;
+                    }
+                    bool overBtn = PtInRectF(pt, m_rcProblemsTabBtn) || PtInRectF(pt, m_rcProblemsTermTabBtn) ||
+                        PtInRectF(pt, m_rcProblemsFilterAll) || PtInRectF(pt, m_rcProblemsFilterErr) ||
+                        PtInRectF(pt, m_rcProblemsFilterWarn) || PtInRectF(pt, m_rcProblemsFilterInfo) ||
+                        PtInRectF(pt, m_rcProblemsCurFileBtn) || PtInRectF(pt, m_rcProblemsGroupBtn) ||
+                        PtInRectF(pt, m_rcProblemsSarifBtn) || PtInRectF(pt, m_rcProblemsRefreshBtn);
+                    if (!overBtn) {
+                        for (const auto& rb : m_problemsRowBounds) {
+                            if (PtInRectF(pt, rb)) { overBtn = true; break; }
+                        }
+                    }
+                    SetCursor(LoadCursor(nullptr, overBtn ? IDC_HAND : IDC_ARROW));
+                    return TRUE;
+                }
+            }
+            return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_MOUSEMOVE: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            TRACKMOUSEEVENT tme{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, fw.hwnd, 0 };
+            TrackMouseEvent(&tme);
+
+            int newHov = 0;
+            if (pt.y >= 0 && pt.y < static_cast<LONG>(titleH)) {
+                if (PtInRectF(pt, fw.rcDockBtn)) newHov = 1;
+                else if (PtInRectF(pt, fw.rcMinBtn)) newHov = 2;
+                else if (PtInRectF(pt, fw.rcMaxBtn)) newHov = 3;
+                else if (PtInRectF(pt, fw.rcCloseBtn)) newHov = 4;
+            }
+            if (newHov != fw.hoveredCaptionBtn) {
+                fw.hoveredCaptionBtn = newHov;
+                InvalidateRect(fw.hwnd, nullptr, FALSE);
+            }
+
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    HandleMessage(WM_MOUSEMOVE, wParam, lParam);
+                }
+                ProcessPendingFloatingActions();
+                return 0;
+            } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                RECT rc{};
+                GetClientRect(fw.hwnd, &rc);
+                float clientH = static_cast<float>(rc.bottom - rc.top);
+                if (m_terminal.OnMouseMove(pt, (wParam & MK_LBUTTON) != 0, clientH)) {
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONDOWN: {
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            SetFocus(fw.hwnd);
+
+            if (pt.y >= 0 && pt.y < static_cast<LONG>(titleH)) {
+                if (PtInRectF(pt, fw.rcDockBtn)) {
+                    PendingFloatingAction act{};
+                    act.winId = fw.id;
+                    if (fw.kind == FloatingDockKind::EditorGroup) act.kind = PendingFloatingAction::Kind::DockAllEditorToMain;
+                    else if (fw.kind == FloatingDockKind::TerminalPanel) act.kind = PendingFloatingAction::Kind::DockTerminal;
+                    else act.kind = PendingFloatingAction::Kind::DockProblems;
+                    m_pendingFloatingActions.push_back(act);
+                    ProcessPendingFloatingActions();
+                    return 0;
+                }
+                if (PtInRectF(pt, fw.rcMinBtn)) {
+                    ShowWindow(fw.hwnd, SW_MINIMIZE);
+                    return 0;
+                }
+                if (PtInRectF(pt, fw.rcMaxBtn)) {
+                    ShowWindow(fw.hwnd, IsZoomed(fw.hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+                    return 0;
+                }
+                if (PtInRectF(pt, fw.rcCloseBtn)) {
+                    PostMessageW(fw.hwnd, WM_CLOSE, 0, 0);
+                    return 0;
+                }
+            }
+
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    HandleMessage(WM_LBUTTONDOWN, wParam, lParam);
+                }
+                ProcessPendingFloatingActions();
+                return 0;
+            } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                std::wstring dir = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+                m_terminal.OnMouseDown(pt, m_config, dir);
+                InvalidateRect(fw.hwnd, nullptr, FALSE);
+                ProcessPendingFloatingActions();
+                return 0;
+            } else if (fw.kind == FloatingDockKind::ProblemsPanel) {
+                if (HandleProblemsPanelMouseDown(pt, true)) {
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                ProcessPendingFloatingActions();
+                return 0;
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONDBLCLK:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_MOUSEWHEEL: {
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                LRESULT res = 0;
+                {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    res = HandleMessage(uMsg, wParam, lParam);
+                }
+                ProcessPendingFloatingActions();
+                return res;
+            } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                if (uMsg == WM_MOUSEWHEEL) {
+                    ScreenToClient(fw.hwnd, &pt);
+                    if (m_terminal.OnMouseWheel(pt, GET_WHEEL_DELTA_WPARAM(wParam))) {
+                        InvalidateRect(fw.hwnd, nullptr, FALSE);
+                    }
+                } else if (uMsg == WM_LBUTTONUP) {
+                    m_terminal.OnMouseUp(pt);
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                ProcessPendingFloatingActions();
+                return 0;
+            } else if (fw.kind == FloatingDockKind::ProblemsPanel && uMsg == WM_MOUSEWHEEL) {
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ScreenToClient(fw.hwnd, &pt);
+                if (HandleProblemsPanelMouseWheel(pt, GET_WHEEL_DELTA_WPARAM(wParam))) {
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_CHAR:
+        case WM_SYSKEYDOWN: {
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                LRESULT res = 0;
+                {
+                    ScopedFloatingEditorContext ctx(*this, fw);
+                    res = HandleMessage(uMsg, wParam, lParam);
+                }
+                ProcessPendingFloatingActions();
+                return res;
+            } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                if (uMsg == WM_KEYDOWN) {
+                    bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                    bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (ctrl && shift && (wParam == '5' || wParam == VK_OEM_5)) {
+                        m_terminal.SplitActiveTab();
+                        InvalidateRect(fw.hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (m_terminal.OnKeyDown(static_cast<UINT>(wParam), ctrl, shift)) {
+                        InvalidateRect(fw.hwnd, nullptr, FALSE);
+                    }
+                } else if (uMsg == WM_CHAR) {
+                    m_terminal.OnChar(static_cast<wchar_t>(wParam));
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                return 0;
+            } else if (fw.kind == FloatingDockKind::ProblemsPanel) {
+                if (uMsg == WM_KEYDOWN && HandleProblemsPanelKeyDown(wParam)) {
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                } else if (uMsg == WM_CHAR && m_problemsSearchFocused && HandleProblemsPanelChar(static_cast<wchar_t>(wParam))) {
+                    InvalidateRect(fw.hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
+        }
+
+        case WM_CLOSE: {
+            PendingFloatingAction act{};
+            act.winId = fw.id;
+            if (fw.kind == FloatingDockKind::EditorGroup) {
+                act.kind = PendingFloatingAction::Kind::CloseFloatingEditor;
+            } else if (fw.kind == FloatingDockKind::TerminalPanel) {
+                act.kind = PendingFloatingAction::Kind::CloseFloatingTerminal;
+            } else {
+                act.kind = PendingFloatingAction::Kind::CloseFloatingProblems;
+            }
+            m_pendingFloatingActions.push_back(act);
+            ProcessPendingFloatingActions();
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            SetWindowLongPtrW(fw.hwnd, GWLP_USERDATA, 0);
+            fw.DiscardDeviceResources();
+            fw.hwnd = nullptr;
+            return 0;
+        }
+
+        default:
+            return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
     }
 }
 

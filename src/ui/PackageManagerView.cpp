@@ -40,6 +40,10 @@ void PackageManagerView::DiscardDeviceResources() {
 }
 
 void PackageManagerView::SetHwnd(HWND hwnd) {
+    if (m_webViewController && hwnd && m_hwnd != hwnd) {
+        m_webViewController->put_ParentWindow(hwnd);
+        m_hasWebViewBounds = false;
+    }
     m_hwnd = hwnd;
     if (m_hwnd && !m_webViewController && !m_webViewInitializing) {
         InitWebView2(m_hwnd);

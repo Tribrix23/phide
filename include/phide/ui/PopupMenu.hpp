@@ -328,6 +328,8 @@ enum class MenuActionId {
     TabSplitRight,
     TabMoveNewWindow,
     TabCopyNewWindow,
+    TabUndockFloating,
+    TabDockToMainWindow,
     TabCopyPath,
     TabRevealInExplorer,
     ViewHexBinary,
@@ -501,7 +503,8 @@ public:
                             bool isPinned, bool hasFilePath,
                             bool canCloseOthers, bool canCloseRight,
                             bool canCloseSaved, bool canToggleStructured,
-                            float clientW = 0.0f, float clientH = 0.0f);
+                            float clientW = 0.0f, float clientH = 0.0f,
+                            bool isFloatingWindow = false);
 
     /**
      * @brief Closes the popup menu and any open submenus.

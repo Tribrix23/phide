@@ -500,6 +500,7 @@ public:
         m_splitterBounds = D2D1::RectF(0, 0, 0, 0);
         m_headerBounds = D2D1::RectF(0, 0, 0, 0);
         m_textAreaBounds = D2D1::RectF(0, 0, 0, 0);
+        m_undockBtnBounds = D2D1::RectF(0, 0, 0, 0);
     }
     [[nodiscard]] bool HitTest(POINT pt) const noexcept;
     [[nodiscard]] bool HitTestSplitter(POINT pt) const noexcept;
@@ -653,6 +654,7 @@ private:
     D2D1_RECT_F m_shellDropdownBtnBounds{};
     D2D1_RECT_F m_splitBtnBounds{};
     D2D1_RECT_F m_optionsBtnBounds{};
+    D2D1_RECT_F m_undockBtnBounds{};
     D2D1_RECT_F m_fullScreenBtnBounds{};
     D2D1_RECT_F m_minimizeBtnBounds{};
 
@@ -660,6 +662,7 @@ private:
     bool m_hoverShellDropdown = false;
     bool m_hoverSplitBtn = false;
     bool m_hoverOptions = false;
+    bool m_hoverUndock = false;
     bool m_hoverFullScreen = false;
     bool m_hoverMinimize = false;
     bool m_isFullScreen = false;
@@ -701,7 +704,7 @@ private:
     std::vector<D2D1_RECT_F> m_resizeSubmenuItemBounds;
 
     int m_defaultShellProfile = 0; // 0 = PowerShell, 1 = Cmd, 2 = GitBash, 3 = Node, 4 = Python
-    int m_dockPosition = 0;        // 0 = Bottom (Panel), 1 = Editor Area, 2 = Right Side
+    int m_dockPosition = 0;        // 0 = Bottom (Panel), 1 = Editor Area, 2 = Right Side, 3 = Floating Window
     float m_rightWidth = 480.0f;   // Width when docked to Right Side
     float m_widthStart = 480.0f;
     float m_dragStartX = 0.0f;

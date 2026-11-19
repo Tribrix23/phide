@@ -238,6 +238,76 @@ public:
     bool ApplyDetachHandoffFile(const std::wstring& handoffPath);
     void ToggleActiveStructuredViewer(bool openHexIfBinary = false);
 
+    /**
+     * @brief Identifies what subsystem an in-process floating/undocked window hosts.
+     */
+    enum class FloatingDockKind : int {
+        EditorGroup = 0,   ///< Undocked editor tabs (code, AssetViewer, Monitor, ERD, Audit, etc.)
+        TerminalPanel = 1, ///< Undocked integrated Terminal panel (preserves live PTY sessions)
+        ProblemsPanel = 2  ///< Undocked Workspace Problems / Diagnostics panel
+    };
+
+    /**
+     * @brief Secondary top-level Win32 window hosting an undocked IDE panel or editor group.
+     *
+     * Runs in-process with its own ID2D1HwndRenderTarget and ui::Theme so Direct2D brushes
+     * and bitmaps stay strictly domain-isolated while sharing workspace IntelliSense, LSP, and PTY state.
+     */
+    struct FloatingDockWindow {
+        uint64_t id = 0;
+        FloatingDockKind kind = FloatingDockKind::EditorGroup;
+        Window* owner = nullptr;
+        HWND hwnd = nullptr;
+        ComPtr<ID2D1HwndRenderTarget> pRenderTarget;
+        ui::Theme theme;
+        std::vector<editor::EditorGroup> editorGroups;
+        int focusedGroupIdx = 0;
+        editor::EditorSplitState splitState{};
+
+        // Custom frameless floating titlebar bounds & hover tracking
+        D2D1_RECT_F rcTitleBar{};
+        D2D1_RECT_F rcDockBtn{};   ///< "Attach" pill button (docks back into main window)
+        D2D1_RECT_F rcMinBtn{};    ///< Minimize button (-)
+        D2D1_RECT_F rcMaxBtn{};    ///< Maximize/Restore button (□)
+        D2D1_RECT_F rcCloseBtn{};  ///< Close button (×)
+        int hoveredCaptionBtn = 0; ///< 0=None, 1=Dock/Attach, 2=Minimize, 3=Maximize, 4=Close
+
+        void DiscardDeviceResources() noexcept {
+            theme.DiscardDeviceResources();
+            for (auto& grp : editorGroups) {
+                for (auto& doc : grp.docs) {
+                    doc.pImageBitmap.Reset();
+                    doc.pImageBitmapRT = nullptr;
+                    if (doc.assetView) doc.assetView->DiscardDeviceResources();
+                }
+            }
+            pRenderTarget.Reset();
+        }
+    };
+
+    // In-process Dock / Undock API for tabs, special views, Terminal, and Problems panels
+    bool UndockTabToFloatingWindow(int groupIdx, int docIdx, const POINT* pScreenPos = nullptr);
+    bool DockFloatingEditorToMainWindow(HWND floatHwnd, int floatGroupIdx = -1, int floatDocIdx = -1, int targetMainGroupIdx = -1);
+    bool DockFloatingTabToFloatingWindow(HWND srcFloatHwnd, int srcGroupIdx, int srcDocIdx, HWND dstFloatHwnd, int targetGroupIdx = -1);
+    bool UndockTerminalToFloatingWindow(const POINT* pScreenPos = nullptr);
+    bool DockTerminalToMainWindow(int targetDockPos = 0);
+    bool UndockProblemsToFloatingWindow(const POINT* pScreenPos = nullptr);
+    bool DockProblemsToMainWindow();
+    [[nodiscard]] size_t GetFloatingWindowCount() const noexcept { return m_floatingWindows.size(); }
+    [[nodiscard]] FloatingDockWindow* FindFloatingWindow(HWND hwnd) noexcept;
+    [[nodiscard]] const FloatingDockWindow* FindFloatingWindow(HWND hwnd) const noexcept;
+    [[nodiscard]] const std::vector<std::unique_ptr<FloatingDockWindow>>& GetFloatingWindows() const noexcept { return m_floatingWindows; }
+    [[nodiscard]] bool IsProblemsPanelFloated() const noexcept { return m_problemsPanelFloated; }
+    [[nodiscard]] HWND GetMainPostHwnd() const noexcept { return m_mainHwnd ? m_mainHwnd : m_hwnd.load(); }
+    void InvalidateFloatingWindows() noexcept;
+    void DestroyAllFloatingWindows() noexcept;
+    void ProcessPendingFloatingActions();
+    void SyncThemeAndFontToFloatingWindows();
+    static LRESULT CALLBACK FloatingWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleFloatingMessage(FloatingDockWindow& fw, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    void RenderFloatingWindow(FloatingDockWindow& fw);
+    void RenderFloatingTitleBar(ID2D1RenderTarget* pRT, FloatingDockWindow& fw, float clientW);
+
 private:
     /**
      * @brief Checks if there is at least one active document opened in the editor.
@@ -739,8 +809,9 @@ private:
     /** @brief Computes absolute path to %APPDATA%\phide\user_keybindings.json. */
     std::wstring GetKeybindingsConfigPath() const;
 
-    /** @brief Effective header height in physical pixels (0 in Zen Mode). */
+    /** @brief Effective header height in physical pixels (0 in Zen Mode, 34px inside floating dock windows). */
     [[nodiscard]] float EffectiveHeaderHeight() const noexcept {
+        if (m_activeFloatingWindow) return m_config.ScaleF(34.0f);
         return m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.headerHeight));
     }
 
@@ -787,11 +858,63 @@ private:
     /** @brief Commits selected autocomplete item or HTML tag block (Images 1 & 5). */
     void CommitAutocompleteSelection();
 
+    // Atomic wrapper for active HWND so temporary floating-context swaps remain data-race free with background readers
+    struct AtomicHwnd {
+        std::atomic<HWND> val{ nullptr };
+        AtomicHwnd() noexcept = default;
+        AtomicHwnd(HWND h) noexcept : val(h) {}
+        AtomicHwnd& operator=(HWND h) noexcept {
+            val.store(h, std::memory_order_release);
+            return *this;
+        }
+        operator HWND() const noexcept { return val.load(std::memory_order_acquire); }
+        explicit operator bool() const noexcept { return val.load(std::memory_order_acquire) != nullptr; }
+        [[nodiscard]] HWND load() const noexcept { return val.load(std::memory_order_acquire); }
+        void store(HWND h) noexcept { val.store(h, std::memory_order_release); }
+    };
+
     // Win32 & D2D handles
-    HWND m_hwnd = nullptr;
+    AtomicHwnd m_hwnd{};
+    HWND m_mainHwnd = nullptr;
     ComPtr<ID2D1Factory> m_pD2DFactory;
     ComPtr<ID2D1HwndRenderTarget> m_pRenderTarget;
     ComPtr<IDWriteFactory> m_pDWriteFactory;
+
+    // Floating dock window state
+    struct ScopedFloatingEditorContext;
+    friend struct ScopedFloatingEditorContext;
+    struct PendingFloatingAction {
+        enum class Kind {
+            DockAllEditorToMain = 0,
+            DockOneTabToMain = 1,
+            CloseFloatingEditor = 2,
+            DockTerminal = 3,
+            CloseFloatingTerminal = 4,
+            DockProblems = 5,
+            CloseFloatingProblems = 6,
+            UndockTabFromMain = 7,
+            MoveFloatingTabToOtherFloating = 8
+        } kind = Kind::DockAllEditorToMain;
+        uint64_t winId = 0;
+        uint64_t targetWinId = 0;
+        int groupIdx = -1;
+        int docIdx = -1;
+        int targetGroupIdx = -1;
+        POINT screenPt{};
+    };
+    std::vector<std::unique_ptr<FloatingDockWindow>> m_floatingWindows;
+    uint64_t m_nextFloatingWinId = 1;
+    FloatingDockWindow* m_activeFloatingWindow = nullptr;
+    HWND m_lastActiveEditorHwnd = nullptr;
+    HWND m_popupMenuOwnerHwnd = nullptr;
+    HWND m_editorOverlayOwnerHwnd = nullptr;
+    bool m_problemsPanelFloated = false;
+    D2D1_RECT_F m_rcProblemsUndockBtn{};
+    std::vector<PendingFloatingAction> m_pendingFloatingActions;
+    bool m_processingFloatingActions = false;
+    HRESULT CreateFloatingDeviceResources(FloatingDockWindow& fw);
+    bool EnsureFloatingWindowClassRegistered(HINSTANCE hInst);
+    HWND CreateFloatingDockHwnd(FloatingDockWindow& fw, const std::wstring& title, int width, int height, const POINT* pScreenPos);
 
     // Subsystems
     AppConfig m_config;
@@ -1084,6 +1207,7 @@ private:
     std::vector<D2D1_RECT_F> m_problemsFixBtnBounds;
 
     [[nodiscard]] bool IsBottomProblemsVisible() const noexcept {
+        if (m_activeFloatingWindow || m_problemsPanelFloated) return false;
         return !m_config.zenMode && m_problemsPanelOpen && m_bottomProblemsActive;
     }
     void ToggleProblemsPanel(bool forceOpen = false);
@@ -1094,7 +1218,8 @@ private:
     void ApplyQuickFixForProblem(const editor::ProblemEntry& prob);
     void ExportProblemsSarif();
     void RenderBottomProblemsPanel(ID2D1RenderTarget* pRT, float clientW, float clientH, float statusBarH, float railLeft);
-    bool HandleProblemsPanelMouseDown(POINT pt);
+    void RenderProblemsPanelInRect(ID2D1RenderTarget* pRT, ui::Theme& theme, const D2D1_RECT_F& panelRect, bool isFloating = false);
+    bool HandleProblemsPanelMouseDown(POINT pt, bool isFloatingOverride = false);
     bool HandleProblemsPanelMouseWheel(POINT pt, short delta);
     bool HandleProblemsPanelChar(wchar_t ch);
     bool HandleProblemsPanelKeyDown(WPARAM vk);
@@ -1253,6 +1378,7 @@ private:
     [[nodiscard]] int FindVisibleTerminalEditorGroup() const noexcept;
 
     [[nodiscard]] float GetCurrentTerminalHeight(float clientH) const noexcept {
+        if (m_activeFloatingWindow) return 0.0f;
         if (!m_terminal.IsOpen() && !m_isTerminalAnimating) return 0.0f;
         if (m_terminal.GetDockPosition() != 0) return 0.0f;
         const float headerH = m_config.ScaleF(static_cast<float>(m_config.headerHeight));
@@ -1264,6 +1390,7 @@ private:
     }
 
     [[nodiscard]] float GetCurrentBottomDockHeight(float clientH) const noexcept {
+        if (m_activeFloatingWindow) return 0.0f;
         if (IsBottomProblemsVisible()) {
             return (std::clamp)(m_problemsPanelHeight, m_config.ScaleF(130.0f), (std::max)(m_config.ScaleF(150.0f), clientH * 0.55f));
         }
