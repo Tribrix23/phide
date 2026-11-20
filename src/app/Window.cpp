@@ -3123,26 +3123,34 @@ void Window::DoOpenFile() {
     }
 }
 
+std::wstring Window::ResolveWorkspaceRelativePath(const std::wstring& path) const {
+    if (path.empty()) return path;
+    std::error_code ec;
+    std::filesystem::path pObj(path);
+    // Prefer the currently open workspace root over the IDE process working directory when resolving relative paths
+    if (!pObj.is_absolute() && m_drawer.HasOpenFolder() && !m_drawer.GetOpenFolderPath().empty()) {
+        std::wstring wsCandidate = (std::filesystem::path(m_drawer.GetOpenFolderPath()) / pObj).lexically_normal().wstring();
+        if (std::filesystem::exists(wsCandidate, ec) || !std::filesystem::exists(path, ec)) {
+            return wsCandidate;
+        }
+    }
+    return path;
+}
+
 void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (path.empty()) return;
     if (ShouldAutoSaveOnFocusChange()) {
         FlushPendingAutoSaves();
     }
 
-    std::wstring resolvedPath = path;
-    if (!std::filesystem::exists(resolvedPath) && m_drawer.HasOpenFolder()) {
-        std::wstring candidate = m_drawer.GetOpenFolderPath() + L"\\" + path;
-        if (std::filesystem::exists(candidate)) {
-            resolvedPath = candidate;
-        }
-    }
+    std::wstring resolvedPath = ResolveWorkspaceRelativePath(path);
 
     // Direct routing for Jupyter Notebook files (.ipynb) to interactive notebook view
     std::wstring extCheck;
     auto dotPosCheck = resolvedPath.rfind(L'.');
     if (dotPosCheck != std::wstring::npos) {
         extCheck = resolvedPath.substr(dotPosCheck);
-        for (auto& c : extCheck) c = towlower(c);
+        for (auto& ch : extCheck) ch = towlower(ch);
     }
     if (extCheck == L".ipynb") {
         OpenNotebookView(resolvedPath);
@@ -3170,7 +3178,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     // 1. Check if document is already open in ANY editor group
     for (size_t g = 0; g < m_editorGroups.size(); ++g) {
         for (size_t i = 0; i < m_editorGroups[g].docs.size(); ++i) {
-            if (m_editorGroups[g].docs[i].viewType != L"markdown_preview" && PathsMatch(m_editorGroups[g].docs[i].filePath, path)) {
+            if (m_editorGroups[g].docs[i].viewType != L"markdown_preview" && PathsMatch(m_editorGroups[g].docs[i].filePath, resolvedPath)) {
                 RecordNavCheckpoint();
                 m_focusedGroupIdx = static_cast<int>(g);
                 m_editorGroups[g].activeDocIdx = static_cast<int>(i);
@@ -3325,14 +3333,20 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     if (!isImage && !isFont && !isBinary) {
         std::ifstream fileCheck(resolvedPath, std::ios::binary);
         if (fileCheck.is_open()) {
-            char buf[1024];
-            fileCheck.read(buf, sizeof(buf));
+            unsigned char buf[1024];
+            fileCheck.read(reinterpret_cast<char*>(buf), sizeof(buf));
             std::streamsize bytesRead = fileCheck.gcount();
-            for (std::streamsize b = 0; b < bytesRead; ++b) {
-                if (buf[b] == '\0') {
-                    isBinary = true;
-                    binaryType = L"Binary File";
-                    break;
+            // Do not flag UTF-16 LE / BE BOM text files as binary since Buffer::LoadFromFile decodes them
+            const bool isUtf16LeBom = (bytesRead >= 2 && buf[0] == 0xFF && buf[1] == 0xFE &&
+                                       !(bytesRead >= 4 && buf[2] == 0x00 && buf[3] == 0x00));
+            const bool isUtf16BeBom = (bytesRead >= 2 && buf[0] == 0xFE && buf[1] == 0xFF);
+            if (!isUtf16LeBom && !isUtf16BeBom) {
+                for (std::streamsize b = 0; b < bytesRead; ++b) {
+                    if (buf[b] == 0) {
+                        isBinary = true;
+                        binaryType = L"Binary File";
+                        break;
+                    }
                 }
             }
         }
@@ -4681,15 +4695,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
 void Window::OpenNotebookView(const std::wstring& filePath) {
     auto& group = GetActiveGroup();
 
-    std::wstring resolvedPath = filePath;
+    std::wstring resolvedPath = ResolveWorkspaceRelativePath(filePath);
     if (!resolvedPath.empty()) {
-        std::error_code ec;
-        if (!std::filesystem::exists(resolvedPath, ec) && m_drawer.HasOpenFolder()) {
-            std::wstring cand = m_drawer.GetOpenFolderPath() + L"\\" + filePath;
-            if (std::filesystem::exists(cand, ec)) {
-                resolvedPath = cand;
-            }
-        }
         try {
             resolvedPath = std::filesystem::canonical(resolvedPath).wstring();
         } catch (...) {

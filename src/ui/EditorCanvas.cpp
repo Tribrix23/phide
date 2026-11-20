@@ -6452,37 +6452,49 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 if (indent == std::wstring::npos) continue;
 
                 float my = oy + relY;
-                if (!isMmapLarge && !doc.isLargeBufferFile && lineStr.length() <= 4096) {
-                    const auto& tokens = buffer.GetTokensForLineRef(b, docExt);
-                    if (!tokens.empty()) {
-                        for (const auto& tok : tokens) {
-                            if (tok.startCol + tok.length > lineStr.length()) continue;
-                            float tx = ox + config.ScaleF(5.0f) + static_cast<float>(tok.startCol) * microCharW;
-                            if (tx >= ox + trackW - 2.0f) break;
-                            float tw = (std::min)(ox + trackW - tx - 2.0f, static_cast<float>(tok.length) * microCharW);
-                            if (tw <= 0.5f) continue;
+                auto drawTokenRow = [&](const std::vector<editor::SyntaxToken>& tokens) -> bool {
+                    if (tokens.empty()) return false;
+                    for (const auto& tok : tokens) {
+                        if (tok.startCol + tok.length > lineStr.length()) continue;
+                        float tx = ox + config.ScaleF(5.0f) + static_cast<float>(tok.startCol) * microCharW;
+                        if (tx >= ox + trackW - 2.0f) break;
+                        float tw = (std::min)(ox + trackW - tx - 2.0f, static_cast<float>(tok.length) * microCharW);
+                        if (tw <= 0.5f) continue;
 
-                            ID2D1Brush* brush = theme.brushTextMuted.Get();
-                            switch (tok.type) {
-                                case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
-                                case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
-                                case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
-                                case editor::TokenType::Comment: {
-                                    BetterCommentType inh = BetterCommentType::Normal;
-                                    auto inhIt = docCommentSummary.inheritedLineTypes.find(b);
-                                    if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
-                                    auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
-                                    brush = ResolveBetterCommentBrush(theme, cInfo.type);
-                                    break;
-                                }
-                                case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
-                                case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
-                                case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
-                                case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
-                                default: brush = theme.brushTextPrimary.Get(); break;
+                        ID2D1Brush* brush = theme.brushTextMuted.Get();
+                        switch (tok.type) {
+                            case editor::TokenType::Keyword:   brush = theme.brushSyntaxKeyword.Get(); break;
+                            case editor::TokenType::Type:      brush = theme.brushSyntaxType.Get(); break;
+                            case editor::TokenType::String:    brush = theme.brushSyntaxString.Get(); break;
+                            case editor::TokenType::Comment: {
+                                BetterCommentType inh = BetterCommentType::Normal;
+                                auto inhIt = docCommentSummary.inheritedLineTypes.find(b);
+                                if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
+                                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
+                                brush = ResolveBetterCommentBrush(theme, cInfo.type);
+                                break;
                             }
-                            pTargetRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
+                            case editor::TokenType::Number:    brush = theme.brushSyntaxNumber.Get(); break;
+                            case editor::TokenType::Operator:  brush = theme.brushSyntaxOperator.Get(); break;
+                            case editor::TokenType::Tag:       brush = theme.brushSyntaxTag.Get(); break;
+                            case editor::TokenType::Attribute: brush = theme.brushSyntaxAttribute.Get(); break;
+                            default: brush = theme.brushTextPrimary.Get(); break;
                         }
+                        pTargetRT->FillRectangle(D2D1::RectF(tx, my, tx + tw, my + microH), brush);
+                    }
+                    return true;
+                };
+
+                // Preserve minimap syntax colors on massive files too: use cached full-line tokens for standard lines
+                // and a bounded visible prefix slice for memory-mapped or ultra-long (>4096 char) minified lines.
+                if (!isMmapLarge && lineStr.length() <= 4096) {
+                    if (drawTokenRow(buffer.GetTokensForLineRef(b, docExt))) {
+                        continue;
+                    }
+                } else {
+                    const size_t miniCols = (std::max<size_t>)(128, static_cast<size_t>((std::max)(1.0f, trackW - config.ScaleF(5.0f)) / microCharW) + 32);
+                    const size_t previewCap = (std::min<size_t>)(512, miniCols);
+                    if (drawTokenRow(buffer.TokenizePreviewSlice(b, docExt, previewCap))) {
                         continue;
                     }
                 }
@@ -8180,18 +8192,115 @@ void EditorCanvas::RenderFileLoadingView(ID2D1RenderTarget* pRT, Theme& theme, c
 void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                               float topY, float clientHeight) {
+    if (!pRT || canvasWidth <= 20.0f || clientHeight <= topY + 20.0f) return;
+
     if (doc.binaryFileSize == 0 && !doc.filePath.empty()) {
         std::error_code ec;
         doc.binaryFileSize = std::filesystem::file_size(doc.filePath, ec);
     }
 
-    const float availH = clientHeight - topY;
-    const float centerY = topY + availH * 0.42f;
-    const float centerX = canvasLeft + canvasWidth / 2.0f;
+    pRT->PushAxisAlignedClip(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight),
+                             D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    // 1. Red circled X icon (as requested: "have X incircle red or anything")
+    const float availH = (std::max)(1.0f, clientHeight - topY);
+    const float centerX = canvasLeft + canvasWidth * 0.5f;
+    const float sidePad = config.ScaleF(24.0f);
+    const float maxContentW = (std::max)(config.ScaleF(160.0f), canvasWidth - sidePad * 2.0f);
+
     const float circleR = config.ScaleF(28.0f);
-    D2D1_ELLIPSE redCircle = D2D1::Ellipse(D2D1::Point2F(centerX, centerY - config.ScaleF(50.0f)), circleR, circleR);
+    const wchar_t* headline = L"The file cannot be opened in the editor";
+    const wchar_t* subheader = L"This file is unsupported because it is binary or an executable file.";
+
+    std::wstring sizeStr;
+    if (doc.binaryFileSize < 1024) {
+        sizeStr = std::to_wstring(doc.binaryFileSize) + L" B";
+    } else if (doc.binaryFileSize < 1024 * 1024) {
+        sizeStr = std::to_wstring(doc.binaryFileSize / 1024) + L" KB";
+    } else {
+        sizeStr = std::to_wstring(doc.binaryFileSize / (1024 * 1024)) + L" MB";
+    }
+    std::wstring typeStr = doc.binaryFileType.empty() ? L"Binary File" : doc.binaryFileType;
+    std::wstring pillText = doc.fileName + L"  |  " + typeStr + L"  |  " + sizeStr;
+
+    const wchar_t* hexLbl = L"Open in Hex Viewer";
+    const wchar_t* revLbl = L"Reveal in File Explorer";
+
+    IDWriteTextFormat* pHeadFmt = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pSubFmt  = theme.fontBody.Get();
+    IDWriteTextFormat* pMenuFmt = theme.fontMenu ? theme.fontMenu.Get() : (theme.fontBody ? theme.fontBody.Get() : theme.fontCode.Get());
+    IDWriteTextFormat* pBtnFmt  = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get();
+
+    auto createWrappedCentered = [&](const wchar_t* text, size_t len, IDWriteTextFormat* pFmt,
+                                     float maxW, float fallbackH,
+                                     Microsoft::WRL::ComPtr<IDWriteTextLayout>& outLayout, float& outH) {
+        outH = fallbackH;
+        if (!theme.dwriteFactory || !pFmt) return;
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                text, static_cast<UINT32>(len), pFmt, maxW, config.ScaleF(300.0f), &outLayout)) && outLayout) {
+            outLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            outLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            outLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            DWRITE_TEXT_METRICS m{};
+            if (SUCCEEDED(outLayout->GetMetrics(&m))) {
+                outH = (std::max)(fallbackH, m.height);
+            }
+        }
+    };
+
+    auto measureSingleLineWidth = [&](const wchar_t* text, size_t len, IDWriteTextFormat* pFmt, float approxCharW) -> float {
+        if (theme.dwriteFactory && pFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    text, static_cast<UINT32>(len), pFmt, config.ScaleF(4000.0f), config.ScaleF(48.0f), &lay)) && lay) {
+                lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                DWRITE_TEXT_METRICS m{};
+                if (SUCCEEDED(lay->GetMetrics(&m))) {
+                    return m.widthIncludingTrailingWhitespace;
+                }
+            }
+        }
+        return static_cast<float>(len) * config.ScaleF(approxCharW);
+    };
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pHeadLayout;
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pSubLayout;
+    float headlineH = config.ScaleF(24.0f);
+    float subH = config.ScaleF(22.0f);
+    createWrappedCentered(headline, wcslen(headline), pHeadFmt, maxContentW, config.ScaleF(24.0f), pHeadLayout, headlineH);
+    createWrappedCentered(subheader, wcslen(subheader), pSubFmt, maxContentW, config.ScaleF(22.0f), pSubLayout, subH);
+
+    const float pillPadX = config.ScaleF(16.0f);
+    const float pillH = config.ScaleF(26.0f);
+    const float measuredPillW = measureSingleLineWidth(pillText.c_str(), pillText.length(), pMenuFmt, 7.6f);
+    const float pillW = (std::min)(maxContentW, (std::max)(config.ScaleF(150.0f), measuredPillW + pillPadX * 2.0f));
+
+    const float btnPadX = config.ScaleF(16.0f);
+    const float btnH = config.ScaleF(32.0f);
+    const float measuredHexW = measureSingleLineWidth(hexLbl, wcslen(hexLbl), pBtnFmt, 8.2f);
+    const float measuredRevW = measureSingleLineWidth(revLbl, wcslen(revLbl), pBtnFmt, 8.2f);
+    float hexBtnW = (std::min)(maxContentW, (std::max)(config.ScaleF(140.0f), measuredHexW + btnPadX * 2.0f));
+    float revBtnW = (std::min)(maxContentW, (std::max)(config.ScaleF(150.0f), measuredRevW + btnPadX * 2.0f));
+    const float btnGapX = config.ScaleF(12.0f);
+    const float btnGapY = config.ScaleF(10.0f);
+    const bool stackButtons = (hexBtnW + btnGapX + revBtnW > maxContentW);
+    if (stackButtons) {
+        const float uniformW = (std::min)(maxContentW, (std::max)(hexBtnW, revBtnW));
+        hexBtnW = uniformW;
+        revBtnW = uniformW;
+    }
+    const float buttonsTotalH = stackButtons ? (btnH * 2.0f + btnGapY) : btnH;
+
+    const float gapCircleToHead = config.ScaleF(16.0f);
+    const float gapHeadToSub    = config.ScaleF(6.0f);
+    const float gapSubToPill    = config.ScaleF(14.0f);
+    const float gapPillToBtns   = config.ScaleF(18.0f);
+    const float totalBlockH = (circleR * 2.0f) + gapCircleToHead + headlineH + gapHeadToSub + subH +
+                              gapSubToPill + pillH + gapPillToBtns + buttonsTotalH;
+    const float blockTop = (std::max)(topY + config.ScaleF(16.0f), topY + (availH - totalBlockH) * 0.44f);
+
+    // 1. Red circled X icon
+    const float circleCenterY = blockTop + circleR;
+    D2D1_ELLIPSE redCircle = D2D1::Ellipse(D2D1::Point2F(centerX, circleCenterY), circleR, circleR);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBg;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushRedBorder;
@@ -8211,99 +8320,108 @@ void EditorCanvas::RenderUnsupportedBinaryView(ID2D1RenderTarget* pRT, Theme& th
         pRT->DrawLine(D2D1::Point2F(ccx + cr, ccy - cr), D2D1::Point2F(ccx - cr, ccy + cr), brushRedCross.Get(), 2.4f);
     }
 
-    // 2. Bold Headline: "The file cannot be opened in the editor"
-    const wchar_t* headline = L"The file cannot be opened in the editor";
-    const float headlineW = config.ScaleF(460.0f);
-    const float headlineH = config.ScaleF(28.0f);
-    D2D1_RECT_F rcHeadline = D2D1::RectF(
-        centerX - headlineW / 2.0f,
-        centerY - config.ScaleF(6.0f),
-        centerX + headlineW / 2.0f,
-        centerY + headlineH - config.ScaleF(6.0f)
-    );
-    IDWriteTextFormat* pHeadFmt = theme.fontSectionHeader ? theme.fontSectionHeader.Get() : theme.fontBody.Get();
-    if (pHeadFmt) {
+    // 2. Bold Headline: "The file cannot be opened in the editor" (wrapped & clipped)
+    const float headTop = blockTop + circleR * 2.0f + gapCircleToHead;
+    D2D1_RECT_F rcHeadline = D2D1::RectF(centerX - maxContentW * 0.5f, headTop, centerX + maxContentW * 0.5f, headTop + headlineH);
+    if (pHeadLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(rcHeadline.left, rcHeadline.top), pHeadLayout.Get(),
+                            theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else if (pHeadFmt) {
         DWRITE_TEXT_ALIGNMENT oldAlign = pHeadFmt->GetTextAlignment();
         pHeadFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(headline, static_cast<UINT32>(wcslen(headline)), pHeadFmt, rcHeadline, theme.brushTextPrimary.Get());
+        pRT->DrawText(headline, static_cast<UINT32>(wcslen(headline)), pHeadFmt, rcHeadline,
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         pHeadFmt->SetTextAlignment(oldAlign);
     }
 
-    // 3. Sub-header: "This file is unsupported because it is binary or an executable file."
-    const wchar_t* subheader = L"This file is unsupported because it is binary or an executable file.";
-    const float subH = config.ScaleF(24.0f);
-    D2D1_RECT_F rcSub = D2D1::RectF(
-        centerX - headlineW / 2.0f,
-        rcHeadline.bottom + config.ScaleF(4.0f),
-        centerX + headlineW / 2.0f,
-        rcHeadline.bottom + config.ScaleF(4.0f) + subH
-    );
-    if (theme.fontBody) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = theme.fontBody->GetTextAlignment();
-        theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(subheader, static_cast<UINT32>(wcslen(subheader)), theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get());
-        theme.fontBody->SetTextAlignment(oldAlign);
+    // 3. Sub-header: "This file is unsupported because it is binary or an executable file." (wrapped & clipped)
+    const float subTop = rcHeadline.bottom + gapHeadToSub;
+    D2D1_RECT_F rcSub = D2D1::RectF(centerX - maxContentW * 0.5f, subTop, centerX + maxContentW * 0.5f, subTop + subH);
+    if (pSubLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(rcSub.left, rcSub.top), pSubLayout.Get(),
+                            theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else if (pSubFmt) {
+        DWRITE_TEXT_ALIGNMENT oldAlign = pSubFmt->GetTextAlignment();
+        pSubFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(subheader, static_cast<UINT32>(wcslen(subheader)), pSubFmt, rcSub,
+                      theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        pSubFmt->SetTextAlignment(oldAlign);
     }
 
-    // 4. File metadata pill (e.g. coordinator.exe | Binary File | 1.42 MB)
-    std::wstring sizeStr;
-    if (doc.binaryFileSize < 1024) {
-        sizeStr = std::to_wstring(doc.binaryFileSize) + L" B";
-    } else if (doc.binaryFileSize < 1024 * 1024) {
-        sizeStr = std::to_wstring(doc.binaryFileSize / 1024) + L" KB";
-    } else {
-        sizeStr = std::to_wstring(doc.binaryFileSize / (1024 * 1024)) + L" MB";
-    }
-
-    std::wstring typeStr = doc.binaryFileType.empty() ? L"Binary File" : doc.binaryFileType;
-    std::wstring pillText = doc.fileName + L"   |   " + typeStr + L"   |   " + sizeStr;
-
-    const float pillH = config.ScaleF(24.0f);
-    const float pillW = config.ScaleF(static_cast<float>(pillText.length() * 7.0f + 24.0f));
-    const float pillX = centerX - pillW / 2.0f;
-    const float pillY = rcSub.bottom + config.ScaleF(14.0f);
-
+    // 4. File metadata pill (measured width + ellipsis trimming so long names never overflow pill borders)
+    const float pillX = centerX - pillW * 0.5f;
+    const float pillY = rcSub.bottom + gapSubToPill;
     D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(
         D2D1::RectF(pillX, pillY, pillX + pillW, pillY + pillH),
-        config.ScaleF(12.0f), config.ScaleF(12.0f)
+        config.ScaleF(13.0f), config.ScaleF(13.0f)
     );
     pRT->FillRoundedRectangle(rrcPill, theme.brushItemHover.Get());
     pRT->DrawRoundedRectangle(rrcPill, theme.brushBorderSubtle.Get(), 0.8f);
 
-    IDWriteTextFormat* pMenuFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontCode.Get();
     if (pMenuFmt) {
-        DWRITE_TEXT_ALIGNMENT oldAlign = pMenuFmt->GetTextAlignment();
-        pMenuFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        pRT->DrawText(pillText.c_str(), static_cast<UINT32>(pillText.length()), pMenuFmt, rrcPill.rect, theme.brushTextSecondary.Get());
-        pMenuFmt->SetTextAlignment(oldAlign);
+        const float innerPad = config.ScaleF(10.0f);
+        const float innerW = (std::max)(20.0f, pillW - innerPad * 2.0f);
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pPillLayout;
+        if (theme.dwriteFactory &&
+            SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                pillText.c_str(), static_cast<UINT32>(pillText.length()),
+                pMenuFmt, innerW, pillH, &pPillLayout)) && pPillLayout) {
+            pPillLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            pPillLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pPillLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            DWRITE_TRIMMING trim{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+            Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+            if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(pMenuFmt, &pEllipsis)) && pEllipsis) {
+                pPillLayout->SetTrimming(&trim, pEllipsis.Get());
+            }
+            pRT->DrawTextLayout(D2D1::Point2F(pillX + innerPad, pillY), pPillLayout.Get(),
+                                theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        } else {
+            D2D1_RECT_F rcPillInner = D2D1::RectF(pillX + innerPad, pillY, pillX + pillW - innerPad, pillY + pillH);
+            DWRITE_TEXT_ALIGNMENT oldAlign = pMenuFmt->GetTextAlignment();
+            pMenuFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pRT->DrawText(pillText.c_str(), static_cast<UINT32>(pillText.length()), pMenuFmt, rcPillInner,
+                          theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pMenuFmt->SetTextAlignment(oldAlign);
+        }
     }
 
-    // 5. Action Buttons: "Open in Hex Viewer" + "Reveal in File Explorer"
-    const float hexBtnW = config.ScaleF(148.0f);
-    const float revBtnW = config.ScaleF(164.0f);
-    const float btnGap  = config.ScaleF(12.0f);
-    const float btnH    = config.ScaleF(32.0f);
-    const float totalW  = hexBtnW + btnGap + revBtnW;
-    const float startBtnX = centerX - totalW / 2.0f;
-    const float btnY = pillY + pillH + config.ScaleF(20.0f);
+    // 5. Action Buttons: "Open in Hex Viewer" + "Reveal in File Explorer" (auto-sized with padding, stacks if narrow)
+    const float btnY = pillY + pillH + gapPillToBtns;
+    if (stackButtons) {
+        const float bx = centerX - hexBtnW * 0.5f;
+        doc.unsupportedOpenHexBtn = D2D1::RectF(bx, btnY, bx + hexBtnW, btnY + btnH);
+        doc.unsupportedActionBtn  = D2D1::RectF(bx, btnY + btnH + btnGapY, bx + revBtnW, btnY + btnH * 2.0f + btnGapY);
+    } else {
+        const float totalW = hexBtnW + btnGapX + revBtnW;
+        const float startBtnX = centerX - totalW * 0.5f;
+        doc.unsupportedOpenHexBtn = D2D1::RectF(startBtnX, btnY, startBtnX + hexBtnW, btnY + btnH);
+        doc.unsupportedActionBtn  = D2D1::RectF(startBtnX + hexBtnW + btnGapX, btnY, startBtnX + totalW, btnY + btnH);
+    }
 
-    doc.unsupportedOpenHexBtn = D2D1::RectF(startBtnX, btnY, startBtnX + hexBtnW, btnY + btnH);
+    auto drawActionBtnLabel = [&](const wchar_t* label, const D2D1_RECT_F& btnRect, ID2D1Brush* textBrush) {
+        if (!pBtnFmt || !textBrush) return;
+        D2D1_RECT_F rcText = D2D1::RectF(btnRect.left + config.ScaleF(6.0f), btnRect.top,
+                                          btnRect.right - config.ScaleF(6.0f), btnRect.bottom);
+        DWRITE_TEXT_ALIGNMENT oldAlign = pBtnFmt->GetTextAlignment();
+        DWRITE_PARAGRAPH_ALIGNMENT oldPara = pBtnFmt->GetParagraphAlignment();
+        pBtnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pBtnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        pRT->DrawText(label, static_cast<UINT32>(wcslen(label)), pBtnFmt, rcText, textBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        pBtnFmt->SetTextAlignment(oldAlign);
+        pBtnFmt->SetParagraphAlignment(oldPara);
+    };
+
     D2D1_ROUNDED_RECT rrcHexBtn = D2D1::RoundedRect(doc.unsupportedOpenHexBtn, 4.0f, 4.0f);
     pRT->FillRoundedRectangle(rrcHexBtn, theme.brushBrandAccent.Get());
-    const wchar_t* hexLbl = L"Open in Hex Viewer";
-    pRT->DrawText(hexLbl, static_cast<UINT32>(wcslen(hexLbl)),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
-                  doc.unsupportedOpenHexBtn, theme.brushTextWhite.Get());
+    drawActionBtnLabel(hexLbl, doc.unsupportedOpenHexBtn, theme.brushTextWhite.Get());
 
-    doc.unsupportedActionBtn = D2D1::RectF(startBtnX + hexBtnW + btnGap, btnY, startBtnX + totalW, btnY + btnH);
     D2D1_ROUNDED_RECT rrcBtn = D2D1::RoundedRect(doc.unsupportedActionBtn, 4.0f, 4.0f);
     pRT->FillRoundedRectangle(rrcBtn, theme.brushItemHover.Get());
     pRT->DrawRoundedRectangle(rrcBtn, theme.brushBorderSubtle.Get(), 1.0f);
+    drawActionBtnLabel(revLbl, doc.unsupportedActionBtn, theme.brushTextPrimary.Get());
 
-    const wchar_t* btnLabel = L"Reveal in File Explorer";
-    pRT->DrawText(btnLabel, static_cast<UINT32>(wcslen(btnLabel)),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
-                  doc.unsupportedActionBtn, theme.brushTextPrimary.Get());
+    pRT->PopAxisAlignedClip();
 }
 
 /**
@@ -13127,60 +13245,104 @@ void EditorCanvas::RenderDiffBinaryView(ID2D1RenderTarget* pRT, Theme& theme, co
     pRT->DrawLine(D2D1::Point2F(leftX, topY + subHeaderH), D2D1::Point2F(dividerX, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
     std::wstring leftTitle = doc.diffOriginalTitle.empty() ? (doc.fileName + L" (HEAD)") : doc.diffOriginalTitle;
     pRT->DrawText(leftTitle.c_str(), static_cast<UINT32>(leftTitle.length()), pLabelFmt,
-                  D2D1::RectF(leftX + config.ScaleF(12.0f), topY + 2.0f, dividerX - config.ScaleF(80.0f), topY + subHeaderH - 2.0f),
-                  theme.brushTextPrimary.Get());
+                  D2D1::RectF(leftX + config.ScaleF(12.0f), topY + 2.0f, dividerX - config.ScaleF(12.0f), topY + subHeaderH - 2.0f),
+                  theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
     D2D1_RECT_F rcRightSub = D2D1::RectF(rightX, topY, rightX + halfW, topY + subHeaderH);
     pRT->FillRectangle(rcRightSub, theme.brushHeaderBg.Get());
     pRT->DrawLine(D2D1::Point2F(rightX, topY + subHeaderH), D2D1::Point2F(rightX + halfW, topY + subHeaderH), theme.brushBorderSubtle.Get(), 1.0f);
     std::wstring rightTitle = doc.diffWorkingTitle.empty() ? (doc.fileName + L" (Working Tree)") : doc.diffWorkingTitle;
     pRT->DrawText(rightTitle.c_str(), static_cast<UINT32>(rightTitle.length()), pLabelFmt,
-                  D2D1::RectF(rightX + config.ScaleF(12.0f), topY + 2.0f, rightX + halfW - config.ScaleF(80.0f), topY + subHeaderH - 2.0f),
-                  theme.brushTextPrimary.Get());
+                  D2D1::RectF(rightX + config.ScaleF(12.0f), topY + 2.0f, rightX + halfW - config.ScaleF(12.0f), topY + subHeaderH - 2.0f),
+                  theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
     // Center Banner: Binary File Not Shown
-    float contentTop = topY + subHeaderH;
-    float contentH = clientHeight - contentTop;
-    float centerY = contentTop + contentH * 0.40f;
-    float centerX = canvasLeft + canvasWidth * 0.5f;
+    const float contentTop = topY + subHeaderH;
+    const float contentH = (std::max)(0.0f, clientHeight - contentTop);
+    const float centerY = contentTop + contentH * 0.40f;
+    const float centerX = canvasLeft + canvasWidth * 0.5f;
 
-    // Card background
-    float cardW = config.ScaleF(460.0f);
-    float cardH = config.ScaleF(130.0f);
+    std::wstring targetName = doc.diffBinaryFileName.empty() ? doc.fileName : doc.diffBinaryFileName;
+    std::wstring sub = L"The file '" + targetName + L"' is binary or an executable and cannot be compared as text.";
+
+    // Measure wrapped subtitle layout first so card width & height cleanly adapt to long filenames without leaking text
+    const float padX = config.ScaleF(20.0f);
+    const float maxCardW = (std::max)(config.ScaleF(220.0f), canvasWidth - config.ScaleF(40.0f));
+    float cardW = (std::min)(config.ScaleF(520.0f), maxCardW);
+    const float subOffsetTop = config.ScaleF(74.0f);
+    const float bottomPad = config.ScaleF(20.0f);
+    float subMeasuredH = config.ScaleF(42.0f);
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> pSubLayout;
+    if (theme.dwriteFactory && theme.fontBody) {
+        const float textMaxW = (std::max)(config.ScaleF(120.0f), cardW - padX * 2.0f);
+        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                sub.c_str(), static_cast<UINT32>(sub.length()),
+                theme.fontBody.Get(), textMaxW, config.ScaleF(260.0f), &pSubLayout)) && pSubLayout) {
+            pSubLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            pSubLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pSubLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            DWRITE_TEXT_METRICS subMetrics{};
+            if (SUCCEEDED(pSubLayout->GetMetrics(&subMetrics))) {
+                subMeasuredH = (std::max)(config.ScaleF(24.0f), subMetrics.height);
+                // If it fits comfortably on one line, tighten card width smoothly around the text
+                const float desiredW = (std::min)(maxCardW, (std::max)(config.ScaleF(340.0f), subMetrics.widthIncludingTrailingWhitespace + padX * 2.0f + config.ScaleF(12.0f)));
+                if (desiredW < cardW) {
+                    cardW = desiredW;
+                    pSubLayout->SetMaxWidth((std::max)(config.ScaleF(120.0f), cardW - padX * 2.0f));
+                    if (SUCCEEDED(pSubLayout->GetMetrics(&subMetrics))) {
+                        subMeasuredH = (std::max)(config.ScaleF(24.0f), subMetrics.height);
+                    }
+                }
+            }
+        }
+    }
+
+    const float cardH = (std::max)(config.ScaleF(132.0f), subOffsetTop + subMeasuredH + bottomPad);
     D2D1_RECT_F rcCard = D2D1::RectF(centerX - cardW * 0.5f, centerY - cardH * 0.5f, centerX + cardW * 0.5f, centerY + cardH * 0.5f);
     D2D1_ROUNDED_RECT rrcCard = D2D1::RoundedRect(rcCard, 8.0f, 8.0f);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushCardBg;
-    pRT->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.95f), &brushCardBg);
+    D2D1_COLOR_F cardBgCol = theme.IsDarkMode()
+        ? D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.96f)
+        : D2D1::ColorF(0.96f, 0.97f, 0.98f, 0.98f);
+    pRT->CreateSolidColorBrush(cardBgCol, &brushCardBg);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBadge;
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.65f, 0.45f, 0.95f, 1.0f), &brushBadge);
 
-    pRT->FillRoundedRectangle(rrcCard, brushCardBg.Get());
+    pRT->FillRoundedRectangle(rrcCard, brushCardBg ? brushCardBg.Get() : theme.brushHeaderBg.Get());
     pRT->DrawRoundedRectangle(rrcCard, theme.brushBorderSubtle.Get(), 1.0f);
+
+    pRT->PushAxisAlignedClip(rcCard, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // Pill badge: [BINARY]
     D2D1_ROUNDED_RECT rrcPill = D2D1::RoundedRect(
-        D2D1::RectF(centerX - config.ScaleF(36.0f), rcCard.top + config.ScaleF(14.0f), centerX + config.ScaleF(36.0f), rcCard.top + config.ScaleF(32.0f)),
+        D2D1::RectF(centerX - config.ScaleF(36.0f), rcCard.top + config.ScaleF(16.0f), centerX + config.ScaleF(36.0f), rcCard.top + config.ScaleF(34.0f)),
         3.0f, 3.0f
     );
     pRT->FillRoundedRectangle(rrcPill, brushBadge.Get());
     const wchar_t* pillText = L"BINARY";
     pRT->DrawText(pillText, 6, theme.fontButtonCenter.Get() ? theme.fontButtonCenter.Get() : pLabelFmt,
-                  rrcPill.rect, theme.brushTextWhite.Get());
+                  rrcPill.rect, theme.brushTextWhite.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
     // Headline: "Binary file not shown"
     const wchar_t* headline = L"Binary file not shown";
-    D2D1_RECT_F rcHead = D2D1::RectF(rcCard.left, rcCard.top + config.ScaleF(38.0f), rcCard.right, rcCard.top + config.ScaleF(66.0f));
+    D2D1_RECT_F rcHead = D2D1::RectF(rcCard.left + padX, rcCard.top + config.ScaleF(42.0f), rcCard.right - padX, rcCard.top + config.ScaleF(68.0f));
     pRT->DrawText(headline, static_cast<UINT32>(wcslen(headline)),
                   theme.fontTitle.Get() ? theme.fontTitle.Get() : theme.fontBody.Get(),
-                  rcHead, theme.brushTextPrimary.Get());
+                  rcHead, theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
-    // Subtitle
-    std::wstring targetName = doc.diffBinaryFileName.empty() ? doc.fileName : doc.diffBinaryFileName;
-    std::wstring sub = L"The file '" + targetName + L"' is binary or an executable and cannot be compared as text.";
-    D2D1_RECT_F rcSub = D2D1::RectF(rcCard.left + config.ScaleF(16.0f), rcCard.top + config.ScaleF(72.0f), rcCard.right - config.ScaleF(16.0f), rcCard.bottom - config.ScaleF(10.0f));
-    pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.length()),
-                  theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get());
+    // Subtitle (wrapped & centered strictly inside the card)
+    if (pSubLayout) {
+        pRT->DrawTextLayout(D2D1::Point2F(rcCard.left + padX, rcCard.top + subOffsetTop),
+                            pSubLayout.Get(), theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+        D2D1_RECT_F rcSub = D2D1::RectF(rcCard.left + padX, rcCard.top + subOffsetTop, rcCard.right - padX, rcCard.bottom - config.ScaleF(12.0f));
+        pRT->DrawText(sub.c_str(), static_cast<UINT32>(sub.length()),
+                      theme.fontBody.Get(), rcSub, theme.brushTextSecondary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    pRT->PopAxisAlignedClip();
 }
 
 void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,

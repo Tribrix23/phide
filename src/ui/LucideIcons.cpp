@@ -734,6 +734,10 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
     }
 
     std::wstring lower = filename;
+    auto sep = lower.find_last_of(L"\\/");
+    if (sep != std::wstring::npos) {
+        lower = lower.substr(sep + 1);
+    }
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
     // Exact filename matches
@@ -749,12 +753,27 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
     if (lower == L"dockerfile") {
         return FileIconType::Terminal;
     }
+    if (lower == L".env" || lower.rfind(L".env.", 0) == 0 || lower.rfind(L".env-", 0) == 0) {
+        return FileIconType::Yaml;
+    }
+    if (lower == L".gitignore" || lower == L".gitattributes" || lower == L".gitmodules" ||
+        lower == L".gitkeep" || lower == L".git-blame-ignore-revs" || lower == L".keep") {
+        return FileIconType::Yaml;
+    }
 
     // Extension matches
     auto dot = lower.find_last_of(L'.');
     if (dot != std::wstring::npos) {
         std::wstring ext = lower.substr(dot);
-        if (ext == L".php" || ext == L".phtml") return FileIconType::Php;
+        if (ext == L".dist" || ext == L".example" || ext == L".template" ||
+            ext == L".sample" || ext == L".orig" || ext == L".bak") {
+            std::wstring stem = lower.substr(0, dot);
+            auto innerDot = stem.find_last_of(L'.');
+            if (innerDot != std::wstring::npos) {
+                ext = stem.substr(innerDot);
+            }
+        }
+        if (ext == L".php" || ext == L".phtml" || ext == L".phar") return FileIconType::Php;
         if (ext == L".cpp" || ext == L".cxx" || ext == L".cc" || ext == L".c") return FileIconType::Cpp;
         if (ext == L".hpp" || ext == L".hxx" || ext == L".hh" || ext == L".h") return FileIconType::Header;
         if (ext == L".jsx" || ext == L".tsx") return FileIconType::React;
@@ -762,7 +781,7 @@ FileIconType LucideIcons::GetIconTypeForPath(const std::wstring& filename, bool 
         if (ext == L".ts") return FileIconType::Ts;
         if (ext == L".json" || ext == L".jsonc") return FileIconType::Json;
         if (ext == L".md" || ext == L".markdown" || ext == L".mdown") return FileIconType::Markdown;
-        if (ext == L".html" || ext == L".htm") return FileIconType::Html;
+        if (ext == L".html" || ext == L".htm" || ext == L".xml") return FileIconType::Html;
         if (ext == L".css" || ext == L".scss" || ext == L".sass" || ext == L".less") return FileIconType::Css;
         if (ext == L".bat" || ext == L".cmd" || ext == L".sh" || ext == L".ps1" || ext == L".bash") return FileIconType::Terminal;
         if (ext == L".yml" || ext == L".yaml") return FileIconType::Yaml;

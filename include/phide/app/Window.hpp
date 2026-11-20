@@ -1662,6 +1662,7 @@ private:
     std::mutex m_fileLoadMutex;
     std::vector<PendingFileLoadResult> m_pendingFileLoads;
     std::atomic<uint64_t> m_fileLoadGenCounter{ 0 };
+    std::wstring ResolveWorkspaceRelativePath(const std::wstring& path) const;
     void FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::wstring& resolvedPath, bool runLspAndLinters, bool runGitAndExtraDiagnostics);
     void ApplyPendingFileLoads();
 };

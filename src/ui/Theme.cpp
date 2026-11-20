@@ -1630,6 +1630,12 @@ void Theme::SetThemeMode(ThemeMode mode) {
 
 Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFolder, bool isExpanded) const {
     std::wstring lower = filename;
+    if (!isFolder) {
+        auto sep = lower.find_last_of(L"\\/");
+        if (sep != std::wstring::npos) {
+            lower = lower.substr(sep + 1);
+        }
+    }
     for (auto& c : lower) c = towlower(c);
 
     if (isFolder) {
@@ -1669,11 +1675,28 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
     if (lower == L"cmakelists.txt" || lower == L"makefile") {
         return { 0xE05F, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
     }
-    if (lower == L".gitignore" || lower == L".gitattributes" || lower == L".gitmodules") {
+    if (lower == L".gitignore" || lower == L".gitattributes" || lower == L".gitmodules" ||
+        lower == L".gitkeep" || lower == L".git-blame-ignore-revs" || lower == L".keep") {
         return { 0xE034, brushSetiGit ? brushSetiGit.Get() : brushIconRed.Get() };
+    }
+    if (lower == L".env" || lower.rfind(L".env.", 0) == 0 || lower.rfind(L".env-", 0) == 0) {
+        return { 0xE019, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
     }
     if (lower == L".editorconfig") {
         return { 0xE026, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+    }
+    if (lower == L".dockerignore") {
+        return { 0xE025, brushSetiCss ? brushSetiCss.Get() : brushIconBlue.Get() };
+    }
+    if (lower == L".eslintignore" || lower == L".eslintrc" || lower.rfind(L".eslintrc.", 0) == 0 ||
+        lower == L"eslint.config.js" || lower == L"eslint.config.mjs") {
+        return { 0xE02C, brushSetiReact ? brushSetiReact.Get() : brushIconBlue.Get() };
+    }
+    if (lower == L".npmignore" || lower == L".prettierignore" || lower == L".stylelintignore" || lower == L".ignore") {
+        return { 0xE04A, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+    }
+    if (lower == L".htaccess" || lower == L".htpasswd") {
+        return { 0xE019, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
     }
     if (lower == L"dockerfile" || lower == L"devcontainer.json" ||
         lower == L"docker-compose.yml" || lower == L"docker-compose.yaml" ||
@@ -1687,7 +1710,16 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
     auto dot = lower.find_last_of(L'.');
     if (dot != std::wstring::npos) {
         std::wstring ext = lower.substr(dot);
-        if (ext == L".php" || ext == L".phtml") return { 0xE070, brushSetiPhp ? brushSetiPhp.Get() : brushIconPurple.Get() };
+        // Unwrap distribution/template suffixes (e.g. phpunit.xml.dist -> .xml, config.yaml.example -> .yaml)
+        if (ext == L".dist" || ext == L".example" || ext == L".template" ||
+            ext == L".sample" || ext == L".orig" || ext == L".bak") {
+            std::wstring stem = lower.substr(0, dot);
+            auto innerDot = stem.find_last_of(L'.');
+            if (innerDot != std::wstring::npos) {
+                ext = stem.substr(innerDot);
+            }
+        }
+        if (ext == L".php" || ext == L".phtml" || ext == L".phar") return { 0xE070, brushSetiPhp ? brushSetiPhp.Get() : brushIconPurple.Get() };
         if (ext == L".jsx" || ext == L".tsx") return { 0xE07D, brushSetiReact ? brushSetiReact.Get() : (brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get()) };
         if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return { 0xE051, brushSetiJs ? brushSetiJs.Get() : brushIconYellow.Get() };
         if (ext == L".ts") return { 0xE099, brushSetiTs ? brushSetiTs.Get() : brushIconBlue.Get() };
@@ -1714,7 +1746,10 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         if (ext == L".sql") return { 0xE022, brushIconOrange ? brushIconOrange.Get() : brushIconBlue.Get() };
         if (ext == L".zip" || ext == L".tar" || ext == L".gz" || ext == L".7z" || ext == L".rar") return { 0xE0A8, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
         if (ext == L".lock") return { 0xE05D, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
-        if (ext == L".txt" || ext == L".log" || ext == L".ini" || ext == L".conf") return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+        if (ext == L".ini" || ext == L".conf" || ext == L".cfg" || ext == L".toml" || ext == L".properties" || ext == L".dist") {
+            return { 0xE019, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
+        }
+        if (ext == L".txt" || ext == L".log") return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
     }
 
     return { 0xE023, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };

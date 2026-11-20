@@ -82,6 +82,10 @@ public:
     [[nodiscard]] std::vector<SyntaxToken> GetTokensForLine(size_t lineIdx, const std::wstring& ext = L"") const;
     [[nodiscard]] const std::vector<SyntaxToken>& GetTokensForLineRef(size_t lineIdx, const std::wstring& ext = L"") const;
     /**
+     * @brief Tokenizes at most @p maxChars of a line for bounded minimap / preview coloring on huge or mapped files.
+     */
+    [[nodiscard]] std::vector<SyntaxToken> TokenizePreviewSlice(size_t lineIdx, const std::wstring& ext, size_t maxChars) const;
+    /**
      * @brief Returns multiline lexer entry state for the given line (0=normal, 1=block comment /* *\/, 2=doubleQuote, 3=singleQuote, 4=HTML comment <!-- -->).
      */
     [[nodiscard]] uint8_t GetLineEntryState(size_t lineIdx) const noexcept {

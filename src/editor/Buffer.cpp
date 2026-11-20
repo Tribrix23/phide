@@ -538,7 +538,8 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
                 tokens.push_back({ TokenType::Comment, i, len - i });
                 break;
             }
-            if (line[i] == L'#' && (lowerExt == L".sh" || lowerExt == L".bash" || lowerExt == L".php" || lowerExt == L"php" || lowerExt.empty())) {
+            if (line[i] == L'#' && (lowerExt == L".sh" || lowerExt == L".bash" || lowerExt == L".php" || lowerExt == L"php" ||
+                                     lowerExt == L".phar" || lowerExt == L"phar" || lowerExt.empty())) {
                 tokens.push_back({ TokenType::Comment, i, len - i });
                 break;
             }
@@ -552,7 +553,8 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
         // 8. String literals ("..." or '...' or `...`) with PHP "$var" interpolation highlighting
         if (line[i] == L'"' || line[i] == L'\'' || line[i] == L'`') {
             wchar_t quote = line[i];
-            bool allowVarInterp = (quote == L'"' && (lowerExt == L".php" || lowerExt == L"php" || lowerExt.empty()));
+            bool allowVarInterp = (quote == L'"' && (lowerExt == L".php" || lowerExt == L"php" ||
+                                                     lowerExt == L".phar" || lowerExt == L"phar" || lowerExt.empty()));
             size_t segStart = i++;
             while (i < len && line[i] != quote) {
                 if (line[i] == L'\\' && i + 1 < len) {
@@ -1367,7 +1369,8 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
     }
 
     const bool isPhp = (_wcsicmp(ext.c_str(), L".php") == 0 || _wcsicmp(ext.c_str(), L"php") == 0 ||
-                        _wcsicmp(ext.c_str(), L".phtml") == 0 || _wcsicmp(ext.c_str(), L"phtml") == 0);
+                        _wcsicmp(ext.c_str(), L".phtml") == 0 || _wcsicmp(ext.c_str(), L"phtml") == 0 ||
+                        _wcsicmp(ext.c_str(), L".phar") == 0 || _wcsicmp(ext.c_str(), L"phar") == 0);
     const bool isPython = (_wcsicmp(ext.c_str(), L".py") == 0 || _wcsicmp(ext.c_str(), L"py") == 0);
     const bool isHtmlLike = isPhp ||
         _wcsicmp(ext.c_str(), L".html") == 0 || _wcsicmp(ext.c_str(), L"html") == 0 ||
@@ -1567,8 +1570,36 @@ const std::vector<SyntaxToken>& Buffer::GetTokensForLineRef(size_t lineIdx, cons
         resultTokens = isHugeLine ? m_lexer.TokenizeLine(line.substr(0, lexLen), ext) : m_lexer.TokenizeLine(line, ext);
     }
 
+    if (m_tokenCache.size() > 8192) {
+        m_tokenCache.clear();
+    }
     auto [insIt, inserted] = m_tokenCache.emplace(lineIdx, std::move(resultTokens));
     return insIt->second;
+}
+
+std::vector<SyntaxToken> Buffer::TokenizePreviewSlice(size_t lineIdx, const std::wstring& ext, size_t maxChars) const {
+    if (lineIdx >= GetLineCount() || maxChars == 0) {
+        return {};
+    }
+    const std::wstring& lineStr = GetLine(lineIdx);
+    if (lineStr.empty()) {
+        return {};
+    }
+    if (!m_mappedState && lineStr.length() <= 4096) {
+        return GetTokensForLineRef(lineIdx, ext);
+    }
+    const size_t sliceLen = (std::min)(lineStr.length(), maxChars);
+    std::wstring slice = (sliceLen == lineStr.length()) ? lineStr : lineStr.substr(0, sliceLen);
+    if (!m_mappedState && lineIdx < m_lineEntryStates.size()) {
+        const uint8_t entry = static_cast<uint8_t>(m_lineEntryStates[lineIdx] & 0x0F);
+        if (entry == 1 || entry == 4) {
+            return { { TokenType::Comment, 0, sliceLen } };
+        }
+        if (entry == 2 || entry == 3) {
+            return { { TokenType::String, 0, sliceLen } };
+        }
+    }
+    return m_lexer.TokenizeLine(slice, ext);
 }
 
 void Buffer::SetCursor(size_t line, size_t col) {
