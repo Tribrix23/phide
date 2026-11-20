@@ -906,6 +906,17 @@ public:
     [[nodiscard]] const phide::db::SqlQueryResult& GetSqlQueryResult() const noexcept { return m_sqlResult; }
     [[nodiscard]] const std::vector<phide::db::SqlConnectionProfile>& GetSqlProfiles() const noexcept { return m_sqlProfiles; }
     [[nodiscard]] const std::vector<phide::db::SqlTableInfo>& GetSqlTables() const noexcept { return m_sqlTables; }
+    /**
+     * @brief Returns combined schema tables across all connected databases + workspace .sql DDL files
+     *        (active DB first) so host-language SQL validation never emits false positives across DBs.
+     */
+    [[nodiscard]] std::vector<phide::db::SqlTableInfo> GetSqlValidationTables() const;
+    /** @brief Returns the currently selected database/schema name on the active SQL profile (empty if none). */
+    [[nodiscard]] std::wstring GetActiveSqlDatabaseName() const {
+        return (m_sqlSelectedProfileIdx < m_sqlProfiles.size())
+            ? m_sqlProfiles[m_sqlSelectedProfileIdx].database
+            : std::wstring{};
+    }
     [[nodiscard]] phide::db::SqlDialect GetActiveSqlDialect() const noexcept {
         return (m_sqlSelectedProfileIdx < m_sqlProfiles.size())
             ? m_sqlProfiles[m_sqlSelectedProfileIdx].dialect
@@ -1219,6 +1230,8 @@ public:
         BetterCommentType inheritedBlockType = BetterCommentType::Normal);
     [[nodiscard]] static ID2D1Brush* ResolveBetterCommentBrush(const Theme& theme, BetterCommentType type) noexcept;
     [[nodiscard]] static D2D1_COLOR_F GetBetterCommentColor(const Theme& theme, BetterCommentType type) noexcept;
+    /// Thread-safe static helper that scans a buffer for BetterComment / TODO annotations without mutating UI caches.
+    [[nodiscard]] static DocCommentSummary ComputeDocCommentSummary(const editor::Buffer& buffer, const std::wstring& ext);
     [[nodiscard]] const DocCommentSummary& GetDocCommentSummary(const editor::Buffer& buffer, const std::wstring& ext) const;
     void PruneDocCommentCache(const std::vector<uint64_t>& liveBufferIds) const;
     [[nodiscard]] const std::vector<TodoCheckboxHit>& GetVisibleTodoCheckboxes() const noexcept { return m_visibleTodoCheckboxes; }
@@ -1565,6 +1578,7 @@ private:
         bool hasSchemaUpdate = false;
         size_t schemaProfileIdx = 0;
         std::vector<phide::db::SqlTableInfo> schemaTables;
+        std::vector<phide::db::SqlTableInfo> schemaAllValidationTables;
         std::vector<std::wstring> schemaDatabases;
         std::wstring schemaError;
         bool hasQueryUpdate = false;
@@ -1601,6 +1615,7 @@ private:
     std::vector<phide::db::SqlConnectionProfile> m_sqlProfiles;
     size_t m_sqlSelectedProfileIdx = 0;
     std::vector<phide::db::SqlTableInfo> m_sqlTables;
+    std::vector<phide::db::SqlTableInfo> m_allSqlValidationTables; ///< Multi-DB + DDL tables for false-positive-free code SQL validation
     int m_sqlExpandedTableIdx = -1;
     std::wstring m_sqlQueryText = L"SELECT 1 AS ok;";
     size_t m_sqlCursorPos = 15;

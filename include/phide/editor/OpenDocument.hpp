@@ -1221,6 +1221,7 @@ struct OpenDocument {
 
     // Viewport Scrolling State
     size_t scrollLine = 0;              ///< Top-most visible visual line index
+    float smoothScrollOffsetPx = 0.0f;  ///< Sub-frame pixel residual animated smoothly to 0 at 60 FPS
     size_t lastTotalVisualLines = 0;    ///< Last rendered visual line count (including CodeLens & folding)
     size_t lastMaxScrollLine = 0;       ///< Last rendered max vertical scrollLine bound
     size_t lastVisibleLines = 25;       ///< Last rendered vertical line capacity of viewport

@@ -1799,6 +1799,31 @@ SqlQueryResult SqlEngine::ExecuteQuery(const SqlConnectionProfile& profile, cons
     return res;
 }
 
+namespace {
+
+// Marks a column `isUnique = true` in a table using case-insensitive matching.
+static void MarkColumnUnique(SqlTableInfo& tbl, const std::wstring& colName) {
+    for (auto& col : tbl.columns) {
+        if (_wcsicmp(col.name.c_str(), colName.c_str()) == 0) {
+            col.isUnique = true;
+            break;
+        }
+    }
+}
+
+// Marks a column `isPrimaryKey = true` (and implies `notNull = true`) in a table.
+static void MarkColumnPrimaryKey(SqlTableInfo& tbl, const std::wstring& colName) {
+    for (auto& col : tbl.columns) {
+        if (_wcsicmp(col.name.c_str(), colName.c_str()) == 0) {
+            col.isPrimaryKey = true;
+            col.notNull = true;
+            break;
+        }
+    }
+}
+
+} // namespace
+
 std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& profile, std::wstring& outError) {
     outError.clear();
     std::vector<SqlTableInfo> tables;
@@ -1825,6 +1850,18 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                         ci.notNull = (cr[3] == L"1");
                         ci.isPrimaryKey = (cr[5] != L"0");
                         t.columns.push_back(std::move(ci));
+                    }
+                }
+            }
+            // Detect single-column UNIQUE indexes/constraints (never composite multi-column indexes)
+            SqlQueryResult idxListRes = ExecuteQuery(profile, L"PRAGMA index_list(" + QuoteSqlIdent(t.name) + L");");
+            if (idxListRes.success) {
+                for (const auto& ir : idxListRes.rows) {
+                    if (ir.size() >= 3 && ir[2] == L"1") {
+                        SqlQueryResult idxInfoRes = ExecuteQuery(profile, L"PRAGMA index_info(" + QuoteSqlIdent(ir[1]) + L");");
+                        if (idxInfoRes.success && idxInfoRes.rows.size() == 1 && idxInfoRes.rows[0].size() >= 3) {
+                            MarkColumnUnique(t, idxInfoRes.rows[0][2]);
+                        }
                     }
                 }
             }
@@ -1873,7 +1910,7 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
         if (!profile.database.empty()) {
             sql << L"AND t.TABLE_SCHEMA = '" << EscapeSqlLiteral(profile.database) << L"' ";
         }
-        sql << L"ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION LIMIT 4000;";
+        sql << L"ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION LIMIT 8000;";
 
         SqlQueryResult qRes = ExecuteQuery(serverProf, sql.str());
         if (!qRes.success) {
@@ -1881,18 +1918,37 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
             return tables;
         }
 
-        // If configured default database doesn't exist / has 0 tables, inspect all user schemas in one fallback pass
+        // Only fall back to inspecting all schemas if the requested database does not exist at all
+        // (if the selected database exists and legitimately has 0 tables, return an empty table list).
         if (qRes.rows.empty() && !profile.database.empty()) {
-            SqlQueryResult allRes = ExecuteQuery(
-                serverProf,
-                L"SELECT t.TABLE_SCHEMA, t.TABLE_NAME, IFNULL(t.TABLE_ROWS, 0), "
-                L"IFNULL(c.COLUMN_NAME, ''), IFNULL(c.COLUMN_TYPE, ''), IFNULL(c.IS_NULLABLE, 'YES'), IFNULL(c.COLUMN_KEY, '') "
-                L"FROM information_schema.tables t "
-                L"LEFT JOIN information_schema.columns c "
-                L"  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME "
-                L"WHERE t.TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys','phpmyadmin') "
-                L"ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION LIMIT 4000;");
-            if (allRes.success) qRes = std::move(allRes);
+            bool dbExists = false;
+            for (const auto& avail : profile.availableDatabases) {
+                if (_wcsicmp(avail.c_str(), profile.database.c_str()) == 0) {
+                    dbExists = true;
+                    break;
+                }
+            }
+            if (!dbExists) {
+                SqlQueryResult chkRes = ExecuteQuery(
+                    serverProf,
+                    L"SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" +
+                    EscapeSqlLiteral(profile.database) + L"' LIMIT 1;");
+                if (chkRes.success && !chkRes.rows.empty()) {
+                    dbExists = true;
+                }
+            }
+            if (!dbExists) {
+                SqlQueryResult allRes = ExecuteQuery(
+                    serverProf,
+                    L"SELECT t.TABLE_SCHEMA, t.TABLE_NAME, IFNULL(t.TABLE_ROWS, 0), "
+                    L"IFNULL(c.COLUMN_NAME, ''), IFNULL(c.COLUMN_TYPE, ''), IFNULL(c.IS_NULLABLE, 'YES'), IFNULL(c.COLUMN_KEY, '') "
+                    L"FROM information_schema.tables t "
+                    L"LEFT JOIN information_schema.columns c "
+                    L"  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME "
+                    L"WHERE t.TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys','phpmyadmin') "
+                    L"ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION LIMIT 8000;");
+                if (allRes.success) qRes = std::move(allRes);
+            }
         }
 
         std::map<std::pair<std::wstring, std::wstring>, size_t> tableIndexMap;
@@ -1921,7 +1977,30 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 ci.type = r[4];
                 ci.notNull = (ToLowerW(r[5]) == L"no");
                 ci.isPrimaryKey = (r[6] == L"PRI");
+                ci.isUnique = (r[6] == L"UNI");
                 tables[it->second].columns.push_back(std::move(ci));
+            }
+        }
+        // Single-column UNIQUE indexes from STATISTICS (catches UNIQUE indexes not tagged UNI in COLUMN_KEY)
+        if (!tables.empty()) {
+            std::wostringstream uqSql;
+            uqSql << L"SELECT TABLE_SCHEMA, TABLE_NAME, MAX(COLUMN_NAME) "
+                  << L"FROM information_schema.STATISTICS "
+                  << L"WHERE NON_UNIQUE = 0 AND INDEX_NAME <> 'PRIMARY' "
+                  << L"  AND TABLE_SCHEMA NOT IN ('information_schema','performance_schema','mysql','sys','phpmyadmin') ";
+            if (!profile.database.empty()) {
+                uqSql << L"  AND TABLE_SCHEMA = '" << EscapeSqlLiteral(profile.database) << L"' ";
+            }
+            uqSql << L"GROUP BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME HAVING COUNT(*) = 1 LIMIT 4000;";
+            SqlQueryResult uqRes = ExecuteQuery(serverProf, uqSql.str());
+            if (uqRes.success) {
+                for (const auto& ur : uqRes.rows) {
+                    if (ur.size() < 3) continue;
+                    auto it = tableIndexMap.find({ ur[0], ur[1] });
+                    if (it != tableIndexMap.end()) {
+                        MarkColumnUnique(tables[it->second], ur[2]);
+                    }
+                }
             }
         }
         // Foreign Keys for MySQL
@@ -2011,6 +2090,27 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 tables[it->second].columns.push_back(std::move(ci));
             }
         }
+        // Single-column UNIQUE indexes/constraints for PostgreSQL (for accurate 1:1 detection)
+        if (!tables.empty()) {
+            const std::wstring uqSql =
+                L"SELECT n.nspname, cls.relname, a.attname "
+                L"FROM pg_index ix "
+                L"JOIN pg_class cls ON cls.oid = ix.indrelid "
+                L"JOIN pg_namespace n ON n.oid = cls.relnamespace "
+                L"JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attnum = ix.indkey[0] "
+                L"WHERE ix.indisunique AND NOT ix.indisprimary AND ix.indnatts = 1 "
+                L"  AND n.nspname NOT IN ('pg_catalog','information_schema') LIMIT 4000;";
+            SqlQueryResult uqRes = ExecuteQuery(profile, uqSql);
+            if (uqRes.success) {
+                for (const auto& ur : uqRes.rows) {
+                    if (ur.size() < 3) continue;
+                    auto it = tableIndexMap.find({ ur[0], ur[1] });
+                    if (it != tableIndexMap.end()) {
+                        MarkColumnUnique(tables[it->second], ur[2]);
+                    }
+                }
+            }
+        }
         // Foreign Keys for PostgreSQL
         {
             const std::wstring fkSql =
@@ -2063,10 +2163,92 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
             ci.notNull = (ToLowerW(r[4]) == L"no");
             tables[it->second].columns.push_back(std::move(ci));
         }
+        // Populate Primary Keys & single-column UNIQUE constraints for SQL Server
+        if (!tables.empty()) {
+            SqlQueryResult pkRes = ExecuteQuery(
+                profile,
+                L"SET NOCOUNT ON; "
+                L"SELECT tc.TABLE_SCHEMA, tc.TABLE_NAME, kcu.COLUMN_NAME "
+                L"FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+                L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu "
+                L"  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA "
+                L"WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY';");
+            if (pkRes.success) {
+                for (const auto& pr : pkRes.rows) {
+                    if (pr.size() < 3) continue;
+                    auto it = tableIndexMap.find({ pr[0], pr[1] });
+                    if (it != tableIndexMap.end()) MarkColumnPrimaryKey(tables[it->second], pr[2]);
+                }
+            }
+            SqlQueryResult uqRes = ExecuteQuery(
+                profile,
+                L"SET NOCOUNT ON; "
+                L"SELECT tc.TABLE_SCHEMA, tc.TABLE_NAME, MAX(kcu.COLUMN_NAME) "
+                L"FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+                L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu "
+                L"  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA "
+                L"WHERE tc.CONSTRAINT_TYPE = 'UNIQUE' "
+                L"GROUP BY tc.TABLE_SCHEMA, tc.TABLE_NAME, tc.CONSTRAINT_NAME HAVING COUNT(*) = 1;");
+            if (uqRes.success) {
+                for (const auto& ur : uqRes.rows) {
+                    if (ur.size() < 3) continue;
+                    auto it = tableIndexMap.find({ ur[0], ur[1] });
+                    if (it != tableIndexMap.end()) MarkColumnUnique(tables[it->second], ur[2]);
+                }
+            }
+            SqlQueryResult fkRes = ExecuteQuery(
+                profile,
+                L"SET NOCOUNT ON; "
+                L"SELECT fk_kcu.TABLE_SCHEMA, fk_kcu.TABLE_NAME, fk_kcu.COLUMN_NAME, pk_kcu.TABLE_NAME, pk_kcu.COLUMN_NAME "
+                L"FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc "
+                L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE fk_kcu "
+                L"  ON rc.CONSTRAINT_NAME = fk_kcu.CONSTRAINT_NAME AND rc.CONSTRAINT_SCHEMA = fk_kcu.CONSTRAINT_SCHEMA "
+                L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE pk_kcu "
+                L"  ON rc.UNIQUE_CONSTRAINT_NAME = pk_kcu.CONSTRAINT_NAME AND rc.UNIQUE_CONSTRAINT_SCHEMA = pk_kcu.CONSTRAINT_SCHEMA "
+                L"  AND fk_kcu.ORDINAL_POSITION = pk_kcu.ORDINAL_POSITION;");
+            if (fkRes.success) {
+                for (const auto& fr : fkRes.rows) {
+                    if (fr.size() < 5) continue;
+                    auto it = tableIndexMap.find({ fr[0], fr[1] });
+                    if (it != tableIndexMap.end()) {
+                        tables[it->second].foreignKeys.push_back({ fr[2], fr[3], fr[4] });
+                    }
+                }
+            }
+        }
         return tables;
     }
 
     return tables;
+}
+
+std::vector<SqlTableInfo> SqlEngine::InspectAllServerSchemas(const SqlConnectionProfile& profile, std::wstring& outError) {
+    // Clearing profile.database instructs MySQL InspectSchema to scan all non-system schemas in a single query.
+    if (profile.dialect == SqlDialect::MySQL) {
+        SqlConnectionProfile allProf = profile;
+        allProf.database.clear();
+        return InspectSchema(allProf, outError);
+    }
+    // For PostgreSQL, iterate available databases on the server if multiple exist (bounded for responsiveness).
+    if (profile.dialect == SqlDialect::PostgreSQL && profile.availableDatabases.size() > 1) {
+        std::vector<SqlTableInfo> combined;
+        const size_t limitDbs = (std::min<size_t>)(profile.availableDatabases.size(), 8);
+        for (size_t i = 0; i < limitDbs; ++i) {
+            SqlConnectionProfile dbProf = profile;
+            dbProf.database = profile.availableDatabases[i];
+            std::wstring dbErr;
+            auto part = InspectSchema(dbProf, dbErr);
+            for (auto& t : part) {
+                if (t.schemaName.empty() || t.schemaName == L"public") {
+                    t.schemaName = dbProf.database;
+                }
+                combined.push_back(std::move(t));
+            }
+            if (outError.empty() && !dbErr.empty()) outError = dbErr;
+        }
+        if (!combined.empty()) return combined;
+    }
+    return InspectSchema(profile, outError);
 }
 
 bool SqlEngine::ExportCsv(const SqlQueryResult& res, const std::wstring& outFilePath) {

@@ -23,6 +23,7 @@ namespace phide::db {
 
 namespace {
 
+/** @brief Trims leading and trailing Unicode whitespace from `s`. */
 static std::wstring TrimW(const std::wstring& s) {
     size_t a = 0;
     while (a < s.size() && iswspace(s[a])) ++a;
@@ -31,16 +32,19 @@ static std::wstring TrimW(const std::wstring& s) {
     return s.substr(a, b - a);
 }
 
+/** @brief Returns a lowercase copy of `s` for case-insensitive SQL identifier matching. */
 static std::wstring ToLowerW(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(towlower(c));
     return s;
 }
 
+/** @brief Returns an uppercase copy of `s` for SQL keyword matching. */
 static std::wstring ToUpperW(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(towupper(c));
     return s;
 }
 
+/** @brief Strips optional schema qualifier (`db.table`) and identifier quotes (``, `""`, `[]`). */
 static std::wstring UnquoteIdent(std::wstring s) {
     s = TrimW(s);
     auto dot = s.rfind(L'.');
@@ -57,11 +61,13 @@ static std::wstring UnquoteIdent(std::wstring s) {
     return s;
 }
 
+/** @brief Quotes an identifier using dialect-appropriate delimiters (backticks for MySQL, double-quotes elsewhere). */
 static std::wstring QuoteIdent(const std::wstring& ident, SqlDialect dialect) {
     if (dialect == SqlDialect::MySQL) return L"`" + ident + L"`";
     return L"\"" + ident + L"\"";
 }
 
+/** @brief Converts a UTF-16 wide string into UTF-8 bytes for SVG / file export. */
 static std::string WideToUtf8(const std::wstring& w) {
     if (w.empty()) return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
@@ -71,6 +77,7 @@ static std::string WideToUtf8(const std::wstring& w) {
     return out;
 }
 
+/** @brief Escapes XML special characters so table/column identifiers never break SVG output. */
 static std::string EscapeXml(const std::wstring& w) {
     std::string s = WideToUtf8(w);
     std::string out;
@@ -85,6 +92,7 @@ static std::string EscapeXml(const std::wstring& w) {
     return out;
 }
 
+/// Removes line (`-- ...`) and block SQL comments while preserving string/identifier literals.
 static std::wstring StripSqlComments(const std::wstring& sql) {
     std::wstring out;
     out.reserve(sql.size());
@@ -124,6 +132,7 @@ static std::wstring StripSqlComments(const std::wstring& sql) {
     return out;
 }
 
+/** @brief Splits a CREATE TABLE body by top-level commas, respecting nested parentheses and quotes. */
 static std::vector<std::wstring> SplitTopLevelCommaItems(const std::wstring& body) {
     std::vector<std::wstring> items;
     int depth = 0;
@@ -260,6 +269,7 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
         std::wstring body = clean.substr(openParen + 1, (cur - 1) - (openParen + 1));
         auto items = SplitTopLevelCommaItems(body);
         std::unordered_set<std::wstring> tablePks;
+        std::unordered_set<std::wstring> tableUniqueCols; // Single-column UNIQUE constraints only
 
         for (const auto& item : items) {
             std::wstring up = ToUpperW(item);
@@ -291,16 +301,41 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                             tbl.foreignKeys.push_back(std::move(fk));
                         }
                     }
+                } else {
+                    // Check named `CONSTRAINT uq_foo UNIQUE (col)` — single-column unique only
+                    size_t uqPos = up.find(L"UNIQUE");
+                    if (uqPos != std::wstring::npos) {
+                        size_t lp = item.find(L'(', uqPos);
+                        size_t rp = item.find(L')', lp != std::wstring::npos ? lp : uqPos);
+                        if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
+                            auto uqParts = SplitTopLevelCommaItems(item.substr(lp + 1, rp - lp - 1));
+                            if (uqParts.size() == 1) {
+                                tableUniqueCols.insert(ToLowerW(UnquoteIdent(uqParts[0])));
+                            }
+                        }
+                    }
                 }
                 continue;
             }
-            if (up.rfind(L"UNIQUE", 0) == 0 || up.rfind(L"KEY ", 0) == 0 ||
+            if (up.rfind(L"UNIQUE", 0) == 0) {
+                // Table-level `UNIQUE [KEY|INDEX] [name] (col)` — record if single-column
+                size_t lp = item.find(L'(');
+                size_t rp = item.rfind(L')');
+                if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
+                    auto uqParts = SplitTopLevelCommaItems(item.substr(lp + 1, rp - lp - 1));
+                    if (uqParts.size() == 1) {
+                        tableUniqueCols.insert(ToLowerW(UnquoteIdent(uqParts[0])));
+                    }
+                }
+                continue;
+            }
+            if (up.rfind(L"KEY ", 0) == 0 ||
                 up.rfind(L"INDEX ", 0) == 0 || up.rfind(L"CHECK", 0) == 0 ||
                 up.rfind(L"FULLTEXT", 0) == 0) {
                 continue;
             }
 
-            // Column definition: `col_name` TYPE(...) [NOT NULL] [PRIMARY KEY] [REFERENCES p(c)]
+            // Column definition: `col_name` TYPE(...) [NOT NULL] [PRIMARY KEY] [UNIQUE] [REFERENCES p(c)]
             size_t colEnd = 0;
             if (item[0] == L'`' || item[0] == L'"' || item[0] == L'[') {
                 wchar_t closeQ = (item[0] == L'[') ? L']' : item[0];
@@ -324,7 +359,7 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 if (tc == L'(') ++tDepth;
                 else if (tc == L')' && tDepth > 0) --tDepth;
                 else if (iswspace(tc) && tDepth == 0) {
-                    // Keep `UNSIGNED` / `PRECISION`? Stop at constraints.
+                    // Stop at column constraints while keeping multi-word types (e.g. INT UNSIGNED)
                     std::wstring nextRest = TrimW(ToUpperW(rest.substr(tEnd)));
                     if (nextRest.rfind(L"NOT ", 0) == 0 || nextRest.rfind(L"NULL", 0) == 0 ||
                         nextRest.rfind(L"PRIMARY", 0) == 0 || nextRest.rfind(L"DEFAULT", 0) == 0 ||
@@ -338,8 +373,10 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 ++tEnd;
             }
             col.type = TrimW(rest.substr(0, tEnd));
-            col.notNull = (restUp.find(L"NOT NULL") != std::wstring::npos);
             col.isPrimaryKey = (restUp.find(L"PRIMARY KEY") != std::wstring::npos);
+            // In SQL, PRIMARY KEY columns are always NOT NULL even when omitted inline
+            col.notNull = (restUp.find(L"NOT NULL") != std::wstring::npos) || col.isPrimaryKey;
+            col.isUnique = (restUp.find(L"UNIQUE") != std::wstring::npos);
 
             size_t refPos = restUp.find(L"REFERENCES");
             if (refPos != std::wstring::npos) {
@@ -357,14 +394,48 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
         }
 
         for (auto& col : tbl.columns) {
-            if (tablePks.count(ToLowerW(col.name)) > 0) {
+            std::wstring colLow = ToLowerW(col.name);
+            if (tablePks.count(colLow) > 0) {
                 col.isPrimaryKey = true;
                 col.notNull = true;
+            }
+            if (tableUniqueCols.count(colLow) > 0) {
+                col.isUnique = true;
             }
         }
 
         tables.push_back(std::move(tbl));
         pos = cur;
+    }
+
+    // Also parse standalone `CREATE UNIQUE INDEX ... ON table_name (single_col)` statements
+    size_t idxPos = 0;
+    while ((idxPos = upper.find(L"CREATE", idxPos)) != std::wstring::npos) {
+        if (idxPos > 0 && iswalnum(upper[idxPos - 1])) { idxPos += 6; continue; }
+        size_t p = idxPos + 6;
+        while (p < upper.size() && iswspace(upper[p])) ++p;
+        if (upper.compare(p, 6, L"UNIQUE") != 0) { idxPos = p; continue; }
+        p += 6;
+        while (p < upper.size() && iswspace(upper[p])) ++p;
+        if (upper.compare(p, 5, L"INDEX") != 0) { idxPos = p; continue; }
+        size_t onPos = upper.find(L" ON ", p + 5);
+        if (onPos == std::wstring::npos) { idxPos = p + 5; continue; }
+        size_t lp = clean.find(L'(', onPos + 4);
+        size_t rp = (lp != std::wstring::npos) ? clean.find(L')', lp + 1) : std::wstring::npos;
+        if (lp == std::wstring::npos || rp == std::wstring::npos || rp <= lp) { idxPos = onPos + 4; continue; }
+        std::wstring targetTbl = ToLowerW(UnquoteIdent(clean.substr(onPos + 4, lp - (onPos + 4))));
+        auto idxCols = SplitTopLevelCommaItems(clean.substr(lp + 1, rp - lp - 1));
+        if (idxCols.size() == 1) {
+            std::wstring targetCol = ToLowerW(UnquoteIdent(idxCols[0]));
+            for (auto& t : tables) {
+                if (ToLowerW(t.name) == targetTbl) {
+                    for (auto& c : t.columns) {
+                        if (ToLowerW(c.name) == targetCol) c.isUnique = true;
+                    }
+                }
+            }
+        }
+        idxPos = rp + 1;
     }
     return tables;
 }
@@ -618,10 +689,44 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
     const size_t n = tables.size();
     out.entities.resize(n);
     std::unordered_map<std::wstring, size_t> nameToIdx;
+    std::unordered_map<std::wstring, size_t> qualifiedToIdx;
     for (size_t i = 0; i < n; ++i) {
         out.entities[i].tableIdx = i;
-        nameToIdx[ToLowerW(tables[i].name)] = i;
+        std::wstring lowName = ToLowerW(tables[i].name);
+        nameToIdx[lowName] = i;
+        if (!tables[i].schemaName.empty()) {
+            qualifiedToIdx[ToLowerW(tables[i].schemaName) + L"." + lowName] = i;
+        }
     }
+
+    auto resolveTargetTable = [&](const SqlTableInfo& childTbl, const std::wstring& refTable) -> size_t {
+        std::wstring refLow = ToLowerW(refTable);
+        // Prefer same-schema table first when multiple schemas are loaded simultaneously
+        if (!childTbl.schemaName.empty()) {
+            auto qIt = qualifiedToIdx.find(ToLowerW(childTbl.schemaName) + L"." + refLow);
+            if (qIt != qualifiedToIdx.end()) return qIt->second;
+        }
+        auto nIt = nameToIdx.find(refLow);
+        return (nIt != nameToIdx.end()) ? nIt->second : SIZE_MAX;
+    };
+
+    auto buildCardinalityReason = [](const SqlColumnInfo& col, int pkCount, bool inferred) -> std::wstring {
+        if (col.isPrimaryKey && pkCount == 1) {
+            return inferred ? L"PK+FK (1:1, inferred *_id)" : L"PK+FK (1:1 shared primary key)";
+        }
+        if (col.isUnique) {
+            return col.notNull
+                ? (inferred ? L"UNIQUE NOT NULL (1:1, inferred *_id)" : L"UNIQUE NOT NULL FK (1:1)")
+                : (inferred ? L"UNIQUE NULLable (1:1, inferred *_id)" : L"UNIQUE nullable FK (1:1)");
+        }
+        if (col.isPrimaryKey) {
+            return L"Composite PK+FK (Weak identifying 1:N)";
+        }
+        if (col.notNull) {
+            return inferred ? L"NOT NULL (1:N mandatory, inferred *_id)" : L"NOT NULL FK (1:N mandatory)";
+        }
+        return inferred ? L"Nullable (1:N optional, inferred *_id)" : L"Nullable FK (1:N optional)";
+    };
 
     // Track explicit FK columns on each child table to avoid duplicate inferred edges
     std::vector<std::unordered_set<std::wstring>> explicitFkCols(n);
@@ -633,9 +738,8 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
             if (c.isPrimaryKey) ++pkCount;
         }
         for (const auto& fk : childTbl.foreignKeys) {
-            auto pIt = nameToIdx.find(ToLowerW(fk.refTable));
-            if (pIt == nameToIdx.end()) continue;
-            const size_t pi = pIt->second;
+            const size_t pi = resolveTargetTable(childTbl, fk.refTable);
+            if (pi >= n) continue;
             explicitFkCols[ci].insert(ToLowerW(fk.column));
 
             ErdInterpretedRelation rel;
@@ -657,7 +761,11 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
                 const auto& ccol = childTbl.columns[static_cast<size_t>(rel.childColIdx)];
                 rel.childOptional = !ccol.notNull;
                 rel.isIdentifying = ccol.isPrimaryKey;
-                rel.isOneToOne = (ccol.isPrimaryKey && pkCount == 1);
+                // 1:1 holds when the FK is either the sole Primary Key or has a single-column UNIQUE constraint
+                rel.isOneToOne = (ccol.isPrimaryKey && pkCount == 1) || ccol.isUnique;
+                rel.cardinalityReason = buildCardinalityReason(ccol, pkCount, false);
+            } else {
+                rel.cardinalityReason = L"Explicit FOREIGN KEY";
             }
             rel.isSelfRef = (pi == ci);
             rel.isInferred = false;
@@ -691,6 +799,11 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
                 size_t matchCount = 0;
                 for (size_t pi = 0; pi < n; ++pi) {
                     if (pi == ci) continue;
+                    // When both tables carry schema names, avoid matching across unrelated databases
+                    if (!childTbl.schemaName.empty() && !tables[pi].schemaName.empty() &&
+                        _wcsicmp(childTbl.schemaName.c_str(), tables[pi].schemaName.c_str()) != 0) {
+                        continue;
+                    }
                     const std::wstring tLow = ToLowerW(tables[pi].name);
                     if (tLow == stem || tLow == stemPlural ||
                         (tLow.size() > stem.size() + 1 && tLow.rfind(L"_" + stem) == tLow.size() - stem.size() - 1) ||
@@ -710,7 +823,8 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
                     if (rel.parentColIdx < 0 && !tables[matchIdx].columns.empty()) rel.parentColIdx = 0;
                     rel.childOptional = !col.notNull;
                     rel.isIdentifying = col.isPrimaryKey;
-                    rel.isOneToOne = (col.isPrimaryKey && pkCount == 1);
+                    rel.isOneToOne = (col.isPrimaryKey && pkCount == 1) || col.isUnique;
+                    rel.cardinalityReason = buildCardinalityReason(col, pkCount, true);
                     rel.isSelfRef = false;
                     rel.isInferred = true;
                     rel.relationLabel = DeriveConciseRelationLabel(rel.fkColumn, true);
@@ -962,6 +1076,7 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
         re.isSelfRef = rel.isSelfRef;
         re.isInferred = rel.isInferred;
         re.relationLabel = rel.relationLabel;
+        re.cardinalityReason = rel.cardinalityReason;
 
         const auto& pn = nodes[rel.parentTableIdx];
         const auto& cn = nodes[rel.childTableIdx];
@@ -1609,14 +1724,17 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
 
     for (const auto& edge : edges) {
         if (edge.points.size() < 2) continue;
-        svg << "  <path d=\"M " << (edge.points[0].x + ox) << " " << (edge.points[0].y + oy);
-        for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
-            const auto& a = edge.points[s];
-            const auto& b = edge.points[s + 1];
+
+        auto emitSvgPathSeg = [&](const ErdPointF& a, const ErdPointF& b, size_t segIdx, bool dashed) {
+            svg << "  <path d=\"M " << (a.x + ox) << " " << (a.y + oy);
             if (std::abs(a.y - b.y) < 0.5f) {
+                const float lo = (std::min)(a.x, b.x) + 5.25f;
+                const float hi = (std::max)(a.x, b.x) - 5.25f;
                 std::vector<float> jxs;
                 for (const auto& j : edge.jumps) {
-                    if (j.segmentIndex == s) jxs.push_back(j.crossX);
+                    if (j.segmentIndex == segIdx && j.crossX > lo && j.crossX < hi) {
+                        jxs.push_back(j.crossX);
+                    }
                 }
                 if (!jxs.empty()) {
                     const float ySvg = a.y + oy;
@@ -1636,11 +1754,71 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
                     }
                 }
             }
-            svg << " L " << (b.x + ox) << " " << (b.y + oy);
+            svg << " L " << (b.x + ox) << " " << (b.y + oy)
+                << "\" fill=\"none\" stroke=\"" << (edge.isInferred ? "#94A3B8" : "#38BDF8") << "\" stroke-width=\"1.55\" ";
+            if (dashed) svg << "stroke-dasharray=\"5,3\" ";
+            svg << "/>\n";
+        };
+
+        if (notation == ErdNotation::Barker && edge.childOptional && !edge.isInferred) {
+            // In Barker notation, optionality splits at the midpoint: solid parent half, dashed child half
+            float totalLen = 0.0f;
+            for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
+                totalLen += std::abs(edge.points[s + 1].x - edge.points[s].x) +
+                            std::abs(edge.points[s + 1].y - edge.points[s].y);
+            }
+            const float halfLen = totalLen * 0.5f;
+            float accLen = 0.0f;
+            for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
+                const auto& a = edge.points[s];
+                const auto& b = edge.points[s + 1];
+                const float segLen = std::abs(b.x - a.x) + std::abs(b.y - a.y);
+                if (accLen + segLen <= halfLen) {
+                    emitSvgPathSeg(a, b, s, false);
+                } else if (accLen >= halfLen) {
+                    emitSvgPathSeg(a, b, s, true);
+                } else if (segLen > 0.5f) {
+                    const float t = (halfLen - accLen) / segLen;
+                    const ErdPointF midPt{ a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
+                    emitSvgPathSeg(a, midPt, s, false);
+                    emitSvgPathSeg(midPt, b, s, true);
+                }
+                accLen += segLen;
+            }
+        } else {
+            svg << "  <path d=\"M " << (edge.points[0].x + ox) << " " << (edge.points[0].y + oy);
+            for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
+                const auto& a = edge.points[s];
+                const auto& b = edge.points[s + 1];
+                if (std::abs(a.y - b.y) < 0.5f) {
+                    std::vector<float> jxs;
+                    for (const auto& j : edge.jumps) {
+                        if (j.segmentIndex == s) jxs.push_back(j.crossX);
+                    }
+                    if (!jxs.empty()) {
+                        const float ySvg = a.y + oy;
+                        const float r = 5.0f;
+                        if (b.x >= a.x) {
+                            std::sort(jxs.begin(), jxs.end());
+                            for (float jx : jxs) {
+                                svg << " L " << (jx - r + ox) << " " << ySvg
+                                    << " A " << r << " " << r << " 0 0 1 " << (jx + r + ox) << " " << ySvg;
+                            }
+                        } else {
+                            std::sort(jxs.rbegin(), jxs.rend());
+                            for (float jx : jxs) {
+                                svg << " L " << (jx + r + ox) << " " << ySvg
+                                    << " A " << r << " " << r << " 0 0 0 " << (jx - r + ox) << " " << ySvg;
+                            }
+                        }
+                    }
+                }
+                svg << " L " << (b.x + ox) << " " << (b.y + oy);
+            }
+            svg << "\" fill=\"none\" stroke=\"" << (edge.isInferred ? "#94A3B8" : "#38BDF8") << "\" stroke-width=\"1.55\" ";
+            if (edge.isInferred) svg << "stroke-dasharray=\"5,3\" ";
+            svg << "/>\n";
         }
-        svg << "\" fill=\"none\" stroke=\"" << (edge.isInferred ? "#94A3B8" : "#38BDF8") << "\" stroke-width=\"1.55\" ";
-        if (notation == ErdNotation::Barker || edge.isInferred) svg << "stroke-dasharray=\"5,3\" ";
-        svg << "/>\n";
 
         const float sx1 = edge.x1 + ox, sy1 = edge.y1 + oy;
         const float sx2 = edge.x2 + ox, sy2 = edge.y2 + oy;
@@ -1704,7 +1882,7 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
                 }
             } else {
                 drawSvgMarker(sx1, sy1, edge.dir1, false, edge.childOptional);
-                drawSvgMarker(sx2, sy2, edge.dir2, !edge.isOneToOne, !edge.isOneToOne && edge.childOptional);
+                drawSvgMarker(sx2, sy2, edge.dir2, !edge.isOneToOne, edge.isOneToOne ? true : edge.childOptional);
             }
         }
     }

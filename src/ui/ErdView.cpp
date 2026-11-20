@@ -26,16 +26,19 @@ using phide::db::SqlTableInfo;
 
 namespace {
 
+/** @brief Returns true if client point `pt` lies inside Direct2D rectangle `r`. */
 static bool PtInRectF(POINT pt, const D2D1_RECT_F& r) noexcept {
     return static_cast<float>(pt.x) >= r.left && static_cast<float>(pt.x) <= r.right &&
            static_cast<float>(pt.y) >= r.top  && static_cast<float>(pt.y) <= r.bottom;
 }
 
+/** @brief Returns a lowercase copy of `s` for case-insensitive table/column matching. */
 static std::wstring ToLowerW(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(towlower(c));
     return s;
 }
 
+/** @brief Converts a UTF-8 std::string (e.g., loaded .sql file bytes) to UTF-16 std::wstring. */
 static std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
     int len = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
@@ -45,6 +48,7 @@ static std::wstring Utf8ToWide(const std::string& s) {
     return w;
 }
 
+/** @brief Copies `text` to the Win32 Unicode clipboard; returns false if empty or clipboard locked. */
 static bool CopyWideClipboard(HWND hwnd, const std::wstring& text) {
     if (text.empty() || !OpenClipboard(hwnd)) return false;
     EmptyClipboard();
@@ -64,6 +68,7 @@ static bool CopyWideClipboard(HWND hwnd, const std::wstring& text) {
     return true;
 }
 
+/** @brief Checks whether `colName` is an explicit FK column in `tbl`, optionally reporting nullability. */
 static bool IsFkCol(const SqlTableInfo& tbl, const std::wstring& colName, bool* outNullable = nullptr) {
     std::wstring low = ToLowerW(colName);
     for (const auto& fk : tbl.foreignKeys) {
@@ -83,17 +88,40 @@ static bool IsFkCol(const SqlTableInfo& tbl, const std::wstring& colName, bool* 
     return false;
 }
 
+/** @brief Returns true if `fkCol` enforces a 1:1 relationship (sole PK or single-column UNIQUE constraint). */
 static bool IsFkUniqueOneToOne(const SqlTableInfo& childTbl, const std::wstring& fkCol) {
     std::wstring low = ToLowerW(fkCol);
     int pkCount = 0;
     bool fkIsPk = false;
+    bool fkIsUnique = false;
     for (const auto& c : childTbl.columns) {
         if (c.isPrimaryKey) {
             ++pkCount;
             if (ToLowerW(c.name) == low) fkIsPk = true;
         }
+        if (c.isUnique && ToLowerW(c.name) == low) {
+            fkIsUnique = true;
+        }
     }
-    return (fkIsPk && pkCount == 1);
+    return (fkIsPk && pkCount == 1) || fkIsUnique;
+}
+
+/** @brief Squared Euclidean distance from point `(px, py)` to line segment `(ax, ay)-(bx, by)`. */
+static float DistPointToSegmentSq(float px, float py, float ax, float ay, float bx, float by) noexcept {
+    const float dx = bx - ax;
+    const float dy = by - ay;
+    const float lenSq = dx * dx + dy * dy;
+    if (lenSq <= 0.0001f) {
+        const float ex = px - ax;
+        const float ey = py - ay;
+        return ex * ex + ey * ey;
+    }
+    const float t = std::clamp(((px - ax) * dx + (py - ay) * dy) / lenSq, 0.0f, 1.0f);
+    const float projX = ax + t * dx;
+    const float projY = ay + t * dy;
+    const float ex = px - projX;
+    const float ey = py - projY;
+    return ex * ex + ey * ey;
 }
 
 /**
@@ -463,22 +491,108 @@ void ErdView::RecalculateNodeHeights() {
     m_routesDirty = true;
 }
 
-void ErdView::AutoArrangeNodes() {
-    m_nodes.clear();
+void ErdView::AutoArrangeNodes(bool animate) {
     m_selectedNodeIdx = -1;
+    m_hoveredEdgeIdx = -1;
     m_userMovedNodes = false;
     if (m_tables.empty()) {
+        m_nodes.clear();
+        m_targetNodes.clear();
+        m_isAnimatingNodes = false;
         m_routesDirty = true;
         return;
     }
+
+    const bool canAnimateFromExisting = animate && m_nodes.size() == m_tables.size();
+    std::vector<ErdNodeLayout> prevNodes = m_nodes;
 
     m_nodes.resize(m_tables.size());
     for (size_t i = 0; i < m_tables.size(); ++i) {
         m_nodes[i].tableName = m_tables[i].name;
     }
     RecalculateNodeHeights();
-    m_nodes = ErdAndMigrationEngine::ComputeSmartLayout(m_tables, m_nodes, m_notation, m_inferImplicitFks);
+    auto arranged = ErdAndMigrationEngine::ComputeSmartLayout(m_tables, m_nodes, m_notation, m_inferImplicitFks);
+
+    if (canAnimateFromExisting) {
+        // Preserve current positions and glide smoothly to `arranged` over animation ticks
+        for (size_t i = 0; i < m_nodes.size(); ++i) {
+            m_nodes[i].x = prevNodes[i].x;
+            m_nodes[i].y = prevNodes[i].y;
+            m_nodes[i].width = arranged[i].width;
+            m_nodes[i].height = arranged[i].height;
+        }
+        m_targetNodes = std::move(arranged);
+        m_isAnimatingNodes = true;
+    } else {
+        m_nodes = std::move(arranged);
+        m_targetNodes = m_nodes;
+        m_isAnimatingNodes = false;
+    }
     m_routesDirty = true;
+}
+
+bool ErdView::IsAnimating() const noexcept {
+    return m_isAnimatingZoomPan || m_isAnimatingNodes || m_isAnimatingDiffScroll;
+}
+
+bool ErdView::UpdateAnimation() noexcept {
+    bool active = false;
+    constexpr float kPanZoomSpeed = 0.24f;
+    constexpr float kNodeSpeed = 0.22f;
+
+    if (m_isAnimatingZoomPan) {
+        const float dz = m_targetZoom - m_zoom;
+        const float dx = m_targetPanX - m_panX;
+        const float dy = m_targetPanY - m_panY;
+        if (std::abs(dz) < 0.0015f && std::abs(dx) < 0.35f && std::abs(dy) < 0.35f) {
+            m_zoom = m_targetZoom;
+            m_panX = m_targetPanX;
+            m_panY = m_targetPanY;
+            m_isAnimatingZoomPan = false;
+        } else {
+            m_zoom += dz * kPanZoomSpeed;
+            m_panX += dx * kPanZoomSpeed;
+            m_panY += dy * kPanZoomSpeed;
+            active = true;
+        }
+    }
+
+    if (m_isAnimatingNodes && m_nodes.size() == m_targetNodes.size()) {
+        bool anyMoving = false;
+        for (size_t i = 0; i < m_nodes.size(); ++i) {
+            const float dx = m_targetNodes[i].x - m_nodes[i].x;
+            const float dy = m_targetNodes[i].y - m_nodes[i].y;
+            if (std::abs(dx) < 0.4f && std::abs(dy) < 0.4f) {
+                m_nodes[i].x = m_targetNodes[i].x;
+                m_nodes[i].y = m_targetNodes[i].y;
+            } else {
+                m_nodes[i].x += dx * kNodeSpeed;
+                m_nodes[i].y += dy * kNodeSpeed;
+                anyMoving = true;
+            }
+        }
+        m_routesDirty = true;
+        if (!anyMoving) {
+            m_isAnimatingNodes = false;
+        } else {
+            active = true;
+        }
+    } else if (m_isAnimatingNodes) {
+        m_isAnimatingNodes = false;
+    }
+
+    if (m_isAnimatingDiffScroll) {
+        const float ds = m_targetDiffScrollY - m_diffScrollY;
+        if (std::abs(ds) < 0.4f) {
+            m_diffScrollY = m_targetDiffScrollY;
+            m_isAnimatingDiffScroll = false;
+        } else {
+            m_diffScrollY += ds * 0.28f;
+            active = true;
+        }
+    }
+
+    return active;
 }
 
 void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
@@ -527,7 +641,7 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     m_rcBtnCrowsFoot = m_rcBtnUml = m_rcBtnChen = m_rcBtnBarker = m_rcBtnChenAttrs = {};
     m_rcBtnAutoLayout = m_rcBtnZoomFit = m_rcBtnRefresh = {};
     m_rcBtnDetect = m_rcBtnEmptyRefresh = {};
-    m_rcBtnToggleDiff = m_rcBtnLoadSql = m_rcBtnExportSvg = m_rcBtnInferFks = m_rcBtnShowM2N = {};
+    m_rcBtnToggleDiff = m_rcBtnLoadSql = m_rcBtnExportSvg = m_rcBtnInferFks = m_rcBtnShowM2N = m_rcBtnLegend = {};
     m_rcSearchBox = {};
 
     auto measureBtnW = [&](const wchar_t* lbl) -> float {
@@ -586,14 +700,15 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     curY += btnH + rowGap;
     float x2 = canvasLeft + pad;
     std::vector<PlannedBtn> row2Btns = {
-        { &m_rcBtnAutoLayout, L"Auto Layout", 6, false,          measureBtnW(L"Auto Layout") },
-        { &m_rcBtnZoomFit,    L"Zoom Fit",    7, false,          measureBtnW(L"Zoom Fit") },
-        { &m_rcBtnRefresh,    L"Refresh",     8, false,          measureBtnW(L"Refresh") },
-        { &m_rcBtnToggleDiff, L"Schema Diff", 9, m_showDiffPanel,   measureBtnW(L"Schema Diff") },
-        { &m_rcBtnInferFks,   L"Infer *_id",  16, m_inferImplicitFks, measureBtnW(L"Infer *_id") },
+        { &m_rcBtnAutoLayout, L"Auto Layout", 6, false,                   measureBtnW(L"Auto Layout") },
+        { &m_rcBtnZoomFit,    L"Zoom Fit",    7, false,                   measureBtnW(L"Zoom Fit") },
+        { &m_rcBtnRefresh,    L"Refresh",     8, false,                   measureBtnW(L"Refresh") },
+        { &m_rcBtnToggleDiff, L"Schema Diff", 9, m_showDiffPanel,         measureBtnW(L"Schema Diff") },
+        { &m_rcBtnInferFks,   L"Infer *_id",  16, m_inferImplicitFks,     measureBtnW(L"Infer *_id") },
         { &m_rcBtnShowM2N,    L"M:N Badges",  17, m_showManyToManyBadges, measureBtnW(L"M:N Badges") },
-        { &m_rcBtnLoadSql,    L"Load .sql",   10, false,            measureBtnW(L"Load .sql") },
-        { &m_rcBtnExportSvg,  L"Export SVG",  11, false,            measureBtnW(L"Export SVG") },
+        { &m_rcBtnLegend,     L"Legend",      18, m_showLegend,           measureBtnW(L"Legend") },
+        { &m_rcBtnLoadSql,    L"Load .sql",   10, false,                  measureBtnW(L"Load .sql") },
+        { &m_rcBtnExportSvg,  L"Export SVG",  11, false,                  measureBtnW(L"Export SVG") },
     };
     layoutRow(x2, curY, row2Btns, searchOnRow1 ? 0.0f : config.ScaleF(168.0f));
     if (!searchOnRow1) {
@@ -835,20 +950,23 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
             pFactory->CreateStrokeStyle(props, dashes, 2, &dashedStyle);
         }
 
-        // Render normal edges first, then highlighted edges for selected table on top
+        // Render normal edges first, then highlighted/hovered edges on top
         for (int hlPass = 0; hlPass < 2; ++hlPass) {
-            for (const auto& edge : m_routedEdges) {
+            for (size_t ei = 0; ei < m_routedEdges.size(); ++ei) {
+                const auto& edge = m_routedEdges[ei];
                 if (edge.parentTableIdx >= m_tables.size() || edge.childTableIdx >= m_tables.size()) continue;
                 const auto& childTbl = m_tables[edge.childTableIdx];
                 const auto& parTbl = m_tables[edge.parentTableIdx];
                 if (!matchesFilter(childTbl) && !matchesFilter(parTbl)) continue;
 
-                const bool highlighted = (m_selectedNodeIdx == static_cast<int>(edge.childTableIdx) ||
+                const bool isHoveredEdge = (m_hoveredEdgeIdx == static_cast<int>(ei));
+                const bool highlighted = isHoveredEdge ||
+                                         (m_selectedNodeIdx == static_cast<int>(edge.childTableIdx) ||
                                           m_selectedNodeIdx == static_cast<int>(edge.parentTableIdx));
                 if ((hlPass == 0 && highlighted) || (hlPass == 1 && !highlighted)) continue;
 
                 ID2D1Brush* lineBr = highlighted ? brAccent.Get() : (edge.isInferred ? txtSec : brRel.Get());
-                const float lineW = highlighted ? 2.2f : (edge.isInferred ? 1.25f : 1.55f);
+                const float lineW = isHoveredEdge ? 2.5f : (highlighted ? 2.2f : (edge.isInferred ? 1.25f : 1.55f));
 
                 DrawRoutedEdgePolyline(pRT, pFactory.Get(), edge, m_notation, lineBr, lineW, dashedStyle.Get());
 
@@ -858,8 +976,11 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                 const float my = edge.midPoint.y;
 
                 if (m_notation == ErdNotation::CrowsFoot) {
+                    // Parent end: mandatory one (||) when FK is NOT NULL, optional zero-or-one (O|) when nullable.
+                    // Child end: 0..1 (O|) for 1:1 relationships, 1..* (|<) for NOT NULL FK, 0..* (O<) for nullable FK.
                     DrawCrowsFootGlyph(pRT, x1, y1, dir1, false, edge.childOptional, lineBr, brBg.Get(), lineW);
-                    DrawCrowsFootGlyph(pRT, x2, y2, dir2, !edge.isOneToOne, !edge.isOneToOne && edge.childOptional, lineBr, brBg.Get(), lineW);
+                    DrawCrowsFootGlyph(pRT, x2, y2, dir2, !edge.isOneToOne,
+                                       edge.isOneToOne ? true : edge.childOptional, lineBr, brBg.Get(), lineW);
                 } else if (m_notation == ErdNotation::Barker) {
                     if (!edge.isOneToOne) {
                         const float forkBaseX = x2 + dir2 * 10.0f;
@@ -1031,10 +1152,10 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                 } else if (m_notation == ErdNotation::Barker) {
                     badge = col.isPrimaryKey ? L"#" : (col.notNull ? L"*" : L"o");
                 } else {
-                    badge = col.isPrimaryKey ? L"PK" : (isFk ? L"FK" : L"");
+                    badge = col.isPrimaryKey ? L"PK" : (isFk ? L"FK" : (col.isUnique ? L"UQ" : L""));
                 }
 
-                ID2D1Brush* colBr = col.isPrimaryKey ? brPk.Get() : (isFk ? brFk.Get() : txtPri);
+                ID2D1Brush* colBr = col.isPrimaryKey ? brPk.Get() : (isFk ? brFk.Get() : (col.isUnique ? brAdd.Get() : txtPri));
                 if (!badge.empty()) {
                     DrawSmallText(pRT, pCodeFmt, badge,
                                   D2D1::RectF(badgeLeft, cy, badgeRight, cy + 19.0f),
@@ -1043,7 +1164,9 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                 DrawSmallText(pRT, pCodeFmt, col.name,
                               D2D1::RectF(nameLeft, cy, nameRight, cy + 19.0f),
                               txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-                DrawSmallText(pRT, pCodeFmt, FormatCompactSqlType(col.type),
+                std::wstring dispType = FormatCompactSqlType(col.type);
+                if (col.isUnique && !col.isPrimaryKey && isFk) dispType += L" UQ";
+                DrawSmallText(pRT, pCodeFmt, dispType,
                               D2D1::RectF(typeLeft, cy, typeRight, cy + 19.0f),
                               txtSec, DWRITE_TEXT_ALIGNMENT_TRAILING, dwf, true);
                 cy += 20.0f;
@@ -1057,6 +1180,107 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
         }
 
         pRT->SetTransform(prevTransform);
+    }
+
+    // 2b. Floating Relationship Cardinality Tooltip (when hovering a routed edge)
+    if (m_hoveredEdgeIdx >= 0 && static_cast<size_t>(m_hoveredEdgeIdx) < m_routedEdges.size() &&
+        m_hoveredEdgeIdx < static_cast<int>(m_interp.relations.size())) {
+        const auto& edge = m_routedEdges[static_cast<size_t>(m_hoveredEdgeIdx)];
+        const auto& rel = m_interp.relations[static_cast<size_t>(m_hoveredEdgeIdx)];
+        if (edge.parentTableIdx < m_tables.size() && edge.childTableIdx < m_tables.size()) {
+            const std::wstring& pName = m_tables[edge.parentTableIdx].name;
+            const std::wstring& cName = m_tables[edge.childTableIdx].name;
+            const std::wstring pCard = edge.childOptional ? L"0..1" : L"1";
+            const std::wstring cCard = edge.isOneToOne ? L"0..1" : (edge.childOptional ? L"0..*" : L"1..*");
+            const std::wstring line1 = pName + L" (" + pCard + L")  \u2192  (" + cCard + L") " + cName;
+            const std::wstring line2 = cName + L"." + rel.fkColumn + L" \u2192 " + pName + L"." + rel.refColumn +
+                                       (edge.cardinalityReason.empty() ? L"" : (L"  \u2022  " + edge.cardinalityReason));
+
+            const float tw = (std::min)(m_rcCanvasViewport.right - m_rcCanvasViewport.left - 24.0f,
+                                        (std::max)(MeasureErdTextWidth(dwf, pUiFmt, line1), MeasureErdTextWidth(dwf, pUiFmt, line2)) + config.ScaleF(24.0f));
+            const float th = config.ScaleF(46.0f);
+            float tx = static_cast<float>(m_lastMousePt.x) + config.ScaleF(14.0f);
+            float ty = static_cast<float>(m_lastMousePt.y) + config.ScaleF(16.0f);
+            if (tx + tw > m_rcCanvasViewport.right - 10.0f) tx = m_rcCanvasViewport.right - tw - 10.0f;
+            if (ty + th > m_rcCanvasViewport.bottom - 10.0f) ty = static_cast<float>(m_lastMousePt.y) - th - 10.0f;
+            if (tx < m_rcCanvasViewport.left + 10.0f) tx = m_rcCanvasViewport.left + 10.0f;
+            if (ty < m_rcCanvasViewport.top + 10.0f) ty = m_rcCanvasViewport.top + 10.0f;
+
+            D2D1_RECT_F rcTip = D2D1::RectF(tx, ty, tx + tw, ty + th);
+            D2D1_ROUNDED_RECT rrcTip = D2D1::RoundedRect(rcTip, config.ScaleF(6.0f), config.ScaleF(6.0f));
+            if (brCardHdr) pRT->FillRoundedRectangle(rrcTip, brCardHdr.Get());
+            if (brAccent)  pRT->DrawRoundedRectangle(rrcTip, brAccent.Get(), 1.2f);
+            DrawSmallText(pRT, pUiFmt, line1, D2D1::RectF(tx + 10.0f, ty + 4.0f, tx + tw - 10.0f, ty + 22.0f),
+                          txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            DrawSmallText(pRT, pUiFmt, line2, D2D1::RectF(tx + 10.0f, ty + 22.0f, tx + tw - 10.0f, ty + 42.0f),
+                          brFk.Get(), DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+        }
+    }
+
+    // 2c. Optional Compact Cardinality Notation Legend Overlay (bottom-right of canvas)
+    if (m_showLegend && (m_rcCanvasViewport.right - m_rcCanvasViewport.left) > config.ScaleF(280.0f) &&
+        (m_rcCanvasViewport.bottom - m_rcCanvasViewport.top) > config.ScaleF(190.0f)) {
+        const float lw = config.ScaleF(292.0f);
+        const float lh = config.ScaleF(138.0f);
+        const float lx = m_rcCanvasViewport.right - lw - config.ScaleF(14.0f);
+        const float ly = m_rcCanvasViewport.bottom - lh - config.ScaleF(14.0f);
+        D2D1_RECT_F rcLeg = D2D1::RectF(lx, ly, lx + lw, ly + lh);
+        D2D1_ROUNDED_RECT rrcLeg = D2D1::RoundedRect(rcLeg, config.ScaleF(7.0f), config.ScaleF(7.0f));
+        if (brCardHdr) pRT->FillRoundedRectangle(rrcLeg, brCardHdr.Get());
+        if (brBorder)  pRT->DrawRoundedRectangle(rrcLeg, brBorder.Get(), 1.1f);
+
+        const wchar_t* legTitle =
+            (m_notation == ErdNotation::Uml) ? L"UML Multiplicity Guide"
+          : (m_notation == ErdNotation::Chen) ? L"Peter Chen Notation Guide"
+          : (m_notation == ErdNotation::Barker) ? L"Oracle Barker Notation Guide"
+          : L"Crow's Foot Cardinality Guide";
+        DrawSmallText(pRT, pTitleFmt, legTitle,
+                      D2D1::RectF(lx + 12.0f, ly + 6.0f, lx + lw - 12.0f, ly + 25.0f),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+        pRT->DrawLine(D2D1::Point2F(lx + 10.0f, ly + 28.0f), D2D1::Point2F(lx + lw - 10.0f, ly + 28.0f), brBorder.Get(), 0.9f);
+
+        std::vector<std::pair<std::wstring, std::wstring>> rows;
+        if (m_notation == ErdNotation::Uml) {
+            rows = {
+                { L"1 \u25c6\u2500 0..1", L"1:1 (PK+FK or UNIQUE FK, NOT NULL)" },
+                { L"1 \u25c6\u2500 1..*", L"1:N Mandatory (NOT NULL FK)" },
+                { L"0..1 \u25c7\u2500 0..*", L"1:N Optional (Nullable FK)" },
+                { L"+ / # / -", L"PK / Foreign Key / Attribute" },
+                { L"Dashed line", L"Inferred *_id relationship" }
+            };
+        } else if (m_notation == ErdNotation::Chen) {
+            rows = {
+                { L"1 \u2500\u25c7\u2500 1", L"1:1 (PK+FK or UNIQUE FK)" },
+                { L"1 \u2500\u25c7\u2500 N", L"1:N Relationship" },
+                { L"Double box", L"Weak entity (FK inside PK)" },
+                { L"PK / FK / UQ", L"Primary / Foreign / Unique Key" },
+                { L"Dashed line", L"Inferred *_id relationship" }
+            };
+        } else if (m_notation == ErdNotation::Barker) {
+            rows = {
+                { L"Solid half", L"Mandatory side (NOT NULL)" },
+                { L"Dashed half", L"Optional side (Nullable FK)" },
+                { L"Crow's foot <", L"Many end (omit for 1:1)" },
+                { L"# / * / o", L"Primary Key / NOT NULL / Nullable" },
+                { L"Dashed full", L"Inferred *_id relationship" }
+            };
+        } else {
+            rows = {
+                { L"|| \u2500\u2500 O|", L"1:1 (PK+FK or UNIQUE FK)" },
+                { L"|| \u2500\u2500 |<", L"1:N Mandatory (NOT NULL FK)" },
+                { L"O| \u2500\u2500 O<", L"1:N Optional (Nullable FK)" },
+                { L"PK / FK / UQ", L"Primary / Foreign / Unique Key" },
+                { L"Dashed line", L"Inferred *_id relationship" }
+            };
+        }
+        float rowY = ly + 33.0f;
+        for (const auto& [sym, desc] : rows) {
+            DrawSmallText(pRT, pCodeFmt, sym, D2D1::RectF(lx + 12.0f, rowY, lx + 106.0f, rowY + 18.0f),
+                          brFk.Get(), DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            DrawSmallText(pRT, pUiFmt, desc, D2D1::RectF(lx + 110.0f, rowY, lx + lw - 10.0f, rowY + 18.0f),
+                          txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            rowY += 19.5f;
+        }
     }
     pRT->PopAxisAlignedClip();
 
@@ -1242,7 +1466,7 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
         const bool needChenSpace = (next == ErdNotation::Chen || m_notation == ErdNotation::Chen);
         m_notation = next;
         if (!m_userMovedNodes && needChenSpace) {
-            AutoArrangeNodes();
+            AutoArrangeNodes(true);
         } else {
             RecalculateNodeHeights();
         }
@@ -1258,10 +1482,11 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
     }
     if (PtInRectF(clientPt, m_rcBtnAutoLayout)) {
         m_userMovedNodes = false;
-        AutoArrangeNodes();
-        m_panX = 40.0f;
-        m_panY = 40.0f;
-        m_zoom = 1.0f;
+        AutoArrangeNodes(true);
+        m_targetPanX = 40.0f;
+        m_targetPanY = 40.0f;
+        m_targetZoom = 1.0f;
+        m_isAnimatingZoomPan = true;
         return true;
     }
     if (PtInRectF(clientPt, m_rcBtnInferFks)) {
@@ -1276,12 +1501,17 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
         SetToast(m_showManyToManyBadges ? L"M:N junction badges enabled" : L"M:N junction badges hidden");
         return true;
     }
+    if (PtInRectF(clientPt, m_rcBtnLegend)) {
+        m_showLegend = !m_showLegend;
+        return true;
+    }
 
     if (PtInRectF(clientPt, m_rcBtnZoomFit)) {
-        if (!m_nodes.empty()) {
-            float minX = m_nodes[0].x, minY = m_nodes[0].y;
-            float maxX = m_nodes[0].x + m_nodes[0].width, maxY = m_nodes[0].y + m_nodes[0].height;
-            for (const auto& n : m_nodes) {
+        const auto& fitNodes = (m_isAnimatingNodes && m_targetNodes.size() == m_nodes.size()) ? m_targetNodes : m_nodes;
+        if (!fitNodes.empty()) {
+            float minX = fitNodes[0].x, minY = fitNodes[0].y;
+            float maxX = fitNodes[0].x + fitNodes[0].width, maxY = fitNodes[0].y + fitNodes[0].height;
+            for (const auto& n : fitNodes) {
                 minX = (std::min)(minX, n.x); minY = (std::min)(minY, n.y);
                 maxX = (std::max)(maxX, n.x + n.width); maxY = (std::max)(maxY, n.y + n.height);
             }
@@ -1289,9 +1519,10 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
             float vh = (std::max)(100.0f, m_rcCanvasViewport.bottom - m_rcCanvasViewport.top - 60.0f);
             float bw = (std::max)(1.0f, maxX - minX);
             float bh = (std::max)(1.0f, maxY - minY);
-            m_zoom = std::clamp((std::min)(vw / bw, vh / bh), 0.25f, 1.5f);
-            m_panX = 30.0f - minX * m_zoom;
-            m_panY = 30.0f - minY * m_zoom;
+            m_targetZoom = std::clamp((std::min)(vw / bw, vh / bh), 0.25f, 1.5f);
+            m_targetPanX = 30.0f - minX * m_targetZoom;
+            m_targetPanY = 30.0f - minY * m_targetZoom;
+            m_isAnimatingZoomPan = true;
         }
         return true;
     }
@@ -1389,17 +1620,27 @@ bool ErdView::HandleLButtonUp(POINT /*clientPt*/) {
 }
 
 bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) {
+    m_lastMousePt = clientPt;
     if (m_draggingNodeIdx >= 0 && static_cast<size_t>(m_draggingNodeIdx) < m_nodes.size()) {
         D2D1_POINT_2F wp = ScreenToWorld(clientPt);
         m_nodes[static_cast<size_t>(m_draggingNodeIdx)].x = wp.x - m_nodeDragOffsetX;
         m_nodes[static_cast<size_t>(m_draggingNodeIdx)].y = wp.y - m_nodeDragOffsetY;
+        if (static_cast<size_t>(m_draggingNodeIdx) < m_targetNodes.size()) {
+            m_targetNodes[static_cast<size_t>(m_draggingNodeIdx)] = m_nodes[static_cast<size_t>(m_draggingNodeIdx)];
+        }
+        m_isAnimatingNodes = false;
         m_userMovedNodes = true;
         m_routesDirty = true;
         return true;
     }
     if (m_isPanningCanvas) {
-        m_panX += static_cast<float>(clientPt.x - m_lastDragPt.x);
-        m_panY += static_cast<float>(clientPt.y - m_lastDragPt.y);
+        const float dx = static_cast<float>(clientPt.x - m_lastDragPt.x);
+        const float dy = static_cast<float>(clientPt.y - m_lastDragPt.y);
+        m_panX += dx;
+        m_panY += dy;
+        m_targetPanX = m_panX;
+        m_targetPanY = m_panY;
+        m_isAnimatingZoomPan = false;
         m_lastDragPt = clientPt;
         return true;
     }
@@ -1422,6 +1663,7 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
     else if (PtInRectF(clientPt, m_rcBtnEmptyRefresh)) h = 15;
     else if (PtInRectF(clientPt, m_rcBtnInferFks)) h = 16;
     else if (PtInRectF(clientPt, m_rcBtnShowM2N)) h = 17;
+    else if (PtInRectF(clientPt, m_rcBtnLegend)) h = 18;
 
     int hp = -1;
     for (size_t i = 0; i < m_profileHits.size(); ++i) {
@@ -1437,6 +1679,7 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
     }
     bool hSearch = PtInRectF(clientPt, m_rcSearchBox);
     int hNode = -1;
+    int hEdge = -1;
     if (h < 0 && hp < 0 && hdb < 0 && hddb < 0 && !hSearch && PtInRectF(clientPt, m_rcCanvasViewport)) {
         D2D1_POINT_2F wp = ScreenToWorld(clientPt);
         for (int i = static_cast<int>(m_nodes.size()) - 1; i >= 0; --i) {
@@ -1446,17 +1689,36 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
                 break;
             }
         }
+        // Hit-test routed edges in world space when cursor is over open canvas corridor
+        if (hNode < 0 && !m_routedEdges.empty()) {
+            const float maxDist = 8.0f / (std::max)(0.25f, m_zoom);
+            float bestDistSq = maxDist * maxDist;
+            for (size_t ei = 0; ei < m_routedEdges.size(); ++ei) {
+                const auto& edge = m_routedEdges[ei];
+                for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
+                    const float d2 = DistPointToSegmentSq(wp.x, wp.y,
+                                                          edge.points[s].x, edge.points[s].y,
+                                                          edge.points[s + 1].x, edge.points[s + 1].y);
+                    if (d2 < bestDistSq) {
+                        bestDistSq = d2;
+                        hEdge = static_cast<int>(ei);
+                    }
+                }
+            }
+        }
     }
 
     const bool changed = (h != m_hoveredBtnId || hp != m_hoveredProfileIdx ||
                           hdb != m_hoveredDbIdx || hddb != m_hoveredDiffDbIdx ||
-                          hSearch != m_hoveredSearchBox || hNode != m_hoveredNodeIdx);
+                          hSearch != m_hoveredSearchBox || hNode != m_hoveredNodeIdx ||
+                          hEdge != m_hoveredEdgeIdx || hEdge >= 0);
     m_hoveredBtnId = h;
     m_hoveredProfileIdx = hp;
     m_hoveredDbIdx = hdb;
     m_hoveredDiffDbIdx = hddb;
     m_hoveredSearchBox = hSearch;
     m_hoveredNodeIdx = hNode;
+    m_hoveredEdgeIdx = hEdge;
     return changed;
 }
 
@@ -1470,7 +1732,7 @@ LPCWSTR ErdView::GetCursorForPoint(POINT clientPt) const noexcept {
         PtInRectF(clientPt, m_rcBtnDetect) || PtInRectF(clientPt, m_rcBtnEmptyRefresh) ||
         PtInRectF(clientPt, m_rcBtnToggleDiff) || PtInRectF(clientPt, m_rcBtnLoadSql) ||
         PtInRectF(clientPt, m_rcBtnExportSvg) || PtInRectF(clientPt, m_rcBtnInferFks) ||
-        PtInRectF(clientPt, m_rcBtnShowM2N) ||
+        PtInRectF(clientPt, m_rcBtnShowM2N) || PtInRectF(clientPt, m_rcBtnLegend) ||
         PtInRectF(clientPt, m_rcBtnOpenMigConsole) || PtInRectF(clientPt, m_rcBtnCopyMigration)) {
         return IDC_HAND;
     }
@@ -1498,15 +1760,23 @@ LPCWSTR ErdView::GetCursorForPoint(POINT clientPt) const noexcept {
 bool ErdView::HandleMouseWheel(short delta, bool /*isCtrlDown*/, POINT clientPt, const app::AppConfig& config) {
     if (m_showDiffPanel && PtInRectF(clientPt, m_rcDiffViewport)) {
         float step = config.ScaleF(36.0f) * (delta > 0 ? -1.0f : 1.0f);
-        m_diffScrollY = std::clamp(m_diffScrollY + step, 0.0f, m_diffMaxScrollY);
+        float base = m_isAnimatingDiffScroll ? m_targetDiffScrollY : m_diffScrollY;
+        m_targetDiffScrollY = std::clamp(base + step, 0.0f, m_diffMaxScrollY);
+        m_isAnimatingDiffScroll = true;
         return true;
     }
     if (PtInRectF(clientPt, m_rcCanvasViewport)) {
-        D2D1_POINT_2F before = ScreenToWorld(clientPt);
+        // Compute world anchor relative to current target pan/zoom so rapid wheel ticks stay centered under cursor
+        const float curZ = m_isAnimatingZoomPan ? m_targetZoom : m_zoom;
+        const float curPX = m_isAnimatingZoomPan ? m_targetPanX : m_panX;
+        const float curPY = m_isAnimatingZoomPan ? m_targetPanY : m_panY;
+        const float wx = (static_cast<float>(clientPt.x) - m_rcCanvasViewport.left - curPX) / curZ;
+        const float wy = (static_cast<float>(clientPt.y) - m_rcCanvasViewport.top  - curPY) / curZ;
         float factor = (delta > 0) ? 1.12f : 0.89f;
-        m_zoom = std::clamp(m_zoom * factor, 0.25f, 2.5f);
-        m_panX = static_cast<float>(clientPt.x) - m_rcCanvasViewport.left - before.x * m_zoom;
-        m_panY = static_cast<float>(clientPt.y) - m_rcCanvasViewport.top  - before.y * m_zoom;
+        m_targetZoom = std::clamp(curZ * factor, 0.25f, 2.5f);
+        m_targetPanX = static_cast<float>(clientPt.x) - m_rcCanvasViewport.left - wx * m_targetZoom;
+        m_targetPanY = static_cast<float>(clientPt.y) - m_rcCanvasViewport.top  - wy * m_targetZoom;
+        m_isAnimatingZoomPan = true;
         return true;
     }
     return false;

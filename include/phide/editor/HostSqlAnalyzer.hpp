@@ -80,12 +80,15 @@ public:
     /**
      * @brief Validates all SQL string literals in `lines` against `schemaTables` and reports
      *        unknown table or column names with exact 0-based line/column spans.
+     *        Supports multi-schema tables (preferring `preferredSchema` or file-level DSN hints)
+     *        so switching the active ERD database never produces false-positive errors.
      *        Returns empty if `schemaTables` is empty.
      */
     [[nodiscard]] static std::vector<HostSqlDiagnostic> ValidateDocumentSql(
         const std::wstring& filePath,
         const std::vector<std::wstring>& lines,
-        const std::vector<phide::db::SqlTableInfo>& schemaTables);
+        const std::vector<phide::db::SqlTableInfo>& schemaTables,
+        const std::wstring& preferredSchema = L"");
 };
 
 } // namespace phide::editor

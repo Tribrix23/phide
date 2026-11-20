@@ -101,9 +101,15 @@ public:
      */
     [[nodiscard]] LPCWSTR GetCursorForPoint(POINT clientPt) const noexcept;
 
-    /** @brief Read-only accessors for current schema interpretation and routed orthogonal connectors. */
+    /** @brief Read-only accessors for current schema interpretation, node layouts, and routed orthogonal connectors. */
     [[nodiscard]] const phide::db::ErdSchemaInterpretation& GetInterpretation() const noexcept { return m_interp; }
+    [[nodiscard]] const std::vector<phide::db::ErdNodeLayout>& GetNodeLayouts() const noexcept { return m_nodes; }
     [[nodiscard]] const std::vector<phide::db::ErdRoutedEdge>& GetRoutedEdges() const noexcept { return m_routedEdges; }
+
+    /** @brief Advances smooth 60 FPS zoom, pan, diff-scroll, and auto-layout node interpolation. Returns true while active. */
+    bool UpdateAnimation() noexcept;
+    /** @brief True while any ERD zoom, pan, layout transition, or scroll animation is in flight. */
+    [[nodiscard]] bool IsAnimating() const noexcept;
 
     /** @brief Enables or disables rendering of M:N junction badges and <<junction>> stereotypes (disabled by default). */
     void SetShowManyToManyBadges(bool show) noexcept {
@@ -112,10 +118,11 @@ public:
     }
     [[nodiscard]] bool GetShowManyToManyBadges() const noexcept { return m_showManyToManyBadges; }
     [[nodiscard]] const D2D1_RECT_F& GetManyToManyButtonBounds() const noexcept { return m_rcBtnShowM2N; }
+    [[nodiscard]] const D2D1_RECT_F& GetLegendButtonBounds() const noexcept { return m_rcBtnLegend; }
 
 private:
     void EnsureRoutesUpToDate();
-    void AutoArrangeNodes();
+    void AutoArrangeNodes(bool animate = false);
     void RecalculateNodeHeights();
     void RecomputeDiff();
     D2D1_POINT_2F ScreenToWorld(POINT pt) const noexcept;
@@ -125,6 +132,7 @@ private:
     std::vector<phide::db::SqlTableInfo> m_tables;
     std::vector<phide::db::SqlTableInfo> m_baselineTables;
     std::vector<phide::db::ErdNodeLayout> m_nodes;
+    std::vector<phide::db::ErdNodeLayout> m_targetNodes; ///< Target coordinates for smooth Auto Layout gliding
     phide::db::SqlDialect m_dialect = phide::db::SqlDialect::MySQL;
     std::wstring m_schemaLabel = L"Active Schema";
     std::wstring m_baselineLabel = L"None (Load .sql)";
@@ -135,6 +143,7 @@ private:
     bool m_routesDirty = true;
     bool m_inferImplicitFks = false;
     bool m_showManyToManyBadges = false;
+    bool m_showLegend = false;
     bool m_userMovedNodes = false;
 
     phide::db::ErdNotation m_notation = phide::db::ErdNotation::CrowsFoot;
@@ -143,11 +152,18 @@ private:
     bool m_searchFocused = false;
     std::wstring m_searchFilter;
     float m_diffScrollY = 0.0f;
+    float m_targetDiffScrollY = 0.0f;
     float m_diffMaxScrollY = 0.0f;
 
     float m_panX = 40.0f;
     float m_panY = 40.0f;
     float m_zoom = 1.0f;
+    float m_targetPanX = 40.0f;
+    float m_targetPanY = 40.0f;
+    float m_targetZoom = 1.0f;
+    bool m_isAnimatingZoomPan = false;
+    bool m_isAnimatingNodes = false;
+    bool m_isAnimatingDiffScroll = false;
     D2D1_RECT_F m_rcCanvasViewport{};
     D2D1_RECT_F m_rcDiffViewport{};
 
@@ -155,6 +171,7 @@ private:
     int m_draggingNodeIdx = -1;
     bool m_isPanningCanvas = false;
     POINT m_lastDragPt{};
+    POINT m_lastMousePt{};
     float m_nodeDragOffsetX = 0.0f;
     float m_nodeDragOffsetY = 0.0f;
 
@@ -178,6 +195,7 @@ private:
     int m_hoveredDbIdx = -1;
     int m_hoveredDiffDbIdx = -1;
     int m_hoveredNodeIdx = -1;
+    int m_hoveredEdgeIdx = -1;
     bool m_hoveredSearchBox = false;
     std::wstring m_toastMsg;
     ULONGLONG m_toastExpire = 0;
@@ -198,6 +216,7 @@ private:
     D2D1_RECT_F m_rcBtnExportSvg{};
     D2D1_RECT_F m_rcBtnInferFks{};
     D2D1_RECT_F m_rcBtnShowM2N{};
+    D2D1_RECT_F m_rcBtnLegend{};
     D2D1_RECT_F m_rcBtnOpenMigConsole{};
     D2D1_RECT_F m_rcBtnCopyMigration{};
     D2D1_RECT_F m_rcSearchBox{};

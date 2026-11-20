@@ -74,6 +74,7 @@ struct ErdInterpretedRelation {
     std::wstring fkColumn;
     std::wstring refColumn;
     std::wstring relationLabel = L"has";
+    std::wstring cardinalityReason; ///< Human-readable explanation of inferred cardinality (e.g. "UNIQUE FK (1:1)")
     bool childOptional = true;
     bool isOneToOne = false;
     bool isIdentifying = false;
@@ -128,6 +129,7 @@ struct ErdRoutedEdge {
     bool isSelfRef = false;
     bool isInferred = false;
     std::wstring relationLabel = L"has";
+    std::wstring cardinalityReason; ///< Explanation surfaced in ERD edge hover tooltips
     std::vector<ErdPointF> points;
     std::vector<ErdLineJump> jumps;
     ErdPointF midPoint{};

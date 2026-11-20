@@ -9,6 +9,10 @@
 
 namespace phide::db {
 
+/**
+ * @enum SqlDialect
+ * @brief Supported SQL database engines for schema inspection and query execution.
+ */
 enum class SqlDialect {
     SQLite = 0,
     MySQL = 1,
@@ -16,6 +20,10 @@ enum class SqlDialect {
     SQLServer = 3
 };
 
+/**
+ * @struct SqlConnectionProfile
+ * @brief Connection settings and discovered database list for a local/remote SQL target.
+ */
 struct SqlConnectionProfile {
     std::wstring name;
     SqlDialect dialect = SqlDialect::SQLite;
@@ -29,19 +37,32 @@ struct SqlConnectionProfile {
     bool isConnected = false;
 };
 
+/**
+ * @struct SqlColumnInfo
+ * @brief Column metadata extracted from live DB catalogs or CREATE TABLE DDL.
+ */
 struct SqlColumnInfo {
     std::wstring name;
     std::wstring type;
     bool notNull = false;
     bool isPrimaryKey = false;
+    bool isUnique = false; ///< True when covered by a single-column UNIQUE constraint/index (used for 1:1 ERD detection)
 };
 
+/**
+ * @struct SqlForeignKeyInfo
+ * @brief Explicit foreign key reference from `column` to `refTable(refColumn)`.
+ */
 struct SqlForeignKeyInfo {
     std::wstring column;
     std::wstring refTable;
     std::wstring refColumn;
 };
 
+/**
+ * @struct SqlTableInfo
+ * @brief Table structure including schema/database qualifier, row estimate, columns, and foreign keys.
+ */
 struct SqlTableInfo {
     std::wstring schemaName;
     std::wstring name;
@@ -100,9 +121,15 @@ public:
     static std::vector<std::wstring> ListDatabases(const SqlConnectionProfile& profile, std::wstring& outError);
 
     /**
-     * @brief Lists tables, columns, and row counts for the selected profile.
+     * @brief Lists tables, columns, and row counts for the selected profile/database.
      */
     static std::vector<SqlTableInfo> InspectSchema(const SqlConnectionProfile& profile, std::wstring& outError);
+
+    /**
+     * @brief Lists tables and columns across all non-system databases/schemas on the connected server
+     *        so host-language SQL validation does not emit false positives when ERD views another DB.
+     */
+    static std::vector<SqlTableInfo> InspectAllServerSchemas(const SqlConnectionProfile& profile, std::wstring& outError);
 
     /**
      * @brief Executes one or more semicolon-separated SQL statements natively.

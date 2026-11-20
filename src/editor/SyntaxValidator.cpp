@@ -2162,12 +2162,57 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                     if (sp != std::wstring::npos) closeName = closeName.substr(0, sp);
                     for (auto& ch : closeName) ch = static_cast<wchar_t>(towlower(ch));
 
+                    auto toLowerTag = [](std::wstring s) {
+                        for (auto& ch : s) ch = static_cast<wchar_t>(towlower(ch));
+                        return s;
+                    };
+                    // HTML5 §13.1.2.4: elements whose end tags may be omitted when their parent closes
+                    auto isOptionalEndClosedByParent = [](const std::wstring& openTop, const std::wstring& parentClose) -> bool {
+                        if (openTop == L"th" || openTop == L"td") {
+                            return parentClose == L"tr" || parentClose == L"thead" ||
+                                   parentClose == L"tbody" || parentClose == L"tfoot" || parentClose == L"table";
+                        }
+                        if (openTop == L"tr") {
+                            return parentClose == L"thead" || parentClose == L"tbody" ||
+                                   parentClose == L"tfoot" || parentClose == L"table";
+                        }
+                        if (openTop == L"thead" || openTop == L"tbody" || openTop == L"tfoot" || openTop == L"colgroup") {
+                            return parentClose == L"table";
+                        }
+                        if (openTop == L"li") return parentClose == L"ul" || parentClose == L"ol" || parentClose == L"menu";
+                        if (openTop == L"dt" || openTop == L"dd") return parentClose == L"dl";
+                        if (openTop == L"option") return parentClose == L"select" || parentClose == L"datalist" || parentClose == L"optgroup";
+                        if (openTop == L"optgroup") return parentClose == L"select";
+                        if (openTop == L"rt" || openTop == L"rp") return parentClose == L"ruby" || parentClose == L"rtc";
+                        // Intentionally do NOT auto-close <p> on arbitrary parent </div|section|...> so typos like <div><p>oops</div> are flagged.
+                        return false;
+                    };
+
+                    // Only unwind optional end tags if `closeName` actually matches an ancestor on `tagStack`
+                    bool hasMatchingAncestor = false;
+                    for (int i = static_cast<int>(tagStack.size()) - 1; i >= 0; --i) {
+                        if (toLowerTag(tagStack[static_cast<size_t>(i)].name) == closeName) {
+                            hasMatchingAncestor = true;
+                            break;
+                        }
+                    }
+                    if (hasMatchingAncestor) {
+                        while (!tagStack.empty()) {
+                            std::wstring topLow = toLowerTag(tagStack.back().name);
+                            if (topLow == closeName) break;
+                            if (isOptionalEndClosedByParent(topLow, closeName)) {
+                                tagStack.pop_back();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
                     if (tagStack.empty()) {
                         diagnostics.push_back({ tagStartLine, tagStartCol, closeName.length() + 3,
                             L"Syntax Error: Unexpected closing tag </" + closeName + L">", 1 });
                     } else {
-                        std::wstring expected = tagStack.back().name;
-                        for (auto& ch : expected) ch = static_cast<wchar_t>(towlower(ch));
+                        std::wstring expected = toLowerTag(tagStack.back().name);
                         if (expected == closeName) {
                             tagStack.pop_back();
                         } else {
@@ -2176,9 +2221,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
 
                             int matchIdx = -1;
                             for (int i = static_cast<int>(tagStack.size()) - 1; i >= 0; --i) {
-                                std::wstring curName = tagStack[i].name;
-                                for (auto& ch : curName) ch = static_cast<wchar_t>(towlower(ch));
-                                if (curName == closeName) {
+                                if (toLowerTag(tagStack[static_cast<size_t>(i)].name) == closeName) {
                                     matchIdx = i;
                                     break;
                                 }
@@ -2197,6 +2240,48 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateHtml(
                     if (!tagName.empty() && !isVoidTag(tagName)) {
                         std::wstring lowerTag = tagName;
                         for (auto& ch : lowerTag) ch = static_cast<wchar_t>(towlower(ch));
+
+                        // HTML5 §13.1.2.4: implicitly close open elements whose end tag is omitted before `lowerTag`
+                        auto isOptionalEndClosedBySibling = [](const std::wstring& openTop, const std::wstring& nextOpen) -> bool {
+                            if (openTop == L"th" || openTop == L"td") {
+                                return nextOpen == L"th" || nextOpen == L"td" || nextOpen == L"tr" ||
+                                       nextOpen == L"thead" || nextOpen == L"tbody" || nextOpen == L"tfoot" ||
+                                       nextOpen == L"caption" || nextOpen == L"colgroup";
+                            }
+                            if (openTop == L"tr") {
+                                return nextOpen == L"tr" || nextOpen == L"thead" || nextOpen == L"tbody" ||
+                                       nextOpen == L"tfoot" || nextOpen == L"caption" || nextOpen == L"colgroup";
+                            }
+                            if (openTop == L"thead") return nextOpen == L"tbody" || nextOpen == L"tfoot";
+                            if (openTop == L"tbody") return nextOpen == L"tbody" || nextOpen == L"tfoot";
+                            if (openTop == L"colgroup") return nextOpen != L"col" && nextOpen != L"template";
+                            if (openTop == L"li") return nextOpen == L"li";
+                            if (openTop == L"dt" || openTop == L"dd") return nextOpen == L"dt" || nextOpen == L"dd";
+                            if (openTop == L"option") return nextOpen == L"option" || nextOpen == L"optgroup" || nextOpen == L"hr";
+                            if (openTop == L"optgroup") return nextOpen == L"optgroup";
+                            if (openTop == L"rt" || openTop == L"rp") return nextOpen == L"rt" || nextOpen == L"rp";
+                            if (openTop == L"p") {
+                                static const std::unordered_set<std::wstring> pClosers = {
+                                    L"address", L"article", L"aside", L"blockquote", L"details", L"div",
+                                    L"dl", L"fieldset", L"figcaption", L"figure", L"footer", L"form",
+                                    L"h1", L"h2", L"h3", L"h4", L"h5", L"h6", L"header", L"hgroup",
+                                    L"hr", L"main", L"menu", L"nav", L"ol", L"p", L"pre", L"search",
+                                    L"section", L"table", L"ul"
+                                };
+                                return pClosers.count(nextOpen) > 0;
+                            }
+                            return false;
+                        };
+                        while (!tagStack.empty()) {
+                            std::wstring topLow = tagStack.back().name;
+                            for (auto& ch : topLow) ch = static_cast<wchar_t>(towlower(ch));
+                            if (isOptionalEndClosedBySibling(topLow, lowerTag)) {
+                                tagStack.pop_back();
+                            } else {
+                                break;
+                            }
+                        }
+
                         if (lowerTag == L"script" || lowerTag == L"style" ||
                             lowerTag == L"textarea" || lowerTag == L"title") {
                             // Raw text element: scan until </script>, </style>, </textarea>, or </title>

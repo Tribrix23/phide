@@ -13,6 +13,7 @@
 #include "phide/ui/ColorPickerModal.hpp"
 #include "phide/editor/TailwindHelper.hpp"
 #include "phide/editor/SyntaxValidator.hpp"
+#include "phide/db/ErdAndMigrationEngine.hpp"
 #include <algorithm>
 #include <cmath>
 #include <wincodec.h>
@@ -131,6 +132,18 @@ EditorCanvas::BetterCommentInfo EditorCanvas::ClassifyBetterComment(
             while (p < cLen && comment[p] == L'*') ++p;
         }
     } else if (!comment.empty() && (comment[0] == L'#' || comment[0] == L';')) {
+        // Ignore Unix/PHP/Python/Node shebang directives (`#!/usr/bin/env php`, `#! /bin/sh`)
+        // and PHP 8 attributes (`#[Route(...)]`) so `#!` never triggers an Alert/Error badge.
+        if (comment[0] == L'#' && cLen >= 2 && comment[1] == L'!') {
+            size_t afterBang = 2;
+            while (afterBang < cLen && (comment[afterBang] == L' ' || comment[afterBang] == L'\t')) ++afterBang;
+            if (afterBang < cLen && comment[afterBang] == L'/') {
+                return info;
+            }
+        }
+        if (comment[0] == L'#' && cLen >= 2 && comment[1] == L'[') {
+            return info;
+        }
         p = 1;
         startsWithDelim = true;
     }
@@ -318,31 +331,19 @@ void EditorCanvas::PruneDocCommentCache(const std::vector<uint64_t>& liveBufferI
     });
 }
 
-const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
-    const editor::Buffer& buffer, const std::wstring& ext) const {
-    const uint64_t bufId = buffer.GetInstanceId();
-    const uint64_t bufVer = buffer.GetVersion();
-    for (size_t i = 0; i < m_docCommentCache.size(); ++i) {
-        if (m_docCommentCache[i].bufferInstanceId == bufId &&
-            m_docCommentCache[i].bufferVersion == bufVer &&
-            m_docCommentCache[i].docExt == ext) {
-            return m_docCommentCache[i];
-        }
-    }
-
+// Scans every line of a Buffer for BetterComment / TODO annotations without touching UI caches,
+// making it safe to invoke from background workspace indexing threads.
+EditorCanvas::DocCommentSummary EditorCanvas::ComputeDocCommentSummary(
+    const editor::Buffer& buffer, const std::wstring& ext) {
     DocCommentSummary summary;
-    summary.bufferInstanceId = bufId;
-    summary.bufferVersion = bufVer;
+    summary.bufferInstanceId = buffer.GetInstanceId();
+    summary.bufferVersion = buffer.GetVersion();
     summary.docExt = ext;
 
-    // Avoid synchronous UI-thread stalls on huge files (>15,000 lines or memory-mapped blobs)
+    // Avoid synchronous stalls on huge files (>15,000 lines or memory-mapped blobs)
     const size_t rawLineCount = buffer.GetLineCount();
     if (buffer.IsMemoryMappedReadOnly() || rawLineCount > 15000) {
-        if (m_docCommentCache.size() >= 16) {
-            m_docCommentCache.erase(m_docCommentCache.begin());
-        }
-        m_docCommentCache.push_back(std::move(summary));
-        return m_docCommentCache.back();
+        return summary;
     }
 
     const size_t totalLines = rawLineCount;
@@ -433,7 +434,24 @@ const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
         activeBlockType = (nextState == 1 || nextState == 4) ? lineOpenedBlockType : BetterCommentType::Normal;
     }
 
-    if (m_docCommentCache.size() >= 16) {
+    return summary;
+}
+
+const EditorCanvas::DocCommentSummary& EditorCanvas::GetDocCommentSummary(
+    const editor::Buffer& buffer, const std::wstring& ext) const {
+    const uint64_t bufId = buffer.GetInstanceId();
+    const uint64_t bufVer = buffer.GetVersion();
+    for (size_t i = 0; i < m_docCommentCache.size(); ++i) {
+        if (m_docCommentCache[i].bufferInstanceId == bufId &&
+            m_docCommentCache[i].bufferVersion == bufVer &&
+            m_docCommentCache[i].docExt == ext) {
+            return m_docCommentCache[i];
+        }
+    }
+
+    DocCommentSummary summary = ComputeDocCommentSummary(buffer, ext);
+
+    if (m_docCommentCache.size() >= 64) {
         m_docCommentCache.erase(m_docCommentCache.begin());
     }
     m_docCommentCache.push_back(std::move(summary));
@@ -3714,14 +3732,20 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         doc.scrollLine = maxScroll;
     }
 
+    // Shared Y calculator keeping active-line highlight, bracket guides, code lines, carets, and gutter aligned during 60 FPS smooth scroll.
+    auto calcVisualLineY = [&](size_t visIdx) noexcept -> float {
+        const float rel = static_cast<float>(static_cast<ptrdiff_t>(visIdx) - static_cast<ptrdiff_t>(doc.scrollLine));
+        return topY + config.ScaleF(6.0f) + rel * lineH + doc.smoothScrollOffsetPx;
+    };
+
     // 2. Current Line Highlight - Rendered if focused or has search target line
     cursor = buffer.GetCursor();
     bool foundCursorVisual = false;
     size_t visualCursorIdx = findVisualIdxForBufferLine(cursor.line, foundCursorVisual);
 
-    if ((isFocused || doc.targetHighlightLine != static_cast<size_t>(-1)) && foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
-        float activeLineY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
-        if (activeLineY >= topY && activeLineY + lineH <= clientHeight) {
+    if ((isFocused || doc.targetHighlightLine != static_cast<size_t>(-1)) && foundCursorVisual) {
+        float activeLineY = calcVisualLineY(visualCursorIdx);
+        if (activeLineY + lineH > topY && activeLineY < clientHeight) {
             D2D1_RECT_F rcActiveLine = D2D1::RectF(canvasLeft + gutterW, activeLineY, codeRight, activeLineY + lineH);
             pRT->FillRectangle(rcActiveLine, theme.brushCurrentLineBg.Get());
         }
@@ -3912,13 +3936,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         bool openFound = false;
         size_t openVisIdx = findVisualIdxForBufferLine(pActivePair->openLine, openFound);
         if (openFound && getVisualLineAt(openVisIdx).bufferLine == pActivePair->openLine) {
-            activeOpenLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(openVisIdx) - static_cast<float>(doc.scrollLine)) * lineH;
+            activeOpenLineY = calcVisualLineY(openVisIdx);
             hasActiveOpenY = true;
         }
         bool closeFound = false;
         size_t closeVisIdx = findVisualIdxForBufferLine(pActivePair->closeLine, closeFound);
         if (closeFound && getVisualLineAt(closeVisIdx).bufferLine == pActivePair->closeLine) {
-            activeCloseLineY = topY + config.ScaleF(6.0f) + (static_cast<float>(closeVisIdx) - static_cast<float>(doc.scrollLine)) * lineH;
+            activeCloseLineY = calcVisualLineY(closeVisIdx);
             hasActiveCloseY = true;
         }
     }
@@ -4066,8 +4090,15 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             &htmlMatchBorderBrush);
     }
 
-    size_t startV = doc.scrollLine;
-    size_t endV = (std::min)(totalVisualLines, startV + visibleCount + 2);
+    const float smoothOffsetY = doc.smoothScrollOffsetPx;
+    const size_t extraAbove = (smoothOffsetY > 0.5f)
+        ? (static_cast<size_t>(std::ceil(smoothOffsetY / (std::max)(1.0f, lineH))) + 1)
+        : 0;
+    const size_t extraBelow = (smoothOffsetY < -0.5f)
+        ? (static_cast<size_t>(std::ceil((-smoothOffsetY) / (std::max)(1.0f, lineH))) + 1)
+        : 0;
+    size_t startV = (doc.scrollLine > extraAbove) ? (doc.scrollLine - extraAbove) : 0;
+    size_t endV = (std::min)(totalVisualLines, doc.scrollLine + visibleCount + 3 + extraBelow);
     if (!m_inMultiPaneRender) {
         m_activeCodeLensActions.clear();
     }
@@ -4238,7 +4269,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     for (size_t v = startV; v < endV; ++v) {
         const auto vl = getVisualLineAt(v);
-        float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
+        const float relLineIdx = static_cast<float>(static_cast<ptrdiff_t>(v) - static_cast<ptrdiff_t>(doc.scrollLine));
+        float lineY = topY + config.ScaleF(6.0f) + relLineIdx * lineH + doc.smoothScrollOffsetPx;
         if (lineY + lineH < topY || lineY > clientHeight) continue;
 
         // CodeLens Virtual Line (Image 1: Run | Debug above function, or Merge Conflict Resolver)
@@ -5427,7 +5459,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     }
 
     // 4. Blinking Caret (Image 5: High-contrast in both Dark and Light modes!) - Only in focused group
-    if (foundCursorVisual && visualCursorIdx >= doc.scrollLine) {
+    if (foundCursorVisual) {
         float caretX = codeLeft - scrollX + cursor.col * charW;
         if (cursor.line < buffer.GetLineCount()) {
             const auto& curLineStr = buffer.GetLine(cursor.line);
@@ -5453,7 +5485,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 caretX = codeLeft - scrollX + static_cast<float>(vc) * charW;
             }
         }
-        float caretY = topY + config.ScaleF(6.0f) + (visualCursorIdx - doc.scrollLine) * lineH;
+        float caretY = calcVisualLineY(visualCursorIdx);
         if (isFocused) {
             m_lastCaretX = caretX;
             m_lastCaretY = caretY;
@@ -5495,7 +5527,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 if (foundSec && getVisualLineAt(secVisualIdx).bufferLine != sec.cursor.line) {
                     foundSec = false;
                 }
-                if (foundSec && secVisualIdx >= doc.scrollLine) {
+                if (foundSec) {
                     float secCaretX = codeLeft - scrollX + static_cast<float>(sec.cursor.col) * charW;
                     if (sec.cursor.line < buffer.GetLineCount()) {
                         const auto& sLineStr = buffer.GetLine(sec.cursor.line);
@@ -5521,8 +5553,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                             secCaretX = endX + static_cast<float>(sec.cursor.col - sLineStr.length()) * charW;
                         }
                     }
-                    float secCaretY = topY + config.ScaleF(6.0f) + (secVisualIdx - doc.scrollLine) * lineH;
-                    if (secCaretY >= topY && secCaretY + lineH <= clientHeight) {
+                    float secCaretY = calcVisualLineY(secVisualIdx);
+                    if (secCaretY + lineH > topY && secCaretY < clientHeight) {
                         drawStyledCaret(secCaretX, secCaretY);
                     }
                 }
@@ -5816,7 +5848,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
         for (size_t v = startV; v < endV; ++v) {
             const auto vl = getVisualLineAt(v);
-            float lineY = topY + config.ScaleF(6.0f) + (v - doc.scrollLine) * lineH;
+            float lineY = calcVisualLineY(v);
             if (lineY + lineH < topY || lineY > clientHeight) continue;
 
             if (vl.isCodeLens) {
@@ -16276,6 +16308,96 @@ void EditorCanvas::UpdateMysqlProfilesPort(int newPort) {
     }
 }
 
+/**
+ * @brief Scans workspace `.sql` DDL files (skipping vendor/node_modules/.git) to extract
+ *        offline CREATE TABLE definitions so host SQL validation works even for un-migrated tables.
+ */
+static std::vector<phide::db::SqlTableInfo> CollectWorkspaceDdlTables(const std::wstring& root) {
+    std::vector<phide::db::SqlTableInfo> out;
+    if (root.empty()) return out;
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) return out;
+    int scanned = 0;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied, ec);
+         it != std::filesystem::recursive_directory_iterator() && !ec && scanned < 40;
+         it.increment(ec)) {
+        if (it->is_directory(ec)) {
+            std::wstring dn = it->path().filename().wstring();
+            for (auto& c : dn) c = static_cast<wchar_t>(towlower(c));
+            if (dn == L".git" || dn == L"node_modules" || dn == L"vendor" ||
+                dn == L".phide" || dn == L".venv" || dn == L"venv") {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!it->is_regular_file(ec)) continue;
+        std::wstring ext = it->path().extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        if (ext != L".sql" || it->file_size(ec) > 2 * 1024 * 1024) continue;
+        ++scanned;
+
+        std::ifstream ifs(it->path(), std::ios::binary);
+        if (!ifs.is_open()) continue;
+        std::string utf8((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        auto parsed = phide::db::ErdAndMigrationEngine::ParseSqlDdlSchema(
+            std::wstring(utf8.begin(), utf8.end())); // ASCII/UTF-8 safe fallback
+        // Prefer full MultiByteToWideChar conversion for non-ASCII identifiers
+        if (!utf8.empty()) {
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+            if (wlen > 0) {
+                std::wstring wideSql(static_cast<size_t>(wlen), L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wideSql.data(), wlen);
+                parsed = phide::db::ErdAndMigrationEngine::ParseSqlDdlSchema(wideSql);
+            }
+        }
+        for (auto& t : parsed) out.push_back(std::move(t));
+    }
+    return out;
+}
+
+/**
+ * @brief Collects tables across all connected profiles (all user DBs) plus workspace `.sql` DDL files
+ *        for false-positive-free host-language SQL validation.
+ */
+static std::vector<phide::db::SqlTableInfo> BuildCombinedSqlValidationTables(
+    const std::vector<phide::db::SqlConnectionProfile>& profiles,
+    const std::wstring& workspaceRoot) {
+    std::vector<phide::db::SqlTableInfo> all;
+    for (const auto& p : profiles) {
+        if (!p.isConnected) continue;
+        std::wstring err;
+        auto tbls = phide::db::SqlEngine::InspectAllServerSchemas(p, err);
+        for (auto& t : tbls) {
+            if (t.schemaName.empty() && !p.database.empty()) t.schemaName = p.database;
+            all.push_back(std::move(t));
+        }
+    }
+    auto ddlTables = CollectWorkspaceDdlTables(workspaceRoot);
+    for (auto& dt : ddlTables) {
+        all.push_back(std::move(dt));
+    }
+    return all;
+}
+
+std::vector<phide::db::SqlTableInfo> EditorCanvas::GetSqlValidationTables() const {
+    std::vector<phide::db::SqlTableInfo> combined;
+    combined.reserve(m_sqlTables.size() + m_allSqlValidationTables.size());
+    std::unordered_set<std::wstring> seen;
+    auto makeKey = [](const phide::db::SqlTableInfo& t) {
+        std::wstring k = t.schemaName + L"." + t.name;
+        for (auto& c : k) c = static_cast<wchar_t>(towlower(c));
+        return k;
+    };
+    for (const auto& t : m_sqlTables) {
+        if (seen.insert(makeKey(t)).second) combined.push_back(t);
+    }
+    for (const auto& t : m_allSqlValidationTables) {
+        if (seen.insert(makeKey(t)).second) combined.push_back(t);
+    }
+    return combined;
+}
+
 void EditorCanvas::RefreshActiveSqlSchema() {
     m_sqlTables.clear();
     m_sqlSchemaError.clear();
@@ -16297,8 +16419,9 @@ void EditorCanvas::RefreshActiveSqlSchema() {
         if (m_sqlSchemaError.empty()) {
             prof.isConnected = true;
         }
+        m_allSqlValidationTables = BuildCombinedSqlValidationTables(m_sqlProfiles, m_workspaceRoot);
         m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
-    SyncErdViewConnections();
+        SyncErdViewConnections();
     }
 }
 
@@ -16595,6 +16718,7 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
         }
 
         std::vector<phide::db::SqlTableInfo> tables;
+        std::vector<phide::db::SqlTableInfo> allValidationTables;
         std::vector<std::wstring> dbs;
         std::wstring schemaErr;
         if (bestIdx < discovered.size()) {
@@ -16606,6 +16730,7 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
         } else {
             schemaErr = L"No local SQLite files or active SQL servers detected.";
         }
+        allValidationTables = BuildCombinedSqlValidationTables(discovered, root);
 
         if (!inbox->alive.load()) return;
         {
@@ -16620,6 +16745,7 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
                 inbox->schemaReqGen = schGen;
                 inbox->schemaProfileIdx = bestIdx;
                 inbox->schemaTables = std::move(tables);
+                inbox->schemaAllValidationTables = std::move(allValidationTables);
                 inbox->schemaDatabases = std::move(dbs);
                 inbox->schemaError = std::move(schemaErr);
                 inbox->hasSchemaUpdate = true;
@@ -16713,6 +16839,8 @@ void EditorCanvas::StartRefreshActiveSqlSchemaAsync() {
     const uint64_t schGen = ++m_sqlSchemaReqGen;
     const size_t profIdx = m_sqlSelectedProfileIdx;
     const phide::db::SqlConnectionProfile profCopy = m_sqlProfiles[profIdx];
+    const auto allProfsCopy = m_sqlProfiles;
+    const std::wstring rootCopy = m_workspaceRoot;
     auto inbox = m_sqlAsyncInbox;
     HWND notifyHwnd = m_sqlNotifyHwnd;
 
@@ -16721,7 +16849,7 @@ void EditorCanvas::StartRefreshActiveSqlSchemaAsync() {
     m_sqlExpandedTableIdx = -1;
     m_sqlStatusBanner = L"Loading schema (" + profCopy.name + L")...";
 
-    std::thread([profCopy, profIdx, schGen, inbox, notifyHwnd]() {
+    std::thread([profCopy, allProfsCopy, rootCopy, profIdx, schGen, inbox, notifyHwnd]() {
         if (!inbox->alive.load()) return;
         phide::db::SqlConnectionProfile localProf = profCopy;
         std::vector<std::wstring> dbs = localProf.availableDatabases;
@@ -16737,6 +16865,7 @@ void EditorCanvas::StartRefreshActiveSqlSchemaAsync() {
         }
         std::wstring schemaErr;
         auto tables = phide::db::SqlEngine::InspectSchema(localProf, schemaErr);
+        auto allValidationTables = BuildCombinedSqlValidationTables(allProfsCopy, rootCopy);
         if (!inbox->alive.load()) return;
         {
             std::lock_guard<std::mutex> lk(inbox->mtx);
@@ -16745,6 +16874,7 @@ void EditorCanvas::StartRefreshActiveSqlSchemaAsync() {
                 inbox->schemaReqGen = schGen;
                 inbox->schemaProfileIdx = profIdx;
                 inbox->schemaTables = std::move(tables);
+                inbox->schemaAllValidationTables = std::move(allValidationTables);
                 inbox->schemaDatabases = std::move(dbs);
                 inbox->schemaError = std::move(schemaErr);
                 inbox->hasSchemaUpdate = true;
@@ -16867,13 +16997,15 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
 
     const uint64_t toggleGen = ++m_sqlServerToggleReqGen;
     const uint64_t schGen = ++m_sqlSchemaReqGen;
+    auto allProfsCopy = m_sqlProfiles;
+    const std::wstring rootCopy = m_workspaceRoot;
     auto inbox = m_sqlAsyncInbox;
     HWND notifyHwnd = m_sqlNotifyHwnd;
 
     m_sqlIsBusy = true;
     m_sqlStatusBanner = std::wstring(wantStop ? L"Stopping " : L"Starting ") + profCopy.name + L"...";
 
-    std::thread([profCopy, profIdx, wantStop, eng, toggleGen, schGen, inbox, notifyHwnd]() {
+    std::thread([profCopy, allProfsCopy, rootCopy, profIdx, wantStop, eng, toggleGen, schGen, inbox, notifyHwnd]() mutable {
         if (!inbox->alive.load()) return;
 
         std::wstring msg;
@@ -16889,8 +17021,10 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
             updatedProf.name = eng + L" (" + updatedProf.host + L":" + std::to_wstring(resolvedPort) + L")";
         }
         const bool nowConnected = phide::db::SqlEngine::IsTcpPortOpen(updatedProf.host, updatedProf.port, 35);
+        updatedProf.isConnected = nowConnected;
 
         std::vector<phide::db::SqlTableInfo> tables;
+        std::vector<phide::db::SqlTableInfo> allValidationTables;
         std::vector<std::wstring> dbs;
         std::wstring schemaErr;
         if (nowConnected) {
@@ -16904,9 +17038,14 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
             }
             tables = phide::db::SqlEngine::InspectSchema(updatedProf, schemaErr);
         } else {
+            updatedProf.availableDatabases.clear();
             schemaErr = eng + L" server is stopped (" + updatedProf.host + L":" + std::to_wstring(updatedProf.port) +
                         L"). Click 'Start " + eng + L"' above to start it.";
         }
+        if (profIdx < allProfsCopy.size()) {
+            allProfsCopy[profIdx] = updatedProf;
+        }
+        allValidationTables = BuildCombinedSqlValidationTables(allProfsCopy, rootCopy);
 
         if (!inbox->alive.load()) return;
         {
@@ -16925,6 +17064,7 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
                 inbox->schemaReqGen = schGen;
                 inbox->schemaProfileIdx = profIdx;
                 inbox->schemaTables = std::move(tables);
+                inbox->schemaAllValidationTables = std::move(allValidationTables);
                 inbox->schemaDatabases = std::move(dbs);
                 inbox->schemaError = std::move(schemaErr);
                 inbox->hasSchemaUpdate = true;
@@ -16951,6 +17091,7 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
     std::vector<phide::db::SqlConnectionProfile> discProfs;
     size_t schProfIdx = 0;
     std::vector<phide::db::SqlTableInfo> schTables;
+    std::vector<phide::db::SqlTableInfo> schAllValidationTables;
     std::vector<std::wstring> schDbs;
     std::wstring schErr;
     phide::db::SqlQueryResult qryRes;
@@ -16983,6 +17124,7 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
             m_sqlAsyncInbox->hasSchemaUpdate = false;
             schProfIdx = m_sqlAsyncInbox->schemaProfileIdx;
             schTables = std::move(m_sqlAsyncInbox->schemaTables);
+            schAllValidationTables = std::move(m_sqlAsyncInbox->schemaAllValidationTables);
             schDbs = std::move(m_sqlAsyncInbox->schemaDatabases);
             schErr = std::move(m_sqlAsyncInbox->schemaError);
         }
@@ -17078,6 +17220,9 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
                        schErr.find(L"ERROR 2002") != std::wstring::npos) {
                 targetProf.isConnected = false;
             }
+        }
+        if (!schAllValidationTables.empty()) {
+            m_allSqlValidationTables = std::move(schAllValidationTables);
         }
         if (schProfIdx == m_sqlSelectedProfileIdx) {
             m_sqlTables = std::move(schTables);

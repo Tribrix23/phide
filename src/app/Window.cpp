@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <unordered_set>
 #include <chrono>
 #include <thread>
 #include <regex>
@@ -2110,6 +2111,7 @@ void Window::LoadSessionState() {
             m_editor.GetApiTesterView().SetWorkspaceRoot(lastOpenFolder);
             RefreshWorkspaceEnvVars();
             RefreshDatabaseSchemaAsync();
+            RefreshWorkspaceCommentAnnotsAsync();
         }
 
         auto openDocIntoGroup = [&](const std::wstring& p) {
@@ -5422,6 +5424,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
     m_editor.GetApiTesterView().SetWorkspaceRoot(path);
     RefreshWorkspaceEnvVars();
     RefreshDatabaseSchemaAsync();
+    RefreshWorkspaceCommentAnnotsAsync();
     StartWorkspaceWatcher(path);
     phide::plugin::PluginManager::Instance().LoadWorkspacePlugins(path);
     phide::plugin::PluginManager::Instance().ApplyAppConfigMods(m_config);
@@ -14830,9 +14833,12 @@ void Window::OnPaint() {
         RenderBreakpointConditionPrompt(clientW, clientH);
     }
 
-    // 13. Render Git Branch Switcher Dropdown (Status Bar Popup)
+    // 13. Render Git Branch Switcher & Comment Annotations Dropdowns (Status Bar Popups)
     if (m_showBranchDropdown) {
         RenderBranchDropdown(m_pRenderTarget.Get(), clientW, clientH);
+    }
+    if (m_showCommentAnnotsDropdown) {
+        RenderCommentAnnotsDropdown(m_pRenderTarget.Get(), clientW, clientH);
     }
 
     // 13.5. Render Floating Commit Details Card (outside drawer clip, on top of editor canvas)
@@ -14868,6 +14874,7 @@ void Window::ToggleBranchDropdown() {
         CloseBranchDropdown();
         return;
     }
+    CloseCommentAnnotsDropdown();
     m_branchList = m_drawer.GetGitBranches();
     if (m_branchList.empty()) {
         std::wstring curBranch = m_drawer.GetGitBranch();
@@ -15112,6 +15119,728 @@ bool Window::HandleBranchDropdownMouseDown(POINT pt) {
 
     // Clicked outside dropdown: close it!
     CloseBranchDropdown();
+    return false;
+}
+
+// =============================================================================
+// Workspace-Wide Comment Annotations Scanner & Status Bar Dropdown
+// =============================================================================
+
+namespace {
+
+/// Normalizes a file path to lowercase with forward-to-back slash unification for deduplication.
+std::wstring NormalizeAnnotPathKey(const std::wstring& path) {
+    std::wstring k = path;
+    for (auto& ch : k) {
+        if (ch == L'/') ch = L'\\';
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    return k;
+}
+
+/// Computes a concise relative display label from rootDir or falls back to the filename.
+std::wstring FormatAnnotDisplayPath(const std::wstring& fullPath, const std::wstring& rootDir) {
+    if (fullPath.empty()) return {};
+    try {
+        std::filesystem::path fp(fullPath);
+        if (!rootDir.empty()) {
+            std::error_code ec;
+            std::filesystem::path rel = std::filesystem::relative(fp, std::filesystem::path(rootDir), ec);
+            if (!ec && !rel.empty()) {
+                std::wstring relStr = rel.wstring();
+                if (relStr.rfind(L"..", 0) != 0) {
+                    for (auto& c : relStr) {
+                        if (c == L'\\') c = L'/';
+                    }
+                    return relStr;
+                }
+            }
+        }
+        return fp.filename().wstring();
+    } catch (...) {
+        return fullPath;
+    }
+}
+
+/// Returns true for source/markup/config extensions scanned for workspace BetterComment annotations.
+bool IsWorkspaceCommentScanExtension(const std::wstring& extLower) {
+    static const wchar_t* const kExts[] = {
+        L".php", L".phtml", L".html", L".htm", L".js", L".jsx", L".mjs", L".cjs",
+        L".ts", L".tsx", L".css", L".scss", L".sass", L".less", L".py", L".pyw",
+        L".cpp", L".cc", L".cxx", L".c", L".h", L".hpp", L".hxx", L".cs", L".java",
+        L".go", L".rs", L".rb", L".sql", L".sh", L".bash", L".zsh", L".ps1",
+        L".bat", L".cmd", L".yaml", L".yml", L".toml", L".ini", L".xml", L".svg",
+        L".vue", L".svelte", L".astro", L".lua", L".kt", L".swift", L".dart", L".r",
+        L".md", L".mdx"
+    };
+    for (const wchar_t* e : kExts) {
+        if (extLower == e) return true;
+    }
+    return false;
+}
+
+/// Returns true for directories skipped during workspace comment scanning (build outputs / vendored deps).
+bool ShouldSkipCommentScanDir(const std::wstring& dirNameLower) {
+    static const wchar_t* const kSkip[] = {
+        L".git", L".hg", L".svn", L"node_modules", L"vendor", L".phide",
+        L".vs", L".vscode", L".idea", L"build", L"dist", L"out", L"target",
+        L"x64", L"x86", L"__pycache__", L"coverage", L".next", L".nuxt", L".cache"
+    };
+    for (const wchar_t* s : kSkip) {
+        if (dirNameLower == s) return true;
+    }
+    return false;
+}
+
+std::wstring GetShortCommentTagName(ui::EditorCanvas::BetterCommentType t) {
+    switch (t) {
+        case ui::EditorCanvas::BetterCommentType::Urgent:    return L"Urgent";
+        case ui::EditorCanvas::BetterCommentType::Asap:      return L"ASAP";
+        case ui::EditorCanvas::BetterCommentType::Alert:     return L"Error";
+        case ui::EditorCanvas::BetterCommentType::Todo:      return L"TODO";
+        case ui::EditorCanvas::BetterCommentType::Warning:   return L"Warn";
+        case ui::EditorCanvas::BetterCommentType::Hack:      return L"Hack";
+        case ui::EditorCanvas::BetterCommentType::Review:    return L"Review";
+        case ui::EditorCanvas::BetterCommentType::Note:      return L"Note";
+        case ui::EditorCanvas::BetterCommentType::Important: return L"Imp";
+        case ui::EditorCanvas::BetterCommentType::Question:  return L"Question";
+        default:                                             return L"Note";
+    }
+}
+
+bool IsAnnotatableOpenDoc(const editor::OpenDocument& d) {
+    return !d.isSpecialView && !d.isDiffView && !d.isMultiFileDiff &&
+           !d.isImageView && !d.isFontView && !d.isFolderView &&
+           !d.buffer.IsMemoryMappedReadOnly() && d.buffer.GetLineCount() <= 15000;
+}
+
+std::wstring GetOpenDocExtLower(const editor::OpenDocument& d) {
+    try {
+        const std::wstring& target = d.filePath.empty() ? d.fileName : d.filePath;
+        std::wstring ext = std::filesystem::path(target).extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        return ext;
+    } catch (...) {
+        return {};
+    }
+}
+
+void AccumulateSummaryToStats(const ui::EditorCanvas::DocCommentSummary& s,
+                              Window::CommentAnnotationStats& stats) {
+    stats.urgentCount += s.urgentCount;
+    stats.asapCount += s.asapCount;
+    stats.alertCount += s.alertCount;
+    stats.todoCount += s.todoCount;
+    stats.warningCount += s.warningCount;
+    stats.hackCount += s.hackCount;
+    stats.reviewCount += s.reviewCount;
+    stats.noteCount += s.noteCount;
+    stats.importantCount += s.importantCount;
+    stats.questionCount += s.questionCount;
+}
+
+} // namespace
+
+std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnots(
+    const std::wstring& rootDir,
+    const std::atomic<bool>* isDestroying,
+    const std::atomic<uint64_t>* activeGen,
+    uint64_t expectedGen) {
+    std::vector<WorkspaceCommentAnnotFile> out;
+    if (rootDir.empty()) return out;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(rootDir, ec) || !std::filesystem::is_directory(rootDir, ec)) {
+        return out;
+    }
+
+    constexpr size_t kMaxScannedFiles = 2000;
+    constexpr uintmax_t kMaxFileBytes = 512 * 1024;
+    size_t scannedFiles = 0;
+
+    std::filesystem::recursive_directory_iterator it(
+        rootDir, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator endIt;
+
+    while (!ec && it != endIt) {
+        if (isDestroying && isDestroying->load()) return {};
+        if (activeGen && activeGen->load() != expectedGen) return {};
+        if (scannedFiles >= kMaxScannedFiles) break;
+
+        const auto& entry = *it;
+        if (entry.is_directory(ec)) {
+            std::wstring dName = entry.path().filename().wstring();
+            for (auto& c : dName) c = static_cast<wchar_t>(towlower(c));
+            if (ShouldSkipCommentScanDir(dName)) {
+                it.disable_recursion_pending();
+            }
+            it.increment(ec);
+            continue;
+        }
+        if (ec) {
+            ec.clear();
+            it.increment(ec);
+            continue;
+        }
+        if (!entry.is_regular_file(ec)) {
+            it.increment(ec);
+            continue;
+        }
+
+        std::wstring ext = entry.path().extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        if (!IsWorkspaceCommentScanExtension(ext)) {
+            it.increment(ec);
+            continue;
+        }
+
+        const uintmax_t fsz = entry.file_size(ec);
+        if (ec || fsz == 0 || fsz > kMaxFileBytes) {
+            ec.clear();
+            it.increment(ec);
+            continue;
+        }
+
+        ++scannedFiles;
+        const std::wstring fullPath = entry.path().wstring();
+        editor::Buffer buf;
+        if (buf.LoadFromFile(fullPath)) {
+            auto summary = ui::EditorCanvas::ComputeDocCommentSummary(buf, ext);
+            if (!summary.entries.empty()) {
+                WorkspaceCommentAnnotFile rec;
+                rec.filePath = fullPath;
+                rec.displayPath = FormatAnnotDisplayPath(fullPath, rootDir);
+                rec.summary = std::move(summary);
+                out.push_back(std::move(rec));
+            }
+        }
+        it.increment(ec);
+    }
+
+    std::sort(out.begin(), out.end(), [](const WorkspaceCommentAnnotFile& a, const WorkspaceCommentAnnotFile& b) {
+        return _wcsicmp(a.displayPath.c_str(), b.displayPath.c_str()) < 0;
+    });
+    return out;
+}
+
+void Window::RefreshWorkspaceCommentAnnotsAsync() {
+    const uint64_t gen = ++m_wsCommentScanGen;
+    m_wsCommentAnnots.clear();
+
+    std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    if (wsRoot.empty() || !m_hwnd || m_isDestroying.load()) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    HWND postHwnd = GetMainPostHwnd();
+    std::thread([this, wsRoot, gen, postHwnd]() {
+        if (m_isDestroying.load() || m_wsCommentScanGen.load() != gen) return;
+        auto scanned = ScanWorkspaceCommentAnnots(wsRoot, &m_isDestroying, &m_wsCommentScanGen, gen);
+        if (m_isDestroying.load() || m_wsCommentScanGen.load() != gen) return;
+        {
+            std::lock_guard<std::mutex> lk(m_wsCommentMutex);
+            if (m_wsCommentScanGen.load() == gen) {
+                m_pendingWsCommentAnnots = std::move(scanned);
+                m_pendingWsCommentGen = gen;
+                m_hasPendingWsCommentAnnots = true;
+            }
+        }
+        if (postHwnd && !m_isDestroying.load()) {
+            PostMessageW(postHwnd, WM_USER + 234, 0, 0);
+        }
+    }).detach();
+}
+
+void Window::ApplyPendingWorkspaceCommentAnnots() {
+    std::vector<WorkspaceCommentAnnotFile> ready;
+    uint64_t readyGen = 0;
+    bool hasReady = false;
+    {
+        std::lock_guard<std::mutex> lk(m_wsCommentMutex);
+        if (m_hasPendingWsCommentAnnots) {
+            ready.swap(m_pendingWsCommentAnnots);
+            readyGen = m_pendingWsCommentGen;
+            m_hasPendingWsCommentAnnots = false;
+            hasReady = true;
+        }
+    }
+    if (!hasReady || readyGen != m_wsCommentScanGen.load()) return;
+
+    m_wsCommentAnnots = std::move(ready);
+    if (m_showCommentAnnotsDropdown) {
+        // Live-refresh the open dropdown when workspace scan finishes
+        m_showCommentAnnotsDropdown = false;
+        ToggleCommentAnnotsDropdown();
+    } else {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+Window::CommentAnnotationStats Window::CollectCommentAnnotationStats() const {
+    CommentAnnotationStats stats;
+    const auto* curDoc = const_cast<Window*>(this)->GetActiveDoc();
+    const std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::unordered_set<std::wstring> seenFiles;
+
+    auto processOpenGroups = [&](const std::vector<editor::EditorGroup>& groups) {
+        for (const auto& grp : groups) {
+            for (const auto& d : grp.docs) {
+                if (!IsAnnotatableOpenDoc(d)) continue;
+                const auto& sum = m_editor.GetDocCommentSummary(d.buffer, GetOpenDocExtLower(d));
+                const std::wstring key = d.filePath.empty()
+                    ? (L"__untitled__" + std::to_wstring(d.buffer.GetInstanceId()))
+                    : NormalizeAnnotPathKey(d.filePath);
+                if (!seenFiles.insert(key).second) continue; // Deduplicate split clones of the same buffer
+                if (sum.entries.empty()) continue;
+
+                stats.distinctFiles++;
+                if (&d == curDoc) {
+                    stats.activeFileHasAnnots = true;
+                }
+                AccumulateSummaryToStats(sum, stats);
+
+                if (stats.fileLabels.size() < 3) {
+                    std::wstring disp = !d.filePath.empty()
+                        ? FormatAnnotDisplayPath(d.filePath, wsRoot)
+                        : (d.fileName.empty() ? L"Untitled" : d.fileName);
+                    if (!disp.empty() && std::find(stats.fileLabels.begin(), stats.fileLabels.end(), disp) == stats.fileLabels.end()) {
+                        stats.fileLabels.push_back(std::move(disp));
+                    }
+                }
+            }
+        }
+    };
+
+    processOpenGroups(m_editorGroups);
+    for (const auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            processOpenGroups(fw->editorGroups);
+        }
+    }
+
+    // Merge closed workspace files so files outside open tabs (e.g., bin/*.php) are always surfaced too.
+    for (const auto& wsFile : m_wsCommentAnnots) {
+        const std::wstring key = NormalizeAnnotPathKey(wsFile.filePath);
+        if (!seenFiles.insert(key).second) continue;
+        if (wsFile.summary.entries.empty()) continue;
+
+        stats.distinctFiles++;
+        AccumulateSummaryToStats(wsFile.summary, stats);
+        if (stats.fileLabels.size() < 3 && !wsFile.displayPath.empty()) {
+            if (std::find(stats.fileLabels.begin(), stats.fileLabels.end(), wsFile.displayPath) == stats.fileLabels.end()) {
+                stats.fileLabels.push_back(wsFile.displayPath);
+            }
+        }
+    }
+
+    return stats;
+}
+
+std::vector<Window::CommentAnnotDropdownItem> Window::CollectAllCommentAnnotations(size_t* outDistinctFiles) const {
+    std::vector<CommentAnnotDropdownItem> items;
+    size_t distinctFiles = 0;
+    const auto* curDoc = const_cast<Window*>(this)->GetActiveDoc();
+    const std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    std::unordered_set<std::wstring> seenFiles;
+
+    auto appendSummary = [&](const ui::EditorCanvas::DocCommentSummary& sum,
+                             const std::wstring& filePath,
+                             const std::wstring& displayPath,
+                             int groupIdx, int docIdx, uint64_t floatingId) {
+        if (sum.entries.empty()) return;
+        distinctFiles++;
+        for (const auto& ann : sum.entries) {
+            CommentAnnotDropdownItem item;
+            item.filePath = filePath;
+            item.displayPath = displayPath;
+            item.groupIdx = groupIdx;
+            item.docIdx = docIdx;
+            item.floatingWinId = floatingId;
+            item.line = ann.line;
+            item.col = (ann.tagCol != std::wstring::npos) ? ann.tagCol : 0;
+            item.type = ann.type;
+            item.tagLabel = GetShortCommentTagName(ann.type);
+            item.preview = ann.preview;
+            items.push_back(std::move(item));
+        }
+    };
+
+    auto collectOpenDoc = [&](const editor::OpenDocument& d, int gi, int di, uint64_t fwId) {
+        if (!IsAnnotatableOpenDoc(d)) return;
+        const std::wstring key = d.filePath.empty()
+            ? (L"__untitled__" + std::to_wstring(d.buffer.GetInstanceId()))
+            : NormalizeAnnotPathKey(d.filePath);
+        if (!seenFiles.insert(key).second) return;
+        const auto& sum = m_editor.GetDocCommentSummary(d.buffer, GetOpenDocExtLower(d));
+        std::wstring disp = !d.filePath.empty()
+            ? FormatAnnotDisplayPath(d.filePath, wsRoot)
+            : (d.fileName.empty() ? L"Untitled" : d.fileName);
+        appendSummary(sum, d.filePath, disp, gi, di, fwId);
+    };
+
+    // Place the currently active document first so it appears at the top of the dropdown
+    if (curDoc) {
+        for (size_t gi = 0; gi < m_editorGroups.size(); ++gi) {
+            for (size_t di = 0; di < m_editorGroups[gi].docs.size(); ++di) {
+                if (&m_editorGroups[gi].docs[di] == curDoc) {
+                    collectOpenDoc(*curDoc, static_cast<int>(gi), static_cast<int>(di), 0);
+                }
+            }
+        }
+    }
+
+    for (size_t gi = 0; gi < m_editorGroups.size(); ++gi) {
+        for (size_t di = 0; di < m_editorGroups[gi].docs.size(); ++di) {
+            collectOpenDoc(m_editorGroups[gi].docs[di], static_cast<int>(gi), static_cast<int>(di), 0);
+        }
+    }
+    for (const auto& fw : m_floatingWindows) {
+        if (!fw || fw->kind != FloatingDockKind::EditorGroup) continue;
+        for (size_t gi = 0; gi < fw->editorGroups.size(); ++gi) {
+            for (size_t di = 0; di < fw->editorGroups[gi].docs.size(); ++di) {
+                collectOpenDoc(fw->editorGroups[gi].docs[di], static_cast<int>(gi), static_cast<int>(di), fw->id);
+            }
+        }
+    }
+
+    for (const auto& wsFile : m_wsCommentAnnots) {
+        const std::wstring key = NormalizeAnnotPathKey(wsFile.filePath);
+        if (!seenFiles.insert(key).second) continue;
+        appendSummary(wsFile.summary, wsFile.filePath, wsFile.displayPath, -1, -1, 0);
+    }
+
+    if (outDistinctFiles) *outDistinctFiles = distinctFiles;
+    return items;
+}
+
+void Window::HandleStatusBarCommentAnnotsClick() {
+    if (m_showCommentAnnotsDropdown) {
+        CloseCommentAnnotsDropdown();
+        return;
+    }
+
+    size_t distinctFiles = 0;
+    auto items = CollectAllCommentAnnotations(&distinctFiles);
+    if (items.empty()) return;
+
+    // Multi-file annotations open the structured dropdown instead of silently redirecting to one tab.
+    if (distinctFiles > 1) {
+        ToggleCommentAnnotsDropdown();
+        return;
+    }
+
+    // Single-file annotations preserve direct jump/cycling behavior.
+    if (items.front().floatingWinId == 0 && items.front().groupIdx >= 0) {
+        JumpToNextCommentAnnotation();
+    } else if (!items.front().filePath.empty()) {
+        JumpToFileAndLocation(items.front().filePath, items.front().line, items.front().col);
+        if (auto* pDoc = GetActiveDoc()) {
+            pDoc->targetHighlightLine = items.front().line;
+        }
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::ToggleCommentAnnotsDropdown() {
+    if (m_showCommentAnnotsDropdown) {
+        CloseCommentAnnotsDropdown();
+        return;
+    }
+    CloseBranchDropdown();
+
+    size_t distinctFiles = 0;
+    m_commentAnnotsDropdownItems = CollectAllCommentAnnotations(&distinctFiles);
+    m_commentAnnotsDropdownDistinctFiles = distinctFiles;
+    m_commentAnnotsDropdownRows.clear();
+    if (m_commentAnnotsDropdownItems.empty()) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Group consecutive items sharing the same displayPath/filePath under a compact file header row.
+    size_t i = 0;
+    while (i < m_commentAnnotsDropdownItems.size()) {
+        const auto& first = m_commentAnnotsDropdownItems[i];
+        size_t groupEnd = i + 1;
+        while (groupEnd < m_commentAnnotsDropdownItems.size() &&
+               m_commentAnnotsDropdownItems[groupEnd].filePath == first.filePath &&
+               m_commentAnnotsDropdownItems[groupEnd].displayPath == first.displayPath &&
+               m_commentAnnotsDropdownItems[groupEnd].floatingWinId == first.floatingWinId) {
+            ++groupEnd;
+        }
+
+        CommentAnnotDropdownRow hdr;
+        hdr.isFileHeader = true;
+        hdr.itemIdx = i;
+        hdr.fileHeaderPath = first.filePath;
+        hdr.fileHeaderLabel = first.displayPath.empty() ? first.filePath : first.displayPath;
+        hdr.fileItemCount = groupEnd - i;
+        m_commentAnnotsDropdownRows.push_back(std::move(hdr));
+
+        for (size_t k = i; k < groupEnd; ++k) {
+            CommentAnnotDropdownRow entryRow;
+            entryRow.isFileHeader = false;
+            entryRow.itemIdx = k;
+            m_commentAnnotsDropdownRows.push_back(std::move(entryRow));
+        }
+        i = groupEnd;
+    }
+
+    m_showCommentAnnotsDropdown = true;
+    m_hoveredCommentAnnotRowIdx = -1;
+    m_commentAnnotsDropdownScrollY = 0.0f;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::CloseCommentAnnotsDropdown() {
+    if (m_showCommentAnnotsDropdown) {
+        m_showCommentAnnotsDropdown = false;
+        m_hoveredCommentAnnotRowIdx = -1;
+        m_commentAnnotsDropdownScrollY = 0.0f;
+        m_commentAnnotsDropdownMaxScrollY = 0.0f;
+        m_rcCommentAnnotsDropdown = {};
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void Window::RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWidth, float clientHeight) {
+    if (!m_showCommentAnnotsDropdown || !pRT || m_commentAnnotsDropdownRows.empty()) return;
+    const auto& config = m_config;
+    auto& theme = m_theme;
+
+    const float headerH = config.ScaleF(32.0f);
+    const float rowH = config.ScaleF(24.0f);
+    const float padX = config.ScaleF(12.0f);
+    const float padY = config.ScaleF(4.0f);
+    const float menuW = (std::min)(config.ScaleF(460.0f), (std::max)(config.ScaleF(260.0f), clientWidth - config.ScaleF(16.0f)));
+
+    const float rawListH = static_cast<float>(m_commentAnnotsDropdownRows.size()) * rowH;
+    const float maxAllowedListH = (std::max)(rowH * 4.0f, (std::min)(config.ScaleF(340.0f), clientHeight - headerH - config.ScaleF(72.0f)));
+    const float listH = (std::min)(rawListH, maxAllowedListH);
+    m_commentAnnotsDropdownMaxScrollY = (std::max)(0.0f, rawListH - listH);
+    m_commentAnnotsDropdownScrollY = (std::clamp)(m_commentAnnotsDropdownScrollY, 0.0f, m_commentAnnotsDropdownMaxScrollY);
+
+    const float totalH = headerH + padY * 2.0f + listH;
+
+    float menuLeft = m_rcStatusBarCommentAnnots.left;
+    if (menuLeft + menuW > clientWidth - config.ScaleF(8.0f)) {
+        menuLeft = clientWidth - menuW - config.ScaleF(8.0f);
+    }
+    if (menuLeft < config.ScaleF(8.0f)) menuLeft = config.ScaleF(8.0f);
+
+    float menuBottom = (m_rcStatusBarCommentAnnots.top > config.ScaleF(30.0f))
+        ? (m_rcStatusBarCommentAnnots.top - config.ScaleF(4.0f))
+        : (clientHeight - config.ScaleF(28.0f));
+    float menuTop = menuBottom - totalH;
+    if (menuTop < config.ScaleF(30.0f)) menuTop = config.ScaleF(30.0f);
+
+    m_rcCommentAnnotsDropdown = D2D1::RectF(menuLeft, menuTop, menuLeft + menuW, menuBottom);
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(m_rcCommentAnnotsDropdown, config.ScaleF(6.0f), config.ScaleF(6.0f));
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushBg, brushBorder, brushHeaderBg, brushSectionBg;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.12f, 0.13f, 0.16f, 0.98f) : D2D1::ColorF(0.98f, 0.98f, 0.99f, 0.98f), &brushBg);
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.25f, 0.27f, 0.32f, 1.0f) : D2D1::ColorF(0.82f, 0.84f, 0.88f, 1.0f), &brushBorder);
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.15f, 0.16f, 0.20f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &brushHeaderBg);
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(0.16f, 0.18f, 0.22f, 0.72f) : D2D1::ColorF(0.94f, 0.95f, 0.97f, 0.85f), &brushSectionBg);
+
+    if (brushBg) pRT->FillRoundedRectangle(rrc, brushBg.Get());
+    if (brushBorder) pRT->DrawRoundedRectangle(rrc, brushBorder.Get(), 1.0f);
+
+    IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+    ID2D1Brush* pItemHover = theme.brushItemHover ? theme.brushItemHover.Get() : brushBorder.Get();
+    ID2D1Brush* pTextPri = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : brushBorder.Get();
+    ID2D1Brush* pTextSec = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : brushBorder.Get();
+    ID2D1Brush* pTextMut = theme.brushTextMuted ? theme.brushTextMuted.Get() : brushBorder.Get();
+    ID2D1Brush* pTextWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : pTextPri;
+
+    // Header bar
+    D2D1_RECT_F rcHeader = D2D1::RectF(menuLeft + 1.0f, menuTop + 1.0f, menuLeft + menuW - 1.0f, menuTop + headerH);
+    if (brushHeaderBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHeader, config.ScaleF(5.0f), config.ScaleF(5.0f)), brushHeaderBg.Get());
+
+    D2D1_RECT_F rcTitle = D2D1::RectF(menuLeft + padX, menuTop, menuLeft + menuW - config.ScaleF(130.0f), menuTop + headerH);
+    const wchar_t* titleStr = L"Comment Annotations";
+    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
+                  theme.fontTitle ? theme.fontTitle.Get() : pFmt, rcTitle, pTextPri);
+
+    std::wstring badgeStr = std::to_wstring(m_commentAnnotsDropdownItems.size()) + L" in " +
+                            std::to_wstring(m_commentAnnotsDropdownDistinctFiles) + L" files";
+    const float badgeW = config.ScaleF(112.0f);
+    const float badgeH = config.ScaleF(18.0f);
+    D2D1_RECT_F rcBadge = D2D1::RectF(menuLeft + menuW - padX - badgeW, menuTop + (headerH - badgeH) * 0.5f,
+                                      menuLeft + menuW - padX, menuTop + (headerH + badgeH) * 0.5f);
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBadge, config.ScaleF(4.0f), config.ScaleF(4.0f)), pItemHover);
+    pRT->DrawText(badgeStr.c_str(), static_cast<UINT32>(badgeStr.length()),
+                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt, rcBadge, pTextSec);
+
+    if (brushBorder) {
+        pRT->DrawLine(D2D1::Point2F(menuLeft, menuTop + headerH), D2D1::Point2F(menuLeft + menuW, menuTop + headerH), brushBorder.Get(), 1.0f);
+    }
+
+    // Scrollable rows
+    const float listTop = menuTop + headerH + padY;
+    const float listBottom = menuBottom - padY;
+    const float sbReserve = (m_commentAnnotsDropdownMaxScrollY > 0.0f) ? config.ScaleF(8.0f) : 0.0f;
+    pRT->PushAxisAlignedClip(D2D1::RectF(menuLeft + 1.0f, listTop, menuLeft + menuW - 1.0f, listBottom),
+                             D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    for (size_t ri = 0; ri < m_commentAnnotsDropdownRows.size(); ++ri) {
+        const float rowY = listTop + static_cast<float>(ri) * rowH - m_commentAnnotsDropdownScrollY;
+        if (rowY + rowH < listTop || rowY > listBottom) continue;
+
+        const auto& row = m_commentAnnotsDropdownRows[ri];
+        D2D1_RECT_F rcRow = D2D1::RectF(menuLeft + config.ScaleF(4.0f), rowY,
+                                        menuLeft + menuW - config.ScaleF(4.0f) - sbReserve, rowY + rowH);
+        const bool isHov = (m_hoveredCommentAnnotRowIdx == static_cast<int>(ri));
+
+        if (isHov) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f)), pItemHover);
+        } else if (row.isFileHeader && brushSectionBg) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, config.ScaleF(4.0f), config.ScaleF(4.0f)), brushSectionBg.Get());
+        }
+
+        if (row.isFileHeader) {
+            std::wstring countTag = L"(" + std::to_wstring(row.fileItemCount) + L")";
+            D2D1_RECT_F rcFileName = D2D1::RectF(rcRow.left + config.ScaleF(8.0f), rowY,
+                                                 rcRow.right - config.ScaleF(40.0f), rowY + rowH);
+            D2D1_RECT_F rcFileCnt = D2D1::RectF(rcRow.right - config.ScaleF(38.0f), rowY,
+                                                rcRow.right - config.ScaleF(6.0f), rowY + rowH);
+            pRT->DrawText(row.fileHeaderLabel.c_str(), static_cast<UINT32>(row.fileHeaderLabel.length()),
+                          pFmt, rcFileName, isHov ? pTextWhite : pTextPri, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            pRT->DrawText(countTag.c_str(), static_cast<UINT32>(countTag.length()),
+                          pFmt, rcFileCnt, pTextMut);
+        } else if (row.itemIdx < m_commentAnnotsDropdownItems.size()) {
+            const auto& item = m_commentAnnotsDropdownItems[row.itemIdx];
+            const float dotR = config.ScaleF(3.3f);
+            const float dotX = rcRow.left + config.ScaleF(16.0f);
+            const float dotY = rowY + rowH * 0.5f;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
+            pRT->CreateSolidColorBrush(ui::EditorCanvas::GetBetterCommentColor(theme, item.type), &dotBrush);
+            if (dotBrush) {
+                pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), dotBrush.Get());
+            }
+
+            const float tagX = dotX + dotR + config.ScaleF(6.0f);
+            const float tagW = config.ScaleF(58.0f);
+            D2D1_RECT_F rcTag = D2D1::RectF(tagX, rowY, tagX + tagW, rowY + rowH);
+            pRT->DrawText(item.tagLabel.c_str(), static_cast<UINT32>(item.tagLabel.length()),
+                          pFmt, rcTag, dotBrush ? static_cast<ID2D1Brush*>(dotBrush.Get()) : pTextPri);
+
+            std::wstring lnStr = L"Ln " + std::to_wstring(item.line + 1);
+            const float lnW = config.ScaleF(50.0f);
+            D2D1_RECT_F rcLn = D2D1::RectF(rcRow.right - lnW - config.ScaleF(6.0f), rowY, rcRow.right - config.ScaleF(4.0f), rowY + rowH);
+            D2D1_RECT_F rcPrev = D2D1::RectF(tagX + tagW + config.ScaleF(2.0f), rowY, rcLn.left - config.ScaleF(6.0f), rowY + rowH);
+
+            pRT->PushAxisAlignedClip(rcPrev, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            pRT->DrawText(item.preview.c_str(), static_cast<UINT32>(item.preview.length()),
+                          pFmt, rcPrev, isHov ? pTextWhite : pTextSec);
+            pRT->PopAxisAlignedClip();
+            pRT->DrawText(lnStr.c_str(), static_cast<UINT32>(lnStr.length()), pFmt, rcLn, pTextMut);
+        }
+    }
+
+    pRT->PopAxisAlignedClip();
+
+    // Subtle scroll indicator thumb when items overflow max height
+    if (m_commentAnnotsDropdownMaxScrollY > 0.0f && rawListH > 0.0f) {
+        const float sbW = config.ScaleF(4.0f);
+        const float sbLeft = menuLeft + menuW - sbW - config.ScaleF(3.0f);
+        const float thumbH = (std::max)(config.ScaleF(16.0f), listH * (listH / rawListH));
+        const float thumbRatio = m_commentAnnotsDropdownScrollY / m_commentAnnotsDropdownMaxScrollY;
+        const float thumbY = listTop + (listH - thumbH) * thumbRatio;
+        pRT->FillRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(sbLeft, thumbY, sbLeft + sbW, thumbY + thumbH), sbW * 0.5f, sbW * 0.5f),
+            pTextMut);
+    }
+}
+
+bool Window::HandleCommentAnnotsDropdownMouseMove(POINT pt) {
+    if (!m_showCommentAnnotsDropdown) return false;
+    const float headerH = m_config.ScaleF(32.0f);
+    const float rowH = m_config.ScaleF(24.0f);
+    const float padY = m_config.ScaleF(4.0f);
+    const float listTop = m_rcCommentAnnotsDropdown.top + headerH + padY;
+    const float listBottom = m_rcCommentAnnotsDropdown.bottom - padY;
+
+    int newHover = -1;
+    if (pt.x >= m_rcCommentAnnotsDropdown.left && pt.x <= m_rcCommentAnnotsDropdown.right &&
+        pt.y >= listTop && pt.y <= listBottom) {
+        int idx = static_cast<int>((static_cast<float>(pt.y) - listTop + m_commentAnnotsDropdownScrollY) / rowH);
+        if (idx >= 0 && idx < static_cast<int>(m_commentAnnotsDropdownRows.size())) {
+            newHover = idx;
+        }
+    }
+
+    if (m_hoveredCommentAnnotRowIdx != newHover) {
+        m_hoveredCommentAnnotRowIdx = newHover;
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+    return true;
+}
+
+bool Window::HandleCommentAnnotsDropdownMouseWheel(short delta, POINT pt) {
+    if (!m_showCommentAnnotsDropdown) return false;
+    if (pt.x >= m_rcCommentAnnotsDropdown.left && pt.x <= m_rcCommentAnnotsDropdown.right &&
+        pt.y >= m_rcCommentAnnotsDropdown.top && pt.y <= m_rcCommentAnnotsDropdown.bottom) {
+        const float step = m_config.ScaleF(24.0f) * 2.0f;
+        m_commentAnnotsDropdownScrollY = (std::clamp)(
+            m_commentAnnotsDropdownScrollY - (static_cast<float>(delta) / 120.0f) * step,
+            0.0f, m_commentAnnotsDropdownMaxScrollY);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+        return true;
+    }
+    return false;
+}
+
+bool Window::HandleCommentAnnotsDropdownMouseDown(POINT pt) {
+    if (!m_showCommentAnnotsDropdown) return false;
+
+    if (pt.x >= m_rcCommentAnnotsDropdown.left && pt.x <= m_rcCommentAnnotsDropdown.right &&
+        pt.y >= m_rcCommentAnnotsDropdown.top && pt.y <= m_rcCommentAnnotsDropdown.bottom) {
+        const float headerH = m_config.ScaleF(32.0f);
+        const float rowH = m_config.ScaleF(24.0f);
+        const float padY = m_config.ScaleF(4.0f);
+        const float listTop = m_rcCommentAnnotsDropdown.top + headerH + padY;
+        const float listBottom = m_rcCommentAnnotsDropdown.bottom - padY;
+
+        if (pt.y >= listTop && pt.y <= listBottom) {
+            int idx = static_cast<int>((static_cast<float>(pt.y) - listTop + m_commentAnnotsDropdownScrollY) / rowH);
+            if (idx >= 0 && idx < static_cast<int>(m_commentAnnotsDropdownRows.size())) {
+                const auto& row = m_commentAnnotsDropdownRows[idx];
+                if (row.itemIdx < m_commentAnnotsDropdownItems.size()) {
+                    const auto item = m_commentAnnotsDropdownItems[row.itemIdx];
+                    CloseCommentAnnotsDropdown();
+
+                    if (!item.filePath.empty()) {
+                        JumpToFileAndLocation(item.filePath, item.line, item.col);
+                        if (auto* pDoc = GetActiveDoc()) {
+                            pDoc->targetHighlightLine = item.line;
+                            EnsureCursorVisible(true);
+                        }
+                    } else if (item.floatingWinId == 0 &&
+                               item.groupIdx >= 0 && item.groupIdx < static_cast<int>(m_editorGroups.size()) &&
+                               item.docIdx >= 0 && item.docIdx < static_cast<int>(m_editorGroups[item.groupIdx].docs.size())) {
+                        m_focusedGroupIdx = item.groupIdx;
+                        m_editorGroups[item.groupIdx].activeDocIdx = item.docIdx;
+                        JumpToEditorLocation(item.line, item.col);
+                        if (auto* pDoc = GetActiveDoc()) {
+                            pDoc->targetHighlightLine = item.line;
+                        }
+                        EnsureCursorVisible(true);
+                    }
+                    InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return true;
+                }
+            }
+        }
+        return true; // Click inside header absorbs click
+    }
+
+    CloseCommentAnnotsDropdown();
     return false;
 }
 
@@ -16206,24 +16935,10 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
     }
 
-    // 4b. Priority Comment Annotations Summary Pill (Active doc, or aggregated open tabs when active tab has none)
+    // 4b. Priority Comment Annotations Summary Pill (Aggregated across active doc, open tabs, and closed workspace files)
     {
-        auto getDocExtStr = [](const editor::OpenDocument& d) -> std::wstring {
-            try {
-                const std::wstring& target = d.filePath.empty() ? d.fileName : d.filePath;
-                return std::filesystem::path(target).extension().wstring();
-            } catch (...) {
-                return {};
-            }
-        };
-        auto isAnnotatableDoc = [](const editor::OpenDocument& d) -> bool {
-            return !d.isSpecialView && !d.isDiffView && !d.isMultiFileDiff &&
-                   !d.isImageView && !d.isFontView && !d.isFolderView &&
-                   !d.buffer.IsMemoryMappedReadOnly() && d.buffer.GetLineCount() <= 15000;
-        };
-
         std::vector<uint64_t> liveBufferIds;
-        liveBufferIds.reserve(16);
+        liveBufferIds.reserve(64);
         auto collectLiveIds = [&](const std::vector<editor::EditorGroup>& groups) {
             for (const auto& grp : groups) {
                 for (const auto& d : grp.docs) {
@@ -16239,64 +16954,10 @@ void Window::RenderStatusBar(float clientW, float clientH) {
         }
         m_editor.PruneDocCommentCache(liveBufferIds);
 
-        size_t sumUrgent = 0, sumAsap = 0, sumAlert = 0, sumTodo = 0, sumWarning = 0;
-        size_t sumHack = 0, sumReview = 0, sumNote = 0, sumImportant = 0, sumQuestion = 0;
-        bool hasAnyAnnots = false;
-        bool fromOtherOpenTabs = false;
-        std::vector<std::wstring> otherTabNames;
-
-        if (hasActiveDoc && isAnnotatableDoc(*curDoc)) {
-            const auto& cSum = m_editor.GetDocCommentSummary(curDoc->buffer, getDocExtStr(*curDoc));
-            if (!cSum.entries.empty()) {
-                hasAnyAnnots = true;
-                sumUrgent = cSum.urgentCount;
-                sumAsap = cSum.asapCount;
-                sumAlert = cSum.alertCount;
-                sumTodo = cSum.todoCount;
-                sumWarning = cSum.warningCount;
-                sumHack = cSum.hackCount;
-                sumReview = cSum.reviewCount;
-                sumNote = cSum.noteCount;
-                sumImportant = cSum.importantCount;
-                sumQuestion = cSum.questionCount;
-            }
-        }
-
-        if (!hasAnyAnnots) {
-            auto accumulateFromGroups = [&](const std::vector<editor::EditorGroup>& groups) {
-                for (const auto& grp : groups) {
-                    for (const auto& d : grp.docs) {
-                        if (&d == curDoc || !isAnnotatableDoc(d)) continue;
-                        const auto& s = m_editor.GetDocCommentSummary(d.buffer, getDocExtStr(d));
-                        if (s.entries.empty()) continue;
-                        hasAnyAnnots = true;
-                        fromOtherOpenTabs = true;
-                        sumUrgent += s.urgentCount;
-                        sumAsap += s.asapCount;
-                        sumAlert += s.alertCount;
-                        sumTodo += s.todoCount;
-                        sumWarning += s.warningCount;
-                        sumHack += s.hackCount;
-                        sumReview += s.reviewCount;
-                        sumNote += s.noteCount;
-                        sumImportant += s.importantCount;
-                        sumQuestion += s.questionCount;
-                        if (otherTabNames.size() < 3) {
-                            std::wstring nm = d.fileName.empty() ? d.filePath : d.fileName;
-                            if (!nm.empty() && std::find(otherTabNames.begin(), otherTabNames.end(), nm) == otherTabNames.end()) {
-                                otherTabNames.push_back(std::move(nm));
-                            }
-                        }
-                    }
-                }
-            };
-            accumulateFromGroups(m_editorGroups);
-            for (const auto& fw : m_floatingWindows) {
-                if (fw && fw->kind == FloatingDockKind::EditorGroup) {
-                    accumulateFromGroups(fw->editorGroups);
-                }
-            }
-        }
+        const auto cStats = CollectCommentAnnotationStats();
+        const bool hasAnyAnnots = (cStats.distinctFiles > 0);
+        const bool multiFileAnnots = (cStats.distinctFiles > 1);
+        const bool singleNonActiveFile = (cStats.distinctFiles == 1 && !cStats.activeFileHasAnnots && !cStats.fileLabels.empty());
 
         if (hasAnyAnnots) {
             struct PillChip {
@@ -16308,34 +16969,31 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             auto pushChip = [&](ui::EditorCanvas::BetterCommentType t, size_t cnt, const wchar_t* name) {
                 if (cnt > 0) chips.push_back({ t, cnt, std::to_wstring(cnt) + L" " + name });
             };
-            pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    sumUrgent,    L"Urgent");
-            pushChip(ui::EditorCanvas::BetterCommentType::Asap,      sumAsap,      L"ASAP");
-            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     sumAlert,     L"Error");
-            pushChip(ui::EditorCanvas::BetterCommentType::Todo,      sumTodo,      L"TODO");
-            pushChip(ui::EditorCanvas::BetterCommentType::Warning,   sumWarning,   L"Warn");
-            pushChip(ui::EditorCanvas::BetterCommentType::Hack,      sumHack,      L"Hack");
-            pushChip(ui::EditorCanvas::BetterCommentType::Review,    sumReview,    L"Review");
-            pushChip(ui::EditorCanvas::BetterCommentType::Note,      sumNote,      L"Note");
-            pushChip(ui::EditorCanvas::BetterCommentType::Important, sumImportant, L"Imp");
-            pushChip(ui::EditorCanvas::BetterCommentType::Question,  sumQuestion,  L"Question");
+            pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    cStats.urgentCount,    L"Urgent");
+            pushChip(ui::EditorCanvas::BetterCommentType::Asap,      cStats.asapCount,      L"ASAP");
+            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     cStats.alertCount,     L"Error");
+            pushChip(ui::EditorCanvas::BetterCommentType::Todo,      cStats.todoCount,      L"TODO");
+            pushChip(ui::EditorCanvas::BetterCommentType::Warning,   cStats.warningCount,   L"Warn");
+            pushChip(ui::EditorCanvas::BetterCommentType::Hack,      cStats.hackCount,      L"Hack");
+            pushChip(ui::EditorCanvas::BetterCommentType::Review,    cStats.reviewCount,    L"Review");
+            pushChip(ui::EditorCanvas::BetterCommentType::Note,      cStats.noteCount,      L"Note");
+            pushChip(ui::EditorCanvas::BetterCommentType::Important, cStats.importantCount, L"Imp");
+            pushChip(ui::EditorCanvas::BetterCommentType::Question,  cStats.questionCount,  L"Question");
 
             if (!chips.empty()) {
-                if (fromOtherOpenTabs && !otherTabNames.empty()) {
-                    m_statusCommentTooltip = L"Open tab annotations (";
-                    for (size_t ni = 0; ni < otherTabNames.size(); ++ni) {
-                        if (ni > 0) m_statusCommentTooltip += L", ";
-                        m_statusCommentTooltip += otherTabNames[ni];
-                    }
-                    m_statusCommentTooltip += L"):";
+                if (multiFileAnnots) {
+                    m_statusCommentTooltip = L"Comment Annotations across " + std::to_wstring(cStats.distinctFiles) + L" files:";
+                } else if (singleNonActiveFile) {
+                    m_statusCommentTooltip = L"Comment Annotations (" + cStats.fileLabels.front() + L"):";
                 } else {
                     m_statusCommentTooltip = L"Comment Annotations in file:";
                 }
                 for (size_t ci = 0; ci < chips.size(); ++ci) {
                     m_statusCommentTooltip += (ci == 0 ? L" " : L" \x2022 ") + chips[ci].label;
                 }
-                m_statusCommentTooltip += fromOtherOpenTabs
-                    ? L" (Click to switch tab & jump)"
-                    : L" (Click to jump to next)";
+                m_statusCommentTooltip += multiFileAnnots
+                    ? L" (Click to view all in dropdown)"
+                    : (singleNonActiveFile ? L" (Click to open & jump)" : L" (Click to jump to next)");
 
                 const size_t shown = (std::min<size_t>)(chips.size(), 3);
                 const float cPadX = m_config.ScaleF(6.0f);
@@ -16372,8 +17030,12 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                 }
                 std::wstring sourceTabSuffix;
                 float sourceTabW = 0.0f;
-                if (fromOtherOpenTabs && !otherTabNames.empty()) {
-                    sourceTabSuffix = L"(" + otherTabNames.front() + (otherTabNames.size() > 1 ? L", \x2026)" : L")");
+                if (multiFileAnnots) {
+                    sourceTabSuffix = L"(" + std::to_wstring(cStats.distinctFiles) + L" files)";
+                } else if (singleNonActiveFile) {
+                    sourceTabSuffix = L"(" + cStats.fileLabels.front() + L")";
+                }
+                if (!sourceTabSuffix.empty()) {
                     float candidateW = measureChipStr(sourceTabSuffix);
                     if (curLeftX + pillW + cChipGap + candidateW + m_config.ScaleF(10.0f) < curRightX) {
                         sourceTabW = candidateW;
@@ -16778,6 +17440,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     if (!m_activeFloatingWindow) {
         if (m_showBranchDropdown) {
             HandleBranchDropdownMouseMove(clientPt);
+        }
+        if (m_showCommentAnnotsDropdown) {
+            HandleCommentAnnotsDropdownMouseMove(clientPt);
         }
         if (m_drawer.IsGitHubLoginModalOpen()) {
             if (m_drawer.HandleGitHubLoginMouseMove(clientPt)) {
@@ -19427,6 +20092,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         }
+        if (m_showCommentAnnotsDropdown) {
+            if (HandleCommentAnnotsDropdownMouseDown(clientPt)) {
+                return;
+            }
+        }
 
         // Status Bar clicks: Git branch toggles Branch Switcher Dropdown (works reliably whether sidebar is open or closed)
         if (m_config.showStatusBar &&
@@ -20799,6 +21469,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"erd") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.GetErdView().HandleLButtonDown(clientPt, m_hwnd, m_config)) {
+                        if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
+                            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                        }
                         SetCapture(m_hwnd);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
@@ -22236,7 +22909,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     if (m_config.showStatusBar && PtInRectF(clientPt, m_rcStatusBarCommentAnnots)) {
-        JumpToNextCommentAnnotation();
+        HandleStatusBarCommentAnnotsClick();
         return;
     }
 
@@ -23461,13 +24134,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 } // end if (!m_activeFloatingWindow) main-window modals
 
-                // 0b. Popup Menu Dropdowns (File, Edit, View, Context Menus)
+                // 0b. Popup Menu Dropdowns (File, Edit, View, Context Menus) & Status Bar Popups
                 if (m_popupMenu.IsOpen() && (m_popupMenuOwnerHwnd == nullptr || m_popupMenuOwnerHwnd == m_hwnd.load())) {
                     if (m_popupMenu.HitTestMenuArea(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+                if (!m_activeFloatingWindow && m_showCommentAnnotsDropdown && PtInRectF(pt, m_rcCommentAnnotsDropdown)) {
+                    const float headerH = m_config.ScaleF(32.0f);
+                    const float padY = m_config.ScaleF(4.0f);
+                    const bool overList = (static_cast<float>(pt.y) >= m_rcCommentAnnotsDropdown.top + headerH + padY &&
+                                           static_cast<float>(pt.y) <= m_rcCommentAnnotsDropdown.bottom - padY);
+                    SetCursor(LoadCursor(nullptr, overList ? IDC_HAND : IDC_ARROW));
                     return TRUE;
                 }
 
@@ -24317,6 +24998,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             const float headerH = EffectiveHeaderHeight();
 
             if (!m_activeFloatingWindow) {
+                if (m_showCommentAnnotsDropdown && HandleCommentAnnotsDropdownMouseWheel(delta, pt)) {
+                    return 0;
+                }
                 // 0a. Scroll Remote Window Modal if open
                 if (m_remoteModal.IsOpen()) {
                     if (m_remoteModal.HandleMouseWheel(delta)) {
@@ -24457,6 +25141,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"erd") {
                     bool isCtrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                     if (m_editor.GetErdView().HandleMouseWheel(delta, isCtrlDown, pt, m_config)) {
+                        if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
+                            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -24546,6 +25233,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                     int absNotches = (std::max)(1, (std::abs(totalWheelDelta) + WHEEL_DELTA / 2) / WHEEL_DELTA);
                     size_t linesToScroll = static_cast<size_t>(absNotches) * 3;
+                    const size_t prevScrollLine = pDoc->scrollLine;
                     if (totalWheelDelta > 0) {
                         if (pDoc->scrollLine >= linesToScroll) {
                             pDoc->scrollLine -= linesToScroll;
@@ -24558,6 +25246,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             ? pDoc->lastMaxScrollLine
                             : ((rawLines > 3) ? (rawLines - 3) : 0);
                         pDoc->scrollLine = (std::min)(maxS, pDoc->scrollLine + linesToScroll);
+                    }
+                    // Seed subpixel vertical offset so the viewport eases smoothly to the new scrollLine at 60 FPS.
+                    const ptrdiff_t actualDeltaLines = static_cast<ptrdiff_t>(pDoc->scrollLine) - static_cast<ptrdiff_t>(prevScrollLine);
+                    if (m_config.smoothScrolling && actualDeltaLines != 0) {
+                        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
+                        const float maxOffsetPx = lineH * 14.0f;
+                        pDoc->smoothScrollOffsetPx = (std::clamp)(
+                            pDoc->smoothScrollOffsetPx + static_cast<float>(actualDeltaLines) * lineH,
+                            -maxOffsetPx, maxOffsetPx);
+                        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                    } else if (!m_config.smoothScrolling) {
+                        pDoc->smoothScrollOffsetPx = 0.0f;
                     }
                     if (IsMarkdownFile(pDoc->filePath)) {
                         SyncMarkdownCompanionScroll(*pDoc, false);
@@ -25954,6 +26654,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             } // end if (!m_activeFloatingWindow) main modals & explorer keys
 
             if (wParam == VK_ESCAPE) {
+                if (!m_activeFloatingWindow && m_showCommentAnnotsDropdown) {
+                    CloseCommentAnnotsDropdown();
+                    return 0;
+                }
                 if (!m_activeFloatingWindow && m_showBranchDropdown) {
                     CloseBranchDropdown();
                     return 0;
@@ -27719,12 +28423,41 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Smoothly animate ER Diagram zoom, pan, Auto Layout node gliding, and Schema Diff scrolling
+                if (m_editor.GetErdView().IsAnimating()) {
+                    m_editor.GetErdView().UpdateAnimation();
+                    keepAnimating = true;
+                }
 
+                // 60 FPS exponential ease-out for code editor smooth vertical wheel scrolling
+                bool anyFloatingScrolled = false;
+                auto easeSmoothGroupScroll = [&](std::vector<editor::EditorGroup>& groups, bool isFloating) {
+                    for (auto& grp : groups) {
+                        for (auto& d : grp.docs) {
+                            if (std::abs(d.smoothScrollOffsetPx) > 0.01f) {
+                                d.smoothScrollOffsetPx *= 0.68f;
+                                if (std::abs(d.smoothScrollOffsetPx) < 0.45f) {
+                                    d.smoothScrollOffsetPx = 0.0f;
+                                } else {
+                                    keepAnimating = true;
+                                }
+                                if (isFloating) anyFloatingScrolled = true;
+                            }
+                        }
+                    }
+                };
+                easeSmoothGroupScroll(m_editorGroups, false);
+                for (auto& fw : m_floatingWindows) {
+                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                        easeSmoothGroupScroll(fw->editorGroups, true);
+                    }
+                }
 
                 if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
                     KillTimer(m_hwnd, m_animTimerId);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
+                if (anyFloatingScrolled) InvalidateFloatingWindows();
             } else if (wParam == m_gcTimerId) {
                 ULONGLONG nowTick = GetTickCount64();
                 if (m_lastUserInputTick == 0 || (nowTick - m_lastUserInputTick) >= 15000ULL) {
@@ -28353,6 +29086,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 RebuildProblemsCache();
                 UpdateDrawerErrorFiles();
+                if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
+                    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 InvalidateFloatingWindows();
             }
@@ -28440,6 +29176,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (!pending.empty()) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
+            }
+            return 0;
+        }
+
+        case WM_USER + 234: {
+            if (!m_isDestroying.load()) {
+                ApplyPendingWorkspaceCommentAnnots();
             }
             return 0;
         }
@@ -30132,6 +30875,7 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
                     wsRoot, doc.filePath, WideToUtf8Str(doc.originalDiskText));
             }
             ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
+            RefreshWorkspaceCommentAnnotsAsync();
         }
     }
 }
@@ -30301,7 +31045,9 @@ void Window::RefreshWorkspaceEnvVars() {
 }
 
 void Window::SyncActiveSqlSchemaToIntelliSense() {
-    const auto& sqlTables = m_editor.GetSqlTables();
+    // Use combined multi-DB + workspace .sql DDL catalog so IntelliSense stays aware of all schemas
+    // even while the ER Diagram inspects a single active database.
+    const auto& sqlTables = m_editor.GetSqlValidationTables();
     if (sqlTables.empty()) return;
     std::vector<editor::IntelliSenseEngine::DbSchemaColumn> cols;
     cols.reserve(sqlTables.size() * 6);
@@ -30337,10 +31083,12 @@ void Window::RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector
     std::wstring ext = std::filesystem::path(docPath).extension().wstring();
     for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
 
-    // #11 Validate SQL queries inside PHP / JS / TS strings against active SqlEngine schema
-    const auto& activeSqlTables = m_editor.GetSqlTables();
-    if (!activeSqlTables.empty() && editor::HostSqlAnalyzer::IsSupportedHostExtension(ext)) {
-        auto sqlDiags = editor::HostSqlAnalyzer::ValidateDocumentSql(docPath, doc.buffer.GetLines(), activeSqlTables);
+    // #11 Validate SQL queries inside PHP / JS / TS strings against all known server schemas + workspace .sql DDL
+    // (using GetActiveSqlDatabaseName() only as tie-breaking preference, never hiding tables from other DBs).
+    const auto& validationSqlTables = m_editor.GetSqlValidationTables();
+    if (!validationSqlTables.empty() && editor::HostSqlAnalyzer::IsSupportedHostExtension(ext)) {
+        auto sqlDiags = editor::HostSqlAnalyzer::ValidateDocumentSql(
+            docPath, doc.buffer.GetLines(), validationSqlTables, m_editor.GetActiveSqlDatabaseName());
         for (const auto& sd : sqlDiags) {
             lsp::Diagnostic ld;
             ld.line = sd.line0;

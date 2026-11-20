@@ -1493,7 +1493,76 @@ private:
     bool m_isColumnSelecting = false;
 
 public:
+    /// Single comment annotation entry collected across open tabs or closed workspace files.
+    struct CommentAnnotDropdownItem {
+        std::wstring filePath;          ///< Full file path on disk (empty for unsaved virtual/untitled tabs)
+        std::wstring displayPath;       ///< Relative path to workspace root or tab filename
+        int groupIdx = -1;              ///< Open group index when already open (-1 if closed workspace file)
+        int docIdx = -1;                ///< Open doc index when already open
+        uint64_t floatingWinId = 0;     ///< Non-zero if hosted in a floating dock window
+        size_t line = 0;                ///< 0-based line index of annotation
+        size_t col = 0;                 ///< 0-based column index of annotation
+        ui::EditorCanvas::BetterCommentType type = ui::EditorCanvas::BetterCommentType::Normal;
+        std::wstring tagLabel;          ///< Short label ("Urgent", "TODO", "Warn", ...)
+        std::wstring preview;           ///< Trimmed comment text preview
+    };
+
+    /// Visual row inside the Status Bar Comment Annotations dropdown (either a file header or an annotation item).
+    struct CommentAnnotDropdownRow {
+        bool isFileHeader = false;
+        size_t itemIdx = 0;             ///< Index in m_commentAnnotsDropdownItems (first item for headers)
+        std::wstring fileHeaderPath;
+        std::wstring fileHeaderLabel;
+        size_t fileItemCount = 0;
+    };
+
+    /// Cached comment annotation summary for a closed workspace file scanned asynchronously.
+    struct WorkspaceCommentAnnotFile {
+        std::wstring filePath;
+        std::wstring displayPath;
+        ui::EditorCanvas::DocCommentSummary summary;
+    };
+
+    /// Aggregated counts & distinct file metadata for Status Bar pill rendering (zero per-entry allocation).
+    struct CommentAnnotationStats {
+        size_t distinctFiles = 0;
+        bool activeFileHasAnnots = false;
+        size_t urgentCount = 0;
+        size_t asapCount = 0;
+        size_t alertCount = 0;
+        size_t todoCount = 0;
+        size_t warningCount = 0;
+        size_t hackCount = 0;
+        size_t reviewCount = 0;
+        size_t noteCount = 0;
+        size_t importantCount = 0;
+        size_t questionCount = 0;
+        std::vector<std::wstring> fileLabels; ///< Up to 3 representative file labels
+    };
+
     bool JumpToNextCommentAnnotation();
+    /** @brief Scans rootDir recursively on a background-safe path for BetterComment annotations across closed workspace files. */
+    [[nodiscard]] static std::vector<WorkspaceCommentAnnotFile> ScanWorkspaceCommentAnnots(
+        const std::wstring& rootDir,
+        const std::atomic<bool>* isDestroying = nullptr,
+        const std::atomic<uint64_t>* activeGen = nullptr,
+        uint64_t expectedGen = 0);
+    /** @brief Collects all comment annotations across open tabs and closed scanned workspace files. */
+    [[nodiscard]] std::vector<CommentAnnotDropdownItem> CollectAllCommentAnnotations(size_t* outDistinctFiles = nullptr) const;
+    /** @brief Fast zero-entry-allocation aggregator for Status Bar pill counts & tooltip composition. */
+    [[nodiscard]] CommentAnnotationStats CollectCommentAnnotationStats() const;
+    /** @brief Handles clicks on the Status Bar comment annotations pill (opens dropdown for >1 files, jumps directly for 1 file). */
+    void HandleStatusBarCommentAnnotsClick();
+    void ToggleCommentAnnotsDropdown();
+    void CloseCommentAnnotsDropdown();
+    void RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWidth, float clientHeight);
+    bool HandleCommentAnnotsDropdownMouseDown(POINT pt);
+    bool HandleCommentAnnotsDropdownMouseMove(POINT pt);
+    bool HandleCommentAnnotsDropdownMouseWheel(short delta, POINT pt);
+    void RefreshWorkspaceCommentAnnotsAsync();
+    void ApplyPendingWorkspaceCommentAnnots();
+    [[nodiscard]] bool IsCommentAnnotsDropdownOpen() const noexcept { return m_showCommentAnnotsDropdown; }
+    [[nodiscard]] const std::vector<CommentAnnotDropdownItem>& GetCommentAnnotsDropdownItems() const noexcept { return m_commentAnnotsDropdownItems; }
     [[nodiscard]] const std::wstring& GetStatusCommentTooltip() const noexcept { return m_statusCommentTooltip; }
     [[nodiscard]] D2D1_RECT_F GetStatusBarCommentAnnotsRect() const noexcept { return m_rcStatusBarCommentAnnots; }
 
@@ -1504,6 +1573,22 @@ private:
     std::vector<std::pair<std::wstring, bool>> m_branchList;
     int m_hoveredBranchIdx = -1;
     D2D1_RECT_F m_rcBranchDropdown{};
+
+    // Comment Annotations Dropdown & Background Workspace Scanner
+    bool m_showCommentAnnotsDropdown = false;
+    std::vector<CommentAnnotDropdownItem> m_commentAnnotsDropdownItems;
+    std::vector<CommentAnnotDropdownRow> m_commentAnnotsDropdownRows;
+    size_t m_commentAnnotsDropdownDistinctFiles = 0;
+    int m_hoveredCommentAnnotRowIdx = -1;
+    float m_commentAnnotsDropdownScrollY = 0.0f;
+    float m_commentAnnotsDropdownMaxScrollY = 0.0f;
+    D2D1_RECT_F m_rcCommentAnnotsDropdown{};
+    std::vector<WorkspaceCommentAnnotFile> m_wsCommentAnnots;
+    std::atomic<uint64_t> m_wsCommentScanGen{ 0 };
+    std::mutex m_wsCommentMutex;
+    std::vector<WorkspaceCommentAnnotFile> m_pendingWsCommentAnnots;
+    uint64_t m_pendingWsCommentGen = 0;
+    bool m_hasPendingWsCommentAnnots = false;
 
     void RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW);
 
