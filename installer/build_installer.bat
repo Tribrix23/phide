@@ -60,5 +60,5 @@ if %errorlevel% neq 0 (
 
 echo ======================================================================
 echo [SUCCESS] phide standalone offline installer created successfully:
-echo  - Output: installer\output\phide-Setup-x64e-a.exe
+echo  - Output: installer\output\phide-Setup-x64e-b.exe
 echo ======================================================================
