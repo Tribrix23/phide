@@ -237,6 +237,8 @@ public:
     void SetPrivacyMaskEnabled(bool enabled) noexcept { m_config.enablePrivacyMask = enabled; }
     void SaveSessionStatePublic() { SaveSessionState(); }
     void LoadSessionStatePublic() { LoadSessionState(); }
+    void OpenFileDocumentForTest(const std::wstring& path, bool isPreview = false) { OpenFileDocument(path, isPreview); }
+    void ProcessPendingFileLoadsForTest() { ApplyPendingFileLoads(); }
 
     /** @brief Tab context menu, pinning, and detached window helpers. */
     void ToggleTabPin(int groupIdx, int docIdx);
@@ -1641,6 +1643,27 @@ private:
     bool m_hasPendingCodeMetrics = false;
     std::atomic<uint64_t> m_codeMetricsGen{ 0 };
     void ApplyPendingCodeMetrics();
+
+    struct PendingFileLoadResult {
+        uint64_t generation = 0;
+        std::wstring resolvedPath;
+        bool loadOk = false;
+        bool isLargeFile = false;
+        std::shared_ptr<editor::Buffer> loadedBuffer;
+        std::wstring originalDiskText;
+        std::shared_ptr<editor::Buffer> diffOriginalBuffer;
+        std::vector<lsp::Diagnostic> diagnostics;
+        std::shared_ptr<ui::StructuredViewerState> structuredView;
+        int effectiveTabSize = 0;
+        int effectiveIndentStyle = 0;
+        std::filesystem::file_time_type lastDiskWriteTime{};
+        bool hasLastDiskWriteTime = false;
+    };
+    std::mutex m_fileLoadMutex;
+    std::vector<PendingFileLoadResult> m_pendingFileLoads;
+    std::atomic<uint64_t> m_fileLoadGenCounter{ 0 };
+    void FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::wstring& resolvedPath, bool runLspAndLinters, bool runGitAndExtraDiagnostics);
+    void ApplyPendingFileLoads();
 };
 
 } // namespace phide::app

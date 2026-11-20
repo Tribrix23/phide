@@ -207,7 +207,7 @@ public:
                 bool highlightUseRegex = false,
                 bool isRenaming = false) {
         editor::EditorGroup g;
-        g.docs = docs;
+        g.docs = std::move(docs);
         g.activeDocIdx = activeDocIdx;
         std::vector<editor::EditorGroup> groups;
         groups.push_back(std::move(g));
@@ -1401,6 +1401,9 @@ public:
     void OpenPeekPanel(PeekMode mode, const std::wstring& title, const std::wstring& subtitle,
                        size_t anchorLine, std::vector<PeekItemEntry> items);
     void OpenCodeMetricsLoadingPanel(const std::wstring& activeFileLabel);
+    void RenderFileLoadingView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                               editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                               float topY, float clientHeight);
     void OpenCodeMetricsPanel(const editor::WorkspaceCodeMetrics& metrics, const std::wstring& activeFileLabel);
     void ClosePeekPanel() noexcept {
         m_peekPanel.isOpen = false;

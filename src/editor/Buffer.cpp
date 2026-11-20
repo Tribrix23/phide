@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <regex>
 #include <atomic>
+#include <mutex>
 
 namespace phide::editor {
 
@@ -801,7 +802,28 @@ struct UndoCoalesceState {
     size_t col = 0;
     ULONGLONG tick = 0;
 };
+static std::mutex s_undoCoalesceMutex;
 static std::unordered_map<const Buffer*, UndoCoalesceState> s_undoCoalesceMap;
+
+void EraseUndoCoalesce(const Buffer* buf) {
+    std::lock_guard<std::mutex> lk(s_undoCoalesceMutex);
+    s_undoCoalesceMap.erase(buf);
+}
+
+bool CheckUndoCoalesce(const Buffer* buf, int op, size_t line, size_t col, ULONGLONG now) {
+    std::lock_guard<std::mutex> lk(s_undoCoalesceMutex);
+    auto it = s_undoCoalesceMap.find(buf);
+    return it != s_undoCoalesceMap.end() &&
+           it->second.lastOp == op &&
+           it->second.line == line &&
+           it->second.col == col &&
+           (now - it->second.tick) <= 750;
+}
+
+void RecordUndoCoalesce(const Buffer* buf, int op, size_t line, size_t col, ULONGLONG now) {
+    std::lock_guard<std::mutex> lk(s_undoCoalesceMutex);
+    s_undoCoalesceMap[buf] = { op, line, col, now };
+}
 } // namespace
 
 Buffer::Buffer() {
@@ -821,7 +843,7 @@ Buffer::Buffer(const std::wstring& initialContent) {
 }
 
 Buffer::~Buffer() {
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CloseFileMapping();
 }
 
@@ -860,8 +882,8 @@ Buffer::Buffer(Buffer&& other) noexcept
     std::swap(m_mmapLineCache, other.m_mmapLineCache);
     std::swap(m_mmapLruOrder, other.m_mmapLruOrder);
     std::swap(m_tokenCache, other.m_tokenCache);
-    s_undoCoalesceMap.erase(&other);
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(&other);
+    EraseUndoCoalesce(this);
     other.m_mappedLineCount = 0;
     other.m_mappedByteSize = 0;
     other.m_undoMemoryBytes = 0;
@@ -875,8 +897,8 @@ Buffer::Buffer(Buffer&& other) noexcept
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this == &other) return *this;
-    s_undoCoalesceMap.erase(&other);
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(&other);
+    EraseUndoCoalesce(this);
     CloseFileMapping();
     m_identity = std::move(other.m_identity);
     m_lines = std::move(other.m_lines);
@@ -1015,7 +1037,7 @@ void Buffer::CommitPendingUndo() {
 }
 
 void Buffer::BeginPendingSliceUndo(size_t startLine, size_t beforeCount, size_t afterCount) {
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CommitPendingUndo();
     const size_t safeStart = (std::min)(startLine, m_lines.size());
     const size_t safeBefore = (std::min)(beforeCount, m_lines.size() - safeStart);
@@ -1037,7 +1059,7 @@ void Buffer::BeginPendingSliceUndo(size_t startLine, size_t beforeCount, size_t 
 }
 
 void Buffer::PushUndo() {
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CommitPendingUndo();
     m_hasPendingRangeUndo = false;
     m_pendingUndoLines = m_lines;
@@ -1072,7 +1094,7 @@ bool Buffer::CanUndo() const noexcept {
 }
 
 void Buffer::RunGarbageCollection(bool clearTokenCache) {
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CommitPendingUndo();
     EnforceUndoBudget();
     if (m_lines.capacity() > m_lines.size() + 256) {
@@ -1105,7 +1127,7 @@ void Buffer::RunGarbageCollection(bool clearTokenCache) {
 
 bool Buffer::Undo() {
     if (m_mappedState) return false;
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CommitPendingUndo();
     if (m_undoStack.empty()) return false;
 
@@ -1148,7 +1170,7 @@ bool Buffer::Undo() {
 
 bool Buffer::Redo() {
     if (m_mappedState) return false;
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     CommitPendingUndo();
     if (m_redoStack.empty()) return false;
 
@@ -1567,14 +1589,9 @@ void Buffer::InsertChar(wchar_t ch) {
     ULONGLONG now = GetTickCount64();
     bool isNewline = (ch == L'\r' || ch == L'\n');
     bool isWordBoundary = isNewline || ch == L' ' || ch == L'\t';
-    auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (!isWordBoundary &&
                         (!m_undoStack.empty() || m_hasPendingUndo) &&
-                        itCoal != s_undoCoalesceMap.end() &&
-                        itCoal->second.lastOp == 1 &&
-                        itCoal->second.line == m_cursor.line &&
-                        itCoal->second.col == m_cursor.col &&
-                        (now - itCoal->second.tick) <= 750);
+                        CheckUndoCoalesce(this, 1, m_cursor.line, m_cursor.col, now));
     const size_t editLine = m_cursor.line;
     if (!canCoalesce) {
         BeginPendingSliceUndo(editLine, 1, isNewline ? 2 : 1);
@@ -1601,13 +1618,13 @@ void Buffer::InsertChar(wchar_t ch) {
         m_cursor.line++;
         m_cursor.col = 0;
         m_tokenCache.clear();
-        s_undoCoalesceMap.erase(this);
+        EraseUndoCoalesce(this);
     } else {
         line.insert(line.begin() + m_cursor.col, ch);
         m_tokenCache.erase(m_cursor.line);
         if (editLine < m_dirtyEntryStart) m_dirtyEntryStart = editLine;
         m_cursor.col++;
-        s_undoCoalesceMap[this] = { 1, m_cursor.line, m_cursor.col, now };
+        RecordUndoCoalesce(this, 1, m_cursor.line, m_cursor.col, now);
     }
     m_isModified = true;
     ++m_version;
@@ -1620,14 +1637,9 @@ void Buffer::Backspace() {
     if (m_cursor.col == 0 && m_cursor.line == 0) return;
 
     ULONGLONG now = GetTickCount64();
-    auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (m_cursor.col > 0 &&
                         (!m_undoStack.empty() || m_hasPendingUndo) &&
-                        itCoal != s_undoCoalesceMap.end() &&
-                        itCoal->second.lastOp == 2 &&
-                        itCoal->second.line == m_cursor.line &&
-                        itCoal->second.col == m_cursor.col &&
-                        (now - itCoal->second.tick) <= 750);
+                        CheckUndoCoalesce(this, 2, m_cursor.line, m_cursor.col, now));
     if (!canCoalesce) {
         if (m_cursor.col > 0) {
             BeginPendingSliceUndo(m_cursor.line, 1, 1);
@@ -1647,7 +1659,7 @@ void Buffer::Backspace() {
         if (m_cursor.line < m_dirtyEntryStart) m_dirtyEntryStart = m_cursor.line;
         m_cursor.col--;
         m_isModified = true;
-        s_undoCoalesceMap[this] = { 2, m_cursor.line, m_cursor.col, now };
+        RecordUndoCoalesce(this, 2, m_cursor.line, m_cursor.col, now);
     } else if (m_cursor.line > 0) {
         // Join with previous line
         const size_t targetLine = m_cursor.line - 1;
@@ -1665,7 +1677,7 @@ void Buffer::Backspace() {
         m_cursor.col = prevLen;
         m_tokenCache.clear();
         m_isModified = true;
-        s_undoCoalesceMap.erase(this);
+        EraseUndoCoalesce(this);
     }
     ++m_version;
 }
@@ -1680,14 +1692,9 @@ void Buffer::DeleteForward() {
     if (m_cursor.col == line.length() && m_cursor.line + 1 >= m_lines.size()) return;
 
     ULONGLONG now = GetTickCount64();
-    auto itCoal = s_undoCoalesceMap.find(this);
     bool canCoalesce = (m_cursor.col < line.length() &&
                         (!m_undoStack.empty() || m_hasPendingUndo) &&
-                        itCoal != s_undoCoalesceMap.end() &&
-                        itCoal->second.lastOp == 3 &&
-                        itCoal->second.line == m_cursor.line &&
-                        itCoal->second.col == m_cursor.col &&
-                        (now - itCoal->second.tick) <= 750);
+                        CheckUndoCoalesce(this, 3, m_cursor.line, m_cursor.col, now));
     if (!canCoalesce) {
         if (m_cursor.col < line.length()) {
             BeginPendingSliceUndo(m_cursor.line, 1, 1);
@@ -1704,7 +1711,7 @@ void Buffer::DeleteForward() {
         m_tokenCache.erase(m_cursor.line);
         if (m_cursor.line < m_dirtyEntryStart) m_dirtyEntryStart = m_cursor.line;
         m_isModified = true;
-        s_undoCoalesceMap[this] = { 3, m_cursor.line, m_cursor.col, now };
+        RecordUndoCoalesce(this, 3, m_cursor.line, m_cursor.col, now);
     } else if (m_cursor.line + 1 < m_lines.size()) {
         const size_t targetLine = m_cursor.line;
         line += m_lines[targetLine + 1];
@@ -1718,7 +1725,7 @@ void Buffer::DeleteForward() {
         }
         m_tokenCache.clear();
         m_isModified = true;
-        s_undoCoalesceMap.erase(this);
+        EraseUndoCoalesce(this);
     }
     ++m_version;
 }
@@ -2208,7 +2215,7 @@ bool Buffer::LoadFromFile(const std::wstring& path, uint64_t mmapThresholdOverri
         m_lineEnding = L"\n";
     }
 
-    s_undoCoalesceMap.erase(this);
+    EraseUndoCoalesce(this);
     m_undoStack.clear();
     m_redoStack.clear();
     m_undoMemoryBytes = 0;

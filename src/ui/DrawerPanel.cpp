@@ -6031,7 +6031,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
 
         std::wstring logCmd = L"log -n " + std::to_wstring(graphLimit) +
             (graphAllBranches ? L" --all" : L"") +
-            L" --pretty=format:\"%h%x1f%p%x1f%s%x1f%an%x1f%ar%x1f%d%x1f%ad%x1f%ae\" --date=format:\"%B %d, %Y at %I:%M %p\"";
+            L" --date-order --pretty=format:\"%h%x1f%p%x1f%s%x1f%an%x1f%ar%x1f%d%x1f%ad%x1f%ae\" --date=format:\"%B %d, %Y at %I:%M %p\"";
         auto resLog = RunGitCmd(logCmd, dir);
         std::vector<GitCommitItem> commits;
         if (resLog.exitCode == 0) {
@@ -6960,7 +6960,9 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
     if (ci.hash.empty()) return;
     std::wstring dir = NormalizeDirForGit(m_openFolderPath);
     if (!ci.filesLoaded) {
-        auto res = RunGitCmd(L"show --name-status --pretty=\"\" " + ci.hash, dir);
+        // Use -m --first-parent so merge commits also report changed files against their first parent
+        // (plain `git show --name-status` produces empty output for multi-parent merge commits).
+        auto res = RunGitCmd(L"show -m --first-parent --name-status --pretty=\"\" " + ci.hash, dir);
         ci.files.clear();
         if (res.exitCode == 0) {
             std::wstringstream ss(res.output);
@@ -6997,7 +6999,7 @@ void DrawerPanel::LoadCommitFiles(GitCommitItem& ci) {
     }
 
     if (ci.statSummary.empty() || ci.statSummary == L"Loading...") {
-        auto resStat = RunGitCmd(L"show --shortstat --format=\"\" " + ci.hash, dir);
+        auto resStat = RunGitCmd(L"show -m --first-parent --shortstat --format=\"\" " + ci.hash, dir);
         if (resStat.exitCode == 0 && !resStat.output.empty()) {
             std::wstring st = resStat.output;
             size_t f = st.find_first_not_of(L" \r\n\t");
@@ -7420,8 +7422,8 @@ float DrawerPanel::ComputeGitGraphTotalHeight(float scale) const noexcept {
     float totalH = 0.0f;
     for (const auto& ci : m_gitCommits) {
         totalH += rowH;
-        if (ci.isExpanded && !ci.files.empty()) {
-            totalH += static_cast<float>(ci.files.size()) * fileRowH;
+        if (ci.isExpanded) {
+            totalH += (ci.files.empty() ? 1.0f : static_cast<float>(ci.files.size())) * fileRowH;
         }
     }
     if (m_gitGraphLimit < 400 && !m_gitCommits.empty() &&
@@ -9383,7 +9385,15 @@ void DrawerPanel::GenerateAiCommitMessage() {
 
 void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHash) {
     static std::atomic<int> s_activeCommitFileLoads{0};
-    if (s_activeCommitFileLoads.load() >= 2) {
+    bool isExplicitExpand = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash) {
+            isExplicitExpand = m_gitCommits[commitIdx].isExpanded;
+        }
+    }
+    const int cap = isExplicitExpand ? 6 : 2;
+    if (s_activeCommitFileLoads.load() >= cap) {
         std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
         if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash &&
             m_gitCommits[commitIdx].statSummary == L"Loading...") {
@@ -9420,8 +9430,22 @@ void DrawerPanel::LoadCommitFilesAsync(size_t commitIdx, const std::wstring& cHa
         if (!alive || !alive->load()) return;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            GitCommitItem* pTarget = nullptr;
             if (commitIdx < m_gitCommits.size() && m_gitCommits[commitIdx].hash == cHash) {
-                m_gitCommits[commitIdx] = std::move(itemCopy);
+                pTarget = &m_gitCommits[commitIdx];
+            } else {
+                for (auto& candidate : m_gitCommits) {
+                    if (candidate.hash == cHash) {
+                        pTarget = &candidate;
+                        break;
+                    }
+                }
+            }
+            if (pTarget) {
+                // Only merge fetched file list & stats; preserve live UI flags (isExpanded, bounds, hover)
+                pTarget->files = std::move(itemCopy.files);
+                pTarget->filesLoaded = itemCopy.filesLoaded;
+                pTarget->statSummary = std::move(itemCopy.statSummary);
             }
         }
         if (alive && alive->load() && m_onGitStateChanged) m_onGitStateChanged();
@@ -12608,8 +12632,8 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             curY = listTopY - m_gitGraphScrollY;
             for (size_t i = 0; i < m_gitCommits.size(); ++i) {
                 auto& ci = m_gitCommits[i];
-                const float expandedH = (ci.isExpanded && !ci.files.empty())
-                    ? (static_cast<float>(ci.files.size()) * fileRowH)
+                const float expandedH = ci.isExpanded
+                    ? ((ci.files.empty() ? 1.0f : static_cast<float>(ci.files.size())) * fileRowH)
                     : 0.0f;
                 const float commitBlockH = rowH + expandedH;
                 if (curY + commitBlockH <= listTopY) {
@@ -12643,7 +12667,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 timelineX = nodeX;
                 ID2D1SolidColorBrush* pCommitBrush = laneBrushes[ci.colorIdx % 8].Get();
 
-                const bool hasExpandedFiles = (ci.isExpanded && !ci.files.empty());
+                const bool hasExpandedFiles = ci.isExpanded;
                 const bool hasOwnParentLane = (std::find(ci.parentLanes.begin(), ci.parentLanes.end(), ci.lane) != ci.parentLanes.end());
 
                 if (headerVisible) {
@@ -12903,10 +12927,57 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                 }
                 curY = commitTopY + rowH;
 
-                // Render expanded commit changed files with uninterrupted continuing branch lanes
+                // Render expanded commit changed files (or loading/empty placeholder) with uninterrupted branch lanes
                 if (hasExpandedFiles) {
                     float fileIndent = originTimelineX + (maxLaneVisible + 1) * laneSpacing + config.ScaleF(6.0f);
-                    const size_t fileCount = ci.files.size();
+                    if (ci.files.empty()) {
+                        if (curY + fileRowH > listTopY && curY < clientHeight) {
+                            const float fileMidY = curY + fileRowH * 0.5f;
+                            for (int postLane : ci.postCommitLanes) {
+                                float plx = originTimelineX + postLane * laneSpacing;
+                                pRT->DrawLine(D2D1::Point2F(plx, curY), D2D1::Point2F(plx, curY + fileRowH),
+                                              laneBrushes[postLane % 8].Get(), 1.6f);
+                            }
+                            if (!hasOwnParentLane) {
+                                pRT->DrawLine(D2D1::Point2F(nodeX, curY), D2D1::Point2F(nodeX, fileMidY), pCommitBrush, 1.6f);
+                                for (int pLane : ci.parentLanes) {
+                                    if (std::find(ci.passThroughLanes.begin(), ci.passThroughLanes.end(), pLane) == ci.passThroughLanes.end()) {
+                                        continue;
+                                    }
+                                    float x2 = originTimelineX + pLane * laneSpacing;
+                                    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                                    pRT->GetFactory(&pFactory);
+                                    if (pFactory) {
+                                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+                                        if (SUCCEEDED(pFactory->CreatePathGeometry(&path)) && path) {
+                                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                                            if (SUCCEEDED(path->Open(&sink)) && sink) {
+                                                float y2 = curY + fileRowH;
+                                                float midY = (fileMidY + y2) * 0.5f;
+                                                sink->BeginFigure(D2D1::Point2F(nodeX, fileMidY), D2D1_FIGURE_BEGIN_HOLLOW);
+                                                sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(nodeX, midY), D2D1::Point2F(x2, midY), D2D1::Point2F(x2, y2)));
+                                                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                                sink->Close();
+                                                pRT->DrawGeometry(path.Get(), pCommitBrush, 1.6f);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            pRT->DrawLine(D2D1::Point2F(nodeX, fileMidY), D2D1::Point2F(fileIndent, fileMidY), pCommitBrush, 1.0f);
+                            const wchar_t* statusMsg = ci.filesLoaded ? L"(No file changes vs parent)" : L"Loading commit files...";
+                            D2D1_RECT_F rcStatusRow = D2D1::RectF(fileIndent + config.ScaleF(6.0f), curY, railW + currentDrawerW - config.ScaleF(8.0f), curY + fileRowH);
+                            if (rcStatusRow.right > rcStatusRow.left) {
+                                pRT->PushAxisAlignedClip(rcStatusRow, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                                pRT->DrawText(statusMsg, static_cast<UINT32>(wcslen(statusMsg)),
+                                              theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontButtonCenter.Get(),
+                                              rcStatusRow, theme.brushTextMuted.Get());
+                                pRT->PopAxisAlignedClip();
+                            }
+                        }
+                        curY = commitTopY + commitBlockH;
+                    } else {
+                        const size_t fileCount = ci.files.size();
 
                     for (size_t fi = 0; fi < fileCount; ++fi) {
                         auto& cf = ci.files[fi];
@@ -13066,6 +13137,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
                         curY += fileRowH;
                     }
                     curY = commitTopY + commitBlockH;
+                    }
                 }
             }
 

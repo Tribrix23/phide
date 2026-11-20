@@ -1622,6 +1622,10 @@ struct OpenDocument {
     bool isMultiFileDiff = false;        ///< True if this document renders all files changed in a commit (Image 4)
     bool isMultiFileDiffLoading = false; ///< True while commit file contents & diff hunks are loading asynchronously
     uint64_t diffLoadGen = 0;            ///< Generation token matching async commit diff load results
+    bool isFileLoading = false;          ///< True while a large disk file is loading asynchronously off the UI thread
+    uint64_t loadingFileSizeBytes = 0;   ///< Disk byte size displayed in the non-blocking loading view
+    uint64_t fileLoadGen = 0;            ///< Generation token matching async file load results
+    bool isLargeBufferFile = false;      ///< True for multi-MB or >15k-line docs to skip costly full-file scanning
     std::wstring commitHash;             ///< Commit hash for multi-file commit diff
     std::wstring commitAuthor;           ///< Commit author
     std::wstring commitDate;             ///< Commit date

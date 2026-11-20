@@ -3174,28 +3174,32 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 RecordNavCheckpoint();
                 m_focusedGroupIdx = static_cast<int>(g);
                 m_editorGroups[g].activeDocIdx = static_cast<int>(i);
+                auto& existingDoc = m_editorGroups[g].docs[i];
                 if (!isPreview) {
-                    m_editorGroups[g].docs[i].isPreview = false;
+                    existingDoc.isPreview = false;
                 }
-                if (m_editorGroups[g].docs[i].bookmarks.empty() && !m_persistedBookmarks.empty()) {
-                    std::wstring normKey = m_editorGroups[g].docs[i].filePath;
+                if (!existingDoc.isFileLoading && existingDoc.bookmarks.empty() && !m_persistedBookmarks.empty()) {
+                    std::wstring normKey = existingDoc.filePath;
                     for (auto& c : normKey) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
                     auto bmIt = m_persistedBookmarks.find(normKey);
                     if (bmIt != m_persistedBookmarks.end()) {
-                        size_t lineCnt = m_editorGroups[g].docs[i].buffer.GetLineCount();
+                        size_t lineCnt = existingDoc.buffer.GetLineCount();
                         for (size_t bl : bmIt->second) {
-                            if (bl < lineCnt) m_editorGroups[g].docs[i].bookmarks.push_back(bl);
+                            if (bl < lineCnt) existingDoc.bookmarks.push_back(bl);
                         }
                     }
+                }
+                if (existingDoc.isFileLoading && m_hwnd) {
+                    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
                 }
                 ClearExplorerSelectionOverride();
                 UpdateDrawerErrorFiles();
                 RefreshActiveDocOutlineAndBreadcrumbs();
                 SaveSessionState();
-                if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
+                if (!existingDoc.isFileLoading && m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
                     OpenMarkdownPreviewSplit(resolvedPath);
                 }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
         }
@@ -3334,6 +3338,14 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         }
     }
 
+    std::error_code sizeEc;
+    const uint64_t diskFileSize = (!isImage && !isFont && !isBinary && fileExists)
+        ? std::filesystem::file_size(resolvedPath, sizeEc)
+        : 0;
+    constexpr uint64_t kAsyncFileLoadThresholdBytes = 256ULL * 1024ULL;
+    const bool loadTextAsync = (!isImage && !isFont && !isBinary && fileExists && !sizeEc &&
+                                diskFileSize >= kAsyncFileLoadThresholdBytes);
+
     editor::OpenDocument newDoc;
     newDoc.filePath = resolvedPath;
     auto pos = resolvedPath.find_last_of(L"\\/");
@@ -3348,6 +3360,134 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     newDoc.binaryFileType = binaryType;
     newDoc.viewType.clear();
 
+    if (loadTextAsync) {
+        // Put the tab on the editor immediately with a smooth animated loading view instead of freezing UI
+        const uint64_t loadGen = ++m_fileLoadGenCounter;
+        newDoc.isFileLoading = true;
+        newDoc.loadingFileSizeBytes = diskFileSize;
+        newDoc.fileLoadGen = loadGen;
+        newDoc.isLargeBufferFile = (diskFileSize >= 1024ULL * 1024ULL);
+
+        RecordNavCheckpoint();
+        if (canReplace) {
+            group.docs[group.activeDocIdx] = std::move(newDoc);
+        } else {
+            group.docs.push_back(std::move(newDoc));
+            group.activeDocIdx = static_cast<int>(group.docs.size()) - 1;
+        }
+        ClearExplorerSelectionOverride();
+        UpdateDrawerErrorFiles();
+        RefreshActiveDocOutlineAndBreadcrumbs();
+        SaveSessionState();
+        if (m_hwnd) {
+            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+            if (m_isDestroying.load()) return;
+            ++m_activeBgWorkers;
+        }
+        HWND postHwnd = m_hwnd.load();
+        std::wstring docExtCopy = ext;
+        std::thread([this, postHwnd, loadGen, resolvedPath, docExtCopy, diskFileSize]() mutable {
+            struct Guard {
+                Window* self;
+                ~Guard() {
+                    std::lock_guard<std::mutex> lk(self->m_bgWorkersMutex);
+                    if (self->m_activeBgWorkers > 0) --self->m_activeBgWorkers;
+                    self->m_bgWorkersCv.notify_all();
+                }
+            } guard{ this };
+            try {
+                if (m_isDestroying.load()) return;
+
+                auto pBuf = std::make_shared<editor::Buffer>();
+                const bool ok = pBuf->LoadFromFile(resolvedPath);
+                if (m_isDestroying.load()) return;
+
+                PendingFileLoadResult pending;
+                pending.generation = loadGen;
+                pending.resolvedPath = resolvedPath;
+                pending.loadOk = ok;
+                pending.loadedBuffer = pBuf;
+                if (ok) {
+                    const bool isLarge = pBuf->IsMemoryMappedReadOnly() ||
+                                         (pBuf->GetLineCount() > 15000) ||
+                                         (diskFileSize >= 1024ULL * 1024ULL);
+                    pending.isLargeFile = isLarge;
+
+                    // Pre-build token entry states off the UI thread so the first rendered frame never stalls
+                    if (!pBuf->IsMemoryMappedReadOnly() && pBuf->GetLineCount() > 0) {
+                        (void)pBuf->GetTokensForLineRef(0, docExtCopy);
+                    }
+                    if (m_isDestroying.load()) return;
+
+                    auto ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(resolvedPath);
+                    if (ecRules.foundAny) {
+                        if (ecRules.hasIndentSize && ecRules.indentSize > 0) {
+                            pending.effectiveTabSize = ecRules.indentSize;
+                        } else if (ecRules.hasTabWidth && ecRules.tabWidth > 0) {
+                            pending.effectiveTabSize = ecRules.tabWidth;
+                        }
+                        if (ecRules.hasIndentStyle) {
+                            pending.effectiveIndentStyle = ecRules.indentStyleTabs ? 1 : 0;
+                        }
+                    }
+
+                    std::error_code writeEc;
+                    pending.lastDiskWriteTime = std::filesystem::last_write_time(resolvedPath, writeEc);
+                    pending.hasLastDiskWriteTime = !writeEc;
+
+                    if (!isLarge) {
+                        pending.originalDiskText = pBuf->GetText();
+                        if (pBuf->GetLineCount() <= 5000) {
+                            pending.diffOriginalBuffer = std::make_shared<editor::Buffer>();
+                            pending.diffOriginalBuffer->SetLines(pBuf->GetLines());
+                        }
+                        pending.diagnostics = editor::SyntaxValidator::Validate(resolvedPath, *pBuf);
+
+                        auto prefMode = ui::StructuredViewRenderer::DetectModeForExtension(docExtCopy);
+                        if (prefMode == ui::StructuredViewMode::CsvTable) {
+                            auto sv = std::make_shared<ui::StructuredViewerState>();
+                            sv->mode = ui::StructuredViewMode::CsvTable;
+                            sv->filePath = resolvedPath;
+                            if (sv->ParseCsvText(pending.originalDiskText, docExtCopy == L".tsv" ? L'\t' : L'\0')) {
+                                sv->isActive = true;
+                            }
+                            pending.structuredView = std::move(sv);
+                        } else if (prefMode == ui::StructuredViewMode::LogTail) {
+                            auto sv = std::make_shared<ui::StructuredViewerState>();
+                            sv->mode = ui::StructuredViewMode::LogTail;
+                            sv->filePath = resolvedPath;
+                            sv->logFollow = true;
+                            sv->ReloadLogTailFromFile(resolvedPath, true);
+                            sv->isActive = true;
+                            pending.structuredView = std::move(sv);
+                        } else if (prefMode == ui::StructuredViewMode::JsonTree) {
+                            auto sv = std::make_shared<ui::StructuredViewerState>();
+                            sv->mode = ui::StructuredViewMode::JsonTree;
+                            sv->filePath = resolvedPath;
+                            sv->isActive = false;
+                            pending.structuredView = std::move(sv);
+                        }
+                    }
+                }
+
+                if (m_isDestroying.load()) return;
+                {
+                    std::lock_guard<std::mutex> lk(m_fileLoadMutex);
+                    m_pendingFileLoads.push_back(std::move(pending));
+                }
+                if (postHwnd && IsWindow(postHwnd) && !m_isDestroying.load()) {
+                    PostMessageW(postHwnd, WM_USER + 237, 0, 0);
+                }
+            } catch (...) {}
+        }).detach();
+        return;
+    }
+
     if (isImage || isFont) {
         std::error_code ec;
         newDoc.imageFileSize = std::filesystem::file_size(resolvedPath, ec);
@@ -3357,6 +3497,7 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     } else {
         newDoc.buffer.LoadFromFile(resolvedPath);
         const bool isLargeBufferDoc = newDoc.buffer.IsMemoryMappedReadOnly() || (newDoc.buffer.GetLineCount() > 15000);
+        newDoc.isLargeBufferFile = isLargeBufferDoc;
         if (isLargeBufferDoc) {
             // Skip copying multi-MB files into RAM or running full-file validators/LSP/symbol indexing synchronously on UI thread
             newDoc.originalDiskText.clear();
@@ -3478,41 +3619,160 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         group.activeDocIdx = static_cast<int>(group.docs.size() - 1);
     }
 
+    if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
+        auto& openedDoc = group.docs[group.activeDocIdx];
+        FinalizeOpenedTextDocument(openedDoc, resolvedPath, !openedDoc.isLargeBufferFile, false);
+    }
+
     ClearExplorerSelectionOverride();
     UpdateDrawerErrorFiles();
     RefreshActiveDocOutlineAndBreadcrumbs();
     SaveSessionState();
 
-    phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
-    if (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size())) {
-        auto& openedDoc = group.docs[group.activeDocIdx];
-        if (!openedDoc.isSpecialView && !openedDoc.isImageView && !openedDoc.isUnsupportedBinary &&
-            !openedDoc.buffer.IsMemoryMappedReadOnly() && openedDoc.buffer.GetLineCount() <= 15000) {
-            StartLspForDocumentAsync(resolvedPath, openedDoc.buffer.GetText());
-            ScheduleLangIntelAndLintersAsync(&openedDoc, m_config.enableExternalLinters);
-        }
-        if (!openedDoc.isSpecialView && !openedDoc.filePath.empty()) {
-            phide::dev::WorkspaceCoverageSummary covCopy;
-            {
-                std::lock_guard<std::mutex> lk(m_covMutex);
-                covCopy = m_workspaceCoverage;
+    if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
+        OpenMarkdownPreviewSplit(resolvedPath);
+    }
+
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+}
+
+void Window::FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::wstring& resolvedPath,
+                                        bool runLspAndLinters, bool runGitAndExtraDiagnostics) {
+    if (doc.isSpecialView || doc.isImageView || doc.isFontView || doc.isUnsupportedBinary) {
+        return;
+    }
+
+    if (runGitAndExtraDiagnostics && !m_persistedBookmarks.empty()) {
+        std::wstring normKey = doc.filePath;
+        for (auto& c : normKey) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
+        auto bmIt = m_persistedBookmarks.find(normKey);
+        if (bmIt != m_persistedBookmarks.end()) {
+            const size_t lineCnt = doc.buffer.GetLineCount();
+            for (size_t bl : bmIt->second) {
+                if (bl < lineCnt) doc.bookmarks.push_back(bl);
             }
-            if (covCopy.loaded) {
-                if (const auto* fc = phide::dev::CoverageReportEngine::FindCoverageForFile(covCopy, openedDoc.filePath)) {
-                    openedDoc.gutterCoverage.clear();
-                    for (const auto& lh : fc->lineHits) {
-                        openedDoc.gutterCoverage[lh.first] = (lh.second > 0);
-                    }
+        }
+    }
+
+    const bool skipHeavy = doc.isLargeBufferFile || doc.buffer.IsMemoryMappedReadOnly() || (doc.buffer.GetLineCount() > 15000);
+    if (!skipHeavy && runGitAndExtraDiagnostics) {
+        bool isInsideOpenRepo = false;
+        std::wstring relPath = resolvedPath;
+        if (m_drawer.IsGitRepo() && m_drawer.HasOpenFolder() && doc.buffer.GetLineCount() <= 5000) {
+            try {
+                std::error_code relEc;
+                auto rel = std::filesystem::relative(resolvedPath, m_drawer.GetOpenFolderPath(), relEc);
+                if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                    relPath = rel.wstring();
+                    isInsideOpenRepo = true;
+                }
+            } catch (...) {}
+        }
+        if (isInsideOpenRepo && doc.buffer.GetLineCount() <= 5000) {
+            std::wstring headContent = m_drawer.GetGitFileContent(relPath);
+            if (!headContent.empty()) {
+                doc.diffOriginalBuffer.SetText(headContent);
+            } else if (doc.diffOriginalBuffer.GetLineCount() <= 1) {
+                doc.diffOriginalBuffer.SetLines(doc.buffer.GetLines());
+            }
+            ComputeDiffHunks(doc);
+            if (m_config.enableGitLens || m_config.gitShowInlineBlame) {
+                doc.gitBlameLoaded = false;
+            }
+        }
+        RunExtraDocDiagnostics(doc, doc.diagnostics);
+        CalculateImportCosts(doc);
+        RefreshMergeConflicts(doc);
+        m_symbolIndex.UpdateFileSymbols(resolvedPath, doc.buffer.GetText());
+    }
+
+    if (!doc.filePath.empty()) {
+        phide::dev::WorkspaceCoverageSummary covCopy;
+        {
+            std::lock_guard<std::mutex> lk(m_covMutex);
+            covCopy = m_workspaceCoverage;
+        }
+        if (covCopy.loaded) {
+            if (const auto* fc = phide::dev::CoverageReportEngine::FindCoverageForFile(covCopy, doc.filePath)) {
+                doc.gutterCoverage.clear();
+                for (const auto& lh : fc->lineHits) {
+                    doc.gutterCoverage[lh.first] = (lh.second > 0);
                 }
             }
         }
     }
 
-    if (m_config.enableMarkdownPreview && IsMarkdownFile(resolvedPath)) {
-        OpenMarkdownPreviewSplit(resolvedPath);
+    phide::plugin::PluginManager::Instance().DispatchEvent(L"onDocumentOpen", resolvedPath);
+    if (runLspAndLinters && !skipHeavy) {
+        StartLspForDocumentAsync(resolvedPath, doc.buffer.GetText());
+        ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
+    }
+}
+
+void Window::ApplyPendingFileLoads() {
+    std::vector<PendingFileLoadResult> results;
+    {
+        std::lock_guard<std::mutex> lk(m_fileLoadMutex);
+        if (m_pendingFileLoads.empty()) return;
+        results.swap(m_pendingFileLoads);
     }
 
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    bool anyApplied = false;
+    std::wstring openMarkdownPath;
+    auto findAndApply = [&](std::vector<editor::EditorGroup>& groups, bool checkActiveMarkdown) {
+        for (auto& grp : groups) {
+            for (size_t di = 0; di < grp.docs.size(); ++di) {
+                auto& d = grp.docs[di];
+                if (!d.isFileLoading) continue;
+                for (auto& res : results) {
+                    if (d.fileLoadGen != res.generation) continue;
+                    if (res.loadOk && res.loadedBuffer) {
+                        d.buffer = std::move(*res.loadedBuffer);
+                        d.isLargeBufferFile = res.isLargeFile;
+                        d.originalDiskText = std::move(res.originalDiskText);
+                        if (res.diffOriginalBuffer) {
+                            d.diffOriginalBuffer = std::move(*res.diffOriginalBuffer);
+                        }
+                        d.diagnostics = std::move(res.diagnostics);
+                        if (res.structuredView) {
+                            d.structuredView = std::move(res.structuredView);
+                        }
+                        if (res.effectiveTabSize > 0) d.effectiveTabSize = res.effectiveTabSize;
+                        if (res.effectiveIndentStyle > 0) d.effectiveIndentStyle = res.effectiveIndentStyle;
+                        d.lastDiskWriteTime = res.lastDiskWriteTime;
+                        d.hasLastDiskWriteTime = res.hasLastDiskWriteTime;
+                        d.hasExternalDiskConflict = false;
+                    }
+                    d.isFileLoading = false;
+                    FinalizeOpenedTextDocument(d, res.resolvedPath, !d.isLargeBufferFile, true);
+                    if (checkActiveMarkdown && static_cast<int>(di) == grp.activeDocIdx &&
+                        m_config.enableMarkdownPreview && IsMarkdownFile(res.resolvedPath)) {
+                        openMarkdownPath = res.resolvedPath;
+                    }
+                    anyApplied = true;
+                    break;
+                }
+            }
+        }
+    };
+
+    findAndApply(m_editorGroups, true);
+    for (auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            findAndApply(fw->editorGroups, false);
+        }
+    }
+
+    if (anyApplied) {
+        UpdateDrawerErrorFiles();
+        RefreshActiveDocOutlineAndBreadcrumbs();
+        SaveSessionState();
+        if (!openMarkdownPath.empty()) {
+            OpenMarkdownPreviewSplit(openMarkdownPath);
+        }
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        InvalidateFloatingWindows();
+    }
 }
 
 void Window::OpenDiffDocument(const std::wstring& relPath, bool isPreview, bool isStagedMode) {
@@ -3838,7 +4098,8 @@ void Window::OpenCommitDiffDocument(const std::wstring& commitHash, const std::w
                 }
 
                 if (commitFiles.empty() && !m_isDestroying.load()) {
-                    auto res = ui::RunGitCmd(L"show --name-status --pretty=\"\" " + commitHash, repoDir);
+                    // Use -m --first-parent so merge commits report changed files against first parent
+                    auto res = ui::RunGitCmd(L"show -m --first-parent --name-status --pretty=\"\" " + commitHash, repoDir);
                     if (res.exitCode == 0) {
                         std::wstringstream ss(res.output);
                         std::wstring line;
@@ -9630,7 +9891,7 @@ void Window::FocusAdjacentEditorGroup(bool next) {
 
 void Window::RefreshActiveDocOutlineAndBreadcrumbs() {
     auto* pDoc = GetActiveDoc();
-    if (!pDoc || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary ||
+    if (!pDoc || pDoc->isFileLoading || pDoc->isLargeBufferFile || pDoc->isSpecialView || pDoc->isImageView || pDoc->isUnsupportedBinary ||
         pDoc->buffer.IsMemoryMappedReadOnly() || pDoc->buffer.GetLineCount() > 15000) {
         if (!m_lastOutlineFileKey.empty()) {
             m_lastOutlineFileKey.clear();
@@ -16982,7 +17243,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
     }
 
     // Structured / Hex Viewer Toggle Pill (Hex / CSV Table / JSON Tree / Log Tail <-> Text)
-    if (curDoc && !curDoc->isSpecialView && !curDoc->isImageView && !curDoc->isFolderView) {
+    if (curDoc && !curDoc->isFileLoading && !curDoc->isSpecialView && !curDoc->isImageView && !curDoc->isFolderView) {
         auto prefMode = ui::StructuredViewMode::None;
         if (curDoc->structuredView && curDoc->structuredView->mode != ui::StructuredViewMode::None) {
             prefMode = curDoc->structuredView->mode;
@@ -21895,6 +22156,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     doc.isDraggingMultiDiffSelect = false;
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
+                } else if (doc.isFileLoading) {
+                    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                    return;
                 } else {
                     float paneCanvasLeft = group.bounds.left;
                     float paneW = (std::max)(20.0f, group.bounds.right - group.bounds.left);
@@ -25616,7 +25880,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     // Printable characters only (Enter and Tab are cleanly handled in WM_KEYDOWN)
                     if (ch >= 32 && ch != 127) {
-                        if (pDoc->buffer.IsMemoryMappedReadOnly()) {
+                        if (pDoc->isFileLoading || pDoc->buffer.IsMemoryMappedReadOnly()) {
                             return 0;
                         }
                         if (pDoc->isDiffView && (pDoc->diffActivePane == 0 || pDoc->isDiffRightReadOnly)) {
@@ -27055,6 +27319,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 m_editor.GetKeyboardShortcutsView().IsActionDefaultUnchanged(L"cmd_toggle_fullscreen")) {
                 if (IsZoomed(m_hwnd)) ShowWindow(m_hwnd, SW_RESTORE);
                 else ShowWindow(m_hwnd, SW_MAXIMIZE);
+                return 0;
+            }
+
+            if (pDoc && pDoc->isFileLoading) {
                 return 0;
             }
 
@@ -28515,7 +28783,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 for (const auto& grp : m_editorGroups) {
                     if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
                         const auto& d = grp.docs[grp.activeDocIdx];
-                        if (d.isMultiFileDiff && d.isMultiFileDiffLoading) {
+                        if ((d.isMultiFileDiff && d.isMultiFileDiffLoading) || d.isFileLoading) {
                             keepAnimating = true;
                             break;
                         }
@@ -29305,6 +29573,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 236: {
             if (!m_isDestroying.load()) {
                 ApplyPendingCodeMetrics();
+            }
+            return 0;
+        }
+
+        case WM_USER + 237: {
+            if (!m_isDestroying.load()) {
+                ApplyPendingFileLoads();
             }
             return 0;
         }

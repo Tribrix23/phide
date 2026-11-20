@@ -1538,7 +1538,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
     } else if (activeDoc.isSpecialView && (activeDoc.viewType == L"welcome" || activeDoc.viewType == L"walkthrough")) {
         m_welcomeView.Render(pRT, theme, config, canvasLeft, canvasWidth, contentTopY, clientHeight - contentTopY);
     } else {
-        if (activeDoc.isFolderView) {
+        if (activeDoc.isFileLoading) {
+            RenderFileLoadingView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.isFolderView) {
             RenderFolderView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isImageView) {
             RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
@@ -6450,7 +6452,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 if (indent == std::wstring::npos) continue;
 
                 float my = oy + relY;
-                if (!isMmapLarge) {
+                if (!isMmapLarge && !doc.isLargeBufferFile && lineStr.length() <= 4096) {
                     const auto& tokens = buffer.GetTokensForLineRef(b, docExt);
                     if (!tokens.empty()) {
                         for (const auto& tok : tokens) {
@@ -8070,6 +8072,106 @@ void EditorCanvas::RenderImageView(ID2D1RenderTarget* pRT, Theme& theme, const a
                                    editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                                    float topY, float clientHeight) {
     AssetViewerRenderer::RenderRasterImageView(pRT, theme, config, doc, canvasLeft, canvasWidth, topY, clientHeight);
+}
+
+void EditorCanvas::RenderFileLoadingView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                         editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
+                                         float topY, float clientHeight) {
+    // Clear interactive hit rects so stale scrollbars/minimap cannot be grabbed while loading
+    doc.scrollbarTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    doc.hScrollbarTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    doc.hScrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    doc.minimapTrack = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    doc.minimapSlider = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+
+    if (!pRT || canvasWidth <= 4.0f || clientHeight <= topY) return;
+    pRT->PushAxisAlignedClip(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight),
+                              D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // 1. Sleek flat indeterminate progress strip across top of editor pane
+    const float barH = config.ScaleF(2.5f);
+    pRT->FillRectangle(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + barH),
+                       theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+    const float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+    const float slideW = (std::max)(config.ScaleF(96.0f), canvasWidth * 0.28f);
+    const float slideX = canvasLeft - slideW + t * (canvasWidth + slideW * 2.0f);
+    const float sL = (std::max)(canvasLeft, slideX);
+    const float sR = (std::min)(canvasLeft + canvasWidth, slideX + slideW);
+    if (sR > sL && theme.brushBrandAccent) {
+        pRT->FillRectangle(D2D1::RectF(sL, topY, sR, topY + barH), theme.brushBrandAccent.Get());
+    }
+
+    // 2. Loading title with filename + formatted size
+    std::wstring sizeLabel;
+    if (doc.loadingFileSizeBytes >= 1024ULL * 1024ULL) {
+        double mb = static_cast<double>(doc.loadingFileSizeBytes) / (1024.0 * 1024.0);
+        wchar_t buf[32]{};
+        swprintf_s(buf, L" (%.1f MB)", mb);
+        sizeLabel = buf;
+    } else if (doc.loadingFileSizeBytes >= 1024ULL) {
+        sizeLabel = L" (" + std::to_wstring(doc.loadingFileSizeBytes / 1024ULL) + L" KB)";
+    }
+
+    const float gutterW = config.ScaleF(52.0f);
+    const float codeX = canvasLeft + gutterW + config.ScaleF(18.0f);
+    float sy = topY + config.ScaleF(20.0f);
+
+    std::wstring headline = L"Opening " + (doc.fileName.empty() ? L"file" : doc.fileName) + sizeLabel + L"...";
+    IDWriteTextFormat* pHdrFmt = theme.fontTitle ? theme.fontTitle.Get() : theme.fontBody.Get();
+    IDWriteTextFormat* pBodyFmt = theme.fontBody.Get();
+    if (pHdrFmt && theme.brushTextPrimary) {
+        pRT->DrawText(headline.c_str(), static_cast<UINT32>(headline.length()), pHdrFmt,
+                      D2D1::RectF(codeX, sy, canvasLeft + canvasWidth - config.ScaleF(20.0f), sy + config.ScaleF(26.0f)),
+                      theme.brushTextPrimary.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    sy += config.ScaleF(28.0f);
+
+    const wchar_t* subMsg = L"Reading file buffer and building line index in the background...";
+    if (pBodyFmt && theme.brushTextMuted) {
+        pRT->DrawText(subMsg, static_cast<UINT32>(wcslen(subMsg)), pBodyFmt,
+                      D2D1::RectF(codeX, sy, canvasLeft + canvasWidth - config.ScaleF(20.0f), sy + config.ScaleF(20.0f)),
+                      theme.brushTextMuted.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    sy += config.ScaleF(30.0f);
+
+    // 3. Pulsing skeleton code lines + faint gutter numbers
+    const float phase = static_cast<float>(GetTickCount64() % 1400) / 1400.0f * 6.283185f;
+    const float pulseAlpha = 0.14f + 0.12f * (0.5f + 0.5f * std::sin(phase));
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> skelBrush, gutterBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, pulseAlpha) : D2D1::ColorF(0.0f, 0.0f, 0.0f, pulseAlpha * 0.6f),
+        &skelBrush);
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.20f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.25f),
+        &gutterBrush);
+
+    const float lineH = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
+    const float maxBarW = (std::max)(config.ScaleF(80.0f), canvasWidth - gutterW - config.ScaleF(64.0f));
+    static constexpr float kWidthFractions[8] = { 0.42f, 0.68f, 0.54f, 0.80f, 0.35f, 0.72f, 0.60f, 0.48f };
+    static constexpr float kIndentFractions[8] = { 0.0f, 0.04f, 0.04f, 0.08f, 0.04f, 0.0f, 0.04f, 0.08f };
+    for (int r = 0; r < 14 && sy + lineH < clientHeight; ++r) {
+        std::wstring lnStr = std::to_wstring(r + 1);
+        IDWriteTextFormat* pNumFmt = theme.fontCode ? theme.fontCode.Get() : pBodyFmt;
+        if (pNumFmt && gutterBrush) {
+            pRT->DrawText(lnStr.c_str(), static_cast<UINT32>(lnStr.length()), pNumFmt,
+                          D2D1::RectF(canvasLeft + config.ScaleF(12.0f), sy, canvasLeft + gutterW - config.ScaleF(4.0f), sy + lineH),
+                          gutterBrush.Get());
+        }
+        if (skelBrush) {
+            float ix = codeX + maxBarW * kIndentFractions[r % 8];
+            float bw = (std::min)(maxBarW * kWidthFractions[r % 8], (canvasLeft + canvasWidth - config.ScaleF(36.0f)) - ix);
+            if (bw > config.ScaleF(24.0f)) {
+                float barY = sy + (lineH - config.ScaleF(9.0f)) * 0.5f;
+                pRT->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(ix, barY, ix + bw, barY + config.ScaleF(9.0f)), 3.0f, 3.0f),
+                    skelBrush.Get());
+            }
+        }
+        sy += lineH;
+    }
+
+    pRT->PopAxisAlignedClip();
 }
 
 /**
