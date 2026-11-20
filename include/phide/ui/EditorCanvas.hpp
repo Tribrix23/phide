@@ -1325,6 +1325,7 @@ public:
 
     struct InlinePeekPanelState {
         bool isOpen = false;
+        bool metricsLoading = false;
         PeekMode mode = PeekMode::PeekDefinition;
         std::wstring title;
         std::wstring subtitle;
@@ -1399,6 +1400,7 @@ public:
     const InlinePeekPanelState& GetPeekPanel() const noexcept { return m_peekPanel; }
     void OpenPeekPanel(PeekMode mode, const std::wstring& title, const std::wstring& subtitle,
                        size_t anchorLine, std::vector<PeekItemEntry> items);
+    void OpenCodeMetricsLoadingPanel(const std::wstring& activeFileLabel);
     void OpenCodeMetricsPanel(const editor::WorkspaceCodeMetrics& metrics, const std::wstring& activeFileLabel);
     void ClosePeekPanel() noexcept {
         m_peekPanel.isOpen = false;
@@ -1421,6 +1423,10 @@ public:
     bool HandleRenameChar(wchar_t ch);
 
 private:
+    /// Shared tab/drag-pill icon renderer covering special views, folders, Python bitmaps, and Seti/Lucide file icons.
+    void DrawTabDocumentIcon(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                             const D2D1_RECT_F& iconBounds, const editor::OpenDocument& doc,
+                             const std::wstring& title, bool isActive);
     void RenderBreadcrumbDropdown(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
     void RenderInlineFindBar(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config);
     void RenderInlinePeekPanel(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);

@@ -1307,7 +1307,28 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
 
     // Render floating dragged tab pill on TOP of EVERYTHING (above tabs, breadcrumbs, and editor canvas)
     if (m_isDraggingTab && !m_dragTabTitle.empty() && (m_dragTabPos.x > 0.0f || m_dragTabPos.y > 0.0f)) {
-        float pillW = (std::min)(220.0f, (std::max)(130.0f, config.ScaleF(145.0f)));
+        IDWriteTextFormat* pFmt = theme.fontTab ? theme.fontTab.Get() : theme.fontBody.Get();
+        const float iconSz = config.ScaleF(16.0f);
+        const float padLeft = config.ScaleF(8.0f);
+        const float iconGap = config.ScaleF(6.0f);
+        const float closeGap = config.ScaleF(8.0f);
+        const float closeBoxW = config.ScaleF(14.0f);
+        const float padRight = config.ScaleF(6.0f);
+
+        float titleTextW = static_cast<float>(m_dragTabTitle.size()) * config.ScaleF(7.2f);
+        if (theme.dwriteFactory && pFmt) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pMeasureLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
+                    pFmt, config.ScaleF(420.0f), config.ScaleF(28.0f), &pMeasureLayout)) && pMeasureLayout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(pMeasureLayout->GetMetrics(&tm))) {
+                    titleTextW = tm.widthIncludingTrailingWhitespace;
+                }
+            }
+        }
+        const float desiredPillW = padLeft + iconSz + iconGap + titleTextW + closeGap + closeBoxW + padRight;
+        float pillW = (std::clamp)(desiredPillW, config.ScaleF(130.0f), config.ScaleF(280.0f));
         float pillH = config.ScaleF(28.0f);
         float pillX = m_dragTabPos.x - pillW / 2.0f;
         float pillY = m_dragTabPos.y - pillH / 2.0f;
@@ -1332,41 +1353,68 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
             pRT->DrawRoundedRectangle(rrcPill, theme.brushBrandAccent.Get(), 1.5f);
         }
 
-        // File or Folder Icon (Seti or Lucide)
-        float iconX = pillX + config.ScaleF(8.0f);
-        float iconY = pillY + (pillH - config.ScaleF(16.0f)) / 2.0f;
-        D2D1_RECT_F iconBounds = D2D1::RectF(iconX, iconY, iconX + config.ScaleF(16.0f), iconY + config.ScaleF(16.0f));
-        bool isDraggedFolder = (m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(groups.size()) &&
-                                m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(groups[m_dragTabGroup].docs.size()) &&
-                                groups[m_dragTabGroup].docs[m_dragTabIdx].isFolderView);
-        auto setiInfo = theme.GetSetiIcon(m_dragTabTitle, isDraggedFolder, isDraggedFolder);
-        if (theme.fontSeti && setiInfo.pBrush) {
-            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+        // Authentic Document / Special View Icon (shared with RenderTabs so special views keep their real icon)
+        float iconX = pillX + padLeft;
+        float iconY = pillY + (pillH - iconSz) / 2.0f;
+        D2D1_RECT_F iconBounds = D2D1::RectF(iconX, iconY, iconX + iconSz, iconY + iconSz);
+        const editor::OpenDocument* pDraggedDoc =
+            (m_dragTabGroup >= 0 && m_dragTabGroup < static_cast<int>(groups.size()) &&
+             m_dragTabIdx >= 0 && m_dragTabIdx < static_cast<int>(groups[m_dragTabGroup].docs.size()))
+            ? &groups[m_dragTabGroup].docs[m_dragTabIdx]
+            : nullptr;
+        if (pDraggedDoc) {
+            DrawTabDocumentIcon(pRT, theme, config, iconBounds, *pDraggedDoc, m_dragTabTitle, true);
         } else {
-            auto iconType = LucideIcons::GetIconTypeForPath(m_dragTabTitle, isDraggedFolder, isDraggedFolder);
-            m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+            auto setiInfo = theme.GetSetiIcon(m_dragTabTitle, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+            } else {
+                auto iconType = LucideIcons::GetIconTypeForPath(m_dragTabTitle, false, false);
+                m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+            }
         }
 
-        // File title text
-        float textX = iconX + config.ScaleF(18.0f);
-        float textW = pillW - config.ScaleF(44.0f);
-        D2D1_RECT_F rcText = D2D1::RectF(textX, pillY, textX + textW, pillY + pillH);
-        IDWriteTextFormat* pFmt = theme.fontTab ? theme.fontTab.Get() : theme.fontBody.Get();
-        ID2D1Brush* pTxtBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
-        if (pFmt && pTxtBrush) {
-            pRT->DrawText(m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
-                          pFmt, rcText, pTxtBrush);
-        }
-
-        // Close 'x' icon
-        float closeX = pillX + pillW - config.ScaleF(18.0f);
-        float closeY = pillY + (pillH - config.ScaleF(10.0f)) / 2.0f;
-        float cx = closeX + config.ScaleF(5.0f);
-        float cy = closeY + config.ScaleF(5.0f);
+        // Close 'x' icon anchored strictly on the right edge
+        float closeRight = pillX + pillW - padRight;
+        float closeLeft = closeRight - closeBoxW;
+        float cx = (closeLeft + closeRight) * 0.5f;
+        float cy = pillY + pillH * 0.5f;
         float cr = config.ScaleF(3.5f);
         if (theme.brushTextSecondary) {
             pRT->DrawLine(D2D1::Point2F(cx - cr, cy - cr), D2D1::Point2F(cx + cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
             pRT->DrawLine(D2D1::Point2F(cx + cr, cy - cr), D2D1::Point2F(cx - cr, cy + cr), theme.brushTextSecondary.Get(), 1.2f);
+        }
+
+        // Clipped & ellipsis-trimmed file title text that can never overlap 'x' or leak past pill border
+        float textX = iconX + iconSz + iconGap;
+        float textRight = (std::max)(textX + config.ScaleF(16.0f), closeLeft - closeGap);
+        float textW = textRight - textX;
+        D2D1_RECT_F rcText = D2D1::RectF(textX, pillY, textRight, pillY + pillH);
+        ID2D1Brush* pTxtBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
+        if (pFmt && pTxtBrush) {
+            pRT->PushAxisAlignedClip(rcText, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            if (theme.dwriteFactory) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pTitleLayout;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
+                        pFmt, textW, pillH, &pTitleLayout)) && pTitleLayout) {
+                    pTitleLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    pTitleLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                    Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(pFmt, &pEllipsis)) && pEllipsis) {
+                        pTitleLayout->SetTrimming(&trimming, pEllipsis.Get());
+                    }
+                    pRT->DrawTextLayout(D2D1::Point2F(textX, pillY), pTitleLayout.Get(), pTxtBrush);
+                } else {
+                    pRT->DrawText(m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
+                                  pFmt, rcText, pTxtBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                }
+            } else {
+                pRT->DrawText(m_dragTabTitle.c_str(), static_cast<UINT32>(m_dragTabTitle.size()),
+                              pFmt, rcText, pTxtBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+            pRT->PopAxisAlignedClip();
         }
 
         // Visual hint when dragging outside host window to undock/re-attach
@@ -1661,6 +1709,108 @@ int EditorCanvas::HitTestWatermarkCard(POINT pt, const app::AppConfig& config, f
     return 2;                          // Command Palette (Ctrl+Shift+P)
 }
 
+void EditorCanvas::DrawTabDocumentIcon(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                       const D2D1_RECT_F& iconBounds, const editor::OpenDocument& doc,
+                                       const std::wstring& title, bool isActive) {
+    if (!pRT) return;
+    if (doc.isSpecialView && doc.viewType == L"keybindings") {
+        if (theme.fontSeti && theme.brushSetiJson) {
+            wchar_t kbGlyph = 0xE055;
+            pRT->DrawText(&kbGlyph, 1, theme.fontSeti.Get(), iconBounds, theme.brushSetiJson.Get());
+        } else {
+            m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
+        }
+    } else if (doc.isSpecialView && doc.viewType == L"terminal") {
+        m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if (doc.isSpecialView && doc.viewType == L"graph") {
+        m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"heatmap") {
+        m_icons.DrawGitCommit(pRT, iconBounds, theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get(), 1.4f);
+    } else if (doc.isSpecialView && doc.viewType == L"monitor") {
+        m_icons.DrawMonitorAppIcon(pRT, iconBounds);
+    } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
+        m_icons.DrawDatabase(pRT, iconBounds, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"erd") {
+        m_icons.DrawDatabase(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"audit") {
+        m_icons.DrawTerminal(pRT, iconBounds, theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
+        m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
+    } else if (doc.isSpecialView && doc.viewType == L"task_runner") {
+        m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"file_history") {
+        m_icons.DrawGitCommit(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if (doc.isSpecialView && doc.viewType == L"test_explorer") {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> testIconBrush;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f), &testIconBrush);
+        if (testIconBrush) {
+            float cx = (iconBounds.left + iconBounds.right) * 0.5f;
+            float cy = (iconBounds.top + iconBounds.bottom) * 0.5f;
+            float r = config.ScaleF(6.5f);
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), testIconBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(cx - r * 0.4f, cy), D2D1::Point2F(cx - r * 0.08f, cy + r * 0.35f), testIconBrush.Get(), 1.4f);
+            pRT->DrawLine(D2D1::Point2F(cx - r * 0.08f, cy + r * 0.35f), D2D1::Point2F(cx + r * 0.45f, cy - r * 0.30f), testIconBrush.Get(), 1.4f);
+        }
+    } else if (doc.isSpecialView && doc.viewType == L"settings") {
+        m_icons.DrawSettings(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+    } else if (doc.isSpecialView && doc.viewType == L"api") {
+        m_icons.DrawApi(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if (doc.isSpecialView && doc.viewType == L"packages") {
+        m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
+    } else if (doc.isSpecialView && doc.viewType == L"student") {
+        m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if ((doc.isSpecialView && doc.viewType == L"course") || !doc.courseId.empty()) {
+        ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+        if (pPyIcon && doc.fileName.find(L"Python") != std::wstring::npos) {
+            pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+        }
+    } else if ((doc.isSpecialView && doc.viewType == L"notebook") || doc.filePath.ends_with(L".ipynb")) {
+        m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
+        m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
+    } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
+        m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
+    } else if (doc.isSpecialView && (doc.viewType == L"interactive_guide" || doc.viewType == L"welcome" || doc.viewType == L"walkthrough")) {
+        if (!m_pPhideLogoBitmap) {
+            D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
+            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pPhideLogoBitmap);
+        }
+        if (m_pPhideLogoBitmap) {
+            pRT->DrawBitmap(m_pPhideLogoBitmap.Get(), iconBounds);
+        }
+    } else if (doc.isFolderView) {
+        auto setiInfo = theme.GetSetiIcon(title, true, isActive);
+        if (theme.fontSeti && setiInfo.pBrush) {
+            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+        } else {
+            m_icons.DrawFileIcon(pRT, theme, iconBounds, isActive ? FileIconType::FolderOpen : FileIconType::Folder);
+        }
+    } else if (doc.filePath.ends_with(L".py") || doc.filePath.ends_with(L".pyw") || title.ends_with(L".py")) {
+        ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
+        if (pPyIcon) {
+            pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            auto setiInfo = theme.GetSetiIcon(title, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+            }
+        }
+    } else {
+        auto setiInfo = theme.GetSetiIcon(title, false, false);
+        if (theme.fontSeti && setiInfo.pBrush) {
+            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
+        } else {
+            auto iconType = LucideIcons::GetIconTypeForPath(title, false, false);
+            m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
+        }
+    }
+}
+
 void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float headerH,
                               std::vector<editor::OpenDocument>& docs, int activeDocIdx,
@@ -1822,103 +1972,7 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             iconCenterY + iconHalf
         );
 
-        if (doc.isSpecialView && doc.viewType == L"keybindings") {
-            // Draw keyboard glyph / settings
-            if (theme.fontSeti && theme.brushSetiJson) {
-                wchar_t kbGlyph = 0xE055;
-                pRT->DrawText(&kbGlyph, 1, theme.fontSeti.Get(), iconBounds, theme.brushSetiJson.Get());
-            } else {
-                m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
-            }
-        } else if (doc.isSpecialView && doc.viewType == L"terminal") {
-            m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"graph") {
-            m_icons.DrawFileNetwork(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"heatmap") {
-            m_icons.DrawGitCommit(pRT, iconBounds, theme.brushRunGreen ? theme.brushRunGreen.Get() : theme.brushTextWhite.Get(), 1.4f);
-        } else if (doc.isSpecialView && doc.viewType == L"monitor") {
-            m_icons.DrawMonitorAppIcon(pRT, iconBounds);
-        } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
-            m_icons.DrawDatabase(pRT, iconBounds, theme.brushIconBlue ? theme.brushIconBlue.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"erd") {
-            m_icons.DrawDatabase(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"audit") {
-            m_icons.DrawTerminal(pRT, iconBounds, theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"snippet_editor") {
-            m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Json);
-        } else if (doc.isSpecialView && doc.viewType == L"task_runner") {
-            m_icons.DrawTerminal(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"file_history") {
-            m_icons.DrawGitCommit(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"test_explorer") {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> testIconBrush;
-            pRT->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.82f, 0.50f), &testIconBrush);
-            if (testIconBrush) {
-                float cx = (iconBounds.left + iconBounds.right) * 0.5f;
-                float cy = (iconBounds.top + iconBounds.bottom) * 0.5f;
-                float r = config.ScaleF(6.5f);
-                pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), testIconBrush.Get(), 1.4f);
-                pRT->DrawLine(D2D1::Point2F(cx - r * 0.4f, cy), D2D1::Point2F(cx - r * 0.08f, cy + r * 0.35f), testIconBrush.Get(), 1.4f);
-                pRT->DrawLine(D2D1::Point2F(cx - r * 0.08f, cy + r * 0.35f), D2D1::Point2F(cx + r * 0.45f, cy - r * 0.30f), testIconBrush.Get(), 1.4f);
-            }
-        } else if (doc.isSpecialView && doc.viewType == L"settings") {
-            m_icons.DrawSettings(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
-        } else if (doc.isSpecialView && doc.viewType == L"api") {
-            m_icons.DrawApi(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"packages") {
-            m_icons.DrawPackage(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.1f);
-        } else if (doc.isSpecialView && doc.viewType == L"student") {
-            m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if ((doc.isSpecialView && doc.viewType == L"course") || !doc.courseId.empty()) {
-            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
-            if (pPyIcon && doc.fileName.find(L"Python") != std::wstring::npos) {
-                pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-            } else {
-                m_icons.DrawGraduationCap(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-            }
-        } else if ((doc.isSpecialView && doc.viewType == L"notebook") || doc.filePath.ends_with(L".ipynb")) {
-            m_icons.DrawTerminalNotebook(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && doc.viewType == L"markdown_preview") {
-            m_icons.DrawFileIcon(pRT, theme, iconBounds, FileIconType::Markdown);
-        } else if (doc.isSpecialView && doc.viewType == L"extension_detail") {
-            m_icons.DrawExtensionsGrid(pRT, iconBounds, theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.3f);
-        } else if (doc.isSpecialView && (doc.viewType == L"interactive_guide" || doc.viewType == L"welcome" || doc.viewType == L"walkthrough")) {
-            if (!m_pPhideLogoBitmap) {
-                D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
-                D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-                );
-                pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pPhideLogoBitmap);
-            }
-            if (m_pPhideLogoBitmap) {
-                pRT->DrawBitmap(m_pPhideLogoBitmap.Get(), iconBounds);
-            }
-        } else if (doc.isFolderView) {
-            auto setiInfo = theme.GetSetiIcon(title, true, isActive);
-            if (theme.fontSeti && setiInfo.pBrush) {
-                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
-            } else {
-                m_icons.DrawFileIcon(pRT, theme, iconBounds, isActive ? FileIconType::FolderOpen : FileIconType::Folder);
-            }
-        } else if (doc.filePath.ends_with(L".py") || doc.filePath.ends_with(L".pyw") || title.ends_with(L".py")) {
-            ID2D1Bitmap* pPyIcon = GetLearningHubBitmap(pRT, L"python.png");
-            if (pPyIcon) {
-                pRT->DrawBitmap(pPyIcon, iconBounds, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-            } else {
-                auto setiInfo = theme.GetSetiIcon(title, false, false);
-                if (theme.fontSeti && setiInfo.pBrush) {
-                    pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
-                }
-            }
-        } else {
-            auto setiInfo = theme.GetSetiIcon(title, false, false);
-            if (theme.fontSeti && setiInfo.pBrush) {
-                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), iconBounds, setiInfo.pBrush);
-            } else {
-                auto iconType = LucideIcons::GetIconTypeForPath(title, false, false);
-                m_icons.DrawFileIcon(pRT, theme, iconBounds, iconType);
-            }
-        }
+        DrawTabDocumentIcon(pRT, theme, config, iconBounds, doc, title, isActive);
 
         // Close & Undock Button Layout (reserve exact horizontal width so title & status dots never overlap)
         const float closeSize = config.ScaleF(16.0f);
@@ -4497,7 +4551,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        // Target Line / Search Jump Highlight Banner (Image 1)
+        // Target Line Banner (keyword box itself is drawn after getColVisualX below so scrollX/tabs/hints align)
         if (vl.bufferLine == doc.targetHighlightLine) {
             D2D1_RECT_F rcTargetLine = D2D1::RectF(canvasLeft + gutterW, lineY, codeRight, lineY + lineH);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushTargetBg;
@@ -4509,29 +4563,61 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 pRT->DrawLine(D2D1::Point2F(rcTargetLine.left, rcTargetLine.top), D2D1::Point2F(rcTargetLine.right, rcTargetLine.top), brushTargetBorder.Get(), 1.2f);
                 pRT->DrawLine(D2D1::Point2F(rcTargetLine.left, rcTargetLine.bottom), D2D1::Point2F(rcTargetLine.right, rcTargetLine.bottom), brushTargetBorder.Get(), 1.2f);
             }
-
-            // High-contrast keyword box on target line
-            if (doc.targetHighlightLen > 0) {
-                float hx = codeLeft + doc.targetHighlightCol * charW;
-                float hw = doc.targetHighlightLen * charW;
-                D2D1_RECT_F rcKeyword = D2D1::RectF(hx - 2.0f, lineY + 1.0f, hx + hw + 2.0f, lineY + lineH - 1.0f);
-                D2D1_ROUNDED_RECT rrcKey = D2D1::RoundedRect(rcKeyword, 3.0f, 3.0f);
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyFill;
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyBorder;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.50f), &keyFill);
-                pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.95f), &keyBorder);
-                if (keyFill) pRT->FillRoundedRectangle(&rrcKey, keyFill.Get());
-                if (keyBorder) pRT->DrawRoundedRectangle(&rrcKey, keyBorder.Get(), 1.5f);
-            }
         }
 
-        // Code Content
+        // Code Content & Visual X Mapper (computed before target/search highlights so scrollX, tabs, swatches, and hints stay aligned)
         const auto& rawLineStr = buffer.GetLine(vl.bufferLine);
         std::wstring maskedLineStorage;
         const std::wstring& lineStr = config.enablePrivacyMask
             ? (maskedLineStorage = MaskSecretsForDisplay(rawLineStr, docExt, isEnvPrivacyFile))
             : rawLineStr;
         float curCodeEndX = codeLeft;
+
+        std::vector<LineColorSpan> lineColors;
+        if (lineStr.length() <= 2048) {
+            lineColors = ScanLineColors(lineStr, isTailwind);
+        }
+
+        std::vector<const editor::OpenDocument::InlayHint*> midLineHints;
+        if (auto hintsIt = visHintsByLine.find(vl.bufferLine); hintsIt != visHintsByLine.end()) {
+            for (const auto* pHint : hintsIt->second) {
+                if (pHint && !pHint->isGhostText && pHint->col > 0 && pHint->col <= lineStr.length()) {
+                    midLineHints.push_back(pHint);
+                }
+            }
+        }
+
+        const float swatchSpan = config.ScaleF(14.0f);
+        const float swatchSize = config.ScaleF(10.5f);
+
+        auto getColVisualX = [&](size_t col) -> float {
+            float x = codeLeft - scrollX + GetColumnVisualOffset(lineStr, lineColors, col, charW, swatchSpan, config.tabSize);
+            for (const auto* pHint : midLineHints) {
+                if (pHint->col <= col) {
+                    x += calcInlaySpanW(*pHint);
+                }
+            }
+            return x;
+        };
+        auto getVirtualColVisualX = [&](size_t col) -> float {
+            if (col <= lineStr.length()) return getColVisualX(col);
+            float baseEnd = getColVisualX(lineStr.length());
+            return baseEnd + static_cast<float>(col - lineStr.length()) * charW;
+        };
+
+        // High-contrast keyword box on target search-jump line (uses exact visual column)
+        if (vl.bufferLine == doc.targetHighlightLine && doc.targetHighlightLen > 0) {
+            float hx = getColVisualX(doc.targetHighlightCol);
+            float hw = (std::max)(charW, getColVisualX(doc.targetHighlightCol + doc.targetHighlightLen) - hx);
+            D2D1_RECT_F rcKeyword = D2D1::RectF(hx - 2.0f, lineY + 1.0f, hx + hw + 2.0f, lineY + lineH - 1.0f);
+            D2D1_ROUNDED_RECT rrcKey = D2D1::RoundedRect(rcKeyword, 3.0f, 3.0f);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyFill;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> keyBorder;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.50f), &keyFill);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.82f, 0.0f, 0.95f), &keyBorder);
+            if (keyFill) pRT->FillRoundedRectangle(&rrcKey, keyFill.Get());
+            if (keyBorder) pRT->DrawRoundedRectangle(&rrcKey, keyBorder.Get(), 1.5f);
+        }
 
         /**
          * @brief Highlight all occurrences of the active search query on this line in amber.
@@ -4608,8 +4694,8 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                         const auto& curM = m_findBar.matches[static_cast<size_t>(m_findBar.currentMatchIdx)];
                         isActiveFindMatch = (curM.line == vl.bufferLine && curM.col == m.first);
                     }
-                    float hx = codeLeft - scrollX + m.first * charW;
-                    float hw = m.second * charW;
+                    float hx = getColVisualX(m.first);
+                    float hw = (std::max)(charW * 0.5f, getColVisualX(m.first + m.second) - hx);
                     D2D1_RECT_F rcMatch = D2D1::RectF(hx - 1.0f, lineY + 1.0f, hx + hw + 1.0f, lineY + lineH - 1.0f);
                     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcMatch, 2.0f, 2.0f);
                     ID2D1SolidColorBrush* fb = (isActiveFindMatch && activeFillBrush) ? activeFillBrush.Get() : fillBrush.Get();
@@ -4619,39 +4705,6 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 }
             }
         }
-
-        // Discover in-context color tokens and mid-line inlay hints on line to compute visual column layout
-        std::vector<LineColorSpan> lineColors;
-        if (lineStr.length() <= 2048) {
-            lineColors = ScanLineColors(lineStr, isTailwind);
-        }
-
-        std::vector<const editor::OpenDocument::InlayHint*> midLineHints;
-        if (auto hintsIt = visHintsByLine.find(vl.bufferLine); hintsIt != visHintsByLine.end()) {
-            for (const auto* pHint : hintsIt->second) {
-                if (pHint && !pHint->isGhostText && pHint->col > 0 && pHint->col <= lineStr.length()) {
-                    midLineHints.push_back(pHint);
-                }
-            }
-        }
-
-        const float swatchSpan = config.ScaleF(14.0f);
-        const float swatchSize = config.ScaleF(10.5f);
-
-        auto getColVisualX = [&](size_t col) -> float {
-            float x = codeLeft - scrollX + GetColumnVisualOffset(lineStr, lineColors, col, charW, swatchSpan, config.tabSize);
-            for (const auto* pHint : midLineHints) {
-                if (pHint->col <= col) {
-                    x += calcInlaySpanW(*pHint);
-                }
-            }
-            return x;
-        };
-        auto getVirtualColVisualX = [&](size_t col) -> float {
-            if (col <= lineStr.length()) return getColVisualX(col);
-            float baseEnd = getColVisualX(lineStr.length());
-            return baseEnd + static_cast<float>(col - lineStr.length()) * charW;
-        };
 
         // Indentation / Scope Guide Lines across visible code lines
         if (scopeGuideBrush && charW > 0.0f) {
@@ -9703,21 +9756,28 @@ static ParsedInlineMarkdown ParseInlineMarkdown(const std::wstring& raw) {
                 }
             }
         }
-        // Italic: *text* or _text_ (single asterisk or underscore)
+        // Italic: *text* or _text_ (ignore intra-word snake_case underscores per CommonMark)
         if ((raw[i] == L'*' || raw[i] == L'_') && (i + 1 >= n || raw[i + 1] != raw[i]) && (i == 0 || raw[i - 1] != raw[i])) {
             wchar_t marker = raw[i];
-            size_t close = raw.find(marker, i + 1);
-            if (close != std::wstring::npos && (close + 1 >= n || raw[close + 1] != marker)) {
-                UINT32 start = static_cast<UINT32>(res.cleanText.size());
-                std::wstring italicContent = raw.substr(i + 1, close - (i + 1));
-                ParsedInlineMarkdown inner = ParseInlineMarkdown(italicContent);
-                res.cleanText += inner.cleanText;
-                res.spans.push_back({ InlineSpan::Type::Italic, start, static_cast<UINT32>(inner.cleanText.size()) });
-                for (const auto& is : inner.spans) {
-                    res.spans.push_back({ is.type, start + is.start, is.length });
+            const bool isIntraWordOpen = (marker == L'_' && i > 0 && iswalnum(raw[i - 1]));
+            if (!isIntraWordOpen) {
+                size_t close = raw.find(marker, i + 1);
+                while (close != std::wstring::npos && marker == L'_' &&
+                       close + 1 < n && iswalnum(raw[close + 1])) {
+                    close = raw.find(marker, close + 1);
                 }
-                i = close + 1;
-                continue;
+                if (close != std::wstring::npos && (close + 1 >= n || raw[close + 1] != marker)) {
+                    UINT32 start = static_cast<UINT32>(res.cleanText.size());
+                    std::wstring italicContent = raw.substr(i + 1, close - (i + 1));
+                    ParsedInlineMarkdown inner = ParseInlineMarkdown(italicContent);
+                    res.cleanText += inner.cleanText;
+                    res.spans.push_back({ InlineSpan::Type::Italic, start, static_cast<UINT32>(inner.cleanText.size()) });
+                    for (const auto& is : inner.spans) {
+                        res.spans.push_back({ is.type, start + is.start, is.length });
+                    }
+                    i = close + 1;
+                    continue;
+                }
             }
         }
         res.cleanText.push_back(raw[i]);
@@ -9902,94 +9962,57 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
         std::wstring codeBlockLang;
         std::vector<std::wstring> codeBlockLines;
         std::vector<std::vector<std::wstring>> tableRows;
+        std::vector<std::wstring> pendingParaLines;
 
-        auto FlushTable = [&]() {
-            if (tableRows.empty()) return;
-            size_t numCols = 0;
-            for (const auto& r : tableRows) numCols = (std::max)(numCols, r.size());
-            if (numCols > 0) {
-                float colW = contentW / static_cast<float>(numCols);
-                float rowH = config.ScaleF(28.0f);
-                float tableH = static_cast<float>(tableRows.size()) * rowH;
+        auto BuildStyledInlineLayout = [&](const ParsedInlineMarkdown& parsed, IDWriteTextFormat* pFormat,
+                                           float width, float lineSpacingMult = 1.48f) -> Microsoft::WRL::ComPtr<IDWriteTextLayout> {
+            if (!theme.dwriteFactory || !pFormat || parsed.cleanText.empty()) return nullptr;
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+            theme.dwriteFactory->CreateTextLayout(
+                parsed.cleanText.c_str(), static_cast<UINT32>(parsed.cleanText.length()),
+                pFormat, (std::max)(24.0f, width), 10000.0f, &layout);
+            if (!layout) return nullptr;
 
-                D2D1_RECT_F rcTbl = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + tableH);
-                pRT->DrawRectangle(rcTbl, brushTableBorder.Get(), 1.0f);
+            layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            const float baseFontPx = (pFormat->GetFontSize() > 1.0f) ? pFormat->GetFontSize() : config.ScaleF(13.5f);
+            // Set explicit uniform line spacing so fonts with tight native metrics (e.g. Koda Mono) never overlap when wrapped
+            layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, baseFontPx * lineSpacingMult, baseFontPx * (lineSpacingMult * 0.77f));
 
-                for (size_t ri = 0; ri < tableRows.size(); ++ri) {
-                    float rY = curY + static_cast<float>(ri) * rowH;
-                    D2D1_RECT_F rcRow = D2D1::RectF(contentLeft, rY, contentLeft + contentW, rY + rowH);
-                    if (ri == 0 && brushTableBg) {
-                        pRT->FillRectangle(rcRow, brushTableBg.Get());
-                    } else if (ri % 2 == 1 && brushTableAlt) {
-                        pRT->FillRectangle(rcRow, brushTableAlt.Get());
-                    }
-                    pRT->DrawLine(D2D1::Point2F(contentLeft, rY + rowH), D2D1::Point2F(contentLeft + contentW, rY + rowH), brushTableBorder.Get(), 1.0f);
-
-                    for (size_t ci = 0; ci < tableRows[ri].size(); ++ci) {
-                        float cX = contentLeft + static_cast<float>(ci) * colW;
-                        if (ci > 0) {
-                            pRT->DrawLine(D2D1::Point2F(cX, rY), D2D1::Point2F(cX, rY + rowH), brushTableBorder.Get(), 1.0f);
-                        }
-                        D2D1_RECT_F rcCell = D2D1::RectF(cX + config.ScaleF(8.0f), rY + config.ScaleF(4.0f),
-                                                         cX + colW - config.ScaleF(8.0f), rY + rowH - config.ScaleF(2.0f));
-                        pRT->DrawText(tableRows[ri][ci].c_str(), static_cast<UINT32>(tableRows[ri][ci].length()),
-                                      (ri == 0 && fontH4) ? fontH4.Get() : pBodyFmt,
-                                      rcCell, (ri == 0) ? brushHead.Get() : brushProse.Get());
-                    }
-                }
-                curY += tableH + config.ScaleF(18.0f);
-            }
-            tableRows.clear();
-        };
-
-        auto RenderInlineLayout = [&](const ParsedInlineMarkdown& parsed, IDWriteTextFormat* pFormat, float x, float y, float width,
-                                      Microsoft::WRL::ComPtr<IDWriteTextLayout>& outLayout, float& outHeight) {
-            outHeight = 0.0f;
-            if (parsed.cleanText.empty()) {
-                outHeight = config.ScaleF(14.0f);
-                return;
-            }
-            if (theme.dwriteFactory && pFormat) {
-                theme.dwriteFactory->CreateTextLayout(parsed.cleanText.c_str(), static_cast<UINT32>(parsed.cleanText.length()),
-                                                     pFormat, width, 10000.0f, &outLayout);
-            }
-            if (!outLayout) {
-                outHeight = config.ScaleF(14.0f);
-                return;
-            }
-
-            // Apply formatting styles for each span
             for (const auto& span : parsed.spans) {
                 if (span.length == 0 || span.start + span.length > parsed.cleanText.length()) continue;
                 DWRITE_TEXT_RANGE rng = { span.start, span.length };
                 switch (span.type) {
                     case InlineSpan::Type::Bold:
-                        outLayout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rng);
+                        layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, rng);
                         break;
                     case InlineSpan::Type::Italic:
-                        outLayout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rng);
+                        layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rng);
                         break;
                     case InlineSpan::Type::Link:
-                        outLayout->SetUnderline(TRUE, rng);
+                        layout->SetUnderline(TRUE, rng);
                         break;
                     case InlineSpan::Type::Code:
-                        outLayout->SetFontFamilyName(L"Consolas", rng);
-                        outLayout->SetFontSize(config.fontSize > 0 ? config.ScaleF(config.fontSize * 0.88f) : config.ScaleF(12.5f), rng);
+                        layout->SetFontFamilyName(L"Consolas", rng);
+                        layout->SetFontSize((std::max)(config.ScaleF(10.0f), baseFontPx * 0.88f), rng);
                         break;
                 }
             }
+            return layout;
+        };
 
-            // Step 1: Draw the rounded background pills for any InlineSpan::Type::Code spans
+        auto RenderPreparedInlineLayout = [&](const ParsedInlineMarkdown& parsed, IDWriteTextLayout* pLayout,
+                                              float x, float y, ID2D1Brush* textBrush) -> float {
+            if (!pLayout) return config.ScaleF(14.0f);
             for (const auto& span : parsed.spans) {
                 if (span.type == InlineSpan::Type::Code && span.length > 0) {
-                    DWRITE_HIT_TEST_METRICS htm[16];
+                    DWRITE_HIT_TEST_METRICS htm[32];
                     UINT32 actualHitTestCount = 0;
-                    if (SUCCEEDED(outLayout->HitTestTextRange(span.start, span.length, x, y, htm, 16, &actualHitTestCount))) {
+                    if (SUCCEEDED(pLayout->HitTestTextRange(span.start, span.length, x, y, htm, 32, &actualHitTestCount))) {
                         for (UINT32 hi = 0; hi < actualHitTestCount; ++hi) {
                             D2D1_RECT_F rcPill = D2D1::RectF(
-                                htm[hi].left - config.ScaleF(3.5f),
+                                htm[hi].left - config.ScaleF(3.0f),
                                 htm[hi].top + config.ScaleF(1.0f),
-                                htm[hi].left + htm[hi].width + config.ScaleF(3.5f),
+                                htm[hi].left + htm[hi].width + config.ScaleF(3.0f),
                                 htm[hi].top + htm[hi].height - config.ScaleF(1.0f)
                             );
                             D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcPill, 3.5f, 3.5f);
@@ -9999,13 +10022,118 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                     }
                 }
             }
-
-            // Step 2: Draw the text layout
-            pRT->DrawTextLayout(D2D1::Point2F(x, y), outLayout.Get(), brushProse.Get());
-
+            pRT->DrawTextLayout(D2D1::Point2F(x, y), pLayout, textBrush ? textBrush : brushProse.Get());
             DWRITE_TEXT_METRICS tm{};
-            outLayout->GetMetrics(&tm);
-            outHeight = tm.height;
+            pLayout->GetMetrics(&tm);
+            return tm.height;
+        };
+
+        auto RenderInlineLayout = [&](const ParsedInlineMarkdown& parsed, IDWriteTextFormat* pFormat, float x, float y, float width,
+                                      Microsoft::WRL::ComPtr<IDWriteTextLayout>& outLayout, float& outHeight) {
+            outHeight = config.ScaleF(14.0f);
+            if (parsed.cleanText.empty()) return;
+            outLayout = BuildStyledInlineLayout(parsed, pFormat, width, 1.48f);
+            outHeight = RenderPreparedInlineLayout(parsed, outLayout.Get(), x, y, brushProse.Get());
+        };
+
+        auto FlushParagraph = [&]() {
+            if (pendingParaLines.empty()) return;
+            std::wstring combined;
+            for (const auto& pl : pendingParaLines) {
+                if (!combined.empty()) combined.push_back(L' ');
+                combined += pl;
+            }
+            pendingParaLines.clear();
+            ParsedInlineMarkdown parsedPara = ParseInlineMarkdown(combined);
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+            float paraH = 0.0f;
+            RenderInlineLayout(parsedPara, pBodyFmt, contentLeft, curY, contentW, pL, paraH);
+            curY += paraH + config.ScaleF(12.0f);
+        };
+
+        auto FlushTable = [&]() {
+            if (tableRows.empty()) return;
+            size_t numCols = 0;
+            for (const auto& r : tableRows) numCols = (std::max)(numCols, r.size());
+            if (numCols > 0) {
+                const float colW = contentW / static_cast<float>(numCols);
+                const float cellPadX = config.ScaleF(10.0f);
+                const float cellPadY = config.ScaleF(6.0f);
+                const float minRowH = config.ScaleF(28.0f);
+                const float cellAvailW = (std::max)(config.ScaleF(30.0f), colW - cellPadX * 2.0f);
+
+                struct PreparedCell {
+                    ParsedInlineMarkdown parsed;
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+                    float textH = 0.0f;
+                };
+                std::vector<std::vector<PreparedCell>> prepRows(tableRows.size());
+                std::vector<float> rowHeights(tableRows.size(), minRowH);
+                float totalTableH = 0.0f;
+
+                // Pass 1: measure every wrapped cell so row heights expand dynamically with zero vertical overlap
+                for (size_t ri = 0; ri < tableRows.size(); ++ri) {
+                    IDWriteTextFormat* cellFmt = (ri == 0 && fontH4) ? fontH4.Get() : (pBodyFmt ? pBodyFmt : theme.fontBody.Get());
+                    prepRows[ri].resize(numCols);
+                    float maxCellTextH = config.ScaleF(18.0f);
+                    for (size_t ci = 0; ci < numCols; ++ci) {
+                        if (ci >= tableRows[ri].size()) continue;
+                        auto& pc = prepRows[ri][ci];
+                        pc.parsed = ParseInlineMarkdown(tableRows[ri][ci]);
+                        pc.layout = BuildStyledInlineLayout(pc.parsed, cellFmt, cellAvailW, 1.42f);
+                        if (pc.layout) {
+                            DWRITE_TEXT_METRICS tm{};
+                            if (SUCCEEDED(pc.layout->GetMetrics(&tm))) {
+                                pc.textH = tm.height;
+                                maxCellTextH = (std::max)(maxCellTextH, pc.textH);
+                            }
+                        } else if (!pc.parsed.cleanText.empty()) {
+                            pc.textH = config.ScaleF(18.0f);
+                        }
+                    }
+                    rowHeights[ri] = (std::max)(minRowH, maxCellTextH + cellPadY * 2.0f);
+                    totalTableH += rowHeights[ri];
+                }
+
+                // Pass 2: render row fills, grid borders, and clipped cell text/code pills
+                float rY = curY;
+                for (size_t ri = 0; ri < tableRows.size(); ++ri) {
+                    const float rowH = rowHeights[ri];
+                    D2D1_RECT_F rcRow = D2D1::RectF(contentLeft, rY, contentLeft + contentW, rY + rowH);
+                    if (ri == 0 && brushTableBg) {
+                        pRT->FillRectangle(rcRow, brushTableBg.Get());
+                    } else if (ri % 2 == 1 && brushTableAlt) {
+                        pRT->FillRectangle(rcRow, brushTableAlt.Get());
+                    }
+                    pRT->DrawLine(D2D1::Point2F(contentLeft, rY + rowH), D2D1::Point2F(contentLeft + contentW, rY + rowH), brushTableBorder.Get(), 1.0f);
+
+                    ID2D1Brush* cellBrush = (ri == 0) ? brushHead.Get() : brushProse.Get();
+                    IDWriteTextFormat* cellFmt = (ri == 0 && fontH4) ? fontH4.Get() : (pBodyFmt ? pBodyFmt : theme.fontBody.Get());
+                    for (size_t ci = 0; ci < numCols; ++ci) {
+                        const float cX = contentLeft + static_cast<float>(ci) * colW;
+                        if (ci > 0) {
+                            pRT->DrawLine(D2D1::Point2F(cX, rY), D2D1::Point2F(cX, rY + rowH), brushTableBorder.Get(), 1.0f);
+                        }
+                        if (ci >= tableRows[ri].size()) continue;
+                        D2D1_RECT_F rcCellClip = D2D1::RectF(cX + cellPadX * 0.5f, rY + 1.0f, cX + colW - cellPadX * 0.5f, rY + rowH - 1.0f);
+                        pRT->PushAxisAlignedClip(rcCellClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        auto& pc = prepRows[ri][ci];
+                        if (pc.layout) {
+                            RenderPreparedInlineLayout(pc.parsed, pc.layout.Get(), cX + cellPadX, rY + cellPadY, cellBrush);
+                        } else if (!tableRows[ri][ci].empty() && cellFmt) {
+                            D2D1_RECT_F rcCell = D2D1::RectF(cX + cellPadX, rY + cellPadY, cX + colW - cellPadX, rY + rowH - cellPadY);
+                            pRT->DrawText(tableRows[ri][ci].c_str(), static_cast<UINT32>(tableRows[ri][ci].length()),
+                                          cellFmt, rcCell, cellBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        }
+                        pRT->PopAxisAlignedClip();
+                    }
+                    rY += rowH;
+                }
+                D2D1_RECT_F rcTbl = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + totalTableH);
+                pRT->DrawRectangle(rcTbl, brushTableBorder.Get(), 1.0f);
+                curY += totalTableH + config.ScaleF(18.0f);
+            }
+            tableRows.clear();
         };
 
         while (std::getline(wss, line)) {
@@ -10013,6 +10141,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
 
             // 1. Fenced Code Block Handler
             if (line.rfind(L"```", 0) == 0) {
+                FlushParagraph();
                 if (!inCodeBlock) {
                     FlushTable();
                     inCodeBlock = true;
@@ -10023,17 +10152,44 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                     continue;
                 } else {
                     inCodeBlock = false;
-                    // Render the accumulated code block
-                    float lineH = config.ScaleF(18.5f);
-                    float padBlock = config.ScaleF(12.0f);
-                    float blockH = static_cast<float>(codeBlockLines.size()) * lineH + padBlock * 2.0f + config.ScaleF(10.0f);
+                    // Measure each wrapped code line so long directory/code lines never overlap vertically
+                    const float minLineH = config.ScaleF(19.0f);
+                    const float lineGap = config.ScaleF(2.0f);
+                    const float padBlock = config.ScaleF(12.0f);
+                    const float topBadgeStrip = !codeBlockLang.empty() ? config.ScaleF(22.0f) : 0.0f;
+                    const float codeInnerW = (std::max)(config.ScaleF(120.0f), contentW - padBlock * 2.0f);
+                    IDWriteTextFormat* pCodeFmt = fontCodeBlock ? fontCodeBlock.Get() : theme.fontCode.Get();
+                    const float codeFontPx = (pCodeFmt && pCodeFmt->GetFontSize() > 1.0f) ? pCodeFmt->GetFontSize() : config.ScaleF(12.5f);
+
+                    std::vector<Microsoft::WRL::ComPtr<IDWriteTextLayout>> codeLayouts(codeBlockLines.size());
+                    std::vector<float> codeLineHeights(codeBlockLines.size(), minLineH);
+                    float totalCodeH = 0.0f;
+                    for (size_t li = 0; li < codeBlockLines.size(); ++li) {
+                        const auto& cl = codeBlockLines[li];
+                        float h = minLineH;
+                        if (theme.dwriteFactory && pCodeFmt && !cl.empty()) {
+                            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                    cl.c_str(), static_cast<UINT32>(cl.length()),
+                                    pCodeFmt, codeInnerW, 2000.0f, &codeLayouts[li])) && codeLayouts[li]) {
+                                codeLayouts[li]->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                                codeLayouts[li]->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, codeFontPx * 1.44f, codeFontPx * 1.12f);
+                                DWRITE_TEXT_METRICS tm{};
+                                if (SUCCEEDED(codeLayouts[li]->GetMetrics(&tm))) {
+                                    h = (std::max)(minLineH, tm.height + lineGap);
+                                }
+                            }
+                        }
+                        codeLineHeights[li] = h;
+                        totalCodeH += h;
+                    }
+                    const float blockH = (std::max)(minLineH + padBlock * 2.0f, totalCodeH + padBlock * 2.0f + topBadgeStrip);
 
                     D2D1_RECT_F rcBlock = D2D1::RectF(contentLeft, curY, contentLeft + contentW, curY + blockH);
                     D2D1_ROUNDED_RECT rrcBlock = D2D1::RoundedRect(rcBlock, config.ScaleF(6.0f), config.ScaleF(6.0f));
                     if (brushCodeBg) pRT->FillRoundedRectangle(&rrcBlock, brushCodeBg.Get());
                     if (brushCodeBorder) pRT->DrawRoundedRectangle(&rrcBlock, brushCodeBorder.Get(), 1.0f);
 
-                    // Language Tag in Top Right
+                    // Language Tag in Top Right header strip
                     if (!codeBlockLang.empty()) {
                         float langW = static_cast<float>(codeBlockLang.length()) * config.ScaleF(7.5f) + config.ScaleF(16.0f);
                         float langH = config.ScaleF(18.0f);
@@ -10047,12 +10203,15 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                                       rrcLang.rect, brushCodeText.Get());
                     }
 
-                    float codeY = curY + padBlock + config.ScaleF(4.0f);
-                    IDWriteTextFormat* pCodeFmt = fontCodeBlock ? fontCodeBlock.Get() : theme.fontCode.Get();
-                    for (const auto& cl : codeBlockLines) {
-                        D2D1_RECT_F rcCodeLine = D2D1::RectF(contentLeft + padBlock, codeY, contentLeft + contentW - padBlock, codeY + lineH);
-                        pRT->DrawText(cl.c_str(), static_cast<UINT32>(cl.length()), pCodeFmt, rcCodeLine, brushCodeText.Get());
-                        codeY += lineH;
+                    float codeY = curY + padBlock + topBadgeStrip;
+                    for (size_t li = 0; li < codeBlockLines.size(); ++li) {
+                        if (codeLayouts[li]) {
+                            pRT->DrawTextLayout(D2D1::Point2F(contentLeft + padBlock, codeY), codeLayouts[li].Get(), brushCodeText.Get());
+                        } else if (!codeBlockLines[li].empty() && pCodeFmt) {
+                            D2D1_RECT_F rcCodeLine = D2D1::RectF(contentLeft + padBlock, codeY, contentLeft + contentW - padBlock, codeY + codeLineHeights[li]);
+                            pRT->DrawText(codeBlockLines[li].c_str(), static_cast<UINT32>(codeBlockLines[li].length()), pCodeFmt, rcCodeLine, brushCodeText.Get());
+                        }
+                        codeY += codeLineHeights[li];
                     }
                     curY += blockH + config.ScaleF(16.0f);
                     continue;
@@ -10101,6 +10260,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                     }
                 }
                 if (!hasContent) {
+                    FlushParagraph();
                     FlushTable();
                     continue;
                 }
@@ -10108,6 +10268,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
 
             // 2. Table Rows Handler
             if (line.find(L'|') != std::wstring::npos) {
+                FlushParagraph();
                 // Check if separator row (e.g. |---|---|)
                 bool isSep = true;
                 for (wchar_t ch : line) {
@@ -10149,6 +10310,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
 
             // 3. Horizontal Rule
             if (line == L"---" || line == L"***" || line == L"___" || line == L"----" || line == L"-----") {
+                FlushParagraph();
                 curY += config.ScaleF(10.0f);
                 pRT->DrawLine(D2D1::Point2F(contentLeft, curY), D2D1::Point2F(contentLeft + contentW, curY),
                               theme.brushBorderSubtle.Get(), 1.2f);
@@ -10161,6 +10323,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                 size_t hCount = 0;
                 while (hCount < line.length() && line[hCount] == L'#') ++hCount;
                 if (hCount <= 6 && hCount < line.length() && (line[hCount] == L' ' || line[hCount] == L'\t')) {
+                    FlushParagraph();
                     std::wstring hText = line.substr(hCount);
                     while (!hText.empty() && (hText.front() == L' ' || hText.front() == L'\t')) hText.erase(0, 1);
 
@@ -10190,6 +10353,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
 
             // 5. Blockquotes and GitHub Callout Alerts (> quote or > [!NOTE])
             if (line.rfind(L">", 0) == 0) {
+                FlushParagraph();
                 std::wstring qText = line.substr(1);
                 while (!qText.empty() && (qText.front() == L' ' || qText.front() == L'\t')) qText.erase(0, 1);
 
@@ -10258,6 +10422,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
             bool isTaskChecked   = (line.rfind(L"- [x]", 0) == 0 || line.rfind(L"- [X]", 0) == 0 ||
                                     line.rfind(L"* [x]", 0) == 0 || line.rfind(L"* [X]", 0) == 0);
             if (isTaskUnchecked || isTaskChecked) {
+                FlushParagraph();
                 std::wstring taskText = line.substr(5);
                 while (!taskText.empty() && (taskText.front() == L' ' || taskText.front() == L'\t')) taskText.erase(0, 1);
 
@@ -10293,6 +10458,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
             while (indentSpaces < line.length() && line[indentSpaces] == L' ') ++indentSpaces;
             std::wstring trimmedLine = line.substr(indentSpaces);
             if (trimmedLine.rfind(L"- ", 0) == 0 || trimmedLine.rfind(L"* ", 0) == 0 || trimmedLine.rfind(L"+ ", 0) == 0) {
+                FlushParagraph();
                 std::wstring itemText = trimmedLine.substr(2);
                 while (!itemText.empty() && (itemText.front() == L' ' || itemText.front() == L'\t')) itemText.erase(0, 1);
 
@@ -10318,6 +10484,7 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                     if (!iswdigit(trimmedLine[di])) { allDigits = false; break; }
                 }
                 if (allDigits) {
+                    FlushParagraph();
                     std::wstring numStr = trimmedLine.substr(0, dotPos + 1);
                     std::wstring itemText = trimmedLine.substr(dotPos + 2);
                     while (!itemText.empty() && (itemText.front() == L' ' || itemText.front() == L'\t')) itemText.erase(0, 1);
@@ -10337,19 +10504,17 @@ void EditorCanvas::RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, c
                 }
             }
 
-            // 9. Empty Line (Paragraph Gap)
+            // 9. Empty Line (Paragraph Break)
             if (trimmedLine.empty()) {
-                curY += config.ScaleF(12.0f);
+                FlushParagraph();
+                curY += config.ScaleF(8.0f);
                 continue;
             }
 
-            // 10. Standard Paragraph with Inline Formatting
-            ParsedInlineMarkdown parsedPara = ParseInlineMarkdown(trimmedLine);
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
-            float paraH = 0.0f;
-            RenderInlineLayout(parsedPara, pBodyFmt, contentLeft, curY, contentW, pL, paraH);
-            curY += paraH + config.ScaleF(10.0f);
+            // 10. Accumulate consecutive plain lines into one smoothly reflowed paragraph
+            pendingParaLines.push_back(trimmedLine);
         }
+        FlushParagraph();
         FlushTable();
     }
 
@@ -12923,7 +13088,7 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
     const float headerBarH = config.ScaleF(28.0f);
     const float lineH = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
     const float gutterW = config.ScaleF(46.0f);
-    const float scrollbarW = config.ScaleF(12.0f);
+    const float scrollbarW = config.ScaleF(14.0f);
     const float dividerW = config.ScaleF(24.0f);
     const float usableW = canvasWidth - scrollbarW;
     const float halfW = (usableW - dividerW) * 0.5f;
@@ -13012,24 +13177,50 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
         return;
     }
 
-    // Calculate total visual rows & horizontal content overflow across expanded entries
-    size_t totalVisualRows = 0;
+    // Calculate exact rendered content height & horizontal content overflow across expanded entries
+    // Must match the collapsed-unchanged (> 8 lines -> 1 bar row) and header/binary geometry below
+    // so Window.cpp wheel & scrollbar drag use exact maxScroll bounds.
+    const float binBoxH = config.ScaleF(44.0f);
+    float totalContentH = 0.0f;
     size_t maxMultiDiffChars = 0;
     for (const auto& entry : doc.multiFileDiffs) {
-        totalVisualRows += 2; // header bar (~1.4 rows)
+        totalContentH += headerBarH;
         if (!entry.isCollapsed) {
             if (entry.isBinary) {
-                totalVisualRows += 3;
+                totalContentH += binBoxH;
             } else {
-                size_t nLeft = entry.originalBuffer.GetLineCount();
-                size_t nRight = entry.workingBuffer.GetLineCount();
-                totalVisualRows += (std::max)(nLeft, nRight);
+                const size_t nLeft = entry.originalBuffer.GetLineCount();
+                const size_t nRight = entry.workingBuffer.GetLineCount();
+                const size_t maxLines = (std::max)(nLeft, nRight);
+                size_t l = 0;
+                while (l < maxLines) {
+                    const bool isLeftDel = (l < nLeft && entry.deletedLines.contains(l));
+                    const bool isRightAdd = (l < nRight && (entry.addedLines.contains(l) || entry.modifiedLines.contains(l)));
+                    if (!isLeftDel && !isRightAdd) {
+                        size_t unchangedCount = 0;
+                        size_t peek = l;
+                        while (peek < maxLines) {
+                            const bool pd = (peek < nLeft && entry.deletedLines.contains(peek));
+                            const bool pa = (peek < nRight && (entry.addedLines.contains(peek) || entry.modifiedLines.contains(peek)));
+                            if (pd || pa) break;
+                            unchangedCount++;
+                            peek++;
+                        }
+                        if (unchangedCount > 8) {
+                            totalContentH += lineH;
+                            l += unchangedCount;
+                            continue;
+                        }
+                    }
+                    totalContentH += lineH;
+                    l++;
+                }
                 maxMultiDiffChars = (std::max)(maxMultiDiffChars, ComputeDiffBufferMaxLineChars(entry.originalBuffer));
                 maxMultiDiffChars = (std::max)(maxMultiDiffChars, ComputeDiffBufferMaxLineChars(entry.workingBuffer));
             }
         }
     }
-    if (totalVisualRows == 0) totalVisualRows = 1;
+    if (totalContentH < lineH) totalContentH = lineH;
 
     doc.maxContentWidth = static_cast<float>(maxMultiDiffChars) * charW;
     const float codePaneW = (std::max)(20.0f, (std::min)(
@@ -13044,14 +13235,20 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
     const float hScrollH = hasHScroll ? config.ScaleF(12.0f) : 0.0f;
     const float contentBottomY = (std::max)(topY + lineH, clientHeight - hScrollH);
 
-    // Viewport row capacity
-    float viewH = contentBottomY - topY;
-    size_t visibleRows = static_cast<size_t>(viewH / lineH);
-    if (visibleRows < 2) visibleRows = 2;
-    if (doc.scrollLine > totalVisualRows) doc.scrollLine = (totalVisualRows > visibleRows) ? (totalVisualRows - visibleRows) : 0;
+    // Viewport row capacity & synchronized scroll metrics for mouse wheel + scrollbar drag
+    const float viewH = (std::max)(lineH, contentBottomY - topY);
+    const size_t totalVisualRows = (std::max<size_t>)(1, static_cast<size_t>(std::ceil(totalContentH / lineH)));
+    const size_t visibleRows = (std::max<size_t>)(2, static_cast<size_t>(std::floor(viewH / lineH)));
+    const size_t maxScroll = (totalContentH > viewH)
+        ? static_cast<size_t>(std::ceil((totalContentH - viewH) / lineH))
+        : 0;
+    if (doc.scrollLine > maxScroll) doc.scrollLine = maxScroll;
+    doc.lastTotalVisualLines = totalVisualRows;
+    doc.lastVisibleLines = visibleRows;
+    doc.lastMaxScrollLine = maxScroll;
 
-    // Virtual Y start based on scrollLine
-    float curY = topY - static_cast<float>(doc.scrollLine) * lineH;
+    // Virtual Y start based on scrollLine + smooth wheel easing offset
+    float curY = topY - static_cast<float>(doc.scrollLine) * lineH + doc.smoothScrollOffsetPx;
 
     // Normalize multi-file diff selection endpoints for row highlighting
     size_t mSelStartE = doc.multiDiffAnchorEntry, mSelStartL = doc.multiDiffAnchorLine, mSelStartC = doc.multiDiffAnchorCol;
@@ -13088,10 +13285,14 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
         auto& entry = doc.multiFileDiffs[fIdx];
 
         // 1. Render Collapsible File Header Banner (Image 4)
-        entry.headerBounds = D2D1::RectF(canvasLeft, curY, canvasLeft + usableW, curY + headerBarH);
+        D2D1_RECT_F rcHeaderDraw = D2D1::RectF(canvasLeft, curY, canvasLeft + usableW, curY + headerBarH);
+        const bool headerVisible = (curY + headerBarH >= topY && curY <= contentBottomY);
+        entry.headerBounds = headerVisible
+            ? D2D1::RectF(canvasLeft, (std::max)(topY, curY), canvasLeft + usableW, (std::min)(contentBottomY, curY + headerBarH))
+            : D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
 
-        if (curY + headerBarH >= topY && curY <= contentBottomY) {
-            pRT->FillRectangle(entry.headerBounds, brushHeaderBg.Get());
+        if (headerVisible) {
+            pRT->FillRectangle(rcHeaderDraw, brushHeaderBg.Get());
             pRT->DrawLine(D2D1::Point2F(canvasLeft, curY), D2D1::Point2F(canvasLeft + usableW, curY), brushHeaderBorder.Get(), 1.0f);
             pRT->DrawLine(D2D1::Point2F(canvasLeft, curY + headerBarH), D2D1::Point2F(canvasLeft + usableW, curY + headerBarH), brushHeaderBorder.Get(), 1.0f);
 
@@ -13312,22 +13513,25 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
     doc.scrollbarTrack = D2D1::RectF(trackLeft, topY, canvasLeft + canvasWidth, contentBottomY);
     pRT->FillRectangle(doc.scrollbarTrack, theme.brushHeaderBg.Get());
 
-    if (totalVisualRows > visibleRows) {
-        float ratio = static_cast<float>(visibleRows) / static_cast<float>(totalVisualRows);
+    if (maxScroll > 0 && totalContentH > viewH) {
+        float ratio = (std::clamp)(viewH / totalContentH, 0.0f, 1.0f);
         float thumbH = (std::max)(viewH * ratio, config.ScaleF(24.0f));
-        float scrollRange = viewH - thumbH;
-        float progress = static_cast<float>(doc.scrollLine) / static_cast<float>(totalVisualRows - visibleRows);
+        if (thumbH > viewH) thumbH = viewH;
+        float scrollRange = (std::max)(0.0f, viewH - thumbH);
+        float progress = (std::clamp)(static_cast<float>(doc.scrollLine) / static_cast<float>(maxScroll), 0.0f, 1.0f);
         float thumbY = topY + progress * scrollRange;
 
-        doc.scrollbarThumb = D2D1::RectF(trackLeft + 2.0f, thumbY, trackLeft + scrollbarW - 2.0f, thumbY + thumbH);
-        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.0f, 3.0f);
+        doc.scrollbarThumb = D2D1::RectF(trackLeft + config.ScaleF(2.0f), thumbY, trackLeft + scrollbarW - config.ScaleF(2.5f), thumbY + thumbH);
+        D2D1_ROUNDED_RECT rrcThumb = D2D1::RoundedRect(doc.scrollbarThumb, 3.5f, 3.5f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brushThumb;
-        float opacity = (doc.isDraggingScrollbar) ? 0.75f : 0.45f;
+        float opacity = (doc.isDraggingScrollbar) ? 0.80f : 0.48f;
         pRT->CreateSolidColorBrush(
             theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity) : D2D1::ColorF(0.0f, 0.0f, 0.0f, opacity),
             &brushThumb
         );
         pRT->FillRoundedRectangle(rrcThumb, brushThumb ? brushThumb.Get() : theme.brushBorderSubtle.Get());
+    } else {
+        doc.scrollbarThumb = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
     DrawDiffHScrollbar(pRT, theme, config, doc, canvasLeft, canvasLeft + usableW, clientHeight, hScrollH, codePaneW,

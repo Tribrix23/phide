@@ -210,6 +210,8 @@ public:
 
     // Git Branch Switcher Dropdown (Status bar popup)
     ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
+    ui::EditorCanvas& GetEditor() noexcept { return m_editor; }
+    const ui::EditorCanvas& GetEditor() const noexcept { return m_editor; }
     ui::Theme& GetTheme() noexcept { return m_theme; }
     app::AppConfig& GetConfigMutable() noexcept { return m_config; }
     void SetDrawerOpenStateForTest(bool open, int railTab) noexcept {
@@ -1627,6 +1629,18 @@ private:
     std::vector<PendingCommitDiffResult> m_pendingCommitDiffs;
     std::atomic<uint64_t> m_commitDiffGenCounter{ 0 };
     void ApplyPendingCommitDiffs();
+
+    struct PendingCodeMetricsResult {
+        uint64_t generation = 0;
+        editor::WorkspaceCodeMetrics metrics{};
+        std::wstring activeSummary;
+        size_t anchorLine = 0;
+    };
+    std::mutex m_codeMetricsMutex;
+    PendingCodeMetricsResult m_pendingCodeMetrics;
+    bool m_hasPendingCodeMetrics = false;
+    std::atomic<uint64_t> m_codeMetricsGen{ 0 };
+    void ApplyPendingCodeMetrics();
 };
 
 } // namespace phide::app

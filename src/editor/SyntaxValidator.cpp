@@ -1158,25 +1158,29 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                 while (!trimmedVal.empty() && iswspace(trimmedVal.front())) trimmedVal.erase(trimmedVal.begin());
                 while (!trimmedVal.empty() && iswspace(trimmedVal.back())) trimmedVal.pop_back();
 
-                // 1. Check for empty property value (e.g. `width: ;`, `width:;`, or `width:` with no continuation)
+                // 1. Check for empty property value (e.g. `width: ;`, `width:;`, or `width:` with no continuation).
+                // CSS Custom Properties (`--*`) explicitly allow empty/whitespace-only declaration values (e.g. Tailwind `--tw-pan-x: ;`).
+                const bool isCustomProperty = (propName.rfind(L"--", 0) == 0);
                 if (trimmedVal.empty()) {
-                    bool continuesOnNextLine = false;
-                    if (c >= line.length() && l + 1 < endLine) {
-                        std::wstring nextLn = buffer.GetLine(l + 1);
-                        size_t ns = 0;
-                        while (ns < nextLn.length() && iswspace(nextLn[ns])) ns++;
-                        if (ns < nextLn.length() && nextLn[ns] != L'}' && nextLn[ns] != L';') {
-                            size_t nextColon = nextLn.find(L':', ns);
-                            size_t nextParen = nextLn.find(L'(', ns);
-                            if (nextColon == std::wstring::npos || (nextParen != std::wstring::npos && nextParen < nextColon)) {
-                                continuesOnNextLine = true;
+                    if (!isCustomProperty) {
+                        bool continuesOnNextLine = false;
+                        if (c >= line.length() && l + 1 < endLine) {
+                            std::wstring nextLn = buffer.GetLine(l + 1);
+                            size_t ns = 0;
+                            while (ns < nextLn.length() && iswspace(nextLn[ns])) ns++;
+                            if (ns < nextLn.length() && nextLn[ns] != L'}' && nextLn[ns] != L';') {
+                                size_t nextColon = nextLn.find(L':', ns);
+                                size_t nextParen = nextLn.find(L'(', ns);
+                                if (nextColon == std::wstring::npos || (nextParen != std::wstring::npos && nextParen < nextColon)) {
+                                    continuesOnNextLine = true;
+                                }
                             }
                         }
-                    }
-                    if (!continuesOnNextLine) {
-                        size_t endCol = (c < line.length() && line[c] == L';') ? (c + 1) : c;
-                        size_t errLen = (endCol > propStart) ? (endCol - propStart) : (colonCol - propStart + 1);
-                        diagnostics.push_back({ l, propStart, errLen, L"CSS Syntax Error: Property value expected for '" + propName + L"'", 1 });
+                        if (!continuesOnNextLine) {
+                            size_t endCol = (c < line.length() && line[c] == L';') ? (c + 1) : c;
+                            size_t errLen = (endCol > propStart) ? (endCol - propStart) : (colonCol - propStart + 1);
+                            diagnostics.push_back({ l, propStart, errLen, L"CSS Syntax Error: Property value expected for '" + propName + L"'", 1 });
+                        }
                     }
                 } else {
                     // 2. Check for unbalanced parentheses in value (e.g. `calc(100% - 20px;`)

@@ -10287,7 +10287,9 @@ void Window::DoCallHierarchy() {
 void Window::DoCodeMetrics() {
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     auto snaps = CollectOpenDocSnapshots(m_editorGroups);
-    auto metrics = editor::ComputeWorkspaceMetrics(wsRoot, m_drawer.GetIgnoreEngine(), snaps);
+
+    // Compute only the active open file's summary synchronously (<1 ms);
+    // run the workspace-wide directory/AST scan on a background thread so UI stays responsive.
     std::wstring activeSummary = L"No active file";
     size_t anchorLine = 0;
     if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView && !pDoc->isUnsupportedBinary) {
@@ -10301,9 +10303,74 @@ void Window::DoCodeMetrics() {
                         L"complexity " + std::to_wstring(fm.cyclomaticComplexity);
         anchorLine = pDoc->buffer.GetCursor().line;
     }
-    m_editor.OpenCodeMetricsPanel(metrics, activeSummary);
+
+    const uint64_t gen = ++m_codeMetricsGen;
+    m_editor.OpenCodeMetricsLoadingPanel(activeSummary);
     m_editor.GetPeekPanel().anchorLine = anchorLine;
-    InvalidateRect(m_hwnd, nullptr, FALSE);
+    if (m_hwnd) {
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
+    }
+
+    auto ignoreCopy = std::make_shared<workspace::IgnoreEngine>();
+    ignoreCopy->CopyFrom(m_drawer.GetIgnoreEngine());
+    HWND postHwnd = m_hwnd.load();
+
+    std::thread([this, postHwnd, gen, wsRoot = std::move(wsRoot), ignoreCopy, snaps = std::move(snaps),
+                 activeSummary = std::move(activeSummary), anchorLine]() mutable {
+        struct Guard {
+            Window* self;
+            ~Guard() {
+                std::lock_guard<std::mutex> lk(self->m_bgWorkersMutex);
+                if (self->m_activeBgWorkers > 0) --self->m_activeBgWorkers;
+                self->m_bgWorkersCv.notify_all();
+            }
+        } guard{ this };
+        try {
+            if (m_isDestroying.load() || m_codeMetricsGen.load() != gen) return;
+            auto metrics = editor::ComputeWorkspaceMetrics(wsRoot, *ignoreCopy, snaps);
+            if (m_isDestroying.load() || m_codeMetricsGen.load() != gen) return;
+
+            {
+                std::lock_guard<std::mutex> lk(m_codeMetricsMutex);
+                if (m_codeMetricsGen.load() != gen) return;
+                m_pendingCodeMetrics.generation = gen;
+                m_pendingCodeMetrics.metrics = std::move(metrics);
+                m_pendingCodeMetrics.activeSummary = std::move(activeSummary);
+                m_pendingCodeMetrics.anchorLine = anchorLine;
+                m_hasPendingCodeMetrics = true;
+            }
+            if (postHwnd && IsWindow(postHwnd) && !m_isDestroying.load()) {
+                PostMessageW(postHwnd, WM_USER + 236, 0, 0);
+            }
+        } catch (...) {}
+    }).detach();
+}
+
+void Window::ApplyPendingCodeMetrics() {
+    PendingCodeMetricsResult res;
+    {
+        std::lock_guard<std::mutex> lk(m_codeMetricsMutex);
+        if (!m_hasPendingCodeMetrics) return;
+        res = std::move(m_pendingCodeMetrics);
+        m_pendingCodeMetrics = {};
+        m_hasPendingCodeMetrics = false;
+    }
+
+    if (res.generation != m_codeMetricsGen.load()) return;
+    const auto& peek = m_editor.GetPeekPanel();
+    // Respect if the user closed or switched away from the loading peek panel while scanning
+    if (!peek.isOpen || peek.mode != ui::EditorCanvas::PeekMode::CodeMetrics) return;
+
+    m_editor.OpenCodeMetricsPanel(res.metrics, res.activeSummary);
+    m_editor.GetPeekPanel().anchorLine = res.anchorLine;
+    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
 void Window::DoRenameSymbol() {
@@ -15196,7 +15263,7 @@ std::wstring GetShortCommentTagName(ui::EditorCanvas::BetterCommentType t) {
     switch (t) {
         case ui::EditorCanvas::BetterCommentType::Urgent:    return L"Urgent";
         case ui::EditorCanvas::BetterCommentType::Asap:      return L"ASAP";
-        case ui::EditorCanvas::BetterCommentType::Alert:     return L"Error";
+        case ui::EditorCanvas::BetterCommentType::Alert:     return L"Critical";
         case ui::EditorCanvas::BetterCommentType::Todo:      return L"TODO";
         case ui::EditorCanvas::BetterCommentType::Warning:   return L"Warn";
         case ui::EditorCanvas::BetterCommentType::Hack:      return L"Hack";
@@ -15652,20 +15719,27 @@ void Window::RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWid
     if (brushBorder) pRT->DrawRoundedRectangle(rrc, brushBorder.Get(), 1.0f);
 
     IDWriteTextFormat* pFmt = theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get();
+    ID2D1Brush* pAccent = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : brushBorder.Get();
     ID2D1Brush* pItemHover = theme.brushItemHover ? theme.brushItemHover.Get() : brushBorder.Get();
     ID2D1Brush* pTextPri = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : brushBorder.Get();
     ID2D1Brush* pTextSec = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : brushBorder.Get();
     ID2D1Brush* pTextMut = theme.brushTextMuted ? theme.brushTextMuted.Get() : brushBorder.Get();
     ID2D1Brush* pTextWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : pTextPri;
 
-    // Header bar
+    // Header bar with Lucide Tag icon + title + file/item count badge
     D2D1_RECT_F rcHeader = D2D1::RectF(menuLeft + 1.0f, menuTop + 1.0f, menuLeft + menuW - 1.0f, menuTop + headerH);
     if (brushHeaderBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcHeader, config.ScaleF(5.0f), config.ScaleF(5.0f)), brushHeaderBg.Get());
 
-    D2D1_RECT_F rcTitle = D2D1::RectF(menuLeft + padX, menuTop, menuLeft + menuW - config.ScaleF(130.0f), menuTop + headerH);
-    const wchar_t* titleStr = L"Comment Annotations";
-    pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)),
-                  theme.fontTitle ? theme.fontTitle.Get() : pFmt, rcTitle, pTextPri);
+    const float hdrIconSz = config.ScaleF(14.0f);
+    D2D1_RECT_F rcHdrIcon = D2D1::RectF(menuLeft + padX, menuTop + (headerH - hdrIconSz) * 0.5f,
+                                        menuLeft + padX + hdrIconSz, menuTop + (headerH + hdrIconSz) * 0.5f);
+    m_rail.GetLucide().DrawTag(pRT, rcHdrIcon, pAccent, 1.5f);
+
+    D2D1_RECT_F rcTitle = D2D1::RectF(rcHdrIcon.right + config.ScaleF(6.0f), menuTop, menuLeft + menuW - config.ScaleF(130.0f), menuTop + headerH);
+    const wchar_t* titleStr = L"Comment Tags";
+    if (IDWriteTextFormat* pTitleFmt = theme.fontTitle ? theme.fontTitle.Get() : pFmt) {
+        pRT->DrawText(titleStr, static_cast<UINT32>(wcslen(titleStr)), pTitleFmt, rcTitle, pTextPri);
+    }
 
     std::wstring badgeStr = std::to_wstring(m_commentAnnotsDropdownItems.size()) + L" in " +
                             std::to_wstring(m_commentAnnotsDropdownDistinctFiles) + L" files";
@@ -15674,8 +15748,9 @@ void Window::RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWid
     D2D1_RECT_F rcBadge = D2D1::RectF(menuLeft + menuW - padX - badgeW, menuTop + (headerH - badgeH) * 0.5f,
                                       menuLeft + menuW - padX, menuTop + (headerH + badgeH) * 0.5f);
     pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBadge, config.ScaleF(4.0f), config.ScaleF(4.0f)), pItemHover);
-    pRT->DrawText(badgeStr.c_str(), static_cast<UINT32>(badgeStr.length()),
-                  theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt, rcBadge, pTextSec);
+    if (IDWriteTextFormat* pBadgeFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : pFmt) {
+        pRT->DrawText(badgeStr.c_str(), static_cast<UINT32>(badgeStr.length()), pBadgeFmt, rcBadge, pTextSec);
+    }
 
     if (brushBorder) {
         pRT->DrawLine(D2D1::Point2F(menuLeft, menuTop + headerH), D2D1::Point2F(menuLeft + menuW, menuTop + headerH), brushBorder.Get(), 1.0f);
@@ -15704,15 +15779,33 @@ void Window::RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWid
         }
 
         if (row.isFileHeader) {
+            // Render authentic file icon (Seti / Lucide fallback) for each grouped file header
+            std::wstring fNameOnly;
+            try {
+                fNameOnly = std::filesystem::path(row.fileHeaderPath.empty() ? row.fileHeaderLabel : row.fileHeaderPath).filename().wstring();
+            } catch (...) {}
+            if (fNameOnly.empty()) fNameOnly = row.fileHeaderLabel;
+            const float fIconSz = config.ScaleF(14.0f);
+            D2D1_RECT_F rcFIcon = D2D1::RectF(rcRow.left + config.ScaleF(6.0f), rowY + (rowH - fIconSz) * 0.5f,
+                                              rcRow.left + config.ScaleF(6.0f) + fIconSz, rowY + (rowH + fIconSz) * 0.5f);
+            auto setiInfo = theme.GetSetiIcon(fNameOnly, false, false);
+            if (theme.fontSeti && setiInfo.pBrush) {
+                pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcFIcon, setiInfo.pBrush);
+            } else {
+                m_rail.GetLucide().DrawFileIcon(pRT, theme, rcFIcon, ui::LucideIcons::GetIconTypeForPath(fNameOnly, false, false));
+            }
+
             std::wstring countTag = L"(" + std::to_wstring(row.fileItemCount) + L")";
-            D2D1_RECT_F rcFileName = D2D1::RectF(rcRow.left + config.ScaleF(8.0f), rowY,
+            D2D1_RECT_F rcFileName = D2D1::RectF(rcFIcon.right + config.ScaleF(6.0f), rowY,
                                                  rcRow.right - config.ScaleF(40.0f), rowY + rowH);
             D2D1_RECT_F rcFileCnt = D2D1::RectF(rcRow.right - config.ScaleF(38.0f), rowY,
                                                 rcRow.right - config.ScaleF(6.0f), rowY + rowH);
-            pRT->DrawText(row.fileHeaderLabel.c_str(), static_cast<UINT32>(row.fileHeaderLabel.length()),
-                          pFmt, rcFileName, isHov ? pTextWhite : pTextPri, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            pRT->DrawText(countTag.c_str(), static_cast<UINT32>(countTag.length()),
-                          pFmt, rcFileCnt, pTextMut);
+            if (pFmt) {
+                pRT->DrawText(row.fileHeaderLabel.c_str(), static_cast<UINT32>(row.fileHeaderLabel.length()),
+                              pFmt, rcFileName, isHov ? pTextWhite : pTextPri, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                pRT->DrawText(countTag.c_str(), static_cast<UINT32>(countTag.length()),
+                              pFmt, rcFileCnt, pTextMut);
+            }
         } else if (row.itemIdx < m_commentAnnotsDropdownItems.size()) {
             const auto& item = m_commentAnnotsDropdownItems[row.itemIdx];
             const float dotR = config.ScaleF(3.3f);
@@ -15727,19 +15820,20 @@ void Window::RenderCommentAnnotsDropdown(ID2D1RenderTarget* pRT, float clientWid
             const float tagX = dotX + dotR + config.ScaleF(6.0f);
             const float tagW = config.ScaleF(58.0f);
             D2D1_RECT_F rcTag = D2D1::RectF(tagX, rowY, tagX + tagW, rowY + rowH);
-            pRT->DrawText(item.tagLabel.c_str(), static_cast<UINT32>(item.tagLabel.length()),
-                          pFmt, rcTag, dotBrush ? static_cast<ID2D1Brush*>(dotBrush.Get()) : pTextPri);
-
             std::wstring lnStr = L"Ln " + std::to_wstring(item.line + 1);
             const float lnW = config.ScaleF(50.0f);
             D2D1_RECT_F rcLn = D2D1::RectF(rcRow.right - lnW - config.ScaleF(6.0f), rowY, rcRow.right - config.ScaleF(4.0f), rowY + rowH);
             D2D1_RECT_F rcPrev = D2D1::RectF(tagX + tagW + config.ScaleF(2.0f), rowY, rcLn.left - config.ScaleF(6.0f), rowY + rowH);
 
-            pRT->PushAxisAlignedClip(rcPrev, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            pRT->DrawText(item.preview.c_str(), static_cast<UINT32>(item.preview.length()),
-                          pFmt, rcPrev, isHov ? pTextWhite : pTextSec);
-            pRT->PopAxisAlignedClip();
-            pRT->DrawText(lnStr.c_str(), static_cast<UINT32>(lnStr.length()), pFmt, rcLn, pTextMut);
+            if (pFmt) {
+                pRT->DrawText(item.tagLabel.c_str(), static_cast<UINT32>(item.tagLabel.length()),
+                              pFmt, rcTag, dotBrush ? static_cast<ID2D1Brush*>(dotBrush.Get()) : pTextPri);
+                pRT->PushAxisAlignedClip(rcPrev, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                pRT->DrawText(item.preview.c_str(), static_cast<UINT32>(item.preview.length()),
+                              pFmt, rcPrev, isHov ? pTextWhite : pTextSec);
+                pRT->PopAxisAlignedClip();
+                pRT->DrawText(lnStr.c_str(), static_cast<UINT32>(lnStr.length()), pFmt, rcLn, pTextMut);
+            }
         }
     }
 
@@ -16971,7 +17065,7 @@ void Window::RenderStatusBar(float clientW, float clientH) {
             };
             pushChip(ui::EditorCanvas::BetterCommentType::Urgent,    cStats.urgentCount,    L"Urgent");
             pushChip(ui::EditorCanvas::BetterCommentType::Asap,      cStats.asapCount,      L"ASAP");
-            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     cStats.alertCount,     L"Error");
+            pushChip(ui::EditorCanvas::BetterCommentType::Alert,     cStats.alertCount,     L"Critical");
             pushChip(ui::EditorCanvas::BetterCommentType::Todo,      cStats.todoCount,      L"TODO");
             pushChip(ui::EditorCanvas::BetterCommentType::Warning,   cStats.warningCount,   L"Warn");
             pushChip(ui::EditorCanvas::BetterCommentType::Hack,      cStats.hackCount,      L"Hack");
@@ -16982,11 +17076,11 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
             if (!chips.empty()) {
                 if (multiFileAnnots) {
-                    m_statusCommentTooltip = L"Comment Annotations across " + std::to_wstring(cStats.distinctFiles) + L" files:";
+                    m_statusCommentTooltip = L"Comment Tags across " + std::to_wstring(cStats.distinctFiles) + L" files:";
                 } else if (singleNonActiveFile) {
-                    m_statusCommentTooltip = L"Comment Annotations (" + cStats.fileLabels.front() + L"):";
+                    m_statusCommentTooltip = L"Comment Tags (" + cStats.fileLabels.front() + L"):";
                 } else {
-                    m_statusCommentTooltip = L"Comment Annotations in file:";
+                    m_statusCommentTooltip = L"Comment Tags in file:";
                 }
                 for (size_t ci = 0; ci < chips.size(); ++ci) {
                     m_statusCommentTooltip += (ci == 0 ? L" " : L" \x2022 ") + chips[ci].label;
@@ -17001,6 +17095,9 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                 const float cDotD = cDotR * 2.0f;
                 const float cGap = m_config.ScaleF(4.0f);
                 const float cChipGap = m_config.ScaleF(7.0f);
+                const float tagIconSz = m_config.ScaleF(11.0f);
+                const float tagIconGap = m_config.ScaleF(4.0f);
+                const std::wstring tagPrefix = L"Tags:";
 
                 auto measureChipStr = [&](const std::wstring& s) -> float {
                     float w = m_config.ScaleF(7.5f) * static_cast<float>(s.length());
@@ -17014,7 +17111,9 @@ void Window::RenderStatusBar(float clientW, float clientH) {
                     return w;
                 };
 
-                float pillW = cPadX * 2.0f;
+                const float tagPrefixW = measureChipStr(tagPrefix);
+                // Prefix pill with Lucide Tag icon + "Tags:" so comment markers are clearly distinct from Errors/Warnings
+                float pillW = cPadX * 2.0f + tagIconSz + tagIconGap + tagPrefixW + cChipGap;
                 std::vector<float> textWidths(shown, 0.0f);
                 for (size_t i = 0; i < shown; ++i) {
                     textWidths[i] = measureChipStr(chips[i].label);
@@ -17059,6 +17158,17 @@ void Window::RenderStatusBar(float clientW, float clientH) {
 
                     float drawX = curLeftX + cPadX;
                     const float midY = itemY + itemH * 0.5f;
+                    D2D1_RECT_F rcTagGlyph = D2D1::RectF(drawX, midY - tagIconSz * 0.5f,
+                                                         drawX + tagIconSz, midY + tagIconSz * 0.5f);
+                    m_rail.GetLucide().DrawTag(m_pRenderTarget.Get(), rcTagGlyph, textBrush, 1.35f);
+                    drawX += tagIconSz + tagIconGap;
+                    if (pFmt && textBrush) {
+                        D2D1_RECT_F rcTagWord = D2D1::RectF(drawX, itemY, drawX + tagPrefixW + m_config.ScaleF(2.0f), itemY + itemH);
+                        m_pRenderTarget->DrawText(tagPrefix.c_str(), static_cast<UINT32>(tagPrefix.length()),
+                                                  pFmt, rcTagWord, textBrush);
+                    }
+                    drawX += tagPrefixW + cChipGap;
+
                     for (size_t i = 0; i < shown; ++i) {
                         D2D1_COLOR_F col = ui::EditorCanvas::GetBetterCommentColor(m_theme, chips[i].type);
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> chipBrush;
@@ -17241,9 +17351,9 @@ LRESULT Window::HandleNCHitTest(POINT screenPt) {
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
 
-    // Window Resize Borders (6px perimeter, disabled when maximized)
+    // Window Resize Borders (4px perimeter so right-edge scrollbars stay easy to grab when unmaximized)
     if (!IsZoomed(m_hwnd)) {
-        const int border = m_config.Scale(6);
+        const int border = m_config.Scale(4);
         if (clientPt.y < border) {
             if (clientPt.x < border) return HTTOPLEFT;
             if (clientPt.x >= w - border) return HTTOPRIGHT;
@@ -18398,7 +18508,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         if (scrollRange > 0.0f) {
             size_t totalLines = pActiveDoc->buffer.GetLineCount();
             size_t maxS = (totalLines > 3) ? (totalLines - 3) : 0;
-            if (pActiveDoc->isDiffView) {
+            if (pActiveDoc->lastTotalVisualLines > 0) {
+                totalLines = pActiveDoc->lastTotalVisualLines;
+                maxS = pActiveDoc->lastMaxScrollLine;
+            } else if (pActiveDoc->isDiffView) {
                 totalLines = (std::max)(pActiveDoc->diffOriginalBuffer.GetLineCount(), pActiveDoc->buffer.GetLineCount());
                 maxS = (totalLines > 3) ? (totalLines - 3) : 0;
             } else if (pActiveDoc->isMultiFileDiff) {
@@ -18410,15 +18523,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                     }
                 }
                 maxS = (totalLines > 3) ? (totalLines - 3) : 0;
-            } else if (pActiveDoc->lastTotalVisualLines > 0) {
-                totalLines = pActiveDoc->lastTotalVisualLines;
-                maxS = pActiveDoc->lastMaxScrollLine;
             }
-            float linesPerPixel = static_cast<float>((std::max<size_t>)(1, maxS)) / scrollRange;
-            long long newScroll = static_cast<long long>(pActiveDoc->dragStartScrollLine) + static_cast<long long>(deltaY * linesPerPixel);
+            if (maxS == 0) return;
+            float linesPerPixel = static_cast<float>(maxS) / scrollRange;
+            long long newScroll = static_cast<long long>(pActiveDoc->dragStartScrollLine) +
+                                  static_cast<long long>(std::llround(static_cast<double>(deltaY) * static_cast<double>(linesPerPixel)));
             if (newScroll < 0) newScroll = 0;
             if (static_cast<size_t>(newScroll) > maxS) newScroll = static_cast<long long>(maxS);
             pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
+            pActiveDoc->smoothScrollOffsetPx = 0.0f;
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -21670,19 +21783,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
                 } else if (doc.isMultiFileDiff) {
-                    // 1. Collapsible file header clicks in multi-file diff view (Image 4)
-                    for (auto& entry : doc.multiFileDiffs) {
-                        if (clientPt.x >= entry.headerBounds.left && clientPt.x <= entry.headerBounds.right &&
-                            clientPt.y >= entry.headerBounds.top && clientPt.y <= entry.headerBounds.bottom) {
-                            entry.isCollapsed = !entry.isCollapsed;
-                            InvalidateRect(m_hwnd, nullptr, FALSE);
-                            return;
-                        }
-                    }
-
-                    // 2. Vertical scrollbar click & drag in multi-file diff view
+                    // 1. Vertical scrollbar click & drag BEFORE header hit testing so scrollbar edges
+                    //    adjacent to a file header are never stolen by collapse/expand.
                     bool hitThumb = false;
                     if (m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
+                        doc.smoothScrollOffsetPx = 0.0f;
                         if (hitThumb) {
                             doc.isDraggingScrollbar = true;
                             doc.dragStartY = static_cast<float>(clientPt.y);
@@ -21704,7 +21809,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         return;
                     }
 
-                    // 3. Horizontal scrollbar click & drag in multi-file diff view
+                    // 2. Horizontal scrollbar click & drag BEFORE row/header hits
                     bool hitHThumb = false;
                     if (m_editor.HitTestHScrollbar(clientPt, doc, hitHThumb)) {
                         const float maxScrollX = (doc.diffMaxScrollX > 0.0f) ? doc.diffMaxScrollX : (std::max)(0.0f, doc.maxContentWidth);
@@ -21722,6 +21827,16 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
+                    }
+
+                    // 3. Collapsible file header clicks in multi-file diff view (Image 4)
+                    for (auto& entry : doc.multiFileDiffs) {
+                        if (clientPt.x >= entry.headerBounds.left && clientPt.x <= entry.headerBounds.right &&
+                            clientPt.y >= entry.headerBounds.top && clientPt.y <= entry.headerBounds.bottom) {
+                            entry.isCollapsed = !entry.isCollapsed;
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                            return;
+                        }
                     }
 
                     // 4. Long-press / drag text selection across left (Parent) or right (Commit) code pane
@@ -22557,20 +22672,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         pDoc->targetHighlightLen = matchLen;
                         pDoc->targetHighlightTime = GetTickCount64();
                         pDoc->buffer.SetCursor(jumpLine, matchCol + matchLen);
-
-                        // Center line vertically in editor view
-                        RECT rcClient;
-                        GetClientRect(m_hwnd, &rcClient);
-                        float headerH = EffectiveHeaderHeight();
-                        float editorH = static_cast<float>(rcClient.bottom - rcClient.top) - headerH;
-                        float lineH = m_config.fontSize * m_config.lineHeightMultiplier;
-                        size_t visibleLines = (lineH > 0.0f) ? static_cast<size_t>(editorH / lineH) : 25;
-                        size_t halfVisible = visibleLines / 2;
-                        if (jumpLine > halfVisible) {
-                            pDoc->scrollLine = jumpLine - halfVisible;
-                        } else {
-                            pDoc->scrollLine = 0;
-                        }
+                        EnsureCursorVisible(true);
                     }
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -24689,19 +24791,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (pHoverPaneDoc->isMultiFileDiff) {
                         const float fpx = static_cast<float>(pt.x);
                         const float fpy = static_cast<float>(pt.y);
+                        if ((fpx >= pHoverPaneDoc->hScrollbarTrack.left && fpx <= pHoverPaneDoc->hScrollbarTrack.right &&
+                             fpy >= pHoverPaneDoc->hScrollbarTrack.top && fpy <= pHoverPaneDoc->hScrollbarTrack.bottom) ||
+                            (fpx >= pHoverPaneDoc->scrollbarTrack.left - 6.0f && fpx <= pHoverPaneDoc->scrollbarTrack.right &&
+                             fpy >= pHoverPaneDoc->scrollbarTrack.top && fpy <= pHoverPaneDoc->scrollbarTrack.bottom)) {
+                            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                            return TRUE;
+                        }
                         for (const auto& entry : pHoverPaneDoc->multiFileDiffs) {
                             if (fpx >= entry.headerBounds.left && fpx <= entry.headerBounds.right &&
                                 fpy >= entry.headerBounds.top && fpy <= entry.headerBounds.bottom) {
                                 SetCursor(LoadCursor(nullptr, IDC_HAND));
                                 return TRUE;
                             }
-                        }
-                        if ((fpx >= pHoverPaneDoc->hScrollbarTrack.left && fpx <= pHoverPaneDoc->hScrollbarTrack.right &&
-                             fpy >= pHoverPaneDoc->hScrollbarTrack.top && fpy <= pHoverPaneDoc->hScrollbarTrack.bottom) ||
-                            (fpx >= pHoverPaneDoc->scrollbarTrack.left && fpx <= pHoverPaneDoc->scrollbarTrack.right &&
-                             fpy >= pHoverPaneDoc->scrollbarTrack.top && fpy <= pHoverPaneDoc->scrollbarTrack.bottom)) {
-                            SetCursor(LoadCursor(nullptr, IDC_ARROW));
-                            return TRUE;
                         }
                     }
 
@@ -28400,9 +28502,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     keepAnimating = true;
                 }
 
-                // Modern flat loading animations for Activity Heatmap and async Commit Diffs
+                // Modern flat loading animations for Activity Heatmap, Code Metrics peek, and async Commit Diffs
                 if (m_editor.GetActivityHeatmapView().IsLoading()) {
                     keepAnimating = true;
+                }
+                {
+                    const auto& peek = m_editor.GetPeekPanel();
+                    if (peek.isOpen && peek.mode == ui::EditorCanvas::PeekMode::CodeMetrics && peek.metricsLoading) {
+                        keepAnimating = true;
+                    }
                 }
                 for (const auto& grp : m_editorGroups) {
                     if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
@@ -29190,6 +29298,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 235: {
             if (!m_isDestroying.load()) {
                 ProcessPendingFloatingActions();
+            }
+            return 0;
+        }
+
+        case WM_USER + 236: {
+            if (!m_isDestroying.load()) {
+                ApplyPendingCodeMetrics();
             }
             return 0;
         }

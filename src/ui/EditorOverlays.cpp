@@ -9,6 +9,7 @@
 
 #include "phide/ui/EditorCanvas.hpp"
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <cwctype>
@@ -606,6 +607,7 @@ void EditorCanvas::OpenPeekPanel(
     std::vector<PeekItemEntry> items) {
     DismissHoverCard();
     m_peekPanel.isOpen = true;
+    m_peekPanel.metricsLoading = false;
     m_peekPanel.rcPanel = {};
     m_peekPanel.rcCloseBtn = {};
     m_peekPanel.rcOpenFileBtn = {};
@@ -622,11 +624,28 @@ void EditorCanvas::OpenPeekPanel(
     LoadSelectedPeekPreview();
 }
 
+void EditorCanvas::OpenCodeMetricsLoadingPanel(const std::wstring& activeFileLabel) {
+    DismissHoverCard();
+    m_peekPanel.isOpen = true;
+    m_peekPanel.metricsLoading = true;
+    m_peekPanel.rcPanel = {};
+    m_peekPanel.rcCloseBtn = {};
+    m_peekPanel.rcOpenFileBtn = {};
+    m_peekPanel.mode = PeekMode::CodeMetrics;
+    m_peekPanel.title = L"Code Metrics & Complexity";
+    m_peekPanel.subtitle = activeFileLabel;
+    m_peekPanel.metrics = {};
+    m_peekPanel.items.clear();
+    m_peekPanel.previewLines.clear();
+    m_peekPanel.codeScrollY = 0.0f;
+}
+
 void EditorCanvas::OpenCodeMetricsPanel(
     const editor::WorkspaceCodeMetrics& metrics,
     const std::wstring& activeFileLabel) {
     DismissHoverCard();
     m_peekPanel.isOpen = true;
+    m_peekPanel.metricsLoading = false;
     m_peekPanel.rcPanel = {};
     m_peekPanel.rcCloseBtn = {};
     m_peekPanel.rcOpenFileBtn = {};
@@ -831,45 +850,94 @@ void EditorCanvas::RenderInlinePeekPanel(
     pRT->PushAxisAlignedClip(rcBody, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     if (m_peekPanel.mode == PeekMode::CodeMetrics) {
-        const auto& ws = m_peekPanel.metrics;
         const float kpiH = config.ScaleF(44.0f);
         const float cardW = (rcBody.right - rcBody.left - config.ScaleF(24.0f)) / 4.0f;
-        size_t maxCC = 1;
-        for (const auto& tf : ws.topComplexFiles) {
-            if (tf.cyclomaticComplexity > maxCC) maxCC = tf.cyclomaticComplexity;
-        }
-        struct KpiPair { std::wstring title; std::wstring value; };
-        std::vector<KpiPair> kpis = {
-            { L"Files", std::to_wstring(ws.totalFiles) },
-            { L"Code Lines", std::to_wstring(ws.codeLines) + L" (" + std::to_wstring(ws.totalLines) + L" total)" },
-            { L"Functions", std::to_wstring(ws.totalFunctions) },
-            { L"Complexity Avg/Max", std::to_wstring(ws.avgComplexity) + L" / " + std::to_wstring(maxCC) }
-        };
-        for (size_t k = 0; k < 4; ++k) {
-            float kx = rcBody.left + static_cast<float>(k) * (cardW + config.ScaleF(8.0f));
-            D2D1_RECT_F rcKpi = D2D1::RectF(kx, bodyTop + config.ScaleF(4.0f), kx + cardW, bodyTop + config.ScaleF(4.0f) + kpiH);
-            pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcKpi, 4.0f, 4.0f), theme.brushBorderSubtle.Get(), 1.0f);
-            D2D1_RECT_F rcKt = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(3.0f), rcKpi.right - config.ScaleF(4.0f), rcKpi.top + config.ScaleF(18.0f));
-            D2D1_RECT_F rcKv = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(19.0f), rcKpi.right - config.ScaleF(4.0f), rcKpi.bottom);
-            pRT->DrawText(kpis[k].title.c_str(), static_cast<UINT32>(kpis[k].title.length()), theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(), rcKt, theme.brushTextMuted.Get());
-            pRT->DrawText(kpis[k].value.c_str(), static_cast<UINT32>(kpis[k].value.length()), theme.fontBody.Get(), rcKv, theme.brushTextPrimary.Get());
-        }
-
-        float rowY = bodyTop + kpiH + config.ScaleF(14.0f) - m_peekPanel.codeScrollY;
-        const float rH = config.ScaleF(20.0f);
-        for (const auto& f : ws.topComplexFiles) {
-            if (rowY + rH >= bodyTop + kpiH + config.ScaleF(10.0f) && rowY < bodyBottom) {
-                std::wstring lineTxt = std::filesystem::path(f.filePath).filename().wstring() +
-                                       L"   Lines: " + std::to_wstring(f.codeLines) +
-                                       L"   Funcs: " + std::to_wstring(f.functionCount) +
-                                       L"   Comments: " + std::to_wstring(f.commentLines) +
-                                       L"   MaxCC: " + std::to_wstring(f.cyclomaticComplexity);
-                D2D1_RECT_F rcRow = D2D1::RectF(rcBody.left + config.ScaleF(4.0f), rowY, rcBody.right - config.ScaleF(4.0f), rowY + rH);
-                pRT->DrawText(lineTxt.c_str(), static_cast<UINT32>(lineTxt.length()),
-                              theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
-                              rcRow, theme.brushTextSecondary.Get());
+        if (m_peekPanel.metricsLoading) {
+            // Non-blocking async Code Metrics loading state: sliding accent progress bar + skeleton KPI cards
+            const float barH = config.ScaleF(2.5f);
+            const float bodyW = (std::max)(config.ScaleF(40.0f), rcBody.right - rcBody.left);
+            pRT->FillRectangle(D2D1::RectF(rcBody.left, bodyTop, rcBody.right, bodyTop + barH),
+                               theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+            const float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+            const float slideW = (std::max)(config.ScaleF(72.0f), bodyW * 0.26f);
+            const float slideX = rcBody.left - slideW + t * (bodyW + slideW * 2.0f);
+            const float sL = (std::max)(rcBody.left, slideX);
+            const float sR = (std::min)(rcBody.right, slideX + slideW);
+            if (sR > sL && accentLineBrush) {
+                pRT->FillRectangle(D2D1::RectF(sL, bodyTop, sR, bodyTop + barH), accentLineBrush.Get());
             }
-            rowY += rH;
+
+            const float phase = static_cast<float>(GetTickCount64() % 1400) / 1400.0f * 6.283185f;
+            const float pulseAlpha = 0.16f + 0.14f * (0.5f + 0.5f * std::sin(phase));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> skelBrush;
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, pulseAlpha) : D2D1::ColorF(0.0f, 0.0f, 0.0f, pulseAlpha * 0.65f),
+                &skelBrush);
+            static constexpr const wchar_t* kLoadingTitles[4] = { L"Files", L"Code Lines", L"Functions", L"Complexity Avg/Max" };
+            for (size_t k = 0; k < 4; ++k) {
+                float kx = rcBody.left + static_cast<float>(k) * (cardW + config.ScaleF(8.0f));
+                D2D1_RECT_F rcKpi = D2D1::RectF(kx, bodyTop + config.ScaleF(8.0f), kx + cardW, bodyTop + config.ScaleF(8.0f) + kpiH);
+                pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcKpi, 4.0f, 4.0f), theme.brushBorderSubtle.Get(), 1.0f);
+                D2D1_RECT_F rcKt = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(3.0f), rcKpi.right - config.ScaleF(4.0f), rcKpi.top + config.ScaleF(18.0f));
+                pRT->DrawText(kLoadingTitles[k], static_cast<UINT32>(wcslen(kLoadingTitles[k])),
+                              theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                              rcKt, theme.brushTextMuted.Get());
+                if (skelBrush) {
+                    D2D1_RECT_F rcBar = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(24.0f),
+                                                    (std::min)(rcKpi.right - config.ScaleF(10.0f), kx + cardW * 0.58f), rcKpi.top + config.ScaleF(34.0f));
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcBar, 3.0f, 3.0f), skelBrush.Get());
+                }
+            }
+
+            float msgY = bodyTop + kpiH + config.ScaleF(20.0f);
+            const wchar_t* scanTxt = L"Scanning workspace files for Code Metrics...";
+            pRT->DrawText(scanTxt, static_cast<UINT32>(wcslen(scanTxt)), theme.fontBody.Get(),
+                          D2D1::RectF(rcBody.left + config.ScaleF(4.0f), msgY, rcBody.right - config.ScaleF(4.0f), msgY + config.ScaleF(22.0f)),
+                          theme.brushTextPrimary.Get());
+            const wchar_t* subTxt = L"Computing LOC, function counts, and cyclomatic complexity asynchronously in the background.";
+            pRT->DrawText(subTxt, static_cast<UINT32>(wcslen(subTxt)),
+                          theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(),
+                          D2D1::RectF(rcBody.left + config.ScaleF(4.0f), msgY + config.ScaleF(24.0f), rcBody.right - config.ScaleF(4.0f), bodyBottom),
+                          theme.brushTextMuted.Get());
+        } else {
+            const auto& ws = m_peekPanel.metrics;
+            size_t maxCC = 1;
+            for (const auto& tf : ws.topComplexFiles) {
+                if (tf.cyclomaticComplexity > maxCC) maxCC = tf.cyclomaticComplexity;
+            }
+            struct KpiPair { std::wstring title; std::wstring value; };
+            std::vector<KpiPair> kpis = {
+                { L"Files", std::to_wstring(ws.totalFiles) },
+                { L"Code Lines", std::to_wstring(ws.codeLines) + L" (" + std::to_wstring(ws.totalLines) + L" total)" },
+                { L"Functions", std::to_wstring(ws.totalFunctions) },
+                { L"Complexity Avg/Max", std::to_wstring(ws.avgComplexity) + L" / " + std::to_wstring(maxCC) }
+            };
+            for (size_t k = 0; k < 4; ++k) {
+                float kx = rcBody.left + static_cast<float>(k) * (cardW + config.ScaleF(8.0f));
+                D2D1_RECT_F rcKpi = D2D1::RectF(kx, bodyTop + config.ScaleF(4.0f), kx + cardW, bodyTop + config.ScaleF(4.0f) + kpiH);
+                pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcKpi, 4.0f, 4.0f), theme.brushBorderSubtle.Get(), 1.0f);
+                D2D1_RECT_F rcKt = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(3.0f), rcKpi.right - config.ScaleF(4.0f), rcKpi.top + config.ScaleF(18.0f));
+                D2D1_RECT_F rcKv = D2D1::RectF(kx + config.ScaleF(6.0f), rcKpi.top + config.ScaleF(19.0f), rcKpi.right - config.ScaleF(4.0f), rcKpi.bottom);
+                pRT->DrawText(kpis[k].title.c_str(), static_cast<UINT32>(kpis[k].title.length()), theme.fontMenuShortcut ? theme.fontMenuShortcut.Get() : theme.fontBody.Get(), rcKt, theme.brushTextMuted.Get());
+                pRT->DrawText(kpis[k].value.c_str(), static_cast<UINT32>(kpis[k].value.length()), theme.fontBody.Get(), rcKv, theme.brushTextPrimary.Get());
+            }
+
+            float rowY = bodyTop + kpiH + config.ScaleF(14.0f) - m_peekPanel.codeScrollY;
+            const float rH = config.ScaleF(20.0f);
+            for (const auto& f : ws.topComplexFiles) {
+                if (rowY + rH >= bodyTop + kpiH + config.ScaleF(10.0f) && rowY < bodyBottom) {
+                    std::wstring lineTxt = std::filesystem::path(f.filePath).filename().wstring() +
+                                           L"   Lines: " + std::to_wstring(f.codeLines) +
+                                           L"   Funcs: " + std::to_wstring(f.functionCount) +
+                                           L"   Comments: " + std::to_wstring(f.commentLines) +
+                                           L"   MaxCC: " + std::to_wstring(f.cyclomaticComplexity);
+                    D2D1_RECT_F rcRow = D2D1::RectF(rcBody.left + config.ScaleF(4.0f), rowY, rcBody.right - config.ScaleF(4.0f), rowY + rH);
+                    pRT->DrawText(lineTxt.c_str(), static_cast<UINT32>(lineTxt.length()),
+                                  theme.fontCode ? theme.fontCode.Get() : theme.fontBody.Get(),
+                                  rcRow, theme.brushTextSecondary.Get());
+                }
+                rowY += rH;
+            }
         }
     } else {
         const float listW = (std::max)(config.ScaleF(160.0f), (rcBody.right - rcBody.left) * 0.36f);

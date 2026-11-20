@@ -3438,13 +3438,13 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
                     return true;
                 }
 
-                // Click on match row to jump to code
+                // Click on match row to jump to code using exact full-line column (not snippet-relative offset)
                 if (match.bounds.right > match.bounds.left &&
                     pt.x >= match.bounds.left && pt.x <= match.bounds.right &&
                     pt.y >= match.bounds.top && pt.y <= match.bounds.bottom) {
                     outJumpFile = group.filePath;
                     outJumpLine = match.lineIndex;
-                    outMatchCol = match.matchCol;
+                    outMatchCol = match.docMatchCol;
                     outMatchLen = match.matchLen;
                     m_focusedSearchInput = 0;
                     return true;
@@ -3728,6 +3728,7 @@ static bool SearchSingleFile(
                 match.lineIndex = lineIdx;
                 match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
                 match.matchCol = matchCol - snipStart;
+                match.docMatchCol = matchCol;
                 match.matchLen = matchLen;
                 outGroup.matches.push_back(std::move(match));
                 inOutTotalMatches++;
@@ -3761,6 +3762,7 @@ static bool SearchSingleFile(
                     match.lineIndex = lineIdx;
                     match.lineText = lineStr.substr(snipStart, snipEnd - snipStart);
                     match.matchCol = findPos - snipStart;
+                    match.docMatchCol = findPos;
                     match.matchLen = query.size();
                     outGroup.matches.push_back(std::move(match));
                     inOutTotalMatches++;
@@ -6327,14 +6329,15 @@ void DrawerPanel::ExecuteReplaceSingleMatch(const std::wstring& filePath, const 
         if (match.lineIndex < buf.GetLineCount()) {
             std::wstring line = buf.GetLine(match.lineIndex);
             bool modified = false;
-            if (!m_useRegex && match.matchCol + match.matchLen <= line.length()) {
-                std::wstring sub = line.substr(match.matchCol, match.matchLen);
+            const size_t replCol = match.docMatchCol;
+            if (!m_useRegex && replCol + match.matchLen <= line.length()) {
+                std::wstring sub = line.substr(replCol, match.matchLen);
                 bool matchesSub = m_matchCase ? (sub == m_searchQuery) : (_wcsicmp(sub.c_str(), m_searchQuery.c_str()) == 0);
                 if (matchesSub) {
                     std::wstring finalRepl = m_preserveCase
                         ? phide::editor::ApplyPreserveCase(sub, m_replaceQuery)
                         : m_replaceQuery;
-                    line.replace(match.matchCol, match.matchLen, finalRepl);
+                    line.replace(replCol, match.matchLen, finalRepl);
                     modified = true;
                 }
             }
@@ -6356,7 +6359,7 @@ void DrawerPanel::ExecuteReplaceSingleMatch(const std::wstring& filePath, const 
         if (m_searchGroups[g].filePath == filePath) {
             for (size_t m = 0; m < m_searchGroups[g].matches.size(); ++m) {
                 if (m_searchGroups[g].matches[m].lineIndex == match.lineIndex &&
-                    m_searchGroups[g].matches[m].matchCol == match.matchCol) {
+                    m_searchGroups[g].matches[m].docMatchCol == match.docMatchCol) {
                     DismissSearchMatch(g, m);
                     return;
                 }

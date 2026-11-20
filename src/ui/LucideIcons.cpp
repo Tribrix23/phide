@@ -2342,4 +2342,32 @@ void LucideIcons::DrawDebugActionIcon(ID2D1RenderTarget* pRT, const D2D1_RECT_F&
     }
 }
 
+void LucideIcons::DrawTag(ID2D1RenderTarget* pRT, const D2D1_RECT_F& bounds, ID2D1Brush* pBrush, float strokeWidth) const {
+    if (!pRT || !pBrush) return;
+    EnsureStrokeStyle(pRT, const_cast<ComPtr<ID2D1StrokeStyle>&>(m_pStrokeStyle));
+
+    const float bw = bounds.right - bounds.left;
+    const float bh = bounds.bottom - bounds.top;
+    const float iconSize = (std::min)(bw, bh) * 0.85f;
+    const float s = iconSize / 24.0f;
+    const float ox = bounds.left + (bw - 24.0f * s) * 0.5f;
+    const float oy = bounds.top + (bh - 24.0f * s) * 0.5f;
+
+    // Angled Lucide tag silhouette: (12, 2) -> (3, 2) -> (3, 11) -> (12.5, 20.5) -> (21.5, 11.5) -> (12, 2)
+    const D2D1_POINT_2F p1 = MapPoint(11.5f, 2.5f, ox, oy, s);
+    const D2D1_POINT_2F p2 = MapPoint(3.0f, 2.5f, ox, oy, s);
+    const D2D1_POINT_2F p3 = MapPoint(3.0f, 11.0f, ox, oy, s);
+    const D2D1_POINT_2F p4 = MapPoint(12.2f, 20.2f, ox, oy, s);
+    const D2D1_POINT_2F p5 = MapPoint(20.7f, 11.7f, ox, oy, s);
+    ID2D1StrokeStyle* st = m_pStrokeStyle.Get();
+    pRT->DrawLine(p1, p2, pBrush, strokeWidth, st);
+    pRT->DrawLine(p2, p3, pBrush, strokeWidth, st);
+    pRT->DrawLine(p3, p4, pBrush, strokeWidth, st);
+    pRT->DrawLine(p4, p5, pBrush, strokeWidth, st);
+    pRT->DrawLine(p5, p1, pBrush, strokeWidth, st);
+
+    // Tag eyelet dot near top-left corner
+    pRT->FillEllipse(D2D1::Ellipse(MapPoint(7.5f, 7.0f, ox, oy, s), 1.4f * s, 1.4f * s), pBrush);
+}
+
 } // namespace phide::ui

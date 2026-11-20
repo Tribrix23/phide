@@ -134,8 +134,9 @@ struct CourseTreeData {
  */
 struct SearchMatch {
     size_t lineIndex = 0;       ///< 0-based buffer line
-    std::wstring lineText;      ///< Full text of the matched line
-    size_t matchCol = 0;        ///< Column offset of match
+    std::wstring lineText;      ///< Extracted snippet window around match for sidebar preview
+    size_t matchCol = 0;        ///< Column offset relative to snippet lineText
+    size_t docMatchCol = 0;     ///< True 0-based character column on the full document line (used for jump & replace)
     size_t matchLen = 0;        ///< Length of match string
     D2D1_RECT_F bounds{};       ///< Clickable row bounding box
     D2D1_RECT_F replaceBtnBounds{0, 0, 0, 0};
