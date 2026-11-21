@@ -16,11 +16,11 @@
 ; General Configuration
 ; ------------------------------------------------------------------------------
 !define APP_NAME "Phide"
-!define APP_VERSION "2026.e-b"
+!define APP_VERSION "2026.f"
 
 Name "${APP_NAME} ${APP_VERSION}"
 BrandingText "${APP_NAME} ${APP_VERSION}"
-OutFile "output\phide-Setup-x64e-b.exe"
+OutFile "output\phide-Setup-x64f.exe"
 InstallDir "$PROGRAMFILES64\phide"
 InstallDirRegKey HKLM "Software\phide" "InstallDir"
 RequestExecutionLevel admin
@@ -63,7 +63,9 @@ SetCompressor /SOLID lzma
 !define MUI_FINISHPAGE_RUN_TEXT "Run ${APP_NAME} ${APP_VERSION}"
 
 Function LaunchApp
-    ExecShell "" "$INSTDIR\phide.exe"
+    ; Launch via explorer.exe so Phide starts at standard user integrity (non-elevated),
+    ; ensuring Windows Snipping Tool / PrintScreen (Fn+Del) and global screenshot shortcuts are never blocked by UIPI.
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\phide.exe"'
 FunctionEnd
 
 ; ------------------------------------------------------------------------------
@@ -163,7 +165,7 @@ Function .onInit
             StrCpy $InstalledVersion "2026.a"
         ${EndIf}
 
-        ; Compare installed version with current installer version (2026.e-b)
+        ; Compare installed version with current installer version (2026.f)
         System::Call "shlwapi::StrCmpLogicalW(w '$InstalledVersion', w '${APP_VERSION}') i .r0"
         ${If} $0 == 0
             StrCpy $InstallMode "SAME"

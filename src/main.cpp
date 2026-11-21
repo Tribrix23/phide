@@ -32,7 +32,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     const bool isNewWindow = (lpCmdLine && (wcsstr(lpCmdLine, L"--new-window") != nullptr || wcsstr(lpCmdLine, L"--detach") != nullptr));
     PHIDE_LOG_INFO(System,
-        L"phide starting (v2026.e-b, PID=" + std::to_wstring(GetCurrentProcessId()) +
+        L"phide starting (v2026.f, PID=" + std::to_wstring(GetCurrentProcessId()) +
         L", mode=" + (isNewWindow ? L"secondary-window" : L"primary") +
         L", logs=" + logger.GetLogsRootDir() + L")");
 

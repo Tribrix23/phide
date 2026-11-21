@@ -93,6 +93,7 @@ static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) 
     if (id == L"editor.lineNumbers")                      return &cfg.showLineNumbers;
     if (id == L"editor.insertSpaces")                     return &cfg.insertSpaces;
     if (id == L"editor.formatOnSave")                     return &cfg.formatOnSave;
+    if (id == L"editor.prettierOnSave")                   return &cfg.prettierOnSave;
     if (id == L"editor.stickyScroll.enabled")             return &cfg.enableStickyScroll;
     if (id == L"editor.renderControlCharacters")          return &cfg.renderControlChars;
     if (id == L"editor.linkedEditing")                    return &cfg.enableLinkedEditing;
@@ -452,7 +453,10 @@ void SettingsView::InitializeSettings() {
               L"Pin enclosing class, namespace, and function headers at the top while scrolling.",
               SettingCategory::TextEditor, true, true);
     addToggle(L"editor.formatOnSave", L"EDITOR", L"Format On Save",
-              L"Automatically format document (HTML, CSS, JS, JSON, PHP) on save (Shift+Alt+F).",
+              L"Automatically format document (PHP, C/C++, Python) on save without freezing the editor (Shift+Alt+F).",
+              SettingCategory::TextEditor, true, false);
+    addToggle(L"editor.prettierOnSave", L"EDITOR", L"Prettier On Save",
+              L"Automatically run Prettier asynchronously on save for JS, TS, JSX, TSX, HTML, CSS, JSON, and Markdown. Disabled by default.",
               SettingCategory::TextEditor, true, false);
     addDropdown(L"editor.renderWhitespace", L"EDITOR", L"Render Whitespace",
                 L"Controls how the editor should render whitespace characters.",

@@ -856,12 +856,19 @@ bool FormatEngine::CanFormat(const std::wstring& ext) {
             phide::plugin::PluginManager::Instance().CanFormat(lower));
 }
 
+bool FormatEngine::IsPrettierExtension(const std::wstring& ext) {
+    std::wstring lower = ext;
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+    return IsPrettierExt(lower);
+}
+
 std::wstring FormatEngine::FormatDocument(
     const std::wstring& src,
     const std::wstring& ext,
     int tabSize,
     const std::wstring& filePath,
-    bool insertSpaces)
+    bool insertSpaces,
+    bool allowPrettier)
 {
     if (src.empty()) return L"";
 
@@ -876,7 +883,7 @@ std::wstring FormatEngine::FormatDocument(
 
     // 1. Try Prettier via bundled phide.prettier extension or system Prettier (honoring local config)
     std::wstring formatted;
-    if (IsPrettierExt(lower) && RunPrettier(src, lower, tabSize, filePath, insertSpaces, -1, -1, formatted) && !formatted.empty()) {
+    if (allowPrettier && IsPrettierExt(lower) && RunPrettier(src, lower, tabSize, filePath, insertSpaces, -1, -1, formatted) && !formatted.empty()) {
         return formatted;
     }
 
@@ -889,7 +896,7 @@ std::wstring FormatEngine::FormatDocument(
     }
 
     // 3. Fall back to Prettier even on unknown/custom parser extensions (e.g. plugin parsers) or PHP
-    if (!IsPrettierExt(lower) && RunPrettier(src, lower, tabSize, filePath, insertSpaces, -1, -1, formatted) && !formatted.empty()) {
+    if (allowPrettier && !IsPrettierExt(lower) && RunPrettier(src, lower, tabSize, filePath, insertSpaces, -1, -1, formatted) && !formatted.empty()) {
         return formatted;
     }
 

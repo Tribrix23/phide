@@ -41,7 +41,7 @@ constexpr size_t kMaxMessageChars     = 8192;
 constexpr uint64_t kMaxSingleFileBytes = 20ULL * 1024ULL * 1024ULL; // 20 MB per category per day
 constexpr size_t kBreadcrumbCapacity  = 64;
 constexpr size_t kBreadcrumbTextChars = 192;
-constexpr const char* kPhideVersion   = "2026.e-b";
+constexpr const char* kPhideVersion   = "2026.f";
 
 struct LogEntry {
     SYSTEMTIME st{};

@@ -1010,6 +1010,7 @@ private:
         float elapsedMs = 0.0f;             ///< Milliseconds elapsed
         bool browserOpened = false;         ///< True after browser launched
         bool isStarting = false;            ///< True while progression active
+        bool waitForTerminalReady = false;  ///< True for terminal dev servers: wait for terminal ready signal before opening browser
         bool hasError = false;              ///< True if dev server failed/errored
         std::wstring errorMsg;              ///< Error message from dev server
         std::wstring framework;             ///< Framework name (Next.js, Vite, Django, Live Server)

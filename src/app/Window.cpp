@@ -738,6 +738,7 @@ constexpr BoolSettingBinding kBoolSettingBindings[] = {
     { L"editor.codeLens",                       L"enableCodeLens",                 &app::AppConfig::enableCodeLens,                 false },
     { L"editor.lineNumbers",                    L"showLineNumbers",                &app::AppConfig::showLineNumbers,                false },
     { L"editor.formatOnSave",                   L"formatOnSave",                   &app::AppConfig::formatOnSave,                   false },
+    { L"editor.prettierOnSave",                 L"prettierOnSave",                 &app::AppConfig::prettierOnSave,                 false },
     { L"explorer.updateImportsOnRename",        L"updateImportsOnRename",          &app::AppConfig::updateImportsOnRename,          false },
     { L"workbench.breadcrumbs",                 L"showBreadcrumbs",                &app::AppConfig::showBreadcrumbs,                false },
     { L"workbench.statusBar",                   L"showStatusBar",                  &app::AppConfig::showStatusBar,                  false },
@@ -1320,6 +1321,7 @@ void Window::SaveSessionState() {
     out << L"  \"showStatusBar\": " << (m_config.showStatusBar ? L"true" : L"false") << L",\n";
     out << L"  \"insertSpaces\": " << (m_config.insertSpaces ? L"true" : L"false") << L",\n";
     out << L"  \"formatOnSave\": " << (m_config.formatOnSave ? L"true" : L"false") << L",\n";
+    out << L"  \"prettierOnSave\": " << (m_config.prettierOnSave ? L"true" : L"false") << L",\n";
     out << L"  \"updateImportsOnRename\": " << (m_config.updateImportsOnRename ? L"true" : L"false") << L",\n";
     out << L"  \"isGraphColored\": " << (m_config.isGraphColored ? L"true" : L"false") << L",\n";
     out << L"  \"enableMarkdownPreview\": " << (m_config.enableMarkdownPreview ? L"true" : L"false") << L",\n";
@@ -1938,6 +1940,8 @@ void Window::LoadSessionState() {
             m_config.insertSpaces = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"formatOnSave\"") != std::wstring::npos) {
             m_config.formatOnSave = (line.find(L"true") != std::wstring::npos);
+        } else if (line.find(L"\"prettierOnSave\"") != std::wstring::npos) {
+            m_config.prettierOnSave = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"updateImportsOnRename\"") != std::wstring::npos) {
             m_config.updateImportsOnRename = (line.find(L"true") != std::wstring::npos);
         } else if (line.find(L"\"isGraphColored\"") != std::wstring::npos) {
@@ -7837,28 +7841,14 @@ void Window::MarkDocumentModified(editor::OpenDocument* pDoc) {
 
 static std::wstring GetDocumentLowerExtension(const editor::OpenDocument* pDoc);
 
+struct AsyncFormatOnSaveResult {
+    std::wstring targetPath;
+    std::wstring rawSnapshot;
+    std::wstring formattedText;
+};
+
 void Window::ApplySaveHooks(editor::OpenDocument& doc, const std::wstring& targetPath, bool allowFormatter) {
     if (doc.isSpecialView || doc.isDiffView || doc.buffer.IsMemoryMappedReadOnly() || targetPath.empty()) return;
-    if (allowFormatter && m_config.formatOnSave) {
-        std::wstring ext = std::filesystem::path(targetPath).extension().wstring();
-        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-        if (editor::FormatEngine::CanFormat(ext)) {
-            int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
-            auto origPos = doc.buffer.GetCursor();
-            std::wstring rawText = doc.buffer.GetText();
-            std::wstring formatted = editor::FormatEngine::FormatDocument(rawText, ext, tabSize);
-            if (!formatted.empty() && formatted != rawText) {
-                doc.buffer.PushUndo();
-                doc.buffer.SetText(formatted);
-                doc.semanticTokensData.clear();
-                doc.semanticTokensVersion++;
-                size_t newLineCount = doc.buffer.GetLineCount();
-                size_t clampedLine = (std::min)(origPos.line, newLineCount > 0 ? newLineCount - 1 : 0);
-                size_t lineLen = doc.buffer.GetLine(clampedLine).length();
-                doc.buffer.SetCursor(clampedLine, (std::min)(origPos.col, lineLen));
-            }
-        }
-    }
     workspace::EditorConfigRules ecRules{};
     if (m_config.enableEditorConfig) {
         ecRules = workspace::WorkspaceConfigEngine::ResolveEditorConfigForFile(targetPath);
@@ -7875,6 +7865,34 @@ void Window::ApplySaveHooks(editor::OpenDocument& doc, const std::wstring& targe
     }
     if (!ecRules.hasInsertFinalNewline && m_config.insertFinalNewline && !doc.buffer.HasTrailingNewline()) {
         doc.buffer.SetHasTrailingNewline(true);
+    }
+
+    // Run formatting asynchronously on a background thread so Ctrl+S NEVER freezes the UI.
+    // Prettier-handled extensions only format on save when the dedicated `prettierOnSave` setting is enabled (off by default).
+    if (allowFormatter) {
+        std::wstring ext = std::filesystem::path(targetPath).extension().wstring();
+        for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        const bool isPrettierExt = editor::FormatEngine::IsPrettierExtension(ext);
+        const bool shouldFormat = isPrettierExt ? m_config.prettierOnSave : m_config.formatOnSave;
+        if (shouldFormat && editor::FormatEngine::CanFormat(ext)) {
+            int tabSize = (m_config.tabSize > 0) ? m_config.tabSize : 4;
+            bool insertSpaces = m_config.insertSpaces;
+            bool allowPrettier = m_config.prettierOnSave;
+            std::wstring rawSnapshot = doc.buffer.GetText();
+            HWND postHwnd = GetMainPostHwnd();
+            if (!rawSnapshot.empty() && postHwnd) {
+                std::thread([this, postHwnd, targetPath, ext, tabSize, insertSpaces, allowPrettier, rawSnapshot = std::move(rawSnapshot)]() mutable {
+                    if (m_isDestroying.load()) return;
+                    std::wstring formatted = editor::FormatEngine::FormatDocument(
+                        rawSnapshot, ext, tabSize, targetPath, insertSpaces, allowPrettier);
+                    if (m_isDestroying.load() || formatted.empty() || formatted == rawSnapshot) return;
+                    auto* res = new AsyncFormatOnSaveResult{ targetPath, std::move(rawSnapshot), std::move(formatted) };
+                    if (!PostMessageW(postHwnd, WM_USER + 239, 0, reinterpret_cast<LPARAM>(res))) {
+                        delete res;
+                    }
+                }).detach();
+            }
+        }
     }
 }
 
@@ -11302,6 +11320,7 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
         entry.elapsedMs = 0.0f;
         entry.browserOpened = false;
         entry.isStarting = true;
+        entry.waitForTerminalReady = true;
         entry.hasError = false;
         entry.errorMsg.clear();
         m_activeLiveServers.push_back(std::move(entry));
@@ -11313,6 +11332,7 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
         srv->progress = 0.05f;
         srv->elapsedMs = 0.0f;
         srv->isStarting = true;
+        srv->waitForTerminalReady = true;
         srv->browserOpened = false;
         srv->hasError = false;
         srv->errorMsg.clear();
@@ -11322,7 +11342,7 @@ void Window::RunProjectDevServer(const std::wstring& projectRoot, const ProjectD
     AnimateTerminalOpen();
     m_terminal.StartServerSession(decision.title, decision.command, projectRoot, projectRoot);
     m_isTerminalFocused = false;
-    SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
     UpdateExecutionButtonStates();
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
@@ -13730,25 +13750,15 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         }
 
     // Server successfully listening / ready callback (e.g. Next.js, Vite, Live Server)
-    m_terminal.SetOnServerReady([this](const std::wstring& rootDir) {
-        for (auto& srv : m_activeLiveServers) {
-            if (rootDir.empty() || srv.rootDir == rootDir || srv.filePath == rootDir) {
-                srv.hasError = false;
-                srv.isStarting = false;
-                srv.progress = 1.0f;
-                if (!srv.browserOpened) {
-                    srv.browserOpened = true;
-                    std::wstring localUrl = !srv.customUrl.empty()
-                        ? srv.customUrl
-                        : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://localhost:" + std::to_wstring(srv.port > 0 ? srv.port : 3000)));
-                    ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
-                }
-            }
+    // Marshaled to the main UI thread via WM_USER + 238 since TerminalTab::AppendOutput runs on a reader thread.
+    m_terminal.SetOnServerReady([this](const std::wstring& rootDir, const std::wstring& detectedUrl) {
+        if (m_isDestroying.load()) return;
+        HWND postHwnd = GetMainPostHwnd();
+        if (!postHwnd) return;
+        auto* payload = new std::pair<std::wstring, std::wstring>(rootDir, detectedUrl);
+        if (!PostMessageW(postHwnd, WM_USER + 238, 0, reinterpret_cast<LPARAM>(payload))) {
+            delete payload;
         }
-        m_isProjectRunning = true;
-        if (m_runningProjectRoot.empty()) m_runningProjectRoot = rootDir;
-        UpdateExecutionButtonStates();
-        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
     });
 
 
@@ -20269,7 +20279,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::HelpAbout:
                         MessageBoxW(m_hwnd,
-                            L"Phide - Web Development IDE\nVersion 2026.e-b (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"Phide - Web Development IDE\nVersion 2026.f (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
@@ -21998,8 +22008,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"erd") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.GetErdView().HandleLButtonDown(clientPt, m_hwnd, m_config)) {
-                        if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
-                            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                        if (m_editor.GetErdView().IsAnimating()) {
+                            if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
                         }
                         SetCapture(m_hwnd);
                         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -25668,8 +25678,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"erd") {
                     bool isCtrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
                     if (m_editor.GetErdView().HandleMouseWheel(delta, isCtrlDown, pt, m_config)) {
-                        if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
-                            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                        if (m_editor.GetErdView().IsAnimating()) {
+                            if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
@@ -25782,7 +25792,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         pDoc->smoothScrollOffsetPx = (std::clamp)(
                             pDoc->smoothScrollOffsetPx + static_cast<float>(actualDeltaLines) * lineH,
                             -maxOffsetPx, maxOffsetPx);
-                        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                        if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
+                    } else if (m_config.smoothScrolling && std::abs(pDoc->smoothScrollOffsetPx) > 0.01f) {
+                        // Ensure any residual smooth scroll offset always eases back to 0 even at top/bottom bounds.
+                        if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
                     } else if (!m_config.smoothScrolling) {
                         pDoc->smoothScrollOffsetPx = 0.0f;
                     }
@@ -26442,6 +26455,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             RunManualGarbageCollection(false);
             return 0;
+        }
+
+        case WM_KEYUP:
+        case WM_SYSKEYUP: {
+            if (wParam == VK_SNAPSHOT) {
+                return DefWindowProcW(m_hwnd, uMsg, wParam, lParam);
+            }
+            return DefWindowProcW(m_hwnd, uMsg, wParam, lParam);
         }
 
         case WM_SYSKEYDOWN: {
@@ -28873,14 +28894,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Smoothly update Live Server progression and auto-open user browser upon completion
                 for (auto& srv : m_activeLiveServers) {
-                    if (srv.hasError || m_terminal.HasServerError(srv.rootDir)) {
+                    const bool termHasErr = m_terminal.HasServerError(srv.rootDir);
+                    if (srv.hasError && !termHasErr && m_terminal.HasActiveServerSession(srv.rootDir)) {
+                        // Server recovered (e.g. Next.js / Vite recompiled cleanly after a code error)
+                        srv.hasError = false;
+                        srv.errorMsg.clear();
+                    }
+                    if (srv.hasError || termHasErr) {
                         srv.hasError = true;
                         if (srv.errorMsg.empty()) {
                             srv.errorMsg = m_terminal.GetServerErrorText(srv.rootDir);
                         }
                         srv.isStarting = false;
                         srv.browserOpened = true; // Handled: NEVER launch browser on error!
-                        if (m_isProjectRunning && (srv.rootDir == m_runningProjectRoot || m_runningProjectRoot.empty())) {
+                        if (!m_terminal.HasActiveServerSession(srv.rootDir) &&
+                            m_isProjectRunning && (srv.rootDir == m_runningProjectRoot || m_runningProjectRoot.empty())) {
                             m_isProjectRunning = false;
                             m_runningProjectRoot.clear();
                             UpdateExecutionButtonStates();
@@ -28890,24 +28918,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                     if (srv.isStarting) {
                         srv.elapsedMs += 16.0f;
-                        srv.progress = (std::min)(1.0f, srv.elapsedMs / srv.progressDurationMs);
-                        keepAnimating = true;
-                        if (!srv.browserOpened && srv.progress >= 1.0f) {
-                            srv.browserOpened = true;
-                            srv.isStarting = false;
-                            if (!srv.hasError && !m_terminal.HasServerError(srv.rootDir)) {
-                                if (srv.port > 0 || !srv.customUrl.empty()) {
-                                    std::wstring localUrl = !srv.customUrl.empty()
-                                        ? srv.customUrl
-                                        : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://127.0.0.1:" + std::to_wstring(srv.port)));
-                                    ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        if (srv.waitForTerminalReady) {
+                            // Terminal-managed dev servers (Next.js, Vite, Django, etc.):
+                            // Smoothly advance indicator up to 92% and wait for the terminal monitor's ready signal (WM_USER + 238)
+                            // so the browser is NEVER opened prematurely before the server finishes booting.
+                            float targetProg = 0.05f + 0.87f * (1.0f - std::exp(-srv.elapsedMs / 4500.0f));
+                            srv.progress = (std::min)(0.92f, targetProg);
+                            if (srv.elapsedMs > 2500.0f && !m_terminal.HasActiveServerSession(srv.rootDir)) {
+                                // Server process terminated before becoming ready
+                                srv.isStarting = false;
+                                srv.browserOpened = true;
+                                if (m_isProjectRunning && (srv.rootDir == m_runningProjectRoot || m_runningProjectRoot.empty())) {
+                                    m_isProjectRunning = false;
+                                    m_runningProjectRoot.clear();
+                                    UpdateExecutionButtonStates();
+                                }
+                            } else {
+                                keepAnimating = true;
+                            }
+                        } else {
+                            srv.progress = (std::min)(1.0f, srv.elapsedMs / srv.progressDurationMs);
+                            keepAnimating = true;
+                            if (!srv.browserOpened && srv.progress >= 1.0f) {
+                                srv.browserOpened = true;
+                                srv.isStarting = false;
+                                if (!srv.hasError && !m_terminal.HasServerError(srv.rootDir)) {
+                                    if (srv.port > 0 || !srv.customUrl.empty()) {
+                                        std::wstring localUrl = !srv.customUrl.empty()
+                                            ? srv.customUrl
+                                            : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://127.0.0.1:" + std::to_wstring(srv.port)));
+                                        ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                if (m_isProjectRunning && !m_runningProjectRoot.empty() && m_terminal.HasServerError(m_runningProjectRoot)) {
+                if (m_isProjectRunning && !m_runningProjectRoot.empty() &&
+                    m_terminal.HasServerError(m_runningProjectRoot) &&
+                    !m_terminal.HasActiveServerSession(m_runningProjectRoot)) {
                     m_isProjectRunning = false;
                     m_runningProjectRoot.clear();
                     UpdateExecutionButtonStates();
@@ -29741,6 +29791,98 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 237: {
             if (!m_isDestroying.load()) {
                 ApplyPendingFileLoads();
+            }
+            return 0;
+        }
+
+        case WM_USER + 238: {
+            std::unique_ptr<std::pair<std::wstring, std::wstring>> payload(
+                reinterpret_cast<std::pair<std::wstring, std::wstring>*>(lParam));
+            if (payload && !m_isDestroying.load()) {
+                const std::wstring& rootDir = payload->first;
+                const std::wstring& detectedUrl = payload->second;
+                int detectedPort = 0;
+                if (!detectedUrl.empty()) {
+                    size_t colonPos = detectedUrl.rfind(L':');
+                    if (colonPos != std::wstring::npos && colonPos + 1 < detectedUrl.size()) {
+                        int parsed = 0;
+                        for (size_t i = colonPos + 1; i < detectedUrl.size() && detectedUrl[i] >= L'0' && detectedUrl[i] <= L'9'; ++i) {
+                            parsed = parsed * 10 + (detectedUrl[i] - L'0');
+                        }
+                        if (parsed > 0 && parsed <= 65535) detectedPort = parsed;
+                    }
+                }
+                for (auto& srv : m_activeLiveServers) {
+                    if (rootDir.empty() || srv.rootDir == rootDir || srv.filePath == rootDir) {
+                        if (!detectedUrl.empty()) {
+                            srv.customUrl = detectedUrl;
+                            if (detectedPort > 0) srv.port = detectedPort;
+                        }
+                        srv.hasError = false;
+                        srv.isStarting = false;
+                        srv.progress = 1.0f;
+                        if (!srv.browserOpened) {
+                            srv.browserOpened = true;
+                            std::wstring localUrl = !srv.customUrl.empty()
+                                ? srv.customUrl
+                                : (srv.server ? srv.server->GetLocalUrl(srv.fileName) : (L"http://localhost:" + std::to_wstring(srv.port > 0 ? srv.port : 3000)));
+                            ShellExecuteW(NULL, L"open", localUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        }
+                    }
+                }
+                m_isProjectRunning = true;
+                if (m_runningProjectRoot.empty()) m_runningProjectRoot = rootDir;
+                UpdateExecutionButtonStates();
+                if (HWND mainHwnd = GetMainPostHwnd()) InvalidateRect(mainHwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_USER + 239: {
+            std::unique_ptr<AsyncFormatOnSaveResult> res(
+                reinterpret_cast<AsyncFormatOnSaveResult*>(lParam));
+            if (res && !m_isDestroying.load() && !res->targetPath.empty() && !res->formattedText.empty()) {
+                auto applyToGroups = [&](std::vector<editor::EditorGroup>& groups) -> bool {
+                    bool updatedAny = false;
+                    for (auto& grp : groups) {
+                        for (auto& doc : grp.docs) {
+                            if (doc.isSpecialView || doc.isDiffView || doc.buffer.IsMemoryMappedReadOnly()) continue;
+                            if (_wcsicmp(doc.filePath.c_str(), res->targetPath.c_str()) != 0) continue;
+                            if (doc.buffer.GetText() != res->rawSnapshot) continue; // User already made newer edits
+                            auto origPos = doc.buffer.GetCursor();
+                            doc.buffer.PushUndo();
+                            doc.buffer.SetText(res->formattedText);
+                            doc.semanticTokensData.clear();
+                            doc.semanticTokensVersion++;
+                            size_t newLineCount = doc.buffer.GetLineCount();
+                            size_t clampedLine = (std::min)(origPos.line, newLineCount > 0 ? newLineCount - 1 : 0);
+                            size_t lineLen = doc.buffer.GetLine(clampedLine).length();
+                            doc.buffer.SetCursor(clampedLine, (std::min)(origPos.col, lineLen));
+                            s_lastInternalAutoSaveTick = GetTickCount64();
+                            if (doc.buffer.SaveToFile(res->targetPath)) {
+                                s_lastInternalAutoSaveTick = GetTickCount64();
+                                doc.isDirty = false;
+                                OnDocumentDiskSaved(doc);
+                                ComputeDiffHunks(doc);
+                            }
+                            updatedAny = true;
+                        }
+                    }
+                    return updatedAny;
+                };
+                bool changedMain = applyToGroups(m_editorGroups);
+                bool changedFloat = false;
+                for (auto& fw : m_floatingWindows) {
+                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                        if (applyToGroups(fw->editorGroups)) changedFloat = true;
+                    }
+                }
+                if (changedMain) {
+                    if (HWND mainHwnd = GetMainPostHwnd()) InvalidateRect(mainHwnd, nullptr, FALSE);
+                }
+                if (changedFloat) {
+                    InvalidateFloatingWindows();
+                }
             }
             return 0;
         }
@@ -35956,7 +36098,8 @@ LRESULT Window::HandleFloatingMessage(FloatingDockWindow& fw, UINT uMsg, WPARAM 
         case WM_LBUTTONDBLCLK:
         case WM_LBUTTONUP:
         case WM_RBUTTONDOWN:
-        case WM_MOUSEWHEEL: {
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL: {
             if (fw.kind == FloatingDockKind::EditorGroup) {
                 LRESULT res = 0;
                 {
@@ -35992,7 +36135,13 @@ LRESULT Window::HandleFloatingMessage(FloatingDockWindow& fw, UINT uMsg, WPARAM 
         case WM_KEYDOWN:
         case WM_KEYUP:
         case WM_CHAR:
-        case WM_SYSKEYDOWN: {
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP: {
+            // Never intercept PrintScreen (Fn+Del on compact keyboards) or Win-key system shortcuts
+            if (wParam == VK_SNAPSHOT ||
+                (uMsg != WM_CHAR && ((GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0))) {
+                return DefWindowProcW(fw.hwnd, uMsg, wParam, lParam);
+            }
             if (fw.kind == FloatingDockKind::EditorGroup) {
                 LRESULT res = 0;
                 {

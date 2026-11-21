@@ -27,7 +27,8 @@ public:
         const std::wstring& ext,
         int tabSize = 4,
         const std::wstring& filePath = L"",
-        bool insertSpaces = true);
+        bool insertSpaces = true,
+        bool allowPrettier = true);
 
     /**
      * @brief Formats only the selected line/column range within a document, preserving surrounding lines.
@@ -72,6 +73,11 @@ public:
      * @brief Returns true if FormatEngine provides integrated formatting for this extension.
      */
     static bool CanFormat(const std::wstring& ext);
+
+    /**
+     * @brief Returns true if this file extension is formatted by Prettier.
+     */
+    static bool IsPrettierExtension(const std::wstring& ext);
 };
 
 } // namespace phide::editor

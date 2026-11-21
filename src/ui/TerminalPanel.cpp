@@ -782,31 +782,139 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
     }
 
     if (isServerTab) {
-        std::wstring checkText = wstr;
+        // Strip ANSI CSI/OSC escape sequences so colored framework output (Next.js, Vite, etc.) matches cleanly
+        auto stripAnsi = [](const std::wstring& src) -> std::wstring {
+            std::wstring out;
+            out.reserve(src.size());
+            const size_t n = src.size();
+            for (size_t i = 0; i < n; ++i) {
+                wchar_t ch = src[i];
+                if (ch == L'\x1b' && i + 1 < n) {
+                    wchar_t next = src[i + 1];
+                    if (next == L'[') {
+                        i += 2;
+                        while (i < n && !(src[i] >= 0x40 && src[i] <= 0x7E)) ++i;
+                        continue;
+                    } else if (next == L']') {
+                        i += 2;
+                        while (i < n) {
+                            if (src[i] == L'\x07') break;
+                            if (src[i] == L'\x1b' && i + 1 < n && src[i + 1] == L'\\') { ++i; break; }
+                            ++i;
+                        }
+                        continue;
+                    } else {
+                        ++i;
+                        continue;
+                    }
+                }
+                if (ch != L'\r') out.push_back(ch);
+            }
+            return out;
+        };
+
+        std::wstring cleanText = stripAnsi(wstr);
+        std::wstring checkText = cleanText;
         for (auto& c : checkText) c = static_cast<wchar_t>(towlower(c));
 
-        // 1. Detect server ready / listening indicators
-        bool isSuccessIndicator = (
-            checkText.find(L"- local:") != std::wstring::npos ||
-            checkText.find(L"ready in ") != std::wstring::npos ||
-            checkText.find(L"ready in") != std::wstring::npos ||
-            checkText.find(L"compiled successfully") != std::wstring::npos ||
-            checkText.find(L"http://localhost:") != std::wstring::npos ||
-            checkText.find(L"http://127.0.0.1:") != std::wstring::npos ||
-            checkText.find(L"server running at") != std::wstring::npos ||
-            checkText.find(L"started on") != std::wstring::npos ||
-            checkText.find(L"listening on") != std::wstring::npos
-        );
+        // Maintain a rolling ANSI-stripped monitor buffer so readiness phrases split across ConPTY chunks are never missed
+        serverMonitorBuffer += checkText;
+        if (serverMonitorBuffer.size() > 4096) {
+            serverMonitorBuffer.erase(0, serverMonitorBuffer.size() - 4096);
+        }
 
-        if (isSuccessIndicator) {
-            hasError = false;
-            lastErrorText.clear();
-            if (onReadyCallback) {
-                onReadyCallback(associatedFilePath);
+        // Capture actual localhost / 127.0.0.1 URL printed by the dev server (e.g., if port 3000 switched to 3001)
+        auto tryExtractUrl = [&](const std::wstring& text) {
+            const wchar_t* prefixes[] = {
+                L"http://localhost:", L"https://localhost:",
+                L"http://127.0.0.1:", L"https://127.0.0.1:",
+                L"http://[::1]:", L"https://[::1]:"
+            };
+            for (const wchar_t* pfx : prefixes) {
+                size_t p = text.find(pfx);
+                if (p != std::wstring::npos) {
+                    size_t end = p + wcslen(pfx);
+                    size_t portStart = end;
+                    while (end < text.size() && text[end] >= L'0' && text[end] <= L'9') ++end;
+                    if (end > portStart) {
+                        while (end < text.size()) {
+                            wchar_t c = text[end];
+                            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r' ||
+                                c == L')' || c == L']' || c == L'"' || c == L'\'' ||
+                                c == L',' || c == L';' || c == L'>') {
+                                break;
+                            }
+                            ++end;
+                        }
+                        std::wstring url = text.substr(p, end - p);
+                        while (!url.empty() && url.back() == L'.') url.pop_back();
+                        if (!url.empty()) {
+                            detectedServerUrl = url;
+                            return;
+                        }
+                    }
+                }
+            }
+        };
+        tryExtractUrl(serverMonitorBuffer);
+
+        // 1. Detect server ready / listening indicators
+        if (!serverReadyFired) {
+            std::wstring titleLower = title;
+            for (auto& c : titleLower) c = static_cast<wchar_t>(towlower(c));
+
+            const bool isNextJs = (
+                titleLower.find(L"next") != std::wstring::npos ||
+                serverMonitorBuffer.find(L"next.js") != std::wstring::npos ||
+                serverMonitorBuffer.find(L"next dev") != std::wstring::npos
+            );
+
+            bool isSuccessIndicator = false;
+            if (isNextJs) {
+                // Next.js prints "- Local: http://localhost:3000" BEFORE it finishes booting ("✓ Starting...").
+                // Wait until it emits the actual ready/compiled signal so the browser never hits an unready server.
+                isSuccessIndicator = (
+                    serverMonitorBuffer.find(L"ready in") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"started server on") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"compiled successfully") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"compiled client and server successfully") != std::wstring::npos
+                );
+            } else {
+                const bool hasLocalUrl = (
+                    (serverMonitorBuffer.find(L"local:") != std::wstring::npos && !detectedServerUrl.empty())
+                );
+                isSuccessIndicator = (
+                    hasLocalUrl ||
+                    serverMonitorBuffer.find(L"ready in") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"compiled successfully") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"server running on") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"server running at") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"listening on") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"listening at") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"started on") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"started server on") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"starting development server at") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"running on http://") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"running on https://") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"now listening on:") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"development server (http://") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"application startup complete") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"available on:") != std::wstring::npos ||
+                    serverMonitorBuffer.find(L"serving!") != std::wstring::npos
+                );
+            }
+
+            if (isSuccessIndicator) {
+                serverReadyFired = true;
+                hasError = false;
+                lastErrorText.clear();
+                if (onReadyCallback) {
+                    onReadyCallback(associatedFilePath, detectedServerUrl);
+                }
             }
         }
 
-        // 2. Distinguish benign warnings from true fatal errors
+        // 2. Distinguish benign warnings and live in-code HMR compile errors from true fatal server failures
         bool isWarning = (
             checkText.find(L"warning") != std::wstring::npos ||
             checkText.find(L"warn -") != std::wstring::npos ||
@@ -814,11 +922,23 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
             checkText.find(L"experimentalwarning") != std::wstring::npos
         );
 
-        bool hasErrorKeyword = (
-            checkText.find(L"error:") != std::wstring::npos ||
-            checkText.find(L": error") != std::wstring::npos ||
-            checkText.find(L"[error]") != std::wstring::npos ||
-            checkText.find(L"syntaxerror") != std::wstring::npos ||
+        // If the server recovered (e.g., Next.js / Vite recompiled cleanly or served 200 OK), clear any prior error flag
+        if (serverReadyFired && hasError) {
+            bool recovered = (
+                checkText.find(L"compiled in ") != std::wstring::npos ||
+                checkText.find(L"compiled successfully") != std::wstring::npos ||
+                checkText.find(L"ready in") != std::wstring::npos ||
+                checkText.find(L"get / 200") != std::wstring::npos ||
+                checkText.find(L" 200 in ") != std::wstring::npos
+            );
+            if (recovered) {
+                hasError = false;
+                lastErrorText.clear();
+            }
+        }
+
+        // True fatal server startup / crash errors (port busy, missing CLI, npm lifecycle exit, etc.)
+        bool hasFatalServerError = (
             checkText.find(L"npm err!") != std::wstring::npos ||
             checkText.find(L"npm error") != std::wstring::npos ||
             checkText.find(L"elifecycle") != std::wstring::npos ||
@@ -828,19 +948,29 @@ void TerminalTab::AppendOutput(const char* data, size_t length, bool isError, bo
             checkText.find(L"commandnotfoundexception") != std::wstring::npos ||
             checkText.find(L"not recognized as the name of a cmdlet") != std::wstring::npos ||
             checkText.find(L"not recognized as an internal or external command") != std::wstring::npos ||
-            checkText.find(L"cannot find module") != std::wstring::npos ||
             checkText.find(L"modulenotfounderror") != std::wstring::npos ||
-            checkText.find(L"failed to compile") != std::wstring::npos ||
             checkText.find(L"fatal error:") != std::wstring::npos ||
             checkText.find(L"fatal:") != std::wstring::npos
         );
 
-        bool isFatalError = hasErrorKeyword && !isWarning;
+        // In-code / compile errors: only treat as server startup failure BEFORE the server is up and running.
+        // Once the dev server is already running (serverReadyFired == true), code/syntax errors in user files
+        // do NOT kill the dev server (HMR stays alive and recovers on next edit).
+        bool hasCodeCompileError = (
+            checkText.find(L"error:") != std::wstring::npos ||
+            checkText.find(L": error") != std::wstring::npos ||
+            checkText.find(L"[error]") != std::wstring::npos ||
+            checkText.find(L"syntaxerror") != std::wstring::npos ||
+            checkText.find(L"cannot find module") != std::wstring::npos ||
+            checkText.find(L"failed to compile") != std::wstring::npos
+        );
+
+        bool isFatalError = !isWarning && (hasFatalServerError || (!serverReadyFired && hasCodeCompileError));
 
         if (isFatalError) {
             hasError = true;
             if (lastErrorText.empty()) {
-                std::wstring line = wstr;
+                std::wstring line = cleanText;
                 size_t nl = line.find(L'\n');
                 if (nl != std::wstring::npos) line = line.substr(0, nl);
                 while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
@@ -4886,7 +5016,10 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         tab->onErrorCallback = m_onServerError;
         tab->onReadyCallback = m_onServerReady;
         tab->hasError = false;
+        tab->serverReadyFired = false;
         tab->lastErrorText.clear();
+        tab->serverMonitorBuffer.clear();
+        tab->detectedServerUrl.clear();
         std::lock_guard<std::mutex> lock(tab->bufferMutex);
         tab->lines.clear();
         tab->lines.push_back({});
@@ -4903,7 +5036,10 @@ void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const st
         newTab->onErrorCallback = m_onServerError;
         newTab->onReadyCallback = m_onServerReady;
         newTab->hasError = false;
+        newTab->serverReadyFired = false;
         newTab->lastErrorText.clear();
+        newTab->serverMonitorBuffer.clear();
+        newTab->detectedServerUrl.clear();
         m_tabs.push_back(std::move(newTab));
         m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
         tab = m_tabs.back().get();

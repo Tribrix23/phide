@@ -243,9 +243,12 @@ struct TerminalTab {
     bool isServerTab = false;
     bool canClose = true;
     bool hasError = false;
+    bool serverReadyFired = false;
     std::wstring lastErrorText;
+    std::wstring serverMonitorBuffer;
+    std::wstring detectedServerUrl;
     std::function<void(const std::wstring&, const std::wstring&)> onErrorCallback;
-    std::function<void(const std::wstring&)> onReadyCallback;
+    std::function<void(const std::wstring&, const std::wstring&)> onReadyCallback;
     std::function<void(const std::wstring& filePath, int lineNum, const std::wstring& errorMsg, const std::wstring& token)> onExecutionError;
     std::function<void()> onClearRuntimeErrors;
     std::function<void(const std::wstring& filePath, int lineNum)> onDebugPaused;
@@ -422,7 +425,7 @@ public:
             }
         }
     }
-    void SetOnServerReady(std::function<void(const std::wstring&)> cb) { m_onServerReady = std::move(cb); }
+    void SetOnServerReady(std::function<void(const std::wstring&, const std::wstring&)> cb) { m_onServerReady = std::move(cb); }
     void SetOnMinimize(std::function<void()> cb) { m_onMinimize = std::move(cb); }
     void SetOnOpenSettings(std::function<void()> cb) { m_onOpenSettings = std::move(cb); }
     void SetOnMoveToPosition(std::function<void(int)> cb) { m_onMoveToPosition = std::move(cb); }
@@ -802,7 +805,7 @@ private:
     std::function<void(const std::wstring&, const std::wstring&)> m_onServerError;
     std::function<void(const std::wstring&, int, const std::wstring&, const std::wstring&)> m_onExecutionError;
     std::function<void()> m_onClearRuntimeErrors;
-    std::function<void(const std::wstring&)> m_onServerReady;
+    std::function<void(const std::wstring&, const std::wstring&)> m_onServerReady;
     std::function<void(const std::wstring&)> m_onGitHubAuthSuccess;
     std::function<void()> m_onMinimize;
     std::function<void(bool)> m_onToggleFullScreen;

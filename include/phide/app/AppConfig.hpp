@@ -87,6 +87,7 @@ struct AppConfig {
     std::wstring cursorStyle = L"line";                 ///< "line", "block", "underline"
     std::wstring renderWhitespaceMode = L"selection";   ///< "none", "boundary", "selection", "trailing", "all"
     bool formatOnSave = true;                           ///< Automatically format document on save (Shift+Alt+F). Default enabled.
+    bool prettierOnSave = false;                        ///< Automatically run Prettier asynchronously on save. Disabled by default.
     bool updateImportsOnRename = true;                  ///< Automatically update imports across workspace files when renaming or moving. Default enabled.
 
     // --- Code Runner Extension Settings ---
