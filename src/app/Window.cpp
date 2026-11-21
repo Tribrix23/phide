@@ -1696,7 +1696,10 @@ void Window::LoadSessionState() {
     }
 
     std::wifstream in(filePath);
-    if (!in.is_open()) return;
+    if (!in.is_open()) {
+        PHIDE_LOG_WARN(System, L"Could not open session state file: " + filePath);
+        return;
+    }
 
     bool isSidebarOpen = true;
     int savedDrawerWidth = 0;
@@ -3186,6 +3189,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 if (!isPreview) {
                     existingDoc.isPreview = false;
                 }
+                if (existingDoc.structuredView && existingDoc.structuredView->mode == ui::StructuredViewMode::LogTail) {
+                    existingDoc.structuredView->ReloadLogTailFromFile(resolvedPath, false);
+                }
                 if (!existingDoc.isFileLoading && existingDoc.bookmarks.empty() && !m_persistedBookmarks.empty()) {
                     std::wstring normKey = existingDoc.filePath;
                     for (auto& c : normKey) { if (c == L'/') c = L'\\'; c = static_cast<wchar_t>(towlower(c)); }
@@ -3218,10 +3224,15 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
     // 2. Check if current active document can be replaced
     // VS Code Rule: a tab is replaced if it is a preview tab AND has NO unsaved edits (!isDirty) AND not a special view,
     // OR if the active tab belongs to an old project outside the currently opened workspace directory.
+    bool isActivePinnedLogTab = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
+                                 !group.docs[group.activeDocIdx].isPreview &&
+                                 group.docs[group.activeDocIdx].structuredView &&
+                                 group.docs[group.activeDocIdx].structuredView->mode == ui::StructuredViewMode::LogTail);
     bool canReplace = (group.activeDocIdx >= 0 && group.activeDocIdx < static_cast<int>(group.docs.size()) &&
                        !group.docs[group.activeDocIdx].isDirty &&
                        !group.docs[group.activeDocIdx].isSpecialView &&
                        !group.docs[group.activeDocIdx].isFolderView &&
+                       !isActivePinnedLogTab &&
                        (group.docs[group.activeDocIdx].isPreview ||
                         (!m_drawer.GetOpenFolderPath().empty() &&
                          !IsFileInDirectory(group.docs[group.activeDocIdx].filePath, m_drawer.GetOpenFolderPath()))));
@@ -3497,7 +3508,12 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
                 if (postHwnd && IsWindow(postHwnd) && !m_isDestroying.load()) {
                     PostMessageW(postHwnd, WM_USER + 237, 0, 0);
                 }
-            } catch (...) {}
+            } catch (const std::exception& ex) {
+                Logger::Instance().LogUtf8(LogCategory::Editor, LogLevel::Error,
+                    std::string("Async file load exception: ") + ex.what());
+            } catch (...) {
+                PHIDE_LOG_ERROR(Editor, L"Unknown exception during async file load: " + resolvedPath);
+            }
         }).detach();
         return;
     }
@@ -3509,7 +3525,9 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
         std::error_code ec;
         newDoc.binaryFileSize = std::filesystem::file_size(resolvedPath, ec);
     } else {
-        newDoc.buffer.LoadFromFile(resolvedPath);
+        if (!newDoc.buffer.LoadFromFile(resolvedPath) && fileExists) {
+            PHIDE_LOG_ERROR(Editor, L"Failed to read file into editor buffer: " + resolvedPath);
+        }
         const bool isLargeBufferDoc = newDoc.buffer.IsMemoryMappedReadOnly() || (newDoc.buffer.GetLineCount() > 15000);
         newDoc.isLargeBufferFile = isLargeBufferDoc;
         if (isLargeBufferDoc) {
@@ -5670,6 +5688,7 @@ void Window::DoOpenFolder() {
 
 void Window::DoOpenFolderFromPath(const std::wstring& path) {
     if (path.empty()) return;
+    PHIDE_LOG_INFO(System, L"Opening workspace folder: " + path);
     if (path.rfind(L"\\\\wsl", 0) != 0) {
         m_activeRemoteSession = {};
     }
@@ -6357,6 +6376,38 @@ void Window::ExecuteQuickOpenAction(const std::wstring& actionCmd) {
     }
     if (actionCmd == L"cmd_sync_env_example") {
         DoSyncEnvKeysToExample();
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_system_log") {
+        DoShowLog(LogCategory::System);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_error_log") {
+        DoShowLog(LogCategory::Error);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_crash_log") {
+        DoShowLog(LogCategory::Crash);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_editor_log") {
+        DoShowLog(LogCategory::Editor);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_lsp_log") {
+        DoShowLog(LogCategory::Lsp);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_server_log") {
+        DoShowLog(LogCategory::Server);
+        return;
+    }
+    if (actionCmd == L"cmd_help_show_plugins_log") {
+        DoShowLog(LogCategory::Plugins);
+        return;
+    }
+    if (actionCmd == L"cmd_help_open_logs_folder") {
+        DoOpenLogsFolder();
         return;
     }
     if (actionCmd == L"cmd_toggle_svg_preview") {
@@ -7130,6 +7181,50 @@ void Window::DoOpenKeyboardShortcuts() {
     m_drawer.SetSearchFocus(0);
     m_editor.GetKeyboardShortcutsView().SetSearchFocused(true);
     OpenSpecialView(L"keybindings", L"Keyboard Shortcuts");
+}
+
+void Window::DoShowLog(LogCategory category) {
+    auto& logger = Logger::Instance();
+    if (!logger.IsInitialized()) {
+        logger.Initialize({}, 7);
+    }
+
+    if (category == LogCategory::Crash) {
+        logger.EnsureLogDirectoriesExist();
+        std::wstring latestCrash = logger.GetLatestCrashLogPath();
+        if (latestCrash.empty()) {
+            std::wstring crashDir = logger.GetCategoryDir(LogCategory::Crash);
+            std::wstring infoMsg =
+                L"No crash logs have been recorded.\n\n"
+                L"If phide ever crashes, a detailed crash report (stack trace + recent activity) is saved in:\n" +
+                crashDir +
+                L"\n\nLogs older than " + std::to_wstring(logger.GetRetentionDays()) +
+                L" days are automatically deleted.";
+            MessageBoxW(m_hwnd, infoMsg.c_str(), L"phide Crash Logs", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        PHIDE_LOG_INFO(System, L"Opening latest crash log: " + latestCrash);
+        OpenFileDocument(latestCrash, false);
+        return;
+    }
+
+    std::wstring logPath = logger.EnsureTodayLogFile(category);
+    if (!logPath.empty()) {
+        PHIDE_LOG_INFO(System, L"Opening " + std::wstring(Logger::CategoryDisplayName(category)) + L" log: " + logPath);
+        OpenFileDocument(logPath, false);
+    }
+}
+
+void Window::DoOpenLogsFolder() {
+    auto& logger = Logger::Instance();
+    if (!logger.IsInitialized()) {
+        logger.Initialize({}, 7);
+    }
+    logger.EnsureLogDirectoriesExist();
+    logger.Flush(150);
+    std::wstring logsRoot = logger.GetLogsRootDir();
+    PHIDE_LOG_INFO(System, L"Opening logs folder in File Explorer: " + logsRoot);
+    ShellExecuteW(nullptr, L"open", logsRoot.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void Window::DoOpenUserSnippets() {
@@ -12178,11 +12273,16 @@ void Window::StartPhpServer(const std::wstring& rootDir, int port) {
     if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, rootDir.c_str(), &si, &pi)) {
         m_hPhpServerProcess = pi.hProcess;
         CloseHandle(pi.hThread);
+        PHIDE_LOG_INFO(Server, L"Started PHP dev server on port " + std::to_wstring(port) + L" (exe=" + phpExe + L", root=" + rootDir + L")");
+    } else {
+        PHIDE_LOG_ERROR(Server, L"Failed to start PHP dev server on port " + std::to_wstring(port) +
+                                L" (exe=" + phpExe + L", GetLastError=" + Logger::FormatHexCode(GetLastError()) + L")");
     }
 }
 
 void Window::StopPhpServer() {
     if (m_hPhpServerProcess) {
+        PHIDE_LOG_INFO(Server, L"Stopping PHP dev server.");
         TerminateProcess(m_hPhpServerProcess, 0);
         CloseHandle(m_hPhpServerProcess);
         m_hPhpServerProcess = nullptr;
@@ -12194,6 +12294,7 @@ void Window::StartNginxServer() {
     std::filesystem::path nginxDir = GetPhideRoot() / L"include" / L"phide" / L"server" / L"nginx";
     std::filesystem::path nginxExe = nginxDir / L"nginx.exe";
     if (!std::filesystem::exists(nginxExe)) {
+        PHIDE_LOG_ERROR(Server, L"Nginx binary not found at: " + nginxExe.wstring());
         m_header.SetServerState(ui::ServerState::Failed);
         return;
     }
@@ -12253,7 +12354,9 @@ void Window::StartNginxServer() {
         m_hNginxProcess = pi.hProcess;
         CloseHandle(pi.hThread);
         m_header.SetServerState(ui::ServerState::Running);
+        PHIDE_LOG_INFO(Server, L"Started Nginx web server on port " + std::to_wstring(nginxPort) + L" (dir=" + nginxDir.wstring() + L")");
     } else {
+        PHIDE_LOG_ERROR(Server, L"Failed to start Nginx web server (GetLastError=" + Logger::FormatHexCode(GetLastError()) + L")");
         m_header.SetServerState(ui::ServerState::Failed);
     }
 }
@@ -12925,6 +13028,9 @@ void Window::SaveFileToPath(const std::wstring& path) {
                 }
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else {
+            PHIDE_LOG_ERROR(Editor, L"Failed to save file to disk: " + path +
+                                    L" (GetLastError=" + Logger::FormatHexCode(GetLastError()) + L")");
         }
     }
 }
@@ -13087,6 +13193,7 @@ static HICON CreatePhideAppIcon(HINSTANCE hInstance) {
 
 bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
     if (FAILED(CreateDeviceIndependentResources())) {
+        PHIDE_LOG_ERROR(System, L"Window::Create aborted: CreateDeviceIndependentResources failed.");
         return false;
     }
 
@@ -13148,7 +13255,12 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         nullptr, nullptr, hInstance, this
     );
 
-    if (!m_hwnd) return false;
+    if (!m_hwnd) {
+        PHIDE_LOG_ERROR(System, L"CreateWindowExW failed (GetLastError=" + Logger::FormatHexCode(GetLastError()) + L").");
+        return false;
+    }
+    PHIDE_LOG_INFO(System, L"Window created (size=" + std::to_wstring(width) + L"x" + std::to_wstring(height) +
+                           L", dpi=" + std::to_wstring(dpi) + L").");
     m_mainHwnd = m_hwnd.load();
     EnsureFloatingWindowClassRegistered(hInstance);
 
@@ -14471,13 +14583,19 @@ HRESULT Window::CreateDeviceIndependentResources() {
         nullptr,
         reinterpret_cast<void**>(m_pD2DFactory.GetAddressOf())
     );
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        PHIDE_LOG_ERROR(System, L"D2D1CreateFactory failed: " + Logger::FormatHexCode(static_cast<uint32_t>(hr)));
+        return hr;
+    }
 
     hr = DWriteCreateFactory(
         DWRITE_FACTORY_TYPE_SHARED,
         __uuidof(IDWriteFactory),
         reinterpret_cast<IUnknown**>(m_pDWriteFactory.GetAddressOf())
     );
+    if (FAILED(hr)) {
+        PHIDE_LOG_ERROR(System, L"DWriteCreateFactory failed: " + Logger::FormatHexCode(static_cast<uint32_t>(hr)));
+    }
     return hr;
 }
 
@@ -14502,7 +14620,10 @@ HRESULT Window::CreateDeviceResources() {
     );
 
     HRESULT hr = m_pD2DFactory->CreateHwndRenderTarget(rtProps, hwndProps, &m_pRenderTarget);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        PHIDE_LOG_ERROR(System, L"CreateHwndRenderTarget failed: " + Logger::FormatHexCode(static_cast<uint32_t>(hr)));
+        return hr;
+    }
 
     m_pRenderTarget->SetDpi(96.0f, 96.0f);
     m_theme.SetDpiScale(m_config.dpiScale);
@@ -14510,6 +14631,7 @@ HRESULT Window::CreateDeviceResources() {
     // Allocate theme GPU brushes and typography formats
     HRESULT hrTheme = m_theme.CreateDeviceResources(m_pRenderTarget.Get(), m_pDWriteFactory.Get());
     if (FAILED(hrTheme)) {
+        PHIDE_LOG_ERROR(System, L"Theme::CreateDeviceResources failed: " + Logger::FormatHexCode(static_cast<uint32_t>(hrTheme)));
         m_pRenderTarget.Reset();
         return hrTheme;
     }
@@ -15198,6 +15320,7 @@ void Window::OnPaint() {
 
     HRESULT hr = m_pRenderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
+        PHIDE_LOG_WARN(System, L"Direct2D device lost (D2DERR_RECREATE_TARGET); recreating GPU resources.");
         DiscardDeviceResources();
     }
 
@@ -20106,6 +20229,31 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                     case ui::MenuActionId::HelpKeyboardShortcuts:
                         DoOpenKeyboardShortcuts();
                         break;
+                    case ui::MenuActionId::HelpShowLogs:
+                    case ui::MenuActionId::HelpShowSystemLog:
+                        DoShowLog(LogCategory::System);
+                        break;
+                    case ui::MenuActionId::HelpShowErrorLog:
+                        DoShowLog(LogCategory::Error);
+                        break;
+                    case ui::MenuActionId::HelpShowCrashLog:
+                        DoShowLog(LogCategory::Crash);
+                        break;
+                    case ui::MenuActionId::HelpShowEditorLog:
+                        DoShowLog(LogCategory::Editor);
+                        break;
+                    case ui::MenuActionId::HelpShowLspLog:
+                        DoShowLog(LogCategory::Lsp);
+                        break;
+                    case ui::MenuActionId::HelpShowServerLog:
+                        DoShowLog(LogCategory::Server);
+                        break;
+                    case ui::MenuActionId::HelpShowPluginsLog:
+                        DoShowLog(LogCategory::Plugins);
+                        break;
+                    case ui::MenuActionId::HelpOpenLogsFolder:
+                        DoOpenLogsFolder();
+                        break;
                     case ui::MenuActionId::HelpContactEmail:
                         // Opens Google Gmail compose with recipient prefilled to john12david12perez@gmail.com
                         ShellExecuteW(nullptr, L"open", L"https://mail.google.com/mail/?view=cm&fs=1&to=john12david12perez@gmail.com&su=Phide%20Web%20Development%20IDE%20Inquiry", nullptr, nullptr, SW_SHOWNORMAL);
@@ -22206,7 +22354,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
                         m_drawer.SetSearchFocus(0);
                         bool switchToRaw = false;
                         m_editor.GetStructuredRenderer().HandleLButtonDown(clientPt, *doc.structuredView, m_config, switchToRaw);
-                        if (switchToRaw) doc.structuredView->isActive = false;
+                        if (switchToRaw) {
+                            doc.structuredView->isActive = false;
+                            if (doc.structuredView->mode == ui::StructuredViewMode::LogTail &&
+                                !doc.isDirty && !doc.filePath.empty()) {
+                                doc.buffer.LoadFromFile(doc.filePath);
+                            }
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -29668,6 +29822,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            PHIDE_LOG_INFO(System, L"Main window shutting down (WM_DESTROY).");
             if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
             }
@@ -31285,6 +31440,11 @@ void Window::CheckOpenDocumentsDiskChanges() {
     for (auto& grp : m_editorGroups) {
         for (auto& doc : grp.docs) {
             if (doc.isSpecialView || doc.isFolderView || doc.isImageView || doc.isUnsupportedBinary || doc.isDiffView || doc.filePath.empty()) {
+                continue;
+            }
+            // Active LogTail tabs stream incrementally via PollLogTail(); avoid redundant full-file reloads & LSP/validator churn
+            if (doc.structuredView && doc.structuredView->isActive &&
+                doc.structuredView->mode == ui::StructuredViewMode::LogTail) {
                 continue;
             }
             std::error_code ec;

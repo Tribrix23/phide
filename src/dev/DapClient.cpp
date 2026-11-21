@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include "phide/dev/DapClient.hpp"
+#include "phide/app/Logger.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1367,7 +1368,11 @@ bool DapClient::StartSession(
     DapAdapterType adapter = !cfg.type.empty() ? AdapterFromTypeString(cfg.type) : DetectAdapterForFile(cfg.program);
     if (adapter == DapAdapterType::None && !cfg.adapterCommand.empty()) adapter = DapAdapterType::ExternalDap;
     if (adapter == DapAdapterType::None) adapter = DetectAdapterForFile(cfg.program);
-    if (adapter == DapAdapterType::None) return false;
+    if (adapter == DapAdapterType::None) {
+        PHIDE_LOG_ERROR(Server, L"DAP failed to resolve debug adapter for program: " + cfg.program);
+        return false;
+    }
+    PHIDE_LOG_INFO(Server, L"DAP debug session starting (type=" + cfg.type + L", program=" + cfg.program + L")");
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);

@@ -411,7 +411,15 @@ void QuickOpenModal::FilterItems() {
             { L"Git: Add Worktree...", L"", L"cmd_git_add_worktree" },
             { L"Git: Update Submodules", L"", L"cmd_git_update_submodules" },
             { L"Git: Commit", L"Ctrl + Enter", L"cmd_git_commit" },
-            { L"Git: Refresh", L"Ctrl + Shift + R", L"cmd_git_refresh" }
+            { L"Git: Refresh", L"Ctrl + Shift + R", L"cmd_git_refresh" },
+            { L"Help: Show Logs (System Log)", L"", L"cmd_help_show_system_log" },
+            { L"Help: Show Error Log", L"", L"cmd_help_show_error_log" },
+            { L"Help: Show Latest Crash Log", L"", L"cmd_help_show_crash_log" },
+            { L"Help: Show Editor Log", L"", L"cmd_help_show_editor_log" },
+            { L"Help: Show LSP Log", L"", L"cmd_help_show_lsp_log" },
+            { L"Help: Show Server & DB Log", L"", L"cmd_help_show_server_log" },
+            { L"Help: Show Plugins Log", L"", L"cmd_help_show_plugins_log" },
+            { L"Help: Open Logs Folder", L"", L"cmd_help_open_logs_folder" }
         };
 
         auto pushScoredCmd = [&](const std::wstring& title, const std::wstring& shortcut, const std::wstring& actionId) {

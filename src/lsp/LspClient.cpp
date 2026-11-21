@@ -4,6 +4,7 @@
  */
 
 #include "phide/lsp/LspClient.hpp"
+#include "phide/app/Logger.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -885,11 +886,14 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
     if (hNullErr != INVALID_HANDLE_VALUE) CloseHandle(hNullErr);
 
     if (!ok) {
+        PHIDE_LOG_ERROR(Lsp, L"Failed to launch LSP process: " + commandLine +
+                             L" (GetLastError=" + phide::app::Logger::FormatHexCode(GetLastError()) + L")");
         CloseHandle(hChildStdinWrite);
         CloseHandle(hChildStdoutRead);
         if (hJob) CloseHandle(hJob);
         return false;
     }
+    PHIDE_LOG_INFO(Lsp, L"Launched LSP server (PID=" + std::to_wstring(pi.dwProcessId) + L"): " + commandLine);
 
     if (hJob) {
         AssignProcessToJobObject(hJob, pi.hProcess);
@@ -951,6 +955,7 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
     }
     std::string initResp;
     if (!SendRequestAndWait("initialize", initParams.str(), initResp, 1800)) {
+        PHIDE_LOG_ERROR(Lsp, L"LSP initialize handshake timed out or failed for: " + commandLine);
         Shutdown();
         return false;
     }

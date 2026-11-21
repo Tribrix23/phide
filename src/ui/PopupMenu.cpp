@@ -359,7 +359,28 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
     // --- Separator ---
     m_items.push_back({ MenuActionId::None,                   L"",                              L"",               true,  false, false, false, {}, {} });
 
-    // 2. Direct Social & Support Channels
+    // 2. Diagnostics & Application Logs (cascading submenu)
+    PopupMenuItem showLogsItem;
+    showLogsItem.actionId = MenuActionId::HelpShowLogs;
+    showLogsItem.label = L"Show Logs";
+    showLogsItem.hasSubmenu = true;
+    showLogsItem.isEnabled = true;
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowSystemLog,   L"System Log (Today)",        L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowErrorLog,    L"Error Log (Today)",         L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowCrashLog,    L"Latest Crash Log",          L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::None,                L"",                          L"", true,  false, false, false, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowEditorLog,   L"Editor Log (Today)",        L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowLspLog,      L"LSP Log (Today)",           L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowServerLog,   L"Server & DB Log (Today)",   L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpShowPluginsLog,  L"Plugins Log (Today)",       L"", false, false, false, true, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::None,                L"",                          L"", true,  false, false, false, {}, {} });
+    showLogsItem.submenuItems.push_back({ MenuActionId::HelpOpenLogsFolder,  L"Open Logs Folder...",       L"", false, false, false, true, {}, {} });
+    m_items.push_back(std::move(showLogsItem));
+
+    // --- Separator ---
+    m_items.push_back({ MenuActionId::None,                   L"",                              L"",               true,  false, false, false, {}, {} });
+
+    // 3. Direct Social & Support Channels
     m_items.push_back({ MenuActionId::HelpContactEmail,       L"✉ Contact via Email (Gmail)",  L"",               false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpFacebook,           L"🌐 Facebook Profile",           L"",               false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpWhatsApp,           L"💬 WhatsApp Channel",           L"",               false, false, false, true, {}, {} });

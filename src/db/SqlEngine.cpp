@@ -14,6 +14,7 @@
 #include <tlhelp32.h>
 
 #include "phide/db/SqlEngine.hpp"
+#include "phide/app/Logger.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -998,8 +999,10 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
     }
     if (!IsLocalHostAddress(profile.host)) {
         outMessage = L"Cannot start remote host '" + profile.host + L"'. Start the server directly on that machine.";
+        PHIDE_LOG_WARN(Server, L"SqlEngine::StartDatabaseServer skipped for remote host: " + profile.host);
         return false;
     }
+    PHIDE_LOG_INFO(Server, L"SqlEngine starting database server on " + profile.host + L":" + std::to_wstring(profile.port));
 
     const std::wstring connectHost = NormalizeConnectHost(profile.host);
 

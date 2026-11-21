@@ -1,4 +1,5 @@
 #include "phide/server/LiveServer.hpp"
+#include "phide/app/Logger.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -455,6 +456,8 @@ bool LiveServer::Start(const std::wstring& rootDir, const std::wstring& defaultH
 
     m_listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (m_listenSock == INVALID_SOCKET) {
+        PHIDE_LOG_ERROR(Server, L"LiveServer failed to create TCP listen socket (WSAGetLastError=" +
+                                std::to_wstring(WSAGetLastError()) + L").");
         CleanupTlsCredentials();
         return false;
     }
@@ -480,11 +483,17 @@ bool LiveServer::Start(const std::wstring& rootDir, const std::wstring& defaultH
     }
 
     if (!bound || listen(m_listenSock, SOMAXCONN) != 0) {
+        PHIDE_LOG_ERROR(Server, L"LiveServer failed to bind/listen starting at port " +
+                                std::to_wstring(preferredPort) + L" (WSAGetLastError=" +
+                                std::to_wstring(WSAGetLastError()) + L").");
         closesocket(m_listenSock);
         m_listenSock = INVALID_SOCKET;
         CleanupTlsCredentials();
         return false;
     }
+
+    PHIDE_LOG_INFO(Server, L"LiveServer listening on port " + std::to_wstring(m_port) +
+                           L" (root=" + m_rootDir + L")");
 
     m_isRunning = true;
     m_workerThread = std::thread(&LiveServer::ServerWorker, this);

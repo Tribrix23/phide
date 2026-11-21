@@ -27,6 +27,7 @@
 #include <mutex>
 
 #include "phide/app/AppConfig.hpp"
+#include "phide/app/Logger.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/TitleHeader.hpp"
 #include "phide/ui/PopupMenu.hpp"
@@ -499,6 +500,12 @@ private:
 
     /** @brief Opens the interactive Keyboard Shortcuts view with keycap badges (Ctrl+K Ctrl+S). */
     void DoOpenKeyboardShortcuts();
+
+    /** @brief Opens the specified categorized PHIDE log file inside the built-in Log Tail viewer. */
+    void DoShowLog(LogCategory category);
+
+    /** @brief Opens the %APPDATA%\phide\logs folder in Windows File Explorer. */
+    void DoOpenLogsFolder();
 
     /** @brief Opens user code snippets configuration. */
     void DoOpenUserSnippets();

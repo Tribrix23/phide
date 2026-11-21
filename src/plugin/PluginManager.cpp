@@ -4,6 +4,7 @@
  */
 
 #include "phide/plugin/PluginManager.hpp"
+#include "phide/app/Logger.hpp"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -751,6 +752,7 @@ void PluginManager::Initialize(const std::wstring& exeDir) {
     }
 
     m_initialized = true;
+    PHIDE_LOG_INFO(Plugins, L"Plugin discovery finished (" + std::to_wstring(m_plugins.size()) + L" plugin(s) loaded).");
 }
 
 void PluginManager::LoadWorkspacePlugins(const std::wstring& workspaceRoot) {
@@ -868,14 +870,20 @@ bool PluginManager::LoadNativeDllPlugin(const std::filesystem::path& dllPath) {
     if (m_loadedManifestPaths.count(canonicalKey) > 0) return true;
 
     HMODULE hMod = LoadLibraryW(dllPath.wstring().c_str());
-    if (!hMod) return false;
+    if (!hMod) {
+        PHIDE_LOG_ERROR(Plugins, L"Failed to load native plugin DLL: " + dllPath.wstring() +
+                                 L" (GetLastError=" + phide::app::Logger::FormatHexCode(GetLastError()) + L")");
+        return false;
+    }
 
     auto initFn = reinterpret_cast<PhidePluginInitFn>(GetProcAddress(hMod, "PhidePluginInitialize"));
     auto shutdownFn = reinterpret_cast<PhidePluginShutdownFn>(GetProcAddress(hMod, "PhidePluginShutdown"));
     if (!initFn) {
+        PHIDE_LOG_WARN(Plugins, L"Skipping DLL without PhidePluginInitialize export: " + dllPath.wstring());
         FreeLibrary(hMod);
         return false;
     }
+    PHIDE_LOG_INFO(Plugins, L"Loaded native plugin DLL: " + dllPath.wstring());
 
     PhidePluginInfo info{};
     info.apiVersion = PHIDE_PLUGIN_API_VERSION;
