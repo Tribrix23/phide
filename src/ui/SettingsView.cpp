@@ -1468,6 +1468,8 @@ void SettingsView::DrawDropdownPopup(ID2D1RenderTarget* pRT, Theme& theme, const
     const float rowH = config.ScaleF(32.0f);
     const float padY = config.ScaleF(6.0f);
     const float menuH = item.options.size() * rowH + padY * 2.0f;
+    m_openDropdownRowH = rowH;
+    m_openDropdownPadY = padY;
     float measuredMaxW = config.ScaleF(180.0f);
     for (const auto& opt : item.options) {
         measuredMaxW = (std::max)(measuredMaxW, MeasureTextWidthDWrite(theme.dwriteFactory.Get(), theme.fontBody.Get(), opt, config.ScaleF(8.0f)) + config.ScaleF(44.0f));
@@ -1582,17 +1584,20 @@ bool SettingsView::HandleMouseMove(POINT clientPt) {
     if (m_openDropdownItemIdx >= 0 && m_openDropdownItemIdx < static_cast<int>(m_items.size())) {
         if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
             clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
-            float relY = clientPt.y - (m_openDropdownBounds.top + 6.0f);
-            const float totalH = m_openDropdownBounds.bottom - m_openDropdownBounds.top - 12.0f;
+            const float padY = (m_openDropdownPadY > 0.0f) ? m_openDropdownPadY : 6.0f;
+            const float rowH = (m_openDropdownRowH > 0.0f) ? m_openDropdownRowH : 32.0f;
+            const float relY = clientPt.y - (m_openDropdownBounds.top + padY);
             const size_t optCount = m_items[m_openDropdownItemIdx].options.size();
-            if (relY >= 0.0f && totalH > 0.0f && optCount > 0) {
-                int opt = static_cast<int>(relY / (totalH / static_cast<float>(optCount)));
+            if (relY >= 0.0f && optCount > 0) {
+                int opt = static_cast<int>(relY / rowH);
                 if (opt >= 0 && opt < static_cast<int>(optCount)) {
                     m_hoveredDropdownOption = opt;
                 }
             }
-            return (oldDropOpt != m_hoveredDropdownOption);
         }
+        return (oldCard != m_hoveredCardIdx || oldCat != m_hoveredCategoryIdx ||
+                oldClear != m_hoveredSearchClear || oldCtrlSub != m_hoveredControlSubId ||
+                oldDropOpt != m_hoveredDropdownOption || (wasScrollHovered != m_isScrollbarHovered));
     }
 
     // Check search clear
@@ -1676,11 +1681,12 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
         auto& dropItem = m_items[m_openDropdownItemIdx];
         if (clientPt.x >= m_openDropdownBounds.left && clientPt.x <= m_openDropdownBounds.right &&
             clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
-            float relY = clientPt.y - (m_openDropdownBounds.top + 6.0f);
-            const float totalH = m_openDropdownBounds.bottom - m_openDropdownBounds.top - 12.0f;
+            const float padY = (m_openDropdownPadY > 0.0f) ? m_openDropdownPadY : config.ScaleF(6.0f);
+            const float rowH = (m_openDropdownRowH > 0.0f) ? m_openDropdownRowH : config.ScaleF(32.0f);
+            const float relY = clientPt.y - (m_openDropdownBounds.top + padY);
             const size_t optCount = dropItem.options.size();
-            if (relY >= 0.0f && totalH > 0.0f && optCount > 0) {
-                int optIdx = static_cast<int>(relY / (totalH / static_cast<float>(optCount)));
+            if (relY >= 0.0f && optCount > 0) {
+                int optIdx = static_cast<int>(relY / rowH);
                 if (optIdx >= 0 && optIdx < static_cast<int>(optCount)) {
                     WriteDropdownSetting(dropItem.id, dropItem.options[optIdx], config, theme);
                     outModifiedSettingId = dropItem.id;
@@ -1690,9 +1696,10 @@ bool SettingsView::HandleLButtonDown(POINT clientPt, app::AppConfig& config, The
             m_hoveredDropdownOption = -1;
             return true;
         } else {
-            // Click outside closes dropdown
+            // Click outside closes dropdown without activating covered cards underneath
             m_openDropdownItemIdx = -1;
             m_hoveredDropdownOption = -1;
+            return true;
         }
     }
 
@@ -1859,6 +1866,7 @@ LPCWSTR SettingsView::GetCursorForPoint(POINT clientPt) const {
             clientPt.y >= m_openDropdownBounds.top && clientPt.y <= m_openDropdownBounds.bottom) {
             return IDC_HAND;
         }
+        return IDC_ARROW;
     }
 
     // 2. Search clear button

@@ -251,6 +251,7 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
         m_isGitRepo = false;
         m_hasGitRemote = false;
         m_gitBranch.clear();
+        m_gitHeadHash.clear();
         m_gitChanges.clear();
         m_gitCommits.clear();
         m_unpushedCommitsCount = 0;
@@ -292,6 +293,7 @@ void DrawerPanel::BeginAsyncOpenFolder(const std::wstring& folderPath) {
         m_isGitRepo = false;
         m_hasGitRemote = false;
         m_gitBranch.clear();
+        m_gitHeadHash.clear();
         m_gitChanges.clear();
         m_gitCommits.clear();
         m_unpushedCommitsCount = 0;
@@ -390,6 +392,7 @@ void DrawerPanel::CloseFolder() {
         m_isGitRepo = false;
         m_hasGitRemote = false;
         m_gitBranch.clear();
+        m_gitHeadHash.clear();
         m_gitChanges.clear();
         m_gitCommits.clear();
         m_unpushedCommitsCount = 0;
@@ -1156,12 +1159,14 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         m_cachedRailW != railW ||
         m_cachedHeaderH != headerH ||
         m_cachedDrawerW != currentDrawerW ||
-        m_cachedClientH != clientHeight)
+        m_cachedClientH != clientHeight ||
+        m_cachedSideBarOnRight != config.sideBarOnRight)
     {
         m_cachedRailW   = railW;
         m_cachedHeaderH = headerH;
         m_cachedDrawerW = currentDrawerW;
         m_cachedClientH = clientHeight;
+        m_cachedSideBarOnRight = config.sideBarOnRight;
         m_pDrawerBgGeometry.Reset();
 
         Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
@@ -1172,7 +1177,7 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
                 Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
                 if (SUCCEEDED(pPath->Open(&sink))) {
                     const float maxR = (std::min)(currentDrawerW, (clientHeight - headerH) / 2.0f);
-                    const float r = (maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
+                    const float r = (!config.sideBarOnRight && maxR > 0.0f) ? (std::min)(cornerRadius, maxR) : 0.0f;
 
                     sink->BeginFigure(D2D1::Point2F(railW + r, headerH), D2D1_FIGURE_BEGIN_FILLED);
                     sink->AddLine(D2D1::Point2F(railW + currentDrawerW, headerH));
@@ -1207,10 +1212,11 @@ void DrawerPanel::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
         pRT->FillRectangle(rcDrawer, theme.brushDrawerBg.Get());
     }
 
-    // Right border divider
+    // Inner border divider (right edge when left-docked, left edge when right-docked)
+    const float dividerX = config.sideBarOnRight ? (railW + 0.5f) : (railW + currentDrawerW - 0.5f);
     pRT->DrawLine(
-        D2D1::Point2F(railW + currentDrawerW - 0.5f, headerH),
-        D2D1::Point2F(railW + currentDrawerW - 0.5f, clientHeight),
+        D2D1::Point2F(dividerX, headerH),
+        D2D1::Point2F(dividerX, clientHeight),
         theme.brushBorderSubtle.Get(),
         1.0f
     );
@@ -6067,6 +6073,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
         m_gitChanges.clear();
         m_gitCommits.clear();
         m_gitBranch.clear();
+        m_gitHeadHash.clear();
         m_isGitRepo = false;
         m_hasGitRemote = false;
         m_isGitLoading = false;
@@ -6166,6 +6173,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             m_hasGitRemote = false;
             m_unpushedCommitsCount = 0;
             m_gitBranch.clear();
+        m_gitHeadHash.clear();
             if (untrackedChanges.size() > 10000) {
                 untrackedChanges.resize(10000);
                 if (!m_dontShowTooManyChanges) {
@@ -6524,6 +6532,11 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
 
         // 5. Query configured remotes and unpushed commits count
         if (!alive || !alive->load()) return;
+        std::wstring headHash;
+        auto resHeadRev = RunGitCmd(L"rev-parse HEAD", dir);
+        if (resHeadRev.exitCode == 0) {
+            headHash = TrimWideWhitespace(resHeadRev.output);
+        }
         auto resRemotes = RunGitCmd(L"remote", dir);
         bool hasRemote = (resRemotes.exitCode == 0 && !TrimWideWhitespace(resRemotes.output).empty());
 
@@ -6646,11 +6659,15 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
                         for (size_t ci = 0; ci < m_gitCommits.size(); ++ci) {
                             if (m_gitCommits[ci].hash == m_commitCardHash) return static_cast<int>(ci);
                         }
+                        return -1;
                     }
                     return (idx < static_cast<int>(m_gitCommits.size())) ? idx : -1;
                 };
                 m_hoveredCommitIdx = resolveIdxByHash(m_hoveredCommitIdx);
                 m_selectedCommitIdx = resolveIdxByHash(m_selectedCommitIdx);
+                if (m_selectedCommitIdx < 0) {
+                    m_commitCardHash.clear();
+                }
             }
             m_gitStashes = std::move(stashes);
             m_gitTags = std::move(tags);
@@ -6658,6 +6675,7 @@ void DrawerPanel::RefreshGitState(bool async, bool showLoading) {
             m_gitSubmodules = std::move(submodules);
             m_gitBisectActive = bisectActive;
             m_unpushedCommitsCount = unpushedCount;
+            m_gitHeadHash = headHash;
             m_isGitLoading = false;
         }
 
@@ -6920,6 +6938,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         m_gitChanges.clear();
         m_gitCommits.clear();
         m_gitBranch.clear();
+        m_gitHeadHash.clear();
         m_isGitRepo = false;
         m_hasGitRemote = false;
         m_isGitLoading = false;
@@ -6971,7 +6990,8 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             }
         } guard(workers, m_isGitRefreshing, async);
 
-        auto runOnce = [this, &alive]() {
+        bool anyHeadChanged = false;
+        auto runOnce = [this, &alive, &anyHeadChanged]() {
             if (!alive || !alive->load()) return;
             std::wstring dir = NormalizeDirForGit(m_openFolderPath);
 
@@ -7020,6 +7040,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             m_hasGitRemote = false;
             m_unpushedCommitsCount = 0;
             m_gitBranch.clear();
+        m_gitHeadHash.clear();
             if (untrackedChanges.size() > 10000) {
                 untrackedChanges.resize(10000);
                 if (!m_dontShowTooManyChanges) {
@@ -7317,15 +7338,24 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         }
 
         if (!alive || !alive->load()) return;
+        std::wstring headHash;
+        auto resHeadRev = RunGitCmd(L"rev-parse HEAD", dir);
+        if (resHeadRev.exitCode == 0) {
+            headHash = TrimWideWhitespace(resHeadRev.output);
+        }
         bool stateChanged = false;
+        bool headChanged = false;
         {
             std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+            headChanged = (m_gitHeadHash != headHash);
             if (!m_isGitRepo || m_hasGitRemote != hasRemote || m_gitBranch != branch || m_unpushedCommitsCount != unpushedCount ||
-                m_gitChanges.size() != changes.size()) {
+                headChanged || m_gitChanges.size() != changes.size()) {
                 stateChanged = true;
             } else {
                 for (size_t i = 0; i < changes.size(); ++i) {
-                    if (m_gitChanges[i].path != changes[i].path || m_gitChanges[i].status != changes[i].status) {
+                    if (m_gitChanges[i].path != changes[i].path ||
+                        m_gitChanges[i].status != changes[i].status ||
+                        m_gitChanges[i].isStaged != changes[i].isStaged) {
                         stateChanged = true;
                         break;
                     }
@@ -7335,6 +7365,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
             m_isGitRepo = true;
             m_hasGitRemote = hasRemote;
             m_gitBranch = branch;
+            m_gitHeadHash = headHash;
             if (changes.size() > 10000) {
                 changes.resize(10000);
                 if (!m_dontShowTooManyChanges) {
@@ -7349,6 +7380,7 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
         }
 
         if (!alive || !alive->load()) return;
+        if (headChanged) anyHeadChanged = true;
         if (stateChanged && m_onGitStateChanged) {
             m_onGitStateChanged();
         }
@@ -7364,6 +7396,10 @@ void DrawerPanel::RefreshGitStatusOnly(bool async) {
                     break;
                 }
             }
+        }
+        guard.ReleaseFlag();
+        if (async && anyHeadChanged && alive && alive->load()) {
+            RefreshGitState(true, false);
         }
     };
 
@@ -8610,6 +8646,7 @@ void DrawerPanel::CommitChangesAsync(const std::wstring& message, bool bypassGua
         if (m_onGitCommitSucceeded) m_onGitCommitSucceeded();
 
         if (postCommitAction == 1 || postCommitAction == 2) {
+            RefreshGitStatusOnly(false);
             auto resRemote = RunGitCmd(L"remote", dir);
             if (resRemote.exitCode != 0 || TrimWideWhitespace(resRemote.output).empty()) {
                 ShowGitNotification(L"Committed locally, but no remote is configured to push.");
@@ -15550,7 +15587,9 @@ void DrawerPanel::RenderCommitCard(ID2D1RenderTarget* pRT, Theme& theme, const a
         // 4.5 Floating Commit Details Card OUTSIDE the sidebar drawer (Image 3)
         float cardW = (std::max)(config.ScaleF(520.0f), minReqW);
         float cardH = config.ScaleF(142.0f);
-        float cardLeft = railW + currentDrawerW + config.ScaleF(8.0f);
+        float cardLeft = config.sideBarOnRight
+            ? (railW - cardW - config.ScaleF(8.0f))
+            : (railW + currentDrawerW + config.ScaleF(8.0f));
         float cardTop = (ci.bounds.top + ci.bounds.bottom) * 0.5f - cardH * 0.5f;
         float headerH = config.ScaleF(static_cast<float>(config.headerHeight));
         float minTop = headerH + config.ScaleF(6.0f);

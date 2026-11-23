@@ -420,7 +420,8 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.push_back({ MenuActionId::MoreCodeMetrics, L"Code Metrics", L"", false, false, false, true, {}, {} });
 
     const float moreMenuW = CalculateOptimalMenuWidth(m_items, config, config.ScaleF(220.0f));
-    LayoutMenu(m_items, x, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
+    const float menuX = config.sideBarOnRight ? (x - moreMenuW - config.ScaleF(4.0f)) : x;
+    LayoutMenu(m_items, menuX, y, moreMenuW, config, m_mainMenuBounds, clientW, clientH);
 }
 
 void PopupMenu::OpenEncodingMenu(float x, float y, const app::AppConfig& config,

@@ -16,6 +16,7 @@
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
+#include "phide/ui/PhideLogo.hpp"
 
 namespace phide::ui {
 
@@ -130,6 +131,7 @@ public:
      */
     void DiscardDeviceResources() {
         m_pHeaderGradientBrush.Reset();
+        m_pLogoBitmap.Reset();
         m_lastWidth = -1.0f;
     }
 
@@ -483,8 +485,10 @@ private:
 
     // Direct2D Purple Glass Gradient Brush and theme state cache
     Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> m_pHeaderGradientBrush;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pLogoBitmap;
     float m_lastWidth = -1.0f;
     bool  m_lastIsDark = true; ///< Tracks theme transitions to invalidate gradient cache
+    bool  m_lastSideBarOnRight = false;
     ThemeMode m_lastThemeMode = static_cast<ThemeMode>(-1);
 };
 

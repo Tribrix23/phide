@@ -2547,6 +2547,52 @@ void Window::ToggleZenMode() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::GetPrimarySidebarRect(float clientW, float& outDrawerLeft, float& outDrawerW,
+                                   float& outRailLeft, float& outRailW) const noexcept {
+    if (m_config.zenMode) {
+        outRailW = 0.0f;
+        outDrawerW = 0.0f;
+        outRailLeft = m_config.sideBarOnRight ? clientW : 0.0f;
+        outDrawerLeft = outRailLeft;
+        return;
+    }
+    outRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
+    outDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+    if (m_config.sideBarOnRight) {
+        outRailLeft = (std::max)(0.0f, clientW - outRailW);
+        outDrawerLeft = (std::max)(0.0f, outRailLeft - outDrawerW);
+    } else {
+        outRailLeft = 0.0f;
+        outDrawerLeft = outRailW;
+    }
+}
+
+float Window::GetDrawerTranslateX(float clientW) const noexcept {
+    if (!m_config.sideBarOnRight || m_config.zenMode) return 0.0f;
+    float drawerLeft = 0.0f, drawerW = 0.0f, railLeft = 0.0f, railW = 0.0f;
+    GetPrimarySidebarRect(clientW, drawerLeft, drawerW, railLeft, railW);
+    return drawerLeft - railW;
+}
+
+POINT Window::ToDrawerSpace(POINT pt) const noexcept {
+    if (!m_config.sideBarOnRight || !m_hwnd) return pt;
+    RECT rc{};
+    GetClientRect(m_hwnd, &rc);
+    const float clientW = static_cast<float>(rc.right - rc.left);
+    const float dx = GetDrawerTranslateX(clientW);
+    return POINT{ pt.x - static_cast<LONG>(std::lround(dx)), pt.y };
+}
+
+bool Window::IsPointInPrimaryDrawer(POINT clientPt, float clientW, float headerH) const noexcept {
+    if (m_config.zenMode || m_drawerAnimProgress <= 0.001f) return false;
+    float drawerLeft = 0.0f, drawerW = 0.0f, railLeft = 0.0f, railW = 0.0f;
+    GetPrimarySidebarRect(clientW, drawerLeft, drawerW, railLeft, railW);
+    if (drawerW <= 1.0f) return false;
+    return (static_cast<float>(clientPt.x) >= drawerLeft &&
+            static_cast<float>(clientPt.x) < drawerLeft + drawerW &&
+            static_cast<float>(clientPt.y) >= headerH);
+}
+
 void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const {
     if (m_activeFloatingWindow) {
         // Editor-only floating window occupies 100% of width (no rail, drawer, or right sidebar)
@@ -2554,8 +2600,8 @@ void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanv
         outCanvasWidth = (std::max)(100.0f, clientW);
         return;
     }
-    const float railW = m_config.zenMode ? 0.0f : m_config.ScaleF(static_cast<float>(m_config.railWidth));
-    const float currentDrawerW = m_config.zenMode ? 0.0f : (m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress);
+    float drawerLeft = 0.0f, currentDrawerW = 0.0f, railLeft = 0.0f, railW = 0.0f;
+    GetPrimarySidebarRect(clientW, drawerLeft, currentDrawerW, railLeft, railW);
 
     float rightDeduction = 0.0f;
     if (!m_config.zenMode) {
@@ -2567,8 +2613,9 @@ void Window::GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanv
         }
     }
 
-    const float rawCanvasLeft = railW + currentDrawerW;
-    const float availableW = (std::max)(100.0f, clientW - rawCanvasLeft - rightDeduction);
+    const float rawCanvasLeft = m_config.sideBarOnRight ? 0.0f : (railW + currentDrawerW);
+    const float totalRightDeduction = rightDeduction + (m_config.sideBarOnRight ? (railW + currentDrawerW) : 0.0f);
+    const float availableW = (std::max)(100.0f, clientW - rawCanvasLeft - totalRightDeduction);
 
     outCanvasLeft = rawCanvasLeft;
     outCanvasWidth = availableW;
@@ -3773,6 +3820,8 @@ void Window::OpenFileDocument(const std::wstring& path, bool isPreview) {
             if ((m_config.enableGitLens || m_config.gitShowInlineBlame || m_config.showGutterBlame) && gitStat != L'U' && gitStat != L'?') {
                 newDoc.gitBlameLoaded = false;
             }
+            newDoc.lastSyncedGitHeadHash = m_drawer.GetGitHeadHash();
+            newDoc.lastSyncedGitStatus = gitStat;
         }
 
         if (!newDoc.isSpecialView && !newDoc.isImageView && !newDoc.isFontView && !newDoc.isUnsupportedBinary) {
@@ -3895,6 +3944,8 @@ void Window::FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::ws
             if ((m_config.enableGitLens || m_config.gitShowInlineBlame || m_config.showGutterBlame) && gitStat != L'U' && gitStat != L'?') {
                 doc.gitBlameLoaded = false;
             }
+            doc.lastSyncedGitHeadHash = m_drawer.GetGitHeadHash();
+            doc.lastSyncedGitStatus = gitStat;
         }
         RunExtraDocDiagnostics(doc, doc.diagnostics);
         CalculateImportCosts(doc);
@@ -4509,6 +4560,7 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
     size_t midM = M - prefix - suffix;
 
     if (midN == 0 && midM == 0) {
+        doc.diffPeekActive = false;
         return; // Identical
     }
 
@@ -4661,6 +4713,167 @@ void Window::ComputeDiffHunks(editor::OpenDocument& doc) {
 
         for (size_t l = prefix; l < prefix + midN; ++l) doc.diffDeletedLines.insert(l);
         doc.diffHunks.push_back(hunk);
+    }
+    if (doc.diffHunks.empty()) {
+        doc.diffPeekActive = false;
+    }
+}
+
+void Window::RefreshOpenDocsAfterGitChange() {
+    const auto& gitChanges = m_drawer.GetGitChanges();
+    const bool isRepo = m_drawer.IsGitRepo() && m_drawer.HasOpenFolder();
+    const std::wstring wsRoot = isRepo ? m_drawer.GetOpenFolderPath() : L"";
+    const std::wstring curHeadHash = isRepo ? m_drawer.GetGitHeadHash() : L"";
+    auto normPathCmp = [](std::wstring s) {
+        for (auto& c : s) {
+            if (c == L'/') c = L'\\';
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        return s;
+    };
+    const bool blameEnabled = (m_config.enableGitLens || m_config.gitShowInlineBlame || m_config.showGutterBlame);
+
+    auto refreshGroupList = [&](std::vector<editor::EditorGroup>& groups, bool isMainWindowGroups) {
+        for (int g = static_cast<int>(groups.size()) - 1; g >= 0; --g) {
+            if (g >= static_cast<int>(groups.size())) continue;
+            for (int d = static_cast<int>(groups[g].docs.size()) - 1; d >= 0; --d) {
+                if (g >= static_cast<int>(groups.size())) break;
+                if (d >= static_cast<int>(groups[g].docs.size())) continue;
+                auto& doc = groups[g].docs[d];
+
+                if (doc.isDiffView && !doc.isMultiFileDiff && (!doc.isDiffRightReadOnly || doc.isDiffStagedMode)) {
+                    bool stillHasMatchingState = false;
+                    std::wstring cleanDoc = normPathCmp(doc.filePath);
+                    for (const auto& item : gitChanges) {
+                        if (item.isStaged != doc.isDiffStagedMode) continue;
+                        std::wstring cleanItem = normPathCmp(item.path);
+                        if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
+                            stillHasMatchingState = true;
+                            break;
+                        }
+                    }
+                    if (!stillHasMatchingState) {
+                        if (isMainWindowGroups) {
+                            CloseDocument(g, d);
+                        } else {
+                            groups[g].docs.erase(groups[g].docs.begin() + d);
+                            if (groups[g].activeDocIdx >= static_cast<int>(groups[g].docs.size())) {
+                                groups[g].activeDocIdx = static_cast<int>(groups[g].docs.size()) - 1;
+                            }
+                        }
+                    } else if (!doc.diffRepoRelPath.empty()) {
+                        std::wstring fileName = std::filesystem::path(doc.diffRepoRelPath).filename().wstring();
+                        std::wstring headC = m_drawer.GetGitFileContent(doc.diffRepoRelPath);
+                        std::wstring stagedC = m_drawer.GetGitStagedFileContent(doc.diffRepoRelPath);
+                        if (doc.isDiffStagedMode) {
+                            doc.diffOriginalBuffer.SetText(headC);
+                            doc.buffer.SetText(stagedC);
+                        } else {
+                            doc.diffOriginalBuffer.SetText(!stagedC.empty() ? stagedC : headC);
+                            doc.diffOriginalTitle = fileName + (!stagedC.empty() ? L" (Index)" : L" (HEAD)");
+                        }
+                        ComputeDiffHunks(doc);
+                    }
+                    continue;
+                }
+
+                if (doc.isDiffView || doc.isSpecialView || doc.isFolderView || doc.isImageView ||
+                    doc.isUnsupportedBinary || doc.filePath.empty() || doc.buffer.IsMemoryMappedReadOnly()) {
+                    continue;
+                }
+
+                bool isInsideOpenRepo = false;
+                std::wstring relPath;
+                if (isRepo) {
+                    try {
+                        std::error_code relEc;
+                        auto rel = std::filesystem::relative(doc.filePath, wsRoot, relEc);
+                        if (!relEc && !rel.empty() && rel.wstring().rfind(L"..", 0) != 0) {
+                            relPath = rel.wstring();
+                            isInsideOpenRepo = true;
+                        }
+                    } catch (...) {}
+                }
+
+                if (!isInsideOpenRepo) {
+                    if (!doc.diffHunks.empty() || !doc.diffAddedLines.empty() ||
+                        !doc.diffModifiedLines.empty() || !doc.diffDeletedGutterMarkers.empty() || doc.diffPeekActive) {
+                        doc.diffOriginalBuffer.SetLines(doc.buffer.GetLines());
+                        ComputeDiffHunks(doc);
+                        doc.diffPeekActive = false;
+                    }
+                    doc.gitBlameMap.clear();
+                    doc.gitBlameLoaded = false;
+                    doc.lastSyncedGitHeadHash.clear();
+                    doc.lastSyncedGitStatus = L'\0';
+                    continue;
+                }
+
+                const wchar_t gitStat = m_drawer.GetCachedGitChangeStatus(relPath);
+                const bool hasPriorHead = !doc.lastSyncedGitHeadHash.empty();
+                const bool headChanged = (hasPriorHead && !curHeadHash.empty() && doc.lastSyncedGitHeadHash != curHeadHash);
+                const bool statusChanged = (doc.lastSyncedGitStatus != gitStat);
+                const bool isUntracked = (gitStat == L'U' || gitStat == L'?');
+
+                if ((gitStat == L'\0' || isUntracked) && !doc.isDirty) {
+                    if (headChanged || statusChanged || !doc.diffHunks.empty() || !doc.diffAddedLines.empty() ||
+                        !doc.diffModifiedLines.empty() || !doc.diffDeletedGutterMarkers.empty() || doc.diffPeekActive) {
+                        doc.diffOriginalBuffer.SetLines(doc.buffer.GetLines());
+                        ComputeDiffHunks(doc);
+                        doc.diffPeekActive = false;
+                    }
+                } else if (!isUntracked && doc.buffer.GetLineCount() <= 5000 &&
+                           (headChanged || statusChanged || doc.diffOriginalBuffer.GetLineCount() == 0)) {
+                    ScheduleGitHeadDiffAsync(doc.filePath, relPath);
+                }
+
+                bool hasUncommittedBlame = false;
+                if (gitStat == L'\0' && doc.gitBlameLoaded) {
+                    for (const auto& [ln, bl] : doc.gitBlameMap) {
+                        if (bl.isUncommitted) {
+                            hasUncommittedBlame = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (isUntracked) {
+                    doc.gitBlameMap.clear();
+                    doc.gitBlameLoaded = false;
+                } else if (headChanged || statusChanged || hasUncommittedBlame ||
+                           (gitStat == L'\0' && doc.gitBlameMap.empty() && blameEnabled)) {
+                    doc.gitBlameLoaded = false;
+                }
+
+                doc.lastSyncedGitHeadHash = curHeadHash;
+                doc.lastSyncedGitStatus = gitStat;
+            }
+        }
+    };
+
+    refreshGroupList(m_editorGroups, true);
+    for (auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            refreshGroupList(fw->editorGroups, false);
+        }
+    }
+
+    if (blameEnabled) {
+        if (auto* pActive = GetActiveDoc(); pActive && !pActive->isSpecialView && !pActive->isDiffView && !pActive->gitBlameLoaded) {
+            EnsureGitBlameLoaded(*pActive);
+        }
+        for (auto& fw : m_floatingWindows) {
+            if (fw && fw->kind == FloatingDockKind::EditorGroup &&
+                fw->focusedGroupIdx >= 0 && fw->focusedGroupIdx < static_cast<int>(fw->editorGroups.size())) {
+                auto& fg = fw->editorGroups[fw->focusedGroupIdx];
+                if (fg.activeDocIdx >= 0 && fg.activeDocIdx < static_cast<int>(fg.docs.size())) {
+                    auto& fDoc = fg.docs[fg.activeDocIdx];
+                    if (!fDoc.isSpecialView && !fDoc.isDiffView && !fDoc.gitBlameLoaded) {
+                        EnsureGitBlameLoaded(fDoc);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -6515,7 +6728,7 @@ void Window::HandleExternalDropFiles(HDROP hDrop, bool isFloatingWindow) {
         if (dropPt.x >= drawerLeft && dropPt.x < drawerLeft + drawerW &&
             dropPt.y >= headerH && dropPt.y < drawerBottom) {
             std::filesystem::path destDir(m_drawer.GetOpenFolderPath());
-            int hitIdx = m_drawer.HitTest(dropPt, m_config);
+            int hitIdx = m_drawer.HitTest(ToDrawerSpace(dropPt), m_config);
             if (hitIdx >= 0) {
                 if (const auto* pItem = m_drawer.GetItem(hitIdx)) {
                     destDir = pItem->isFolder
@@ -7548,12 +7761,20 @@ void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
     {
         std::lock_guard<std::mutex> lock(m_blameMutex);
         if (!m_pendingGitBlames.empty()) {
-            for (auto& res : m_pendingGitBlames) {
-                for (auto& g : m_editorGroups) {
+            auto applyBlameToGroups = [&](std::vector<editor::EditorGroup>& groups, const PendingGitBlameResult& res) {
+                for (auto& g : groups) {
                     for (auto& d : g.docs) {
-                        if (d.filePath == res.docPath) {
-                            d.gitBlameMap = std::move(res.blameMap);
+                        if (!d.filePath.empty() && _wcsicmp(d.filePath.c_str(), res.docPath.c_str()) == 0) {
+                            d.gitBlameMap = res.blameMap;
                         }
+                    }
+                }
+            };
+            for (auto& res : m_pendingGitBlames) {
+                applyBlameToGroups(m_editorGroups, res);
+                for (auto& fw : m_floatingWindows) {
+                    if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                        applyBlameToGroups(fw->editorGroups, res);
                     }
                 }
             }
@@ -7573,6 +7794,8 @@ void Window::EnsureGitBlameLoaded(editor::OpenDocument& doc) {
         } catch (...) {}
     }
     const wchar_t gitStat = m_drawer.GetCachedGitChangeStatus(relPath);
+    doc.lastSyncedGitStatus = gitStat;
+    doc.lastSyncedGitHeadHash = m_drawer.GetGitHeadHash();
     if (gitStat == L'U' || gitStat == L'?') {
         return; // Untracked files have no git blame history; skip spawning git.exe
     }
@@ -15630,10 +15853,12 @@ void Window::OnPaint() {
 
     // Fill workspace canvas background behind all panels
     // so when terminal is open with a gap, the gap matches the dark canvas background seamlessly
-    D2D1_RECT_F rcWorkspace = D2D1::RectF(effectiveRailW, headerH, clientW, clientH);
+    D2D1_RECT_F rcWorkspace = m_config.sideBarOnRight
+        ? D2D1::RectF(0.0f, headerH, clientW - effectiveRailW, clientH)
+        : D2D1::RectF(effectiveRailW, headerH, clientW, clientH);
     m_pRenderTarget->FillRectangle(rcWorkspace, m_theme.brushCanvasBg ? m_theme.brushCanvasBg.Get() : m_theme.brushDrawerBg.Get());
 
-    if (!m_config.zenMode) {
+    if (!m_config.zenMode && !m_config.sideBarOnRight) {
         // Pre-fill the corner patch at (railW, headerH) with headerBg
         // so the 14px inward rounded arc of DrawerPanel (or EditorCanvas when drawer is closed)
         // curves smoothly against the title header and activity rail across all 20 themes.
@@ -15643,7 +15868,7 @@ void Window::OnPaint() {
 
     float editorH = clientH - effectiveStatusBarH - effectiveTermH - effectiveTermGap;
     float drawerH = clientH - effectiveStatusBarH - effectiveTermH - effectiveTermGap;
-    float terminalLeft = static_cast<float>(effectiveRailW);
+    float terminalLeft = m_config.sideBarOnRight ? 0.0f : static_cast<float>(effectiveRailW);
 
     if (editorH > headerH + 2.0f) {
         if (curDoc && curDoc->isSpecialView && curDoc->viewType == L"packages") {
@@ -15709,17 +15934,29 @@ void Window::OnPaint() {
     // 2. Render Slide-out Drawer Panel (smoothly morphs and resizes its bottom with terminal)
     SyncActiveTabWithDrawer();
     if (hasLeftDrawer && drawerH > headerH + 2.0f) {
-        D2D1_RECT_F drawerClip = D2D1::RectF(static_cast<float>(railW), headerH, static_cast<float>(railW) + currentDrawerW, drawerH);
+        float dLeft = 0.0f, dW = 0.0f, dRailLeft = 0.0f, dRailW = 0.0f;
+        GetPrimarySidebarRect(clientW, dLeft, dW, dRailLeft, dRailW);
+        const float drawerDx = GetDrawerTranslateX(clientW);
+        D2D1_RECT_F drawerClip = D2D1::RectF(dLeft, headerH, dLeft + currentDrawerW, drawerH);
         m_pRenderTarget->PushAxisAlignedClip(drawerClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        D2D1_MATRIX_3X2_F prevXf = D2D1::Matrix3x2F::Identity();
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->GetTransform(&prevXf);
+            m_pRenderTarget->SetTransform(D2D1::Matrix3x2F::Translation(drawerDx, 0.0f) * prevXf);
+        }
         m_drawer.Render(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW, true);
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->SetTransform(prevXf);
+        }
         m_pRenderTarget->PopAxisAlignedClip();
     }
 
     // 2b. Render Extensions Right Sidebar Panel (smoothly slides in from right with zero content squishing!)
     if (hasRightSidebar) {
-        float rightSidebarX = clientW - currentRightSidebarW;
+        const float primaryRightReserved = (m_config.sideBarOnRight && !m_config.zenMode) ? (effectiveRailW + currentDrawerW) : 0.0f;
+        float rightSidebarX = clientW - primaryRightReserved - currentRightSidebarW;
         float rightSidebarH = (std::max)(50.0f, clientH - headerH - currentTermH);
-        D2D1_RECT_F clipRect = D2D1::RectF(rightSidebarX, headerH, clientW, headerH + rightSidebarH);
+        D2D1_RECT_F clipRect = D2D1::RectF(rightSidebarX, headerH, clientW - primaryRightReserved, headerH + rightSidebarH);
         m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         m_extensionsPanel.Render(m_pRenderTarget.Get(), m_theme, m_config, rightSidebarX, headerH, fullRightSidebarW, rightSidebarH);
         m_pRenderTarget->PopAxisAlignedClip();
@@ -15745,8 +15982,9 @@ void Window::OnPaint() {
             m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
         } else if (!hasOnlyPackageTasks) {
             // Floating Processes HUD Card at bottom-right for non-package background processes
+            const float primaryRightReserved = (m_config.sideBarOnRight && !m_config.zenMode) ? (effectiveRailW + currentDrawerW) : 0.0f;
             const float cardW = m_config.ScaleF(340.0f);
-            const float cardX = clientW - cardW - m_config.ScaleF(16.0f);
+            const float cardX = clientW - primaryRightReserved - cardW - m_config.ScaleF(16.0f);
             float cardH = (std::max)(50.0f, clientH - headerH - currentTermH);
             float cardY = headerH;
             m_extensionsPanel.RenderProcessesCard(m_pRenderTarget.Get(), m_theme, m_config, cardX, cardY, cardW, cardH);
@@ -15762,7 +16000,8 @@ void Window::OnPaint() {
         m_terminal.ClearBounds();
     }
     if (IsBottomProblemsVisible()) {
-        RenderBottomProblemsPanel(m_pRenderTarget.Get(), clientW, clientH, statusBarH, terminalLeft);
+        const float dockRightClientW = (m_config.sideBarOnRight && !m_config.zenMode) ? (clientW - effectiveRailW) : clientW;
+        RenderBottomProblemsPanel(m_pRenderTarget.Get(), dockRightClientW, clientH, statusBarH, terminalLeft);
     } else if (m_terminal.IsOpen()) {
         if (m_terminal.GetDockPosition() == 2) {
             float termW = m_terminal.GetRightWidth();
@@ -15772,7 +16011,11 @@ void Window::OnPaint() {
             m_terminal.RenderBounds(m_pRenderTarget.Get(), m_theme, m_config,
                                     D2D1::RectF(termX, termY, clientW, termY + termH), clientH, true);
         } else if (m_terminal.GetDockPosition() == 0 && m_terminalAnimProgress > 0.001f) {
-            m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH - statusBarH, terminalLeft, currentTermH);
+            const float primaryRightReserved = (m_config.sideBarOnRight && !m_config.zenMode) ? (effectiveRailW + currentDrawerW) : 0.0f;
+            const float termRenderClientW = (m_terminal.GetDockPosition() == 2)
+                ? (clientW - primaryRightReserved)
+                : ((m_config.sideBarOnRight && !m_config.zenMode) ? (clientW - effectiveRailW) : clientW);
+            m_terminal.Render(m_pRenderTarget.Get(), m_theme, m_config, termRenderClientW, clientH - statusBarH, terminalLeft, currentTermH);
         }
     } else {
         m_terminal.ClearBounds();
@@ -15791,7 +16034,8 @@ void Window::OnPaint() {
         const float cardW = m_config.ScaleF(280.0f); // Sleek modern developer toast card
         const float cardH = m_config.ScaleF(34.0f);  // STRICTLY SINGLE-LINE: 34px height (no 2nd line per user request!)
         const float minimapW = m_config.ScaleF(88.0f);
-        const float rightOffset = (hasRightSidebar ? currentRightSidebarW : 0.0f) +
+        const float primaryRightReserved = (m_config.sideBarOnRight && !m_config.zenMode) ? (effectiveRailW + currentDrawerW) : 0.0f;
+        const float rightOffset = primaryRightReserved + (hasRightSidebar ? currentRightSidebarW : 0.0f) +
             (m_config.showMinimap ? minimapW : 0.0f) +
             m_config.ScaleF(16.0f);
         const float cardX = clientW - cardW - rightOffset;
@@ -15991,7 +16235,7 @@ void Window::OnPaint() {
     if (!m_config.zenMode) {
         m_rail.SetGitLoading(m_drawer.HasOpenFolder() ? m_drawer.IsGitLoading() : false);
         m_rail.SetGitBadgeCount(m_drawer.HasOpenFolder() ? m_drawer.GetGitChanges().size() : 0);
-        m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH);
+        m_rail.Render(m_pRenderTarget.Get(), m_theme, m_config, clientH - statusBarH, clientW);
     }
 
     // 4.5. Render Status Bar at Bottom
@@ -16167,12 +16411,30 @@ void Window::OnPaint() {
 
     // 13.5. Render Floating Commit Details Card (outside drawer clip, on top of editor canvas)
     if (hasLeftDrawer && m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible()) {
+        const float drawerDx = GetDrawerTranslateX(clientW);
+        D2D1_MATRIX_3X2_F prevXf = D2D1::Matrix3x2F::Identity();
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->GetTransform(&prevXf);
+            m_pRenderTarget->SetTransform(D2D1::Matrix3x2F::Translation(drawerDx, 0.0f) * prevXf);
+        }
         m_drawer.RenderCommitCard(m_pRenderTarget.Get(), m_theme, m_config, drawerH, currentDrawerW);
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->SetTransform(prevXf);
+        }
     }
 
     // 14. Render Floating Git Tooltip (on top of all panes so it can never be clipped)
     if (m_drawer.IsGitTooltipVisible()) {
+        const float drawerDx = GetDrawerTranslateX(clientW);
+        D2D1_MATRIX_3X2_F prevXf = D2D1::Matrix3x2F::Identity();
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->GetTransform(&prevXf);
+            m_pRenderTarget->SetTransform(D2D1::Matrix3x2F::Translation(drawerDx, 0.0f) * prevXf);
+        }
         m_drawer.RenderGitTooltip(m_pRenderTarget.Get(), m_theme, m_config, clientW, clientH);
+        if (drawerDx != 0.0f) {
+            m_pRenderTarget->SetTransform(prevXf);
+        }
     }
 
     // Hide native child WebView2 HWND while modal overlays / menus / fullscreen terminal cover the canvas
@@ -18527,22 +18789,23 @@ void Window::RenderStatusBarImpl(ID2D1RenderTarget* pRT, float clientW, float cl
 
 bool Window::HitTestLeftSidebarSplitter(POINT pt) const {
     if (m_drawerAnimProgress < 0.5f) return false;
-    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-    float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-    float leftEdgeX = railW + currentDrawerW;
+    RECT rcClient;
+    GetClientRect(m_hwnd, &rcClient);
+    float clientW = static_cast<float>(rcClient.right - rcClient.left);
+    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
+    float dLeft = 0.0f, currentDrawerW = 0.0f, rLeft = 0.0f, railW = 0.0f;
+    GetPrimarySidebarRect(clientW, dLeft, currentDrawerW, rLeft, railW);
+    float splitterX = m_config.sideBarOnRight ? dLeft : (dLeft + currentDrawerW);
     float hitTolerance = m_config.ScaleF(4.0f);
     float headerH = EffectiveHeaderHeight();
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
-    RECT rcClient;
-    GetClientRect(m_hwnd, &rcClient);
-    float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
 
     // If point is over the explorer scrollbar, do NOT treat as sidebar splitter resize
-    if (m_config.isDrawerOpen && m_config.activeRailTab == 0 && m_drawer.IsPointInExplorerScrollbar(pt)) {
+    if (m_config.isDrawerOpen && m_config.activeRailTab == 0 && m_drawer.IsPointInExplorerScrollbar(ToDrawerSpace(pt))) {
         return false;
     }
 
-    return (std::abs(static_cast<float>(pt.x) - leftEdgeX) <= hitTolerance &&
+    return (std::abs(static_cast<float>(pt.x) - splitterX) <= hitTolerance &&
             static_cast<float>(pt.y) >= headerH && static_cast<float>(pt.y) <= (clientH - statusBarH));
 }
 
@@ -18554,7 +18817,10 @@ bool Window::HitTestRightSidebarSplitter(POINT pt) const {
     float clientH = static_cast<float>(rcClient.bottom - rcClient.top);
     float fullRightW = m_config.ScaleF(static_cast<float>(m_config.rightSidebarWidth));
     float currentRightW = fullRightW * m_rightSidebarAnimProgress;
-    float rightEdgeX = clientW - currentRightW;
+    float dLeft = 0.0f, dW = 0.0f, rLeft = 0.0f, rW = 0.0f;
+    GetPrimarySidebarRect(clientW, dLeft, dW, rLeft, rW);
+    float primaryRightReserved = (m_config.sideBarOnRight && !m_config.zenMode) ? (rW + dW) : 0.0f;
+    float rightEdgeX = clientW - primaryRightReserved - currentRightW;
     float hitTolerance = m_config.ScaleF(5.0f);
     float headerH = EffectiveHeaderHeight();
     const float statusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
@@ -18887,7 +19153,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
-        float deltaX = static_cast<float>(clientPt.x) - m_dragLeftSidebarStartX;
+        float deltaX = m_config.sideBarOnRight
+            ? (m_dragLeftSidebarStartX - static_cast<float>(clientPt.x))
+            : (static_cast<float>(clientPt.x) - m_dragLeftSidebarStartX);
         float scale = (m_config.dpiScale > 0.001f) ? m_config.dpiScale : 1.0f;
         float unscaledDelta = deltaX / scale;
         int newW = m_dragLeftSidebarStartW + static_cast<int>(unscaledDelta);
@@ -19349,10 +19617,9 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
 
             // 1. Check if dragging over Explorer drawer to move file(s)/folder(s)
             if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
-                clientPt.x >= railW && clientPt.x < railW + drawerW &&
-                clientPt.y >= headerH && clientPt.y < clientH) {
+                IsPointInPrimaryDrawer(clientPt, clientW, headerH) && clientPt.y < clientH) {
                 m_isDragOverExplorer = true;
-                int hoverTree = m_drawer.HitTest(clientPt, m_config);
+                int hoverTree = m_drawer.HitTest(ToDrawerSpace(clientPt), m_config);
                 auto dragSources = GetExplorerDragSourcePaths();
                 std::error_code ec;
 
@@ -19857,7 +20124,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 needRepaint = true;
             }
         } else if (pActiveDoc->viewType == L"heatmap") {
-            const POINT hmPt = (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt))
+            const POINT hmPt = (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(ToDrawerSpace(clientPt)))
                 ? POINT{ -10000, -10000 } : clientPt;
             if (m_editor.GetActivityHeatmapView().HandleMouseMove(hmPt)) {
                 needRepaint = true;
@@ -19891,7 +20158,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (hg.activeDocIdx >= 0 && hg.activeDocIdx < static_cast<int>(hg.docs.size())) {
                 const auto& hDoc = hg.docs[hg.activeDocIdx];
                 if (hDoc.isSpecialView && hDoc.viewType == L"heatmap" && (&hDoc != pActiveDoc)) {
-                    const POINT hmPt = (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt))
+                    const POINT hmPt = (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(ToDrawerSpace(clientPt)))
                         ? POINT{ -10000, -10000 } : clientPt;
                     if (m_editor.GetActivityHeatmapView().HandleMouseMove(hmPt)) {
                         needRepaint = true;
@@ -20046,11 +20313,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
     const float termGap = (IsBottomProblemsVisible() || (m_terminalAnimProgress > 0.001f && m_terminal.IsOpen())) ? m_config.ScaleF(6.0f) : 0.0f;
     float effectiveDrawerH = (IsBottomProblemsVisible() || m_terminal.IsOpen()) ? (clientH - termH - termGap) : clientH;
 
-    float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-    float currentDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+    RECT drawerHoverRc{};
+    GetClientRect(m_hwnd, &drawerHoverRc);
+    const float drawerHoverClientW = static_cast<float>(drawerHoverRc.right - drawerHoverRc.left);
+    float drawerHoverLeft = 0.0f, currentDrawerW = 0.0f, drawerHoverRailLeft = 0.0f, railW = 0.0f;
+    GetPrimarySidebarRect(drawerHoverClientW, drawerHoverLeft, currentDrawerW, drawerHoverRailLeft, railW);
+    const POINT drawerHoverPt = ToDrawerSpace(clientPt);
     bool isOverDrawer = (m_config.isDrawerOpen && m_drawerAnimProgress > 0.5f &&
-                         static_cast<float>(clientPt.x) >= railW &&
-                         static_cast<float>(clientPt.x) <= (railW + currentDrawerW) &&
+                         static_cast<float>(clientPt.x) >= drawerHoverLeft &&
+                         static_cast<float>(clientPt.x) <= (drawerHoverLeft + currentDrawerW) &&
                          static_cast<float>(clientPt.y) >= EffectiveHeaderHeight() &&
                          static_cast<float>(clientPt.y) < effectiveDrawerH);
     if (m_drawer.IsMouseOverDrawer() != isOverDrawer) {
@@ -20067,23 +20338,23 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
-                if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
+                if (m_drawer.HandleExplorerScrollbarMouseMove(drawerHoverPt)) needRepaint = true;
             } else {
-                if (m_drawer.HandleExplorerScrollbarMouseMove(clientPt)) needRepaint = true;
+                if (m_drawer.HandleExplorerScrollbarMouseMove(drawerHoverPt)) needRepaint = true;
                 if (!m_drawer.HasOpenFolder()) {
                     if (m_drawer.SetHoveredExplorerHeaderBtn(false, false)) needRepaint = true;
-                    bool btnHover = m_drawer.HitTestOpenFolderButton(clientPt, m_config);
+                    bool btnHover = m_drawer.HitTestOpenFolderButton(drawerHoverPt, m_config);
                     if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
                 } else {
-                    bool hoverNewFile = m_drawer.HitTestExplorerNewFileButton(clientPt);
-                    bool hoverNewFolder = !hoverNewFile && m_drawer.HitTestExplorerNewFolderButton(clientPt);
+                    bool hoverNewFile = m_drawer.HitTestExplorerNewFileButton(drawerHoverPt);
+                    bool hoverNewFolder = !hoverNewFile && m_drawer.HitTestExplorerNewFolderButton(drawerHoverPt);
                     if (m_drawer.SetHoveredExplorerHeaderBtn(hoverNewFile, hoverNewFolder)) needRepaint = true;
-                    int hoveredTree = (hoverNewFile || hoverNewFolder) ? -1 : m_drawer.HitTest(clientPt, m_config);
+                    int hoveredTree = (hoverNewFile || hoverNewFolder) ? -1 : m_drawer.HitTest(drawerHoverPt, m_config);
                     if (m_drawer.SetHoveredIndex(hoveredTree)) needRepaint = true;
                 }
             }
         } else if (m_config.activeRailTab == 1) {
-            if (m_drawer.HandleSearchMouseMove(clientPt)) {
+            if (m_drawer.HandleSearchMouseMove(drawerHoverPt)) {
                 needRepaint = true;
             }
         } else if (m_config.activeRailTab == 2) {
@@ -20101,15 +20372,15 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 const float headerH = EffectiveHeaderHeight();
                 m_drawer.SetGitSplitY(static_cast<float>(clientPt.y), headerH + 110.0f, effectiveDrawerH - 70.0f);
                 needRepaint = true;
-            } else if (m_drawer.HandleGitMouseMove(clientPt, (wParam & MK_LBUTTON) != 0, &m_theme, &m_config)) {
+            } else if (m_drawer.HandleGitMouseMove(drawerHoverPt, (wParam & MK_LBUTTON) != 0, &m_theme, &m_config)) {
                 needRepaint = true;
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
-            if (m_drawer.HandleRemoteMouseMove(clientPt)) {
+            if (m_drawer.HandleRemoteMouseMove(drawerHoverPt)) {
                 needRepaint = true;
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug)) {
-            if (m_drawer.HandleDebugMouseMove(clientPt)) {
+            if (m_drawer.HandleDebugMouseMove(drawerHoverPt)) {
                 needRepaint = true;
             }
         }
@@ -20448,6 +20719,8 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::MoveSideBarRight:
                         m_config.sideBarOnRight = !m_config.sideBarOnRight;
+                        UpdateEditorGroupBounds();
+                        SaveSessionState();
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         break;
                     case ui::MenuActionId::PanelPositionBottom:
@@ -22067,7 +22340,8 @@ void Window::HandleLButtonDown(POINT clientPt) {
 
     if (!m_activeFloatingWindow) {
     // 0a. Floating commit card click check (card is positioned outside drawer over editor canvas)
-    if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(clientPt)) {
+    const POINT drawerPt = ToDrawerSpace(clientPt);
+    if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(drawerPt)) {
         std::wstring openFile;
         std::wstring discardedFile;
         bool isDiff = false;
@@ -22079,7 +22353,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
         size_t discardCount = 1;
         bool promptEmptyCommit = false;
         bool isStagedItem = false;
-        if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
+        if (m_drawer.HitTestGit(drawerPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
                                 &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit, &isStagedItem)) {
             if (promptEmptyCommit) {
                 m_drawer.ClearGitTooltip();
@@ -22111,9 +22385,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
     }
 
     {
-        float curRailW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-        float curDrawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-        if (clientPt.x > curRailW + curDrawerW) {
+        RECT clientRc{};
+        GetClientRect(m_hwnd, &clientRc);
+        if (!IsPointInPrimaryDrawer(clientPt, static_cast<float>(clientRc.right - clientRc.left), EffectiveHeaderHeight())) {
             m_drawer.DismissCommitCard();
         }
     }
@@ -22969,6 +23243,10 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 SetWindowPos(GetMainPostHwnd(), nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
                                 SyncThemeAndFontToFloatingWindows();
                                 UpdateDrawerErrorFiles();
+                            } else if (modifiedId == L"workbench.sideBar.location") {
+                                UpdateEditorGroupBounds();
+                            } else if (modifiedId == L"editor.cursorBlinking") {
+                                m_editor.ResetCaretBlink();
                             }
                             if (m_editor.GetSettingsView().GetActiveScope() == 2) {
                                 SaveCurrentWorkspaceSetting(modifiedId);
@@ -23883,8 +24161,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
     // 5. Handle inline tree rename commit on click outside
     if (m_drawer.IsRenaming()) {
         const auto& rcBox = m_drawer.GetRenameBox();
-        if (clientPt.x >= rcBox.left && clientPt.x <= rcBox.right &&
-            clientPt.y >= rcBox.top && clientPt.y <= rcBox.bottom) {
+        const POINT dRenPt = ToDrawerSpace(clientPt);
+        if (dRenPt.x >= rcBox.left && dRenPt.x <= rcBox.right &&
+            dRenPt.y >= rcBox.top && dRenPt.y <= rcBox.bottom) {
             return;
         }
         std::wstring proposedOld, proposedNew;
@@ -23986,10 +24265,11 @@ void Window::HandleLButtonDown(POINT clientPt) {
     if (m_drawer.IsCreating()) {
         const auto& rcBox = m_drawer.GetCreateBox();
         const auto& rcPill = m_drawer.GetCreatePill();
-        if ((clientPt.x >= rcBox.left && clientPt.x <= rcBox.right &&
-             clientPt.y >= rcBox.top && clientPt.y <= rcBox.bottom) ||
-            (clientPt.x >= rcPill.left && clientPt.x <= rcPill.right &&
-             clientPt.y >= rcPill.top && clientPt.y <= rcPill.bottom)) {
+        const POINT dCreatePt = ToDrawerSpace(clientPt);
+        if ((dCreatePt.x >= rcBox.left && dCreatePt.x <= rcBox.right &&
+             dCreatePt.y >= rcBox.top && dCreatePt.y <= rcBox.bottom) ||
+            (dCreatePt.x >= rcPill.left && dCreatePt.x <= rcPill.right &&
+             dCreatePt.y >= rcPill.top && dCreatePt.y <= rcPill.bottom)) {
             return;
         }
         std::wstring createdPath;
@@ -24017,7 +24297,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             size_t matchLen = 0;
             // Clear shortcuts view search focus when interacting with search drawer
             m_editor.GetKeyboardShortcutsView().SetSearchFocused(false);
-            if (m_drawer.HitTestSearch(clientPt, m_config, jumpFile, jumpLine, matchCol, matchLen)) {
+            if (m_drawer.HitTestSearch(ToDrawerSpace(clientPt), m_config, jumpFile, jumpLine, matchCol, matchLen)) {
                 if (!jumpFile.empty()) {
                     RecordNavCheckpoint();
                     OpenFileDocument(jumpFile, false);
@@ -24036,13 +24316,13 @@ void Window::HandleLButtonDown(POINT clientPt) {
             }
         } else if (m_config.activeRailTab == 2) {
             // Check commit message input box focus & drag selection
-            if (m_drawer.HandleGitMouseDown(clientPt, (GetKeyState(VK_SHIFT) & 0x8000) != 0, m_theme, m_config)) {
+            if (m_drawer.HandleGitMouseDown(ToDrawerSpace(clientPt), (GetKeyState(VK_SHIFT) & 0x8000) != 0, m_theme, m_config)) {
                 SetCapture(m_hwnd);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
             // Check vertical splitter drag between Changes and Graph (Image 2 & 3)
-            if (m_drawer.HitTestGitSplitter(clientPt)) {
+            if (m_drawer.HitTestGitSplitter(ToDrawerSpace(clientPt))) {
                 m_isDraggingGitSplitter = true;
                 SetCapture(m_hwnd);
                 return;
@@ -24058,7 +24338,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             size_t discardCount = 1;
             bool promptEmptyCommit = false;
             bool isStagedItem = false;
-            if (m_drawer.HitTestGit(clientPt, m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
+            if (m_drawer.HitTestGit(ToDrawerSpace(clientPt), m_config, openFile, discardedFile, isDiff, openCommitDiff, openUrl,
                                     &promptDiscard, &discardFileName, &discardStatus, &discardCount, &promptEmptyCommit, &isStagedItem)) {
                 if (promptEmptyCommit) {
                     m_drawer.ClearGitTooltip();
@@ -24091,22 +24371,22 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer)) {
-            if (m_drawer.HandleRemoteLButtonDown(clientPt, m_config)) {
+            if (m_drawer.HandleRemoteLButtonDown(ToDrawerSpace(clientPt), m_config)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
         } else if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug)) {
-            if (m_drawer.HandleDebugLButtonDown(clientPt, m_config)) {
+            if (m_drawer.HandleDebugLButtonDown(ToDrawerSpace(clientPt), m_config)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
         } else {
-            if (m_drawer.HitTestOutline(clientPt, m_config)) {
+            if (m_drawer.HitTestOutline(ToDrawerSpace(clientPt), m_config)) {
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return;
             }
             if (m_drawer.IsCourseExplorerMode()) {
-                if (m_drawer.HandleCourseExplorerClick(clientPt, m_config)) {
+                if (m_drawer.HandleCourseExplorerClick(ToDrawerSpace(clientPt), m_config)) {
                     const auto* pTree = m_drawer.GetActiveCourseTree();
                     if (pTree) {
                         for (const auto& mod : pTree->modules) {
@@ -24140,31 +24420,31 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     return;
                 }
             } else if (!m_drawer.HasOpenFolder()) {
-                if (m_drawer.HitTestOpenFolderButton(clientPt, m_config)) {
+                if (m_drawer.HitTestOpenFolderButton(ToDrawerSpace(clientPt), m_config)) {
                     DoOpenFolder();
                     return;
                 }
             } else {
-                if (m_drawer.HitTestExplorerNewFileButton(clientPt)) {
+                if (m_drawer.HitTestExplorerNewFileButton(ToDrawerSpace(clientPt))) {
                     m_explorerHasFocus = true;
             m_isTerminalFocused = false;
                     m_drawer.StartInlineCreate(ResolveExplorerCreateTargetDir(false), false);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
-                if (m_drawer.HitTestExplorerNewFolderButton(clientPt)) {
+                if (m_drawer.HitTestExplorerNewFolderButton(ToDrawerSpace(clientPt))) {
                     m_explorerHasFocus = true;
             m_isTerminalFocused = false;
                     m_drawer.StartInlineCreate(ResolveExplorerCreateTargetDir(false), true);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
-                if (m_drawer.HitTestExplorerScrollbar(clientPt)) {
+                if (m_drawer.HitTestExplorerScrollbar(ToDrawerSpace(clientPt))) {
                     SetCapture(m_hwnd);
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return;
                 }
-                int clickedTree = m_drawer.HitTest(clientPt, m_config);
+                int clickedTree = m_drawer.HitTest(ToDrawerSpace(clientPt), m_config);
                 if (clickedTree >= 0) {
                     m_explorerHasFocus = true;
             m_isTerminalFocused = false;
@@ -24240,8 +24520,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     const float expHeaderH = EffectiveHeaderHeight();
                     const float expStatusBarH = (m_config.showStatusBar && !m_config.zenMode) ? m_config.ScaleF(22.0f) : 0.0f;
                     const float expDrawerBottom = static_cast<float>(expClientRc.bottom - expClientRc.top) - expStatusBarH;
-                    if (clientPt.x >= expRailW && clientPt.x < expRailW + expDrawerW &&
-                        clientPt.y >= expHeaderH && clientPt.y < expDrawerBottom) {
+                    if (IsPointInPrimaryDrawer(clientPt, static_cast<float>(expClientRc.right - expClientRc.left), expHeaderH) &&
+                        clientPt.y < expDrawerBottom) {
+                        (void)expRailW; (void)expDrawerW;
                         // Clicking empty Explorer space deselects the active folder/file so subsequent creates target root
                         m_explorerHasFocus = true;
             m_isTerminalFocused = false;
@@ -24456,7 +24737,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
             D2D1_RECT_F bounds = m_rail.GetItemBounds(ui::RailTabId::MoreActions);
             float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
             m_popupMenu.OpenMoreActionsMenu(
-                railW + m_config.ScaleF(4.0f),
+                m_config.sideBarOnRight ? (clientW - railW) : (railW + m_config.ScaleF(4.0f)),
                 bounds.top,
                 m_config,
                 clientW,
@@ -25079,10 +25360,9 @@ void Window::HandleLButtonUp(POINT clientPt) {
             const float clientH = static_cast<float>(clientRc.bottom - clientRc.top);
 
             if (m_config.isDrawerOpen && m_config.activeRailTab == 0 &&
-                clientPt.x >= railW && clientPt.x < railW + drawerW &&
-                clientPt.y >= headerH && clientPt.y < clientH) {
+                IsPointInPrimaryDrawer(clientPt, clientW, headerH) && clientPt.y < clientH) {
                 // User dropped inside Explorer drawer to move file(s) or folder(s)!
-                int dropIdx = m_drawer.HitTest(clientPt, m_config);
+                int dropIdx = m_drawer.HitTest(ToDrawerSpace(clientPt), m_config);
                 std::filesystem::path destDir;
 
                 if (dropIdx >= 0) {
@@ -25097,7 +25377,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
 
                 auto dragSources = GetExplorerDragSourcePaths();
                 ExecuteMoveExplorerItems(dragSources, destDir);
-            } else if (clientPt.x >= canvasLeft && clientPt.y >= headerH) {
+            } else if (clientPt.x >= canvasLeft && clientPt.x < canvasLeft + canvasWidth && clientPt.y >= headerH) {
                 UpdateEditorGroupBounds();
                 int dropGrp = FindEditorGroupAtPoint(clientPt);
                 if (dropGrp >= 0 && dropGrp < static_cast<int>(m_editorGroups.size())) {
@@ -25248,7 +25528,7 @@ void Window::HandleLButtonUp(POINT clientPt) {
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
-    if (m_drawer.HandleGitMouseUp(clientPt)) {
+    if (m_drawer.HandleGitMouseUp(ToDrawerSpace(clientPt))) {
         ReleaseCapture();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
@@ -25299,9 +25579,8 @@ void Window::HandleRButtonDown(POINT clientPt) {
     float headerH = EffectiveHeaderHeight();
 
     // 1. Right-click inside Drawer Explorer (main window only)
-    if (!m_activeFloatingWindow && !m_config.zenMode && m_drawerAnimProgress > 0.001f &&
-        clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
-        int hitIdx = m_drawer.HitTest(clientPt, m_config);
+    if (!m_activeFloatingWindow && IsPointInPrimaryDrawer(clientPt, clientW, headerH)) {
+        int hitIdx = m_drawer.HitTest(ToDrawerSpace(clientPt), m_config);
         const ui::DrawerTreeItem* pItem = (hitIdx >= 0) ? m_drawer.GetItem(hitIdx) : nullptr;
         bool isFolder = false;
         std::wstring targetPath;
@@ -25739,11 +26018,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Floating Source Control overlays (Commit Card & Git Dropdowns) MUST take cursor
                 // precedence over background editor views (such as Activity Heatmap) when overlapped.
-                if (m_drawer.HitTestGitButtons(pt)) {
+                if (m_drawer.HitTestGitButtons(ToDrawerSpace(pt))) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
-                if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(pt)) {
+                if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible() && m_drawer.HitTestCommitCard(ToDrawerSpace(pt))) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW));
                     return TRUE;
                 }
@@ -25863,11 +26142,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 // Drawer Search Pane Buttons & Inputs
                 if (m_config.activeRailTab == 1 && m_drawerAnimProgress > 0.001f) {
-                    if (m_drawer.HitTestSearchButtons(pt)) {
+                    if (m_drawer.HitTestSearchButtons(ToDrawerSpace(pt))) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
-                    if (m_drawer.HitTestSearchInputs(pt)) {
+                    if (m_drawer.HitTestSearchInputs(ToDrawerSpace(pt))) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
                     }
@@ -25877,14 +26156,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     return TRUE;
                 }
                 if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::RemoteExplorer) && m_drawerAnimProgress > 0.001f) {
-                    if (m_drawer.HitTestRemoteInteractive(pt)) {
+                    if (m_drawer.HitTestRemoteInteractive(ToDrawerSpace(pt))) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
                 }
                 if (m_config.activeRailTab == static_cast<int>(ui::RailTabId::Debug) && m_drawerAnimProgress > 0.001f) {
                     bool isDbgInput = false;
-                    if (m_drawer.HitTestDebugInteractive(pt, &isDbgInput)) {
+                    if (m_drawer.HitTestDebugInteractive(ToDrawerSpace(pt), &isDbgInput)) {
                         SetCursor(LoadCursor(nullptr, isDbgInput ? IDC_IBEAM : IDC_HAND));
                         return TRUE;
                     }
@@ -25922,16 +26201,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
                 if (!m_activeFloatingWindow) {
                 // Open Folder button in drawer when empty
-                if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(pt, m_config)) {
+                if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(ToDrawerSpace(pt), m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
 
                 // Explorer Drawer: file tree item & header action button hover cursor
                 if (m_config.activeRailTab == 0 && m_drawerAnimProgress > 0.001f) {
-                    if (m_drawer.HitTestExplorerNewFileButton(pt) ||
-                        m_drawer.HitTestExplorerNewFolderButton(pt) ||
-                        m_drawer.HitTest(pt, m_config) >= 0) {
+                    const POINT dExpCurPt = ToDrawerSpace(pt);
+                    if (m_drawer.HitTestExplorerNewFileButton(dExpCurPt) ||
+                        m_drawer.HitTestExplorerNewFolderButton(dExpCurPt) ||
+                        m_drawer.HitTest(dExpCurPt, m_config) >= 0) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
                         return TRUE;
                     }
@@ -25940,19 +26220,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 // Inline rename / create input box in drawer: show I-beam cursor
                 if (m_drawer.IsRenaming() || m_drawer.IsCreating()) {
                     const auto& rcBox = m_drawer.IsRenaming() ? m_drawer.GetRenameBox() : m_drawer.GetCreateBox();
-                    if (pt.x >= rcBox.left && pt.x <= rcBox.right && pt.y >= rcBox.top && pt.y <= rcBox.bottom) {
+                    const POINT dRenamePt = ToDrawerSpace(pt);
+                    if (dRenamePt.x >= rcBox.left && dRenamePt.x <= rcBox.right && dRenamePt.y >= rcBox.top && dRenamePt.y <= rcBox.bottom) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                         return TRUE;
                     }
                 }
 
                 // Source Control: Draggable splitter and inputs (Images 1, 2, 3, 5)
-                if (m_drawer.HitTestGitInputs(pt)) {
+                if (m_drawer.HitTestGitInputs(ToDrawerSpace(pt))) {
                     SetCursor(LoadCursor(nullptr, IDC_IBEAM));
                     return TRUE;
                 }
                 if (m_config.activeRailTab == 2 && m_drawerAnimProgress > 0.001f) {
-                    if (m_drawer.HitTestGitSplitter(pt)) {
+                    if (m_drawer.HitTestGitSplitter(ToDrawerSpace(pt))) {
                         SetCursor(LoadCursor(nullptr, IDC_SIZENS));
                         return TRUE;
                     }
@@ -26383,9 +26664,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             const float headerH = EffectiveHeaderHeight();
 
             // Double click in Explorer tree (main window only, Explorer tab active): open file permanently (not preview)!
-            if (!m_activeFloatingWindow && !m_config.zenMode && m_config.activeRailTab == 0 &&
-                m_drawerAnimProgress > 0.001f && clientPt.x >= railW && clientPt.x < railW + drawerW && clientPt.y >= headerH) {
-                int clickedTree = m_drawer.HitTest(clientPt, m_config);
+            if (!m_activeFloatingWindow && IsPointInPrimaryDrawer(clientPt, clientW, headerH) && m_config.activeRailTab == 0) {
+                int clickedTree = m_drawer.HitTest(ToDrawerSpace(clientPt), m_config);
                 if (clickedTree >= 0) {
                     const auto* pItem = m_drawer.GetItem(clickedTree);
                     if (pItem && !pItem->isFolder) {
@@ -26530,13 +26810,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-                float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
+                RECT rcWheelClient{};
+                GetClientRect(m_hwnd, &rcWheelClient);
 
                 // 1. Scroll Drawer Panel tree (or expanded Outline panel when hovered) if mouse is over open sidebar drawer.
                 // Never leak wheel events to the active editor canvas when cursor is inside the sidebar,
                 // even if the sidebar list is short or already at top/bottom scroll bounds.
-                if (m_drawerAnimProgress > 0.001f && pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                if (IsPointInPrimaryDrawer(pt, static_cast<float>(rcWheelClient.right - rcWheelClient.left), headerH)) {
                     m_drawer.HandleMouseWheel(delta, m_config.activeRailTab, static_cast<float>(pt.y));
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     return 0;
@@ -26794,9 +27074,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             // Isolate horizontal wheel events inside the open sidebar drawer so they never scroll the editor
             if (!m_activeFloatingWindow && m_drawerAnimProgress > 0.001f) {
                 const float headerH = EffectiveHeaderHeight();
-                const float railW = m_config.ScaleF(static_cast<float>(m_config.railWidth));
-                const float drawerW = m_config.ScaleF(static_cast<float>(m_config.drawerWidth)) * m_drawerAnimProgress;
-                if (pt.x >= railW && pt.x < railW + drawerW && pt.y >= headerH) {
+                RECT rcHWheelClient{};
+                GetClientRect(m_hwnd, &rcHWheelClient);
+                if (IsPointInPrimaryDrawer(pt, static_cast<float>(rcHWheelClient.right - rcHWheelClient.left), headerH)) {
                     return 0;
                 }
             }
@@ -29676,6 +29956,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 InvalidateFloatingWindows();
             } else if (wParam == m_throttleTimerId) {
                 ULONGLONG now = GetTickCount64();
+                if ((m_config.cursorBlinking == L"smooth" || m_config.cursorBlinking == L"phase") && !IsIconic(m_hwnd)) {
+                    HWND fg = GetForegroundWindow();
+                    if (fg == m_hwnd) {
+                        if (auto* pCaretDoc = GetActiveDoc();
+                            pCaretDoc && !pCaretDoc->isSpecialView && !pCaretDoc->isImageView && !pCaretDoc->isUnsupportedBinary) {
+                            InvalidateRect(m_hwnd, nullptr, FALSE);
+                        }
+                    } else if (!m_floatingWindows.empty()) {
+                        InvalidateFloatingWindows();
+                    }
+                }
                 if (m_hoverDwellPending && now >= m_hoverDwellTargetTime) {
                     m_hoverDwellPending = false;
                     if (m_config.enableLspHover && !IsOverlayBlockingHover() && !m_editorGroups.empty() &&
@@ -30285,51 +30576,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_USER + 206: {
-            // Auto-refresh or auto-close open staged/unstaged diff views when Git state changes
-            const auto& gitChanges = m_drawer.GetGitChanges();
-            auto normPathCmp = [](std::wstring s) {
-                for (auto& c : s) {
-                    if (c == L'/') c = L'\\';
-                    c = static_cast<wchar_t>(towlower(c));
-                }
-                return s;
-            };
-            for (int g = static_cast<int>(m_editorGroups.size()) - 1; g >= 0; --g) {
-                if (g >= static_cast<int>(m_editorGroups.size())) continue;
-                for (int d = static_cast<int>(m_editorGroups[g].docs.size()) - 1; d >= 0; --d) {
-                    if (g >= static_cast<int>(m_editorGroups.size())) break;
-                    if (d >= static_cast<int>(m_editorGroups[g].docs.size())) continue;
-                    auto& doc = m_editorGroups[g].docs[d];
-                    if (doc.isDiffView && !doc.isMultiFileDiff && (!doc.isDiffRightReadOnly || doc.isDiffStagedMode)) {
-                        bool stillHasMatchingState = false;
-                        std::wstring cleanDoc = normPathCmp(doc.filePath);
-                        for (const auto& item : gitChanges) {
-                            if (item.isStaged != doc.isDiffStagedMode) continue;
-                            std::wstring cleanItem = normPathCmp(item.path);
-                            if (cleanDoc == cleanItem || cleanDoc.ends_with(cleanItem) || cleanItem.ends_with(cleanDoc)) {
-                                stillHasMatchingState = true;
-                                break;
-                            }
-                        }
-                        if (!stillHasMatchingState) {
-                            CloseDocument(g, d);
-                        } else if (!doc.diffRepoRelPath.empty()) {
-                            std::wstring fileName = std::filesystem::path(doc.diffRepoRelPath).filename().wstring();
-                            std::wstring headC = m_drawer.GetGitFileContent(doc.diffRepoRelPath);
-                            std::wstring stagedC = m_drawer.GetGitStagedFileContent(doc.diffRepoRelPath);
-                            if (doc.isDiffStagedMode) {
-                                doc.diffOriginalBuffer.SetText(headC);
-                                doc.buffer.SetText(stagedC);
-                            } else {
-                                doc.diffOriginalBuffer.SetText(!stagedC.empty() ? stagedC : headC);
-                                doc.diffOriginalTitle = fileName + (!stagedC.empty() ? L" (Index)" : L" (HEAD)");
-                            }
-                            ComputeDiffHunks(doc);
-                        }
-                    }
-                }
-            }
+            RefreshOpenDocsAfterGitChange();
             InvalidateRect(m_hwnd, nullptr, FALSE);
+            InvalidateFloatingWindows();
             return 0;
         }
 
@@ -31012,6 +31261,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             if (_wcsicmp(doc.filePath.c_str(), res->docPath.c_str()) != 0) continue;
                             doc.diffOriginalBuffer.SetText(res->headContent);
                             ComputeDiffHunks(doc);
+                            if (doc.diffHunks.empty()) {
+                                doc.diffPeekActive = false;
+                            } else if (doc.diffPeekActive) {
+                                doc.diffPeekHunkIdx = (std::min)(doc.diffPeekHunkIdx, doc.diffHunks.size() - 1);
+                                doc.diffPeekLine = doc.diffHunks[doc.diffPeekHunkIdx].rightStart;
+                            }
                             changed = true;
                         }
                     }
@@ -33312,6 +33567,8 @@ void Window::CheckOpenDocumentsDiskChanges() {
                 }
                 doc.originalDiskText = diskText;
                 doc.hasExternalDiskConflict = false;
+                ComputeDiffHunks(doc);
+                doc.gitBlameLoaded = false;
                 doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
                 RunExtraDocDiagnostics(doc, doc.diagnostics);
                 if (m_lsp.IsRunning()) {

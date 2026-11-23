@@ -44,11 +44,14 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
     const float h = config.ScaleF(static_cast<float>(config.headerHeight));
 
     const float railW = config.ScaleF(static_cast<float>(config.railWidth));
+    const float headerLeft = (config.sideBarOnRight && !config.zenMode) ? 0.0f : railW;
 
     // Ensure horizontal glass gradient brush is initialized/updated
-    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f || m_lastThemeMode != theme.GetThemeMode()) {
+    if (!m_pHeaderGradientBrush || std::abs(m_lastWidth - clientWidth) >= 1.0f ||
+        m_lastThemeMode != theme.GetThemeMode() || m_lastSideBarOnRight != config.sideBarOnRight) {
         m_lastWidth = clientWidth;
         m_lastIsDark = theme.IsDarkMode();
+        m_lastSideBarOnRight = config.sideBarOnRight;
         m_lastThemeMode = theme.GetThemeMode();
         m_pHeaderGradientBrush.Reset();
 
@@ -71,19 +74,36 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
         if (pStopColl) {
             D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = D2D1::LinearGradientBrushProperties(
-                D2D1::Point2F(railW, 0.0f),
+                D2D1::Point2F(headerLeft, 0.0f),
                 D2D1::Point2F(clientWidth, 0.0f)
             );
             pRT->CreateLinearGradientBrush(props, pStopColl.Get(), &m_pHeaderGradientBrush);
         }
     }
 
-    // 1. Draw Glass Purple-to-Black Header Background (starting at railW for seamless fusion with rail)
-    D2D1_RECT_F rcHeader = D2D1::RectF(railW, 0.0f, clientWidth, h);
+    // 1. Draw Glass Purple-to-Black Header Background (starting at 0 when rail is right-docked, or railW on left)
+    D2D1_RECT_F rcHeader = D2D1::RectF(headerLeft, 0.0f, clientWidth, h);
     if (m_pHeaderGradientBrush) {
         pRT->FillRectangle(rcHeader, m_pHeaderGradientBrush.Get());
     } else {
         pRT->FillRectangle(rcHeader, theme.brushHeaderBg.Get());
+    }
+
+    // Top-left brand badge when Primary Sidebar is docked on the right
+    if (config.sideBarOnRight && !config.zenMode && railW > 4.0f && h > 4.0f) {
+        if (!m_pLogoBitmap) {
+            D2D1_SIZE_U logoSizeU = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
+            D2D1_BITMAP_PROPERTIES bmpProps = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            pRT->CreateBitmap(logoSizeU, g_phideLogoBgra, kPhideLogoWidth * 4, bmpProps, &m_pLogoBitmap);
+        }
+        if (m_pLogoBitmap) {
+            const float logoSz = (std::max)(8.0f, (std::min)(railW, h) - config.ScaleF(12.0f));
+            const float lx = (railW - logoSz) * 0.5f;
+            const float ly = (h - logoSz) * 0.5f;
+            pRT->DrawBitmap(m_pLogoBitmap.Get(), D2D1::RectF(lx, ly, lx + logoSz, ly + logoSz));
+        }
     }
 
     // Top subtle 1px glass specular reflection sheen

@@ -187,6 +187,27 @@ private:
      */
     void GetCanvasLayout(float clientW, float& outCanvasLeft, float& outCanvasWidth) const;
 
+    /**
+     * @brief Computes primary ActivityRail and DrawerPanel horizontal geometry for left or right docking.
+     */
+    void GetPrimarySidebarRect(float clientW, float& outDrawerLeft, float& outDrawerW,
+                               float& outRailLeft, float& outRailW) const noexcept;
+
+    /**
+     * @brief Returns horizontal D2D translation delta (screenX - drawerLocalX) for primary drawer.
+     */
+    [[nodiscard]] float GetDrawerTranslateX(float clientW) const noexcept;
+
+    /**
+     * @brief Maps a window client point into DrawerPanel's local [railW .. railW + drawerW] coordinate space.
+     */
+    [[nodiscard]] POINT ToDrawerSpace(POINT pt) const noexcept;
+
+    /**
+     * @brief Returns true if clientPt falls inside the currently visible primary drawer bounds.
+     */
+    [[nodiscard]] bool IsPointInPrimaryDrawer(POINT clientPt, float clientW, float headerH) const noexcept;
+
 public:
     editor::OpenDocument* GetActiveDoc() noexcept {
         auto& group = GetActiveGroup();
@@ -208,6 +229,7 @@ public:
      * @brief Computes diff hunks and line highlights between diffOriginalBuffer and buffer for a document.
      */
     void ComputeDiffHunks(editor::OpenDocument& doc);
+    void RefreshOpenDocsAfterGitChange();
     void RefreshMergeConflicts(editor::OpenDocument& doc);
     void CalculateImportCosts(editor::OpenDocument& doc);
     [[nodiscard]] std::unordered_map<size_t, std::wstring> CalculatePythonBufferImportCosts(
@@ -229,6 +251,19 @@ public:
         m_config.isDrawerOpen = open;
         m_drawerAnimProgress = open ? 1.0f : 0.0f;
         m_config.activeRailTab = railTab;
+    }
+    void GetPrimarySidebarRectForTest(float clientW, float& outDrawerLeft, float& outDrawerW,
+                                      float& outRailLeft, float& outRailW) const noexcept {
+        GetPrimarySidebarRect(clientW, outDrawerLeft, outDrawerW, outRailLeft, outRailW);
+    }
+    void GetCanvasLayoutForTest(float clientW, float& outCanvasLeft, float& outCanvasWidth) const {
+        GetCanvasLayout(clientW, outCanvasLeft, outCanvasWidth);
+    }
+    [[nodiscard]] float GetDrawerTranslateXForTest(float clientW) const noexcept {
+        return GetDrawerTranslateX(clientW);
+    }
+    [[nodiscard]] bool IsPointInPrimaryDrawerForTest(POINT clientPt, float clientW, float headerH) const noexcept {
+        return IsPointInPrimaryDrawer(clientPt, clientW, headerH);
     }
     bool UpdateMultiFileDiffSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll);
     bool UpdateDiffViewSelection(editor::OpenDocument& doc, POINT clientPt, bool allowEdgeScroll);

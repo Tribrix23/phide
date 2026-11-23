@@ -176,6 +176,8 @@ private:
     // Dropdown popup state
     int m_openDropdownItemIdx = -1;
     D2D1_RECT_F m_openDropdownBounds{};
+    float m_openDropdownRowH = 32.0f;
+    float m_openDropdownPadY = 6.0f;
     int m_hoveredDropdownOption = -1;
 
     // Layout cache

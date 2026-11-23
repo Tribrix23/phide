@@ -1277,7 +1277,7 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         ? config.ScaleF(34.0f)
         : (config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight)));
     const float canvasRight = canvasLeft + canvasWidth;
-    const float cornerRadius = (hasLeftDrawer || m_isRenderingFloatingWindow) ? 0.0f : config.ScaleF(14.0f);
+    const float cornerRadius = (hasLeftDrawer || config.sideBarOnRight || m_isRenderingFloatingWindow) ? 0.0f : config.ScaleF(14.0f);
 
     // Check if cached geometry needs rebuilding (e.g. on resize, layout changes, or drawer open/close)
     if (!m_pCanvasGeometry ||
@@ -1285,13 +1285,15 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         m_cachedTop != headerH ||
         m_cachedRight != canvasRight ||
         m_cachedBottom != clientHeight ||
-        m_cachedHasLeftDrawer != hasLeftDrawer)
+        m_cachedHasLeftDrawer != hasLeftDrawer ||
+        m_cachedSideBarOnRight != config.sideBarOnRight)
     {
         m_cachedLeft          = canvasLeft;
         m_cachedTop           = headerH;
         m_cachedRight         = canvasRight;
         m_cachedBottom        = clientHeight;
         m_cachedHasLeftDrawer = hasLeftDrawer;
+        m_cachedSideBarOnRight = config.sideBarOnRight;
         m_pCanvasGeometry.Reset();
 
         Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
@@ -5831,16 +5833,27 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             m_lastCaretX = caretX;
             m_lastCaretY = caretY;
         }
+        const float caretOpacity = ComputeCaretOpacity(config.cursorBlinking, GetTickCount64(), m_caretResetTick, m_caretVisible);
         auto drawStyledCaret = [&](float cx, float cy) {
-            ID2D1Brush* caretBrush = theme.IsDarkMode()
+            ID2D1Brush* fallbackBrush = theme.IsDarkMode()
                 ? theme.brushTextWhite.Get()
                 : (theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushHeaderIcon.Get());
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fadeBrush;
+            ID2D1Brush* caretBrush = fallbackBrush;
+            if (caretOpacity < 0.995f) {
+                D2D1_COLOR_F col = theme.IsDarkMode()
+                    ? D2D1::ColorF(1.0f, 1.0f, 1.0f, caretOpacity)
+                    : D2D1::ColorF(0.12f, 0.12f, 0.12f, caretOpacity);
+                if (SUCCEEDED(pRT->CreateSolidColorBrush(col, &fadeBrush)) && fadeBrush) {
+                    caretBrush = fadeBrush.Get();
+                }
+            }
             const std::wstring& style = config.cursorStyle;
             if (style == L"block") {
                 D2D1_RECT_F rcBlock = D2D1::RectF(cx, cy + config.ScaleF(1.0f), cx + charW, cy + lineH - config.ScaleF(1.0f));
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
                 pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f * caretOpacity) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f * caretOpacity),
                     &blockFill
                 );
                 pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
@@ -5854,14 +5867,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         };
 
-        if (isFocused && !isRenaming && m_caretVisible) {
+        if (isFocused && !isRenaming && caretOpacity > 0.02f) {
             if (caretY >= topY && caretY + lineH <= clientHeight) {
                 drawStyledCaret(caretX, caretY);
             }
         }
 
         // 4-sec. Secondary Carets (Multi-Cursor Ctrl+D / Alt+Click / Box Selection)
-        if (!isMmapLarge && isFocused && !isRenaming && m_caretVisible && !doc.secondarySelections.empty()) {
+        if (!isMmapLarge && isFocused && !isRenaming && caretOpacity > 0.02f && !doc.secondarySelections.empty()) {
             for (const auto& sec : doc.secondarySelections) {
                 bool foundSec = false;
                 size_t secVisualIdx = findVisualIdxForBufferLine(sec.cursor.line, foundSec);
@@ -13491,14 +13504,24 @@ void EditorCanvas::RenderDiffView(ID2D1RenderTarget* pRT, Theme& theme, const ap
         float caretX = doc.diffRightCodeStartX - doc.scrollOffsetX + static_cast<float>(cursor.col) * charW;
         m_lastCaretX = caretX;
         m_lastCaretY = caretY;
-        if (m_caretVisible && caretX >= rightX + gutterW && caretX < rightX + halfW && caretY + lineH <= codeBottomY + 2.0f) {
+        const float diffCaretOpacity = ComputeCaretOpacity(config.cursorBlinking, GetTickCount64(), m_caretResetTick, m_caretVisible);
+        if (diffCaretOpacity > 0.02f && caretX >= rightX + gutterW && caretX < rightX + halfW && caretY + lineH <= codeBottomY + 2.0f) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> diffFadeBrush;
             ID2D1Brush* caretBrush = theme.brushTextPrimary.Get();
+            if (diffCaretOpacity < 0.995f) {
+                D2D1_COLOR_F col = theme.IsDarkMode()
+                    ? D2D1::ColorF(1.0f, 1.0f, 1.0f, diffCaretOpacity)
+                    : D2D1::ColorF(0.12f, 0.12f, 0.12f, diffCaretOpacity);
+                if (SUCCEEDED(pRT->CreateSolidColorBrush(col, &diffFadeBrush)) && diffFadeBrush) {
+                    caretBrush = diffFadeBrush.Get();
+                }
+            }
             const std::wstring& style = config.cursorStyle;
             if (style == L"block") {
                 D2D1_RECT_F rcBlock = D2D1::RectF(caretX, caretY + config.ScaleF(1.0f), caretX + charW, caretY + lineH - config.ScaleF(1.0f));
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blockFill;
                 pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f),
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.65f * diffCaretOpacity) : D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.65f * diffCaretOpacity),
                     &blockFill
                 );
                 pRT->FillRectangle(rcBlock, blockFill ? blockFill.Get() : caretBrush);
@@ -13666,11 +13689,22 @@ void EditorCanvas::RenderThreeWayMergeView(ID2D1RenderTarget* pRT, Theme& theme,
             RenderSyntaxTokensLine(pRT, theme, config, *sp.buf, v, sp.x + gutterW + 6.0f, lineY, sp.x + paneW, lineH, charW, pCodeFmt, theme.brushTextPrimary.Get());
         }
 
-        if (sp.editable && isFocused && cursor.line >= doc.scrollLine && cursor.line <= doc.scrollLine + visibleCount && m_caretVisible) {
+        const float mergeCaretOpacity = ComputeCaretOpacity(config.cursorBlinking, GetTickCount64(), m_caretResetTick, m_caretVisible);
+        if (sp.editable && isFocused && cursor.line >= doc.scrollLine && cursor.line <= doc.scrollLine + visibleCount && mergeCaretOpacity > 0.02f) {
             float cy = codeTopY + static_cast<float>(cursor.line - doc.scrollLine) * lineH;
             float cx = sp.x + gutterW + 6.0f + static_cast<float>(cursor.col) * charW;
             if (cx < sp.x + paneW) {
-                pRT->DrawLine(D2D1::Point2F(cx, cy + 2.0f), D2D1::Point2F(cx, cy + lineH - 2.0f), theme.brushTextPrimary.Get(), 1.5f);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> mergeFadeBrush;
+                ID2D1Brush* caretBrush = theme.brushTextPrimary.Get();
+                if (mergeCaretOpacity < 0.995f) {
+                    D2D1_COLOR_F col = theme.IsDarkMode()
+                        ? D2D1::ColorF(1.0f, 1.0f, 1.0f, mergeCaretOpacity)
+                        : D2D1::ColorF(0.12f, 0.12f, 0.12f, mergeCaretOpacity);
+                    if (SUCCEEDED(pRT->CreateSolidColorBrush(col, &mergeFadeBrush)) && mergeFadeBrush) {
+                        caretBrush = mergeFadeBrush.Get();
+                    }
+                }
+                pRT->DrawLine(D2D1::Point2F(cx, cy + 2.0f), D2D1::Point2F(cx, cy + lineH - 2.0f), caretBrush, 1.5f);
             }
         }
 

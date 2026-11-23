@@ -137,6 +137,8 @@ struct OpenDocument {
     };
     std::unordered_map<size_t, LineBlameInfo> gitBlameMap; ///< 0-based buffer line -> LineBlameInfo
     bool gitBlameLoaded = false;
+    std::wstring lastSyncedGitHeadHash;
+    wchar_t lastSyncedGitStatus = L'\0';
 
     // Text Selection State (Images 2, 3, 4)
     bool hasSelection = false;          ///< True if text is selected

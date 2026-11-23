@@ -15,6 +15,7 @@
 #include <mutex>
 #include <atomic>
 #include <cstdint>
+#include <cmath>
 #include <list>
 #include <unordered_map>
 #include "phide/app/AppConfig.hpp"
@@ -268,7 +269,32 @@ public:
      * @brief Toggles caret blink phase.
      */
     void ToggleCaretBlink() noexcept { m_caretVisible = !m_caretVisible; }
-    void ResetCaretBlink() noexcept { m_caretVisible = true; }
+    void ResetCaretBlink() noexcept {
+        m_caretVisible = true;
+        m_caretResetTick = GetTickCount64();
+    }
+
+    /**
+     * @brief Computes normalized caret opacity [0.0..1.0] for editor.cursorBlinking modes
+     *        ("blink", "smooth", "phase", "solid").
+     */
+    [[nodiscard]] static float ComputeCaretOpacity(const std::wstring& mode, ULONGLONG nowMs,
+                                                   ULONGLONG resetTick, bool fallbackVisible) noexcept {
+        if (mode == L"solid") return 1.0f;
+        if (mode == L"smooth") {
+            const ULONGLONG elapsed = (nowMs >= resetTick) ? (nowMs - resetTick) : 0ULL;
+            const float phase = static_cast<float>(elapsed % 1050ULL) / 1050.0f;
+            return 0.5f + 0.5f * std::cosf(2.0f * 3.14159265f * phase);
+        }
+        if (mode == L"phase") {
+            const ULONGLONG elapsed = (nowMs >= resetTick) ? (nowMs - resetTick) : 0ULL;
+            const ULONGLONG modMs = elapsed % 1200ULL;
+            if (modMs < 420ULL) return 1.0f;
+            const float phase = static_cast<float>(modMs - 420ULL) / 780.0f;
+            return 0.5f + 0.5f * std::cosf(2.0f * 3.14159265f * phase);
+        }
+        return fallbackVisible ? 1.0f : 0.0f;
+    }
 
     /**
      * @brief Computes width of optional dedicated Git blame gutter column (Author · 2d).
@@ -561,6 +587,7 @@ public:
 private:
     std::wstring m_workspaceRoot;
     bool m_caretVisible = true;
+    ULONGLONG m_caretResetTick = 0;
     mutable float m_charWidth = 0.0f;
     mutable float m_cachedRenderFontSize = 0.0f;
     mutable std::wstring m_cachedRenderFontFamily;
@@ -585,6 +612,7 @@ private:
     float m_cachedRight         = -1.0f;
     float m_cachedBottom        = -1.0f;
     bool  m_cachedHasLeftDrawer = false;
+    bool  m_cachedSideBarOnRight = false;
 
     // Watermark logo in center of canvas (dark mode + light mode inverted)
     Microsoft::WRL::ComPtr<ID2D1Bitmap> m_pWatermarkBitmap;

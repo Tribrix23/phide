@@ -43,7 +43,8 @@ ActivityRail::ActivityRail() {
     m_items.push_back({ RailTabId::Packages, L"Packages",                      {} });
 }
 
-void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
+void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                          float clientHeight, float clientWidth) {
     if (!pRT) return;
 
     // Initialize vector icon stroke styles if not yet created
@@ -57,7 +58,11 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     const float railW   = config.ScaleF(static_cast<float>(config.railWidth));
     const float btnSize = config.ScaleF(static_cast<float>(config.railBtnSize)); // 36px
     const float spacing = config.ScaleF(10.0f);
-    const float startX  = (railW - btnSize) / 2.0f;
+    const float cw      = (clientWidth > 0.0f) ? clientWidth : pRT->GetSize().width;
+    const float railLeft  = (config.sideBarOnRight && !config.zenMode && cw > railW) ? (cw - railW) : 0.0f;
+    const float railRight = railLeft + railW;
+    const float railTop   = (config.sideBarOnRight && !config.zenMode) ? headerH : 0.0f;
+    const float startX    = railLeft + (railW - btnSize) / 2.0f;
 
     // Ensure vertical purple glass gradient brush is initialized/updated
     if (!m_pRailGradientBrush || std::abs(m_lastRailH - clientHeight) >= 1.0f || m_lastThemeMode != theme.GetThemeMode()) {
@@ -93,39 +98,44 @@ void ActivityRail::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
     }
 
     // 1. Draw Rail Background with Vertical Purple Glass Gradient (seamless fusion with header)
-    D2D1_RECT_F rcRail = D2D1::RectF(0.0f, 0.0f, railW, clientHeight);
+    D2D1_RECT_F rcRail = D2D1::RectF(railLeft, railTop, railRight, clientHeight);
     if (m_pRailGradientBrush) {
         pRT->FillRectangle(rcRail, m_pRailGradientBrush.Get());
     } else {
         pRT->FillRectangle(rcRail, theme.brushRailBg.Get());
     }
 
-    // Right border divider: starts below the upper-left rounded corner (no line in header or clashing with curve)
-    const float dividerStartY = headerH + config.ScaleF(14.0f);
+    // Inner border divider (right edge on left-docked rail, left edge on right-docked rail)
+    const float divX = config.sideBarOnRight ? (railLeft + 0.5f) : (railRight - 0.5f);
+    const float dividerStartY = config.sideBarOnRight ? railTop : (headerH + config.ScaleF(14.0f));
     pRT->DrawLine(
-        D2D1::Point2F(railW - 0.5f, dividerStartY),
-        D2D1::Point2F(railW - 0.5f, clientHeight),
+        D2D1::Point2F(divX, dividerStartY),
+        D2D1::Point2F(divX, clientHeight),
         theme.brushBorderSubtle.Get(),
         0.8f
     );
 
-    // 2. Render Square Phide Brand Logo in Upper-Left Box ([0..railW] x [0..headerH])
-    if (!m_pLogoBitmap) {
-        D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
-        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-        );
-        pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pLogoBitmap);
-    }
+    // 2. Render Square Phide Brand Logo in Upper-Left Box ([0..railW] x [0..headerH]) when left-docked
+    if (!config.sideBarOnRight) {
+        if (!m_pLogoBitmap) {
+            D2D1_SIZE_U size = D2D1::SizeU(kPhideLogoWidth, kPhideLogoHeight);
+            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            pRT->CreateBitmap(size, g_phideLogoBgra, kPhideLogoWidth * 4, props, &m_pLogoBitmap);
+        }
 
-    const float logoSize = config.ScaleF(28.0f);
-    const float logoX = (railW - logoSize) / 2.0f;
-    const float logoY = (headerH - logoSize) / 2.0f;
-    m_rcLogo = D2D1::RectF(logoX, logoY, logoX + logoSize, logoY + logoSize);
+        const float logoSize = config.ScaleF(28.0f);
+        const float logoX = (railW - logoSize) / 2.0f;
+        const float logoY = (headerH - logoSize) / 2.0f;
+        m_rcLogo = D2D1::RectF(logoX, logoY, logoX + logoSize, logoY + logoSize);
 
-    if (m_pLogoBitmap) {
-        // Render the user's Phide icon strictly as a crisp square ("it should stay as quare")
-        pRT->DrawBitmap(m_pLogoBitmap.Get(), m_rcLogo);
+        if (m_pLogoBitmap) {
+            // Render the user's Phide icon strictly as a crisp square ("it should stay as quare")
+            pRT->DrawBitmap(m_pLogoBitmap.Get(), m_rcLogo);
+        }
+    } else {
+        m_rcLogo = D2D1::RectF(-999.0f, -999.0f, -999.0f, -999.0f);
     }
 
     // 3. Render Lucide Vector Icons matching Image 2
@@ -344,8 +354,11 @@ void ActivityRail::RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, con
     float textW = config.ScaleF(static_cast<float>(textLen * 7 + 16));
     float tipW = textW + tipPadX * 2.0f;
 
-    // Position tooltip to the right of the rail, vertically centered on the active icon
-    float tipX = railW + config.ScaleF(10.0f);
+    // Position tooltip outside the rail (right when rail is left, left when rail is right)
+    const float railLeft = item.bounds.left - (railW - btnSize) * 0.5f;
+    float tipX = config.sideBarOnRight
+        ? (std::max)(config.ScaleF(6.0f), railLeft - tipW - config.ScaleF(10.0f))
+        : (railLeft + railW + config.ScaleF(10.0f));
     float tipY = item.bounds.top + (btnSize - tipH) / 2.0f;
 
     D2D1_RECT_F rcTip = D2D1::RectF(tipX, tipY, tipX + tipW, tipY + tipH);
@@ -355,9 +368,9 @@ void ActivityRail::RenderCustomTooltip(ID2D1RenderTarget* pRT, Theme& theme, con
     pRT->FillRoundedRectangle(rrcTip, theme.brushTooltipBg.Get());
     pRT->DrawRoundedRectangle(rrcTip, theme.brushTooltipBorder.Get(), 1.0f);
 
-    // Draw Small Pointer Triangle pointing left towards the rail button
-    D2D1_POINT_2F p1 = D2D1::Point2F(tipX, tipY + tipH / 2.0f);
-    D2D1_POINT_2F p2 = D2D1::Point2F(tipX - config.ScaleF(5.0f), tipY + tipH / 2.0f);
+    // Draw Small Pointer Stem towards the rail button
+    D2D1_POINT_2F p1 = D2D1::Point2F(config.sideBarOnRight ? (tipX + tipW) : tipX, tipY + tipH / 2.0f);
+    D2D1_POINT_2F p2 = D2D1::Point2F(config.sideBarOnRight ? (tipX + tipW + config.ScaleF(5.0f)) : (tipX - config.ScaleF(5.0f)), tipY + tipH / 2.0f);
     pRT->DrawLine(p1, p2, theme.brushTooltipBorder.Get(), 1.0f);
 
     // Draw Crisp White Tooltip Label Text

@@ -78,7 +78,8 @@ public:
      * @param config Application configuration.
      * @param clientHeight Height of the window client area.
      */
-    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                float clientHeight, float clientWidth = 0.0f);
 
     /**
      * @brief Performs hit-testing against rail items.

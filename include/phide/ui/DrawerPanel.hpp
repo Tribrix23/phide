@@ -501,6 +501,10 @@ public:
     workspace::IgnoreEngine& GetIgnoreEngine() noexcept { return m_ignoreEngine; }
     void ReloadIgnoreFiles();
     [[nodiscard]] const std::wstring& GetGitBranch() const noexcept { return m_gitBranch; }
+    [[nodiscard]] std::wstring GetGitHeadHash() const {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        return m_gitHeadHash;
+    }
     [[nodiscard]] std::vector<std::pair<std::wstring, bool>> GetGitBranches();
     bool CheckoutGitBranch(const std::wstring& branch, std::wstring& outError);
     [[nodiscard]] const D2D1_RECT_F& GetGitHeaderMoreBounds() const noexcept { return m_gitHeaderMoreBounds; }
@@ -1459,6 +1463,7 @@ private:
     bool m_hasGitRemote = false;
     bool m_gitSyncMode = false;
     std::wstring m_gitBranch;
+    std::wstring m_gitHeadHash;
     std::vector<GitChangeItem> m_gitChanges;
     std::unordered_set<std::wstring> m_gitIgnoredSet;
     std::vector<GitCommitItem> m_gitCommits;
@@ -1932,6 +1937,7 @@ private:
     float m_cachedHeaderH = -1.0f;
     float m_cachedDrawerW = -1.0f;
     float m_cachedClientH = -1.0f;
+    bool  m_cachedSideBarOnRight = false;
 
     // --- Remote Explorer Pane State ---
     void RenderRemotePane(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight, float currentDrawerW);
