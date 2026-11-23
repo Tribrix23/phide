@@ -380,6 +380,7 @@ public:
     [[nodiscard]] int GetActiveTabIdx() const noexcept { return m_activeTabIdx; }
     void SetActiveTabIdx(int idx) noexcept;
     TerminalTab* GetActiveTab();
+    [[nodiscard]] TerminalShellType GetActiveShellType() const noexcept;
     [[nodiscard]] bool IsActiveTabSplit() const noexcept;
 
     // URL Link Navigation (Ctrl + Click)
@@ -435,6 +436,11 @@ public:
     [[nodiscard]] const std::vector<D2D1_RECT_F>& GetResizeSubmenuItemBounds() const noexcept { return m_resizeSubmenuItemBounds; }
     [[nodiscard]] D2D1_RECT_F GetOptionsBtnBounds() const noexcept { return m_optionsBtnBounds; }
     void ExecuteCommandLine(const std::wstring& command);
+    void ExecuteCommandForFile(const std::wstring& command, const std::wstring& filePath);
+    [[nodiscard]] bool IsCommandRunningForFile(const std::wstring& filePath) const;
+    bool StopCommandForFile(const std::wstring& filePath);
+    void SimulateFileRunForTest(const std::wstring& filePath, bool active);
+    void SetOnCommandStateChanged(std::function<void()> cb);
     void SetUseConPtyForShells(bool enabled) noexcept { m_useConPtyForShells = enabled; }
     [[nodiscard]] bool GetUseConPtyForShells() const noexcept { return m_useConPtyForShells; }
     static size_t InterruptForegroundChildProcesses(DWORD rootShellPid);
@@ -839,6 +845,24 @@ private:
     std::wstring m_envHttpProxy;
     std::wstring m_envHttpsProxy;
     std::vector<TerminalProfileDef> m_customProfiles;
+
+    struct ActiveFileRunEntry {
+        uint64_t id = 0;
+        std::wstring filePath;
+        DWORD rootShellPid = 0;
+        bool active = true;
+        bool testSimulated = false;
+    };
+    struct FileRunTrackerState {
+        std::mutex mtx;
+        std::atomic<bool> destroyed{ false };
+        uint64_t nextRunId = 1;
+        std::vector<ActiveFileRunEntry> runs;
+        std::function<void()> onChanged;
+    };
+    std::shared_ptr<FileRunTrackerState> m_runTracker = std::make_shared<FileRunTrackerState>();
+    TerminalTab* PrepareInteractiveTabForCommand(const std::wstring& preferIdleFromFile = L"");
+    void ClearRunsForShellPid(DWORD shellPid);
 };
 
 } // namespace phide::ui

@@ -1,7 +1,7 @@
 /**
  * @file DapClient.hpp
  * @brief Native Debug Adapter Protocol (DAP) & Multi-Backend Step Debugger (#26 & #27):
- *        - .vscode/launch.json configuration parser & macro expansion
+ *        - .phide/launch.json (with .vscode/launch.json fallback) configuration parser & macro expansion
  *        - RFC DAP Content-Length wire frame encoder & incremental decoder
  *        - Real backends: Python bdb JSON adapter, GDB/MI (C/C++), Node.js CDP (--inspect), PHP Xdebug DBGp
  *        - Conditional breakpoints, hit counts, logpoints, exception breakpoints, expandable Variables, Watch, Call Stack

@@ -29,7 +29,8 @@ enum class ConfirmModalType {
     DeleteFolder,
     DeleteBatch,
     UpdateImportsOnRename,
-    UpdateImportsOnMove
+    UpdateImportsOnMove,
+    UnsavedSettings
 };
 
 /**
@@ -156,6 +157,31 @@ public:
     [[nodiscard]] const std::wstring& GetNewFilePath() const noexcept { return m_newPath; }
 
     /**
+     * @brief Opens an unsaved settings confirmation popup with Save and Close buttons.
+     */
+    void OpenUnsavedSettings(const std::wstring& title, const std::wstring& message, const std::wstring& subtext) {
+        m_type = ConfirmModalType::UnsavedSettings;
+        m_title = title;
+        m_message = message;
+        m_subtext = subtext;
+        m_filePath.clear();
+        m_fileName.clear();
+        m_newPath.clear();
+        m_batchPaths.clear();
+        m_status.clear();
+        m_changeCount = 0;
+        m_isOpen = true;
+        m_isLoading = false;
+        m_spinnerAngle = 0.0f;
+        m_isConfirmHovered = false;
+        m_isCancelHovered = false;
+        m_isCloseHovered = false;
+        m_lastWasCancelButton = false;
+    }
+
+    [[nodiscard]] bool WasCancelButtonClicked() const noexcept { return m_lastWasCancelButton; }
+
+    /**
      * @brief Closes the confirmation dialog.
      */
     void Close() noexcept {
@@ -243,6 +269,7 @@ private:
     bool m_isConfirmHovered = false;
     bool m_isCancelHovered = false;
     bool m_isCloseHovered = false;
+    bool m_lastWasCancelButton = false;
 };
 
 } // namespace phide::ui

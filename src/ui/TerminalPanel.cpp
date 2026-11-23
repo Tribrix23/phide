@@ -512,17 +512,38 @@ static void SafeKillProcessTree(DWORD rootPid) {
     }
 }
 
-size_t TerminalPanel::InterruptForegroundChildProcesses(DWORD rootShellPid) {
-    auto procs = CollectDescendantProcesses(rootShellPid);
-    size_t interrupted = 0;
-    // Skip rootShellPid (index 0) and system console host helpers so the interactive shell stays alive
-    for (auto it = procs.rbegin(); it != procs.rend(); ++it) {
-        if (it->first == rootShellPid) continue;
-        std::wstring exeLower = it->second;
+static bool PathsEqualCaseInsensitive(const std::wstring& a, const std::wstring& b) {
+    if (a.empty() || b.empty()) return false;
+    auto norm = [](std::wstring s) {
+        for (auto& c : s) {
+            if (c == L'/') c = L'\\';
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        while (s.size() > 3 && s.back() == L'\\') s.pop_back();
+        return s;
+    };
+    return norm(a) == norm(b);
+}
+
+static std::vector<std::pair<DWORD, std::wstring>> CollectNonConsoleDescendants(DWORD rootShellPid) {
+    auto all = CollectDescendantProcesses(rootShellPid);
+    std::vector<std::pair<DWORD, std::wstring>> filtered;
+    for (const auto& entry : all) {
+        if (entry.first == rootShellPid) continue;
+        std::wstring exeLower = entry.second;
         for (auto& c : exeLower) c = static_cast<wchar_t>(towlower(c));
         if (exeLower == L"conhost.exe" || exeLower == L"openconsole.exe") {
             continue;
         }
+        filtered.push_back(entry);
+    }
+    return filtered;
+}
+
+size_t TerminalPanel::InterruptForegroundChildProcesses(DWORD rootShellPid) {
+    auto procs = CollectNonConsoleDescendants(rootShellPid);
+    size_t interrupted = 0;
+    for (auto it = procs.rbegin(); it != procs.rend(); ++it) {
         HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, it->first);
         if (hProc) {
             if (TerminateProcess(hProc, STATUS_CONTROL_C_EXIT)) {
@@ -1521,6 +1542,12 @@ TerminalPanel::TerminalPanel() = default;
 
 TerminalPanel::~TerminalPanel() {
     m_isDestroying.store(true);
+    if (m_runTracker) {
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        m_runTracker->destroyed.store(true);
+        m_runTracker->onChanged = nullptr;
+        m_runTracker->runs.clear();
+    }
     m_dap.onOutput = nullptr;
     m_dap.onPaused = nullptr;
     m_dap.onContinued = nullptr;
@@ -1958,6 +1985,43 @@ std::vector<wchar_t> TerminalPanel::BuildTabEnvBlock() const {
     setVar(L"TERM", L"xterm-256color");
     setVar(L"COLORTERM", L"truecolor");
 
+    // Auto-activate workspace Python virtual environment (.venv / venv / env) on PATH & VIRTUAL_ENV
+    {
+        std::wstring venvSearchRoot = !m_envWorkspaceDir.empty()
+            ? StripExtendedPathPrefix(m_envWorkspaceDir)
+            : StripExtendedPathPrefix(m_defaultWorkingDir);
+        if (!venvSearchRoot.empty()) {
+            std::error_code ecVenv;
+            std::filesystem::path wsRootFs(venvSearchRoot);
+            for (const wchar_t* vname : { L".venv", L"venv", L"env", L".env" }) {
+                std::filesystem::path venvDir = wsRootFs / vname;
+                std::filesystem::path scriptsDir = venvDir / L"Scripts";
+                if (std::filesystem::is_directory(scriptsDir, ecVenv) &&
+                    std::filesystem::exists(scriptsDir / L"python.exe", ecVenv)) {
+                    setVar(L"VIRTUAL_ENV", venvDir.wstring());
+                    vars.erase(std::remove_if(vars.begin(), vars.end(), [](const auto& kv) {
+                        return _wcsicmp(kv.first.c_str(), L"PYTHONHOME") == 0;
+                    }), vars.end());
+                    bool updatedPath = false;
+                    for (auto& kv : vars) {
+                        if (_wcsicmp(kv.first.c_str(), L"PATH") == 0) {
+                            std::wstring sDirW = scriptsDir.wstring();
+                            if (kv.second.rfind(sDirW, 0) != 0) {
+                                kv.second = sDirW + L";" + kv.second;
+                            }
+                            updatedPath = true;
+                            break;
+                        }
+                    }
+                    if (!updatedPath) {
+                        setVar(L"PATH", scriptsDir.wstring());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     // Parse workspace .env (capped at 256 KB & 200 entries)
     if (!m_envWorkspaceDir.empty()) {
         std::filesystem::path envPath = std::filesystem::path(StripExtendedPathPrefix(m_envWorkspaceDir)) / L".env";
@@ -2093,6 +2157,7 @@ void TerminalPanel::NewRemoteCommandTab(const std::wstring& title, const std::ws
 void TerminalPanel::CloseTab(size_t index) {
     std::wstring associatedPath;
     bool isServer = false;
+    DWORD closedPid = 0;
     std::unique_ptr<TerminalTab> tabToClose;
     {
         std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
@@ -2100,6 +2165,7 @@ void TerminalPanel::CloseTab(size_t index) {
         if (!m_tabs[index]->canClose) return; // Un-Xable tabs cannot be closed
         associatedPath = m_tabs[index]->associatedFilePath;
         isServer = (m_tabs[index]->shellType == TerminalShellType::LiveServer || m_tabs[index]->isServerTab);
+        closedPid = m_tabs[index]->processId;
 
         tabToClose = std::move(m_tabs[index]);
         m_tabs.erase(m_tabs.begin() + index);
@@ -2111,6 +2177,10 @@ void TerminalPanel::CloseTab(size_t index) {
         } else if (m_activeTabIdx >= static_cast<int>(m_tabs.size())) {
             m_activeTabIdx = static_cast<int>(m_tabs.size() - 1);
         }
+    }
+
+    if (closedPid != 0) {
+        ClearRunsForShellPid(closedPid);
     }
 
     // Terminate processes, pipes, and threads in background worker so UI thread NEVER freezes
@@ -2156,6 +2226,10 @@ bool TerminalPanel::CloseTabByAssociatedFile(const std::wstring& filePath) {
 }
 
 void TerminalPanel::CloseAllTabs() {
+    if (m_runTracker) {
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        m_runTracker->runs.clear();
+    }
     std::vector<std::unique_ptr<TerminalTab>> tabsToClose;
     {
         std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
@@ -2212,6 +2286,29 @@ TerminalTab* TerminalPanel::GetActiveTab() {
         return primary;
     }
     return nullptr;
+}
+
+TerminalShellType TerminalPanel::GetActiveShellType() const noexcept {
+    const TerminalTab* current = nullptr;
+    if (m_activeTabIdx >= 0 && m_activeTabIdx < static_cast<int>(m_tabs.size())) {
+        const auto* primary = m_tabs[m_activeTabIdx].get();
+        if (primary) {
+            current = (primary->splitTab && primary->activeSplitIndex == 1) ? primary->splitTab.get() : primary;
+        }
+    }
+    if (current && !current->isServerTab && current->title != L"Git Logs" && !current->isGitHubLoginTab) {
+        return current->shellType;
+    }
+    for (const auto& t : m_tabs) {
+        if (t && !t->isServerTab && t->title != L"Git Logs" && !t->isGitHubLoginTab) {
+            return t->shellType;
+        }
+    }
+    if (m_defaultShellProfile == 1) return TerminalShellType::Cmd;
+    if (m_defaultShellProfile == 2) return TerminalShellType::GitBash;
+    if (m_defaultShellProfile == 3) return TerminalShellType::Node;
+    if (m_defaultShellProfile == 4) return TerminalShellType::Python;
+    return TerminalShellType::PowerShell;
 }
 
 bool TerminalPanel::IsActiveTabSplit() const noexcept {
@@ -4946,21 +5043,138 @@ void TerminalPanel::StartLiveServerSession(const std::wstring& localUrl, const s
     if (m_outputCallback) m_outputCallback();
 }
 
-void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
+void TerminalPanel::SetOnCommandStateChanged(std::function<void()> cb) {
+    if (!m_runTracker) return;
+    std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+    m_runTracker->onChanged = std::move(cb);
+}
+
+void TerminalPanel::ClearRunsForShellPid(DWORD shellPid) {
+    if (!m_runTracker || shellPid == 0) return;
+    std::function<void()> cb;
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        for (auto it = m_runTracker->runs.begin(); it != m_runTracker->runs.end();) {
+            if (it->rootShellPid == shellPid) {
+                it->active = false;
+                it = m_runTracker->runs.erase(it);
+                erased = true;
+            } else {
+                ++it;
+            }
+        }
+        if (erased) cb = m_runTracker->onChanged;
+    }
+    if (erased && cb) cb();
+}
+
+bool TerminalPanel::IsCommandRunningForFile(const std::wstring& filePath) const {
+    if (filePath.empty() || !m_runTracker) return false;
+    std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+    for (const auto& r : m_runTracker->runs) {
+        if (r.active && PathsEqualCaseInsensitive(r.filePath, filePath)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TerminalPanel::StopCommandForFile(const std::wstring& filePath) {
+    if (filePath.empty() || !m_runTracker) return false;
+    std::vector<DWORD> pidsToInterrupt;
+    std::function<void()> cb;
+    {
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        for (auto it = m_runTracker->runs.begin(); it != m_runTracker->runs.end();) {
+            if (it->active && PathsEqualCaseInsensitive(it->filePath, filePath)) {
+                it->active = false;
+                if (!it->testSimulated && it->rootShellPid != 0) {
+                    pidsToInterrupt.push_back(it->rootShellPid);
+                }
+                it = m_runTracker->runs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        cb = m_runTracker->onChanged;
+    }
+    if (pidsToInterrupt.empty() && !cb) return false;
+
+    for (DWORD shellPid : pidsToInterrupt) {
+        TerminalTab* targetTab = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> tabsLock(m_tabsMutex);
+            for (const auto& t : m_tabs) {
+                if (t && t->processId == shellPid) {
+                    targetTab = t.get();
+                    break;
+                }
+            }
+        }
+        if (targetTab && targetTab->isAlive.load()) {
+            targetTab->SendInput("\x03");
+            InterruptForegroundChildProcesses(shellPid);
+        }
+    }
+    if (cb) cb();
+    return true;
+}
+
+void TerminalPanel::SimulateFileRunForTest(const std::wstring& filePath, bool active) {
+    if (!m_runTracker || filePath.empty()) return;
+    std::function<void()> cb;
+    {
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        for (auto it = m_runTracker->runs.begin(); it != m_runTracker->runs.end();) {
+            if (PathsEqualCaseInsensitive(it->filePath, filePath)) {
+                it->active = false;
+                it = m_runTracker->runs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (active) {
+            ActiveFileRunEntry e;
+            e.id = m_runTracker->nextRunId++;
+            e.filePath = filePath;
+            e.rootShellPid = 0;
+            e.active = true;
+            e.testSimulated = true;
+            m_runTracker->runs.push_back(std::move(e));
+        }
+        cb = m_runTracker->onChanged;
+    }
+    if (cb) cb();
+}
+
+TerminalTab* TerminalPanel::PrepareInteractiveTabForCommand(const std::wstring& preferIdleFromFile) {
     if (!m_isOpen) {
         Open(m_defaultWorkingDir);
     }
 
-    // Ensure we send command to an interactive shell tab (not Git Logs, not server tab, not login tab)
+    auto isInteractiveTab = [](const TerminalTab* t) -> bool {
+        return t && !t->isServerTab && t->title != L"Git Logs" && !t->isGitHubLoginTab;
+    };
+    auto isTabBusyWithOtherRun = [&](const TerminalTab* t) -> bool {
+        if (!t || preferIdleFromFile.empty() || !m_runTracker || t->processId == 0) return false;
+        std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+        for (const auto& r : m_runTracker->runs) {
+            if (r.active && r.rootShellPid == t->processId && !PathsEqualCaseInsensitive(r.filePath, preferIdleFromFile)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     TerminalTab* tab = nullptr;
     TerminalTab* current = GetActiveTab();
-    if (current && !current->isServerTab && current->title != L"Git Logs" && !current->isGitHubLoginTab) {
+    if (isInteractiveTab(current) && !isTabBusyWithOtherRun(current)) {
         tab = current;
     } else {
-        // Look for any existing interactive shell tab
         for (size_t i = 0; i < m_tabs.size(); ++i) {
             auto* t = m_tabs[i].get();
-            if (t && !t->isServerTab && t->title != L"Git Logs" && !t->isGitHubLoginTab) {
+            if (isInteractiveTab(t) && !isTabBusyWithOtherRun(t)) {
                 m_activeTabIdx = static_cast<int>(i);
                 tab = t;
                 break;
@@ -4969,9 +5183,23 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     }
 
     if (!tab) {
-        NewTab(TerminalShellType::PowerShell, m_defaultWorkingDir);
+        TerminalShellType shell = current ? current->shellType : TerminalShellType::PowerShell;
+        if (shell == TerminalShellType::Custom || shell == TerminalShellType::LiveServer) {
+            shell = TerminalShellType::PowerShell;
+        }
+        std::wstring workDir = !m_defaultWorkingDir.empty() ? m_defaultWorkingDir : (current ? current->workingDir : L"");
+        NewTab(shell, workDir);
         tab = GetActiveTab();
     }
+    return tab;
+}
+
+void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
+    ExecuteCommandForFile(command, L"");
+}
+
+void TerminalPanel::ExecuteCommandForFile(const std::wstring& command, const std::wstring& filePath) {
+    TerminalTab* tab = PrepareInteractiveTabForCommand(filePath);
     if (!tab) return;
 
     tab->lastScannedLineIdx = tab->lines.size();
@@ -4984,12 +5212,105 @@ void TerminalPanel::ExecuteCommandLine(const std::wstring& command) {
     }
 
     int utf8Len = WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, NULL, 0, NULL, NULL);
-    if (utf8Len > 1) {
-        std::string utf8(utf8Len - 1, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
-        utf8 += tab->isConPty ? "\r" : "\n";
+    if (utf8Len <= 1) return;
+
+    std::string utf8(utf8Len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, command.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
+    utf8 += tab->isConPty ? "\r" : "\n";
+
+    if (!filePath.empty() && tab->isAlive.load() && tab->processId != 0 && m_runTracker) {
+        uint64_t runId = 0;
+        const DWORD shellPid = tab->processId;
+        {
+            std::lock_guard<std::mutex> lk(m_runTracker->mtx);
+            for (auto it = m_runTracker->runs.begin(); it != m_runTracker->runs.end();) {
+                if (PathsEqualCaseInsensitive(it->filePath, filePath)) {
+                    it->active = false;
+                    it = m_runTracker->runs.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            runId = m_runTracker->nextRunId++;
+            ActiveFileRunEntry entry;
+            entry.id = runId;
+            entry.filePath = filePath;
+            entry.rootShellPid = shellPid;
+            entry.active = true;
+            entry.testSimulated = false;
+            m_runTracker->runs.push_back(std::move(entry));
+        }
+
         tab->SendInput(utf8);
+
+        std::shared_ptr<FileRunTrackerState> tracker = m_runTracker;
+        std::thread([tracker, runId, shellPid]() {
+            auto isStillActive = [&]() -> bool {
+                if (tracker->destroyed.load()) return false;
+                std::lock_guard<std::mutex> lk(tracker->mtx);
+                for (const auto& r : tracker->runs) {
+                    if (r.id == runId && r.active) return true;
+                }
+                return false;
+            };
+            auto finishRun = [&]() {
+                std::function<void()> cb;
+                bool removed = false;
+                {
+                    std::lock_guard<std::mutex> lk(tracker->mtx);
+                    for (auto it = tracker->runs.begin(); it != tracker->runs.end(); ++it) {
+                        if (it->id == runId) {
+                            it->active = false;
+                            tracker->runs.erase(it);
+                            removed = true;
+                            break;
+                        }
+                    }
+                    if (removed && !tracker->destroyed.load()) {
+                        cb = tracker->onChanged;
+                    }
+                }
+                if (removed && cb) cb();
+            };
+
+            // Phase 1: Wait briefly for ConPTY shell to spawn the child runtime process (python.exe / node.exe)
+            std::vector<std::pair<DWORD, std::wstring>> children;
+            static constexpr DWORD kStartupWaitsMs[] = { 20, 20, 30, 30, 40, 50, 60, 75, 75, 100, 100, 150 };
+            for (DWORD delayMs : kStartupWaitsMs) {
+                Sleep(delayMs);
+                if (!isStillActive()) return;
+                children = CollectNonConsoleDescendants(shellPid);
+                if (!children.empty()) break;
+            }
+
+            // Phase 2: Wait efficiently on child process handles until all foreground child runtimes exit
+            while (!children.empty() && isStillActive()) {
+                HANDLE hChild = OpenProcess(SYNCHRONIZE, FALSE, children.front().first);
+                if (hChild) {
+                    for (;;) {
+                        DWORD waitRes = WaitForSingleObject(hChild, 200);
+                        if (waitRes == WAIT_OBJECT_0 || !isStillActive()) {
+                            break;
+                        }
+                    }
+                    CloseHandle(hChild);
+                } else {
+                    Sleep(100);
+                }
+                if (!isStillActive()) return;
+                children = CollectNonConsoleDescendants(shellPid);
+                if (children.empty()) {
+                    Sleep(40);
+                    children = CollectNonConsoleDescendants(shellPid);
+                }
+            }
+
+            finishRun();
+        }).detach();
+        return;
     }
+
+    tab->SendInput(utf8);
 }
 
 void TerminalPanel::StartServerSession(const std::wstring& serverTitle, const std::wstring& command, const std::wstring& workingDir, const std::wstring& projectRoot) {

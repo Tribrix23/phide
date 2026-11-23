@@ -349,7 +349,7 @@ void PopupMenu::OpenHelpMenu(float x, float y, const app::AppConfig& config) {
 
     m_items.clear();
 
-    // 1. Navigation & Interactive Guide (matching VS Code Help layout)
+    // 1. Navigation & Interactive Guide
     m_items.push_back({ MenuActionId::HelpShowAllCommands,    L"Show All Commands",             L"Ctrl+Shift+P",   false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpWelcome,            L"Open Walkthrough...",           L"",               false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::HelpInteractiveGuide,   L"Interactive Guide",             L"",               false, false, false, true, {}, {} });
@@ -623,6 +623,8 @@ void PopupMenu::BuildViewMenuItems(const app::AppConfig& config, bool isSidebarO
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleStickyScroll,        L"Sticky Scroll",                L"",             false, config.enableStickyScroll,    false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleMarkdownPreview,     L"Markdown Preview",             L"Ctrl+Shift+V", false, config.enableMarkdownPreview, false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleCodeLens,            L"CodeLens",                     L"",             false, config.enableCodeLens,         false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleErrorLens,           L"Inline Error Lens Badges",     L"",             false, config.showErrorLens,          false, true, {}, {} });
+    appearanceItem.submenuItems.push_back({ MenuActionId::ToggleGutterBlame,         L"Gutter Git Blame Column",      L"",             false, config.showGutterBlame,        false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderWhitespace,    L"Render Whitespace",            L"",             false, config.renderWhitespace,      false, true, {}, {} });
     appearanceItem.submenuItems.push_back({ MenuActionId::ToggleRenderControlChars, L"Render Control Characters",     L"",             false, config.renderControlChars,    false, true, {}, {} });
     // --- Submenu Separator ---

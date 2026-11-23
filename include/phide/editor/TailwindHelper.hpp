@@ -601,105 +601,727 @@ private:
             list.push_back(std::move(c));
         }
 
-        // 3. Layout, Flexbox, Grid, Sizing, Spacing, Typography
+        // 3. Complete Tailwind CSS v3/v4 Utility Catalog (Layout, Flex, Grid, Spacing, Sizing, Typography, Borders, Effects, Filters, Transforms, Transitions, Interactivity, SVG, Accessibility)
+        auto addUtil = [&](const std::wstring& name, const std::wstring& detail, const wchar_t* doc = L"utility") {
+            TailwindCandidate c;
+            c.name = name;
+            c.detail = detail;
+            c.doc = doc;
+            c.isColor = false;
+            c.hex = 0;
+            list.push_back(std::move(c));
+        };
+
+        // 3a. Full Spacing Scale (0..96) for padding, margin, gap, space, inset, width, height, size, translate
+        struct ScaleEntry { const wchar_t* key; const wchar_t* css; };
+        static const ScaleEntry spacingScale[] = {
+            { L"0", L"0px" }, { L"px", L"1px" }, { L"0.5", L"0.125rem" }, { L"1", L"0.25rem" },
+            { L"1.5", L"0.375rem" }, { L"2", L"0.5rem" }, { L"2.5", L"0.625rem" }, { L"3", L"0.75rem" },
+            { L"3.5", L"0.875rem" }, { L"4", L"1rem" }, { L"5", L"1.25rem" }, { L"6", L"1.5rem" },
+            { L"7", L"1.75rem" }, { L"8", L"2rem" }, { L"9", L"2.25rem" }, { L"10", L"2.5rem" },
+            { L"11", L"2.75rem" }, { L"12", L"3rem" }, { L"14", L"3.5rem" }, { L"16", L"4rem" },
+            { L"20", L"5rem" }, { L"24", L"6rem" }, { L"28", L"7rem" }, { L"32", L"8rem" },
+            { L"36", L"9rem" }, { L"40", L"10rem" }, { L"44", L"11rem" }, { L"48", L"12rem" },
+            { L"52", L"13rem" }, { L"56", L"14rem" }, { L"60", L"15rem" }, { L"64", L"16rem" },
+            { L"72", L"18rem" }, { L"80", L"20rem" }, { L"96", L"24rem" }
+        };
+        struct SpacingProp { const wchar_t* pfx; const wchar_t* cssProp; bool allowAuto; bool allowNeg; };
+        static const SpacingProp spacingProps[] = {
+            { L"p-", L"padding", false, false },
+            { L"px-", L"padding-inline", false, false },
+            { L"py-", L"padding-block", false, false },
+            { L"pt-", L"padding-top", false, false },
+            { L"pr-", L"padding-right", false, false },
+            { L"pb-", L"padding-bottom", false, false },
+            { L"pl-", L"padding-left", false, false },
+            { L"ps-", L"padding-inline-start", false, false },
+            { L"pe-", L"padding-inline-end", false, false },
+            { L"m-", L"margin", true, true },
+            { L"mx-", L"margin-inline", true, true },
+            { L"my-", L"margin-block", true, true },
+            { L"mt-", L"margin-top", true, true },
+            { L"mr-", L"margin-right", true, true },
+            { L"mb-", L"margin-bottom", true, true },
+            { L"ml-", L"margin-left", true, true },
+            { L"ms-", L"margin-inline-start", true, true },
+            { L"me-", L"margin-inline-end", true, true },
+            { L"gap-", L"gap", false, false },
+            { L"gap-x-", L"column-gap", false, false },
+            { L"gap-y-", L"row-gap", false, false },
+            { L"space-x-", L"margin-left", false, true },
+            { L"space-y-", L"margin-top", false, true },
+            { L"w-", L"width", true, false },
+            { L"h-", L"height", true, false },
+            { L"size-", L"width & height", true, false },
+            { L"min-w-", L"min-width", false, false },
+            { L"max-w-", L"max-width", false, false },
+            { L"min-h-", L"min-height", false, false },
+            { L"max-h-", L"max-height", false, false },
+            { L"inset-", L"inset", true, true },
+            { L"inset-x-", L"inset-inline", true, true },
+            { L"inset-y-", L"inset-block", true, true },
+            { L"top-", L"top", true, true },
+            { L"right-", L"right", true, true },
+            { L"bottom-", L"bottom", true, true },
+            { L"left-", L"left", true, true },
+            { L"start-", L"inset-inline-start", true, true },
+            { L"end-", L"inset-inline-end", true, true },
+            { L"basis-", L"flex-basis", true, false },
+            { L"translate-x-", L"transform: translateX", false, true },
+            { L"translate-y-", L"transform: translateY", false, true },
+            { L"indent-", L"text-indent", false, true },
+            { L"scroll-m-", L"scroll-margin", false, false },
+            { L"scroll-p-", L"scroll-padding", false, false }
+        };
+        for (const auto& sp : spacingProps) {
+            if (sp.allowAuto) {
+                addUtil(std::wstring(sp.pfx) + L"auto", std::wstring(sp.cssProp) + L": auto;", L"spacing");
+            }
+            for (const auto& sc : spacingScale) {
+                std::wstring nm = std::wstring(sp.pfx) + sc.key;
+                std::wstring det = std::wstring(sp.cssProp) + L": " + sc.css + L";";
+                addUtil(nm, det, L"spacing");
+                if (sp.allowNeg && sc.key[0] != L'0') {
+                    addUtil(L"-" + nm, std::wstring(sp.cssProp) + L": -" + sc.css + L";", L"spacing");
+                }
+            }
+        }
+        // Fractions & viewport sizing for w-, h-, size-, basis-, inset-, top/right/bottom/left
+        static const ScaleEntry fractionScale[] = {
+            { L"1/2", L"50%" }, { L"1/3", L"33.333333%" }, { L"2/3", L"66.666667%" },
+            { L"1/4", L"25%" }, { L"2/4", L"50%" }, { L"3/4", L"75%" },
+            { L"1/5", L"20%" }, { L"2/5", L"40%" }, { L"3/5", L"60%" }, { L"4/5", L"80%" },
+            { L"1/6", L"16.666667%" }, { L"5/6", L"83.333333%" },
+            { L"1/12", L"8.333333%" }, { L"5/12", L"41.666667%" }, { L"7/12", L"58.333333%" }, { L"11/12", L"91.666667%" },
+            { L"full", L"100%" }, { L"min", L"min-content" }, { L"max", L"max-content" }, { L"fit", L"fit-content" }
+        };
+        for (const auto& fr : fractionScale) {
+            addUtil(std::wstring(L"w-") + fr.key, std::wstring(L"width: ") + fr.css + L";", L"sizing");
+            addUtil(std::wstring(L"h-") + fr.key, std::wstring(L"height: ") + fr.css + L";", L"sizing");
+            addUtil(std::wstring(L"size-") + fr.key, std::wstring(L"width: ") + fr.css + L"; height: " + fr.css + L";", L"sizing");
+            addUtil(std::wstring(L"basis-") + fr.key, std::wstring(L"flex-basis: ") + fr.css + L";", L"flexbox");
+        }
+        static const ScaleEntry maxWScale[] = {
+            { L"none", L"none" }, { L"xs", L"20rem" }, { L"sm", L"24rem" }, { L"md", L"28rem" },
+            { L"lg", L"32rem" }, { L"xl", L"36rem" }, { L"2xl", L"42rem" }, { L"3xl", L"48rem" },
+            { L"4xl", L"56rem" }, { L"5xl", L"64rem" }, { L"6xl", L"72rem" }, { L"7xl", L"80rem" },
+            { L"full", L"100%" }, { L"min", L"min-content" }, { L"max", L"max-content" }, { L"fit", L"fit-content" },
+            { L"prose", L"65ch" }, { L"screen-sm", L"640px" }, { L"screen-md", L"768px" },
+            { L"screen-lg", L"1024px" }, { L"screen-xl", L"1280px" }, { L"screen-2xl", L"1536px" }
+        };
+        for (const auto& mw : maxWScale) {
+            addUtil(std::wstring(L"max-w-") + mw.key, std::wstring(L"max-width: ") + mw.css + L";", L"sizing");
+        }
+
+        // 3b. Grid columns/rows/span/start/end & Order
+        for (int n = 1; n <= 12; ++n) {
+            std::wstring ns = std::to_wstring(n);
+            addUtil(L"grid-cols-" + ns, L"grid-template-columns: repeat(" + ns + L", minmax(0, 1fr));", L"grid");
+            addUtil(L"grid-rows-" + ns, L"grid-template-rows: repeat(" + ns + L", minmax(0, 1fr));", L"grid");
+            addUtil(L"col-span-" + ns, L"grid-column: span " + ns + L" / span " + ns + L";", L"grid");
+            addUtil(L"row-span-" + ns, L"grid-row: span " + ns + L" / span " + ns + L";", L"grid");
+            addUtil(L"col-start-" + ns, L"grid-column-start: " + ns + L";", L"grid");
+            addUtil(L"col-end-" + ns, L"grid-column-end: " + ns + L";", L"grid");
+            addUtil(L"row-start-" + ns, L"grid-row-start: " + ns + L";", L"grid");
+            addUtil(L"row-end-" + ns, L"grid-row-end: " + ns + L";", L"grid");
+            addUtil(L"order-" + ns, L"order: " + ns + L";", L"flexbox");
+            addUtil(L"columns-" + ns, L"columns: " + ns + L";", L"layout");
+        }
+        addUtil(L"col-start-13", L"grid-column-start: 13;", L"grid");
+        addUtil(L"col-end-13", L"grid-column-end: 13;", L"grid");
+        addUtil(L"row-start-13", L"grid-row-start: 13;", L"grid");
+        addUtil(L"row-end-13", L"grid-row-end: 13;", L"grid");
+
+        // 3c. Opacity (0..100 step 5), Scale, Rotate, Duration, Delay, Z-index
+        for (int op = 0; op <= 100; op += 5) {
+            std::wstring os = std::to_wstring(op);
+            addUtil(L"opacity-" + os, L"opacity: " + std::to_wstring(op / 100.0).substr(0, 4) + L";", L"effects");
+        }
+        static const int scales[] = { 0, 50, 75, 90, 95, 100, 105, 110, 125, 150 };
+        for (int sc : scales) {
+            std::wstring ss = std::to_wstring(sc);
+            addUtil(L"scale-" + ss, L"transform: scale(" + ss + L"%);", L"transform");
+            addUtil(L"scale-x-" + ss, L"transform: scaleX(" + ss + L"%);", L"transform");
+            addUtil(L"scale-y-" + ss, L"transform: scaleY(" + ss + L"%);", L"transform");
+        }
+        static const int rots[] = { 0, 1, 2, 3, 6, 12, 45, 90, 180 };
+        for (int rt : rots) {
+            std::wstring rs = std::to_wstring(rt);
+            addUtil(L"rotate-" + rs, L"transform: rotate(" + rs + L"deg);", L"transform");
+            if (rt > 0) addUtil(L"-rotate-" + rs, L"transform: rotate(-" + rs + L"deg);", L"transform");
+        }
+        static const int times[] = { 0, 75, 100, 150, 200, 300, 500, 700, 1000 };
+        for (int ms : times) {
+            std::wstring mss = std::to_wstring(ms);
+            addUtil(L"duration-" + mss, L"transition-duration: " + mss + L"ms;", L"transition");
+            addUtil(L"delay-" + mss, L"transition-delay: " + mss + L"ms;", L"transition");
+        }
+        static const int zVals[] = { 0, 10, 20, 30, 40, 50 };
+        for (int zv : zVals) {
+            std::wstring zs = std::to_wstring(zv);
+            addUtil(L"z-" + zs, L"z-index: " + zs + L";", L"layout");
+        }
+
+        // 3d. Rounded corners across all sides & sizes
+        static const wchar_t* roundDirs[] = { L"", L"-t", L"-r", L"-b", L"-l", L"-tl", L"-tr", L"-br", L"-bl", L"-s", L"-e" };
+        static const ScaleEntry roundSizes[] = {
+            { L"-none", L"0px" }, { L"-sm", L"0.125rem" }, { L"", L"0.25rem" }, { L"-md", L"0.375rem" },
+            { L"-lg", L"0.5rem" }, { L"-xl", L"0.75rem" }, { L"-2xl", L"1rem" }, { L"-3xl", L"1.5rem" }, { L"-full", L"9999px" }
+        };
+        for (const wchar_t* rd : roundDirs) {
+            for (const auto& rs : roundSizes) {
+                addUtil(std::wstring(L"rounded") + rd + rs.key, std::wstring(L"border-radius: ") + rs.css + L";", L"border");
+            }
+        }
+
+        // 3e. Border widths across all sides
+        static const wchar_t* borderSides[] = { L"", L"-t", L"-r", L"-b", L"-l", L"-x", L"-y", L"-s", L"-e" };
+        static const ScaleEntry borderWidths[] = {
+            { L"", L"1px" }, { L"-0", L"0px" }, { L"-2", L"2px" }, { L"-4", L"4px" }, { L"-8", L"8px" }
+        };
+        for (const wchar_t* bs : borderSides) {
+            for (const auto& bw : borderWidths) {
+                addUtil(std::wstring(L"border") + bs + bw.key, std::wstring(L"border-width: ") + bw.css + L";", L"border");
+            }
+        }
+
+        // 3f. Complete General Utilities (Typography, Text Decoration, All Cursors, Layout, Flex, Grid, Borders, Shadows, Filters, Interactivity, Accessibility)
         static const struct GeneralUtil { const wchar_t* name; const wchar_t* detail; } genUtils[] = {
-            { L"flex", L"display: flex;" },
-            { L"inline-flex", L"display: inline-flex;" },
-            { L"grid", L"display: grid;" },
-            { L"inline-grid", L"display: inline-grid;" },
-            { L"hidden", L"display: none;" },
+            // Display & Layout
+            { L"container", L"width: 100%; (responsive max-width)" },
             { L"block", L"display: block;" },
             { L"inline-block", L"display: inline-block;" },
-            { L"flex-col", L"flex-direction: column;" },
+            { L"inline", L"display: inline;" },
+            { L"flex", L"display: flex;" },
+            { L"inline-flex", L"display: inline-flex;" },
+            { L"table", L"display: table;" },
+            { L"inline-table", L"display: inline-table;" },
+            { L"table-caption", L"display: table-caption;" },
+            { L"table-cell", L"display: table-cell;" },
+            { L"table-column", L"display: table-column;" },
+            { L"table-row", L"display: table-row;" },
+            { L"flow-root", L"display: flow-root;" },
+            { L"grid", L"display: grid;" },
+            { L"inline-grid", L"display: inline-grid;" },
+            { L"contents", L"display: contents;" },
+            { L"list-item", L"display: list-item;" },
+            { L"hidden", L"display: none;" },
+            { L"static", L"position: static;" },
+            { L"fixed", L"position: fixed;" },
+            { L"absolute", L"position: absolute;" },
+            { L"relative", L"position: relative;" },
+            { L"sticky", L"position: sticky;" },
+            { L"visible", L"visibility: visible;" },
+            { L"invisible", L"visibility: hidden;" },
+            { L"collapse", L"visibility: collapse;" },
+            { L"isolate", L"isolation: isolate;" },
+            { L"isolation-auto", L"isolation: auto;" },
+            { L"z-auto", L"z-index: auto;" },
+            { L"box-border", L"box-sizing: border-box;" },
+            { L"box-content", L"box-sizing: content-box;" },
+            { L"float-start", L"float: inline-start;" },
+            { L"float-end", L"float: inline-end;" },
+            { L"float-right", L"float: right;" },
+            { L"float-left", L"float: left;" },
+            { L"float-none", L"float: none;" },
+            { L"clear-start", L"clear: inline-start;" },
+            { L"clear-end", L"clear: inline-end;" },
+            { L"clear-left", L"clear: left;" },
+            { L"clear-right", L"clear: right;" },
+            { L"clear-both", L"clear: both;" },
+            { L"clear-none", L"clear: none;" },
+            { L"aspect-auto", L"aspect-ratio: auto;" },
+            { L"aspect-square", L"aspect-ratio: 1 / 1;" },
+            { L"aspect-video", L"aspect-ratio: 16 / 9;" },
+            { L"object-contain", L"object-fit: contain;" },
+            { L"object-cover", L"object-fit: cover;" },
+            { L"object-fill", L"object-fit: fill;" },
+            { L"object-none", L"object-fit: none;" },
+            { L"object-scale-down", L"object-fit: scale-down;" },
+            { L"object-center", L"object-position: center;" },
+            { L"object-top", L"object-position: top;" },
+            { L"object-bottom", L"object-position: bottom;" },
+            { L"object-left", L"object-position: left;" },
+            { L"object-right", L"object-position: right;" },
+            { L"overflow-auto", L"overflow: auto;" },
+            { L"overflow-hidden", L"overflow: hidden;" },
+            { L"overflow-clip", L"overflow: clip;" },
+            { L"overflow-visible", L"overflow: visible;" },
+            { L"overflow-scroll", L"overflow: scroll;" },
+            { L"overflow-x-auto", L"overflow-x: auto;" },
+            { L"overflow-y-auto", L"overflow-y: auto;" },
+            { L"overflow-x-hidden", L"overflow-x: hidden;" },
+            { L"overflow-y-hidden", L"overflow-y: hidden;" },
+            { L"overflow-x-scroll", L"overflow-x: scroll;" },
+            { L"overflow-y-scroll", L"overflow-y: scroll;" },
+            { L"overscroll-auto", L"overscroll-behavior: auto;" },
+            { L"overscroll-contain", L"overscroll-behavior: contain;" },
+            { L"overscroll-none", L"overscroll-behavior: none;" },
+
+            // Flexbox & Grid Alignment
             { L"flex-row", L"flex-direction: row;" },
+            { L"flex-row-reverse", L"flex-direction: row-reverse;" },
+            { L"flex-col", L"flex-direction: column;" },
+            { L"flex-col-reverse", L"flex-direction: column-reverse;" },
             { L"flex-wrap", L"flex-wrap: wrap;" },
+            { L"flex-wrap-reverse", L"flex-wrap: wrap-reverse;" },
             { L"flex-nowrap", L"flex-wrap: nowrap;" },
-            { L"items-center", L"align-items: center;" },
-            { L"items-start", L"align-items: flex-start;" },
-            { L"items-end", L"align-items: flex-end;" },
-            { L"items-baseline", L"align-items: baseline;" },
-            { L"items-stretch", L"align-items: stretch;" },
+            { L"flex-1", L"flex: 1 1 0%;" },
+            { L"flex-auto", L"flex: 1 1 auto;" },
+            { L"flex-initial", L"flex: 0 1 auto;" },
+            { L"flex-none", L"flex: none;" },
+            { L"grow", L"flex-grow: 1;" },
+            { L"grow-0", L"flex-grow: 0;" },
+            { L"shrink", L"flex-shrink: 1;" },
+            { L"shrink-0", L"flex-shrink: 0;" },
+            { L"order-first", L"order: -9999;" },
+            { L"order-last", L"order: 9999;" },
+            { L"order-none", L"order: 0;" },
+            { L"grid-cols-none", L"grid-template-columns: none;" },
+            { L"grid-cols-subgrid", L"grid-template-columns: subgrid;" },
+            { L"grid-rows-none", L"grid-template-rows: none;" },
+            { L"grid-rows-subgrid", L"grid-template-rows: subgrid;" },
+            { L"col-auto", L"grid-column: auto;" },
+            { L"col-span-full", L"grid-column: 1 / -1;" },
+            { L"row-auto", L"grid-row: auto;" },
+            { L"row-span-full", L"grid-row: 1 / -1;" },
+            { L"grid-flow-row", L"grid-auto-flow: row;" },
+            { L"grid-flow-col", L"grid-auto-flow: column;" },
+            { L"grid-flow-dense", L"grid-auto-flow: dense;" },
+            { L"grid-flow-row-dense", L"grid-auto-flow: row dense;" },
+            { L"grid-flow-col-dense", L"grid-auto-flow: column dense;" },
+            { L"auto-cols-auto", L"grid-auto-columns: auto;" },
+            { L"auto-cols-min", L"grid-auto-columns: min-content;" },
+            { L"auto-cols-max", L"grid-auto-columns: max-content;" },
+            { L"auto-cols-fr", L"grid-auto-columns: minmax(0, 1fr);" },
+            { L"auto-rows-auto", L"grid-auto-rows: auto;" },
+            { L"auto-rows-min", L"grid-auto-rows: min-content;" },
+            { L"auto-rows-max", L"grid-auto-rows: max-content;" },
+            { L"auto-rows-fr", L"grid-auto-rows: minmax(0, 1fr);" },
+            { L"justify-normal", L"justify-content: normal;" },
+            { L"justify-start", L"justify-content: flex-start;" },
+            { L"justify-end", L"justify-content: flex-end;" },
             { L"justify-center", L"justify-content: center;" },
             { L"justify-between", L"justify-content: space-between;" },
             { L"justify-around", L"justify-content: space-around;" },
             { L"justify-evenly", L"justify-content: space-evenly;" },
-            { L"justify-start", L"justify-content: flex-start;" },
-            { L"justify-end", L"justify-content: flex-end;" },
-            { L"gap-1", L"gap: 0.25rem;" },
-            { L"gap-2", L"gap: 0.5rem;" },
-            { L"gap-3", L"gap: 0.75rem;" },
-            { L"gap-4", L"gap: 1rem;" },
-            { L"gap-6", L"gap: 1.5rem;" },
-            { L"gap-8", L"gap: 2rem;" },
-            { L"p-1", L"padding: 0.25rem;" },
-            { L"p-2", L"padding: 0.5rem;" },
-            { L"p-3", L"padding: 0.75rem;" },
-            { L"p-4", L"padding: 1rem;" },
-            { L"p-6", L"padding: 1.5rem;" },
-            { L"p-8", L"padding: 2rem;" },
-            { L"px-2", L"padding-left: 0.5rem; padding-right: 0.5rem;" },
-            { L"px-4", L"padding-left: 1rem; padding-right: 1rem;" },
-            { L"px-6", L"padding-left: 1.5rem; padding-right: 1.5rem;" },
-            { L"py-1", L"padding-top: 0.25rem; padding-bottom: 0.25rem;" },
-            { L"py-2", L"padding-top: 0.5rem; padding-bottom: 0.5rem;" },
-            { L"py-4", L"padding-top: 1rem; padding-bottom: 1rem;" },
-            { L"m-1", L"margin: 0.25rem;" },
-            { L"m-2", L"margin: 0.5rem;" },
-            { L"m-4", L"margin: 1rem;" },
-            { L"mx-auto", L"margin-left: auto; margin-right: auto;" },
-            { L"my-2", L"margin-top: 0.5rem; margin-bottom: 0.5rem;" },
-            { L"my-4", L"margin-top: 1rem; margin-bottom: 1rem;" },
-            { L"w-full", L"width: 100%;" },
+            { L"justify-stretch", L"justify-content: stretch;" },
+            { L"justify-items-start", L"justify-items: start;" },
+            { L"justify-items-end", L"justify-items: end;" },
+            { L"justify-items-center", L"justify-items: center;" },
+            { L"justify-items-stretch", L"justify-items: stretch;" },
+            { L"justify-self-auto", L"justify-self: auto;" },
+            { L"justify-self-start", L"justify-self: start;" },
+            { L"justify-self-end", L"justify-self: end;" },
+            { L"justify-self-center", L"justify-self: center;" },
+            { L"justify-self-stretch", L"justify-self: stretch;" },
+            { L"content-normal", L"align-content: normal;" },
+            { L"content-center", L"align-content: center;" },
+            { L"content-start", L"align-content: flex-start;" },
+            { L"content-end", L"align-content: flex-end;" },
+            { L"content-between", L"align-content: space-between;" },
+            { L"content-around", L"align-content: space-around;" },
+            { L"content-evenly", L"align-content: space-evenly;" },
+            { L"content-baseline", L"align-content: baseline;" },
+            { L"content-stretch", L"align-content: stretch;" },
+            { L"items-start", L"align-items: flex-start;" },
+            { L"items-end", L"align-items: flex-end;" },
+            { L"items-center", L"align-items: center;" },
+            { L"items-baseline", L"align-items: baseline;" },
+            { L"items-stretch", L"align-items: stretch;" },
+            { L"self-auto", L"align-self: auto;" },
+            { L"self-start", L"align-self: flex-start;" },
+            { L"self-end", L"align-self: flex-end;" },
+            { L"self-center", L"align-self: center;" },
+            { L"self-stretch", L"align-self: stretch;" },
+            { L"self-baseline", L"align-self: baseline;" },
+            { L"place-content-center", L"place-content: center;" },
+            { L"place-content-start", L"place-content: start;" },
+            { L"place-content-end", L"place-content: end;" },
+            { L"place-content-between", L"place-content: space-between;" },
+            { L"place-content-around", L"place-content: space-around;" },
+            { L"place-content-evenly", L"place-content: space-evenly;" },
+            { L"place-content-stretch", L"place-content: stretch;" },
+            { L"place-items-start", L"place-items: start;" },
+            { L"place-items-end", L"place-items: end;" },
+            { L"place-items-center", L"place-items: center;" },
+            { L"place-items-stretch", L"place-items: stretch;" },
+            { L"place-self-auto", L"place-self: auto;" },
+            { L"place-self-start", L"place-self: start;" },
+            { L"place-self-end", L"place-self: end;" },
+            { L"place-self-center", L"place-self: center;" },
+            { L"place-self-stretch", L"place-self: stretch;" },
+            { L"space-x-reverse", L"--tw-space-x-reverse: 1;" },
+            { L"space-y-reverse", L"--tw-space-y-reverse: 1;" },
+
+            // Viewport Sizing
             { L"w-screen", L"width: 100vw;" },
-            { L"w-auto", L"width: auto;" },
-            { L"w-fit", L"width: fit-content;" },
-            { L"h-full", L"height: 100%;" },
+            { L"w-svw", L"width: 100svw;" },
+            { L"w-lvw", L"width: 100lvw;" },
+            { L"w-dvw", L"width: 100dvw;" },
             { L"h-screen", L"height: 100vh;" },
-            { L"h-auto", L"height: auto;" },
-            { L"h-fit", L"height: fit-content;" },
+            { L"h-svh", L"height: 100svh;" },
+            { L"h-lvh", L"height: 100lvh;" },
+            { L"h-dvh", L"height: 100dvh;" },
+            { L"min-h-screen", L"min-height: 100vh;" },
+            { L"min-h-svh", L"min-height: 100svh;" },
+            { L"min-h-lvh", L"min-height: 100lvh;" },
+            { L"min-h-dvh", L"min-height: 100dvh;" },
+            { L"min-h-full", L"min-height: 100%;" },
+            { L"min-h-fit", L"min-height: fit-content;" },
+            { L"max-h-screen", L"max-height: 100vh;" },
+            { L"max-h-full", L"max-height: 100%;" },
+            { L"max-h-fit", L"max-height: fit-content;" },
+            { L"min-w-full", L"min-width: 100%;" },
+            { L"min-w-min", L"min-width: min-content;" },
+            { L"min-w-max", L"min-width: max-content;" },
+            { L"min-w-fit", L"min-width: fit-content;" },
+
+            // Typography & Text Decoration
+            { L"font-sans", L"font-family: ui-sans-serif, system-ui, sans-serif;" },
+            { L"font-serif", L"font-family: ui-serif, Georgia, serif;" },
+            { L"font-mono", L"font-family: ui-monospace, SFMono-Regular, monospace;" },
             { L"text-xs", L"font-size: 0.75rem; line-height: 1rem;" },
             { L"text-sm", L"font-size: 0.875rem; line-height: 1.25rem;" },
             { L"text-base", L"font-size: 1rem; line-height: 1.5rem;" },
             { L"text-lg", L"font-size: 1.125rem; line-height: 1.75rem;" },
             { L"text-xl", L"font-size: 1.25rem; line-height: 1.75rem;" },
             { L"text-2xl", L"font-size: 1.5rem; line-height: 2rem;" },
+            { L"text-3xl", L"font-size: 1.875rem; line-height: 2.25rem;" },
+            { L"text-4xl", L"font-size: 2.25rem; line-height: 2.5rem;" },
+            { L"text-5xl", L"font-size: 3rem; line-height: 1;" },
+            { L"text-6xl", L"font-size: 3.75rem; line-height: 1;" },
+            { L"text-7xl", L"font-size: 4.5rem; line-height: 1;" },
+            { L"text-8xl", L"font-size: 6rem; line-height: 1;" },
+            { L"text-9xl", L"font-size: 8rem; line-height: 1;" },
+            { L"antialiased", L"-webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;" },
+            { L"subpixel-antialiased", L"-webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto;" },
+            { L"italic", L"font-style: italic;" },
+            { L"not-italic", L"font-style: normal;" },
+            { L"font-thin", L"font-weight: 100;" },
+            { L"font-extralight", L"font-weight: 200;" },
+            { L"font-light", L"font-weight: 300;" },
+            { L"font-normal", L"font-weight: 400;" },
+            { L"font-medium", L"font-weight: 500;" },
+            { L"font-semibold", L"font-weight: 600;" },
+            { L"font-bold", L"font-weight: 700;" },
+            { L"font-extrabold", L"font-weight: 800;" },
+            { L"font-black", L"font-weight: 900;" },
+            { L"tabular-nums", L"font-variant-numeric: tabular-nums;" },
+            { L"lining-nums", L"font-variant-numeric: lining-nums;" },
+            { L"oldstyle-nums", L"font-variant-numeric: oldstyle-nums;" },
+            { L"proportional-nums", L"font-variant-numeric: proportional-nums;" },
+            { L"ordinal", L"font-variant-numeric: ordinal;" },
+            { L"slashed-zero", L"font-variant-numeric: slashed-zero;" },
+            { L"tracking-tighter", L"letter-spacing: -0.05em;" },
+            { L"tracking-tight", L"letter-spacing: -0.025em;" },
+            { L"tracking-normal", L"letter-spacing: 0em;" },
+            { L"tracking-wide", L"letter-spacing: 0.025em;" },
+            { L"tracking-wider", L"letter-spacing: 0.05em;" },
+            { L"tracking-widest", L"letter-spacing: 0.1em;" },
+            { L"leading-none", L"line-height: 1;" },
+            { L"leading-tight", L"line-height: 1.25;" },
+            { L"leading-snug", L"line-height: 1.375;" },
+            { L"leading-normal", L"line-height: 1.5;" },
+            { L"leading-relaxed", L"line-height: 1.625;" },
+            { L"leading-loose", L"line-height: 2;" },
+            { L"leading-3", L"line-height: 0.75rem;" },
+            { L"leading-4", L"line-height: 1rem;" },
+            { L"leading-5", L"line-height: 1.25rem;" },
+            { L"leading-6", L"line-height: 1.5rem;" },
+            { L"leading-7", L"line-height: 1.75rem;" },
+            { L"leading-8", L"line-height: 2rem;" },
+            { L"leading-9", L"line-height: 2.25rem;" },
+            { L"leading-10", L"line-height: 2.5rem;" },
+            { L"line-clamp-1", L"overflow: hidden; -webkit-line-clamp: 1;" },
+            { L"line-clamp-2", L"overflow: hidden; -webkit-line-clamp: 2;" },
+            { L"line-clamp-3", L"overflow: hidden; -webkit-line-clamp: 3;" },
+            { L"line-clamp-4", L"overflow: hidden; -webkit-line-clamp: 4;" },
+            { L"line-clamp-5", L"overflow: hidden; -webkit-line-clamp: 5;" },
+            { L"line-clamp-6", L"overflow: hidden; -webkit-line-clamp: 6;" },
+            { L"line-clamp-none", L"overflow: visible; -webkit-line-clamp: none;" },
+            { L"list-none", L"list-style-type: none;" },
+            { L"list-disc", L"list-style-type: disc;" },
+            { L"list-decimal", L"list-style-type: decimal;" },
+            { L"list-inside", L"list-style-position: inside;" },
+            { L"list-outside", L"list-style-position: outside;" },
             { L"text-left", L"text-align: left;" },
             { L"text-center", L"text-align: center;" },
             { L"text-right", L"text-align: right;" },
-            { L"font-bold", L"font-weight: 700;" },
-            { L"font-semibold", L"font-weight: 600;" },
-            { L"font-medium", L"font-weight: 500;" },
-            { L"font-normal", L"font-weight: 400;" },
-            { L"font-extrabold", L"font-weight: 800;" },
-            { L"rounded", L"border-radius: 0.25rem;" },
-            { L"rounded-md", L"border-radius: 0.375rem;" },
-            { L"rounded-lg", L"border-radius: 0.5rem;" },
-            { L"rounded-xl", L"border-radius: 0.75rem;" },
-            { L"rounded-full", L"border-radius: 9999px;" },
-            { L"border", L"border-width: 1px;" },
-            { L"border-2", L"border-width: 2px;" },
+            { L"text-justify", L"text-align: justify;" },
+            { L"text-start", L"text-align: start;" },
+            { L"text-end", L"text-align: end;" },
+            { L"underline", L"text-decoration-line: underline;" },
+            { L"overline", L"text-decoration-line: overline;" },
+            { L"line-through", L"text-decoration-line: line-through;" },
+            { L"no-underline", L"text-decoration-line: none;" },
+            { L"decoration-solid", L"text-decoration-style: solid;" },
+            { L"decoration-double", L"text-decoration-style: double;" },
+            { L"decoration-dotted", L"text-decoration-style: dotted;" },
+            { L"decoration-dashed", L"text-decoration-style: dashed;" },
+            { L"decoration-wavy", L"text-decoration-style: wavy;" },
+            { L"decoration-auto", L"text-decoration-thickness: auto;" },
+            { L"decoration-from-font", L"text-decoration-thickness: from-font;" },
+            { L"decoration-0", L"text-decoration-thickness: 0px;" },
+            { L"decoration-1", L"text-decoration-thickness: 1px;" },
+            { L"decoration-2", L"text-decoration-thickness: 2px;" },
+            { L"decoration-4", L"text-decoration-thickness: 4px;" },
+            { L"decoration-8", L"text-decoration-thickness: 8px;" },
+            { L"underline-offset-auto", L"text-underline-offset: auto;" },
+            { L"underline-offset-0", L"text-underline-offset: 0px;" },
+            { L"underline-offset-1", L"text-underline-offset: 1px;" },
+            { L"underline-offset-2", L"text-underline-offset: 2px;" },
+            { L"underline-offset-4", L"text-underline-offset: 4px;" },
+            { L"underline-offset-8", L"text-underline-offset: 8px;" },
+            { L"uppercase", L"text-transform: uppercase;" },
+            { L"lowercase", L"text-transform: lowercase;" },
+            { L"capitalize", L"text-transform: capitalize;" },
+            { L"normal-case", L"text-transform: none;" },
+            { L"truncate", L"overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" },
+            { L"text-ellipsis", L"text-overflow: ellipsis;" },
+            { L"text-clip", L"text-overflow: clip;" },
+            { L"text-wrap", L"text-wrap: wrap;" },
+            { L"text-nowrap", L"text-wrap: nowrap;" },
+            { L"text-balance", L"text-wrap: balance;" },
+            { L"text-pretty", L"text-wrap: pretty;" },
+            { L"align-baseline", L"vertical-align: baseline;" },
+            { L"align-top", L"vertical-align: top;" },
+            { L"align-middle", L"vertical-align: middle;" },
+            { L"align-bottom", L"vertical-align: bottom;" },
+            { L"align-text-top", L"vertical-align: text-top;" },
+            { L"align-text-bottom", L"vertical-align: text-bottom;" },
+            { L"align-sub", L"vertical-align: sub;" },
+            { L"align-super", L"vertical-align: super;" },
+            { L"whitespace-normal", L"white-space: normal;" },
+            { L"whitespace-nowrap", L"white-space: nowrap;" },
+            { L"whitespace-pre", L"white-space: pre;" },
+            { L"whitespace-pre-line", L"white-space: pre-line;" },
+            { L"whitespace-pre-wrap", L"white-space: pre-wrap;" },
+            { L"whitespace-break-spaces", L"white-space: break-spaces;" },
+            { L"break-normal", L"overflow-wrap: normal; word-break: normal;" },
+            { L"break-words", L"overflow-wrap: break-word;" },
+            { L"break-all", L"word-break: break-all;" },
+            { L"break-keep", L"word-break: keep-all;" },
+            { L"hyphens-none", L"hyphens: none;" },
+            { L"hyphens-manual", L"hyphens: manual;" },
+            { L"hyphens-auto", L"hyphens: auto;" },
+
+            // Gradients
+            { L"bg-none", L"background-image: none;" },
+            { L"bg-gradient-to-t", L"background-image: linear-gradient(to top, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-tr", L"background-image: linear-gradient(to top right, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-r", L"background-image: linear-gradient(to right, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-br", L"background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-b", L"background-image: linear-gradient(to bottom, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-bl", L"background-image: linear-gradient(to bottom left, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-l", L"background-image: linear-gradient(to left, var(--tw-gradient-stops));" },
+            { L"bg-gradient-to-tl", L"background-image: linear-gradient(to top left, var(--tw-gradient-stops));" },
+
+            // Borders, Dividers, Outlines, Rings
+            { L"border-solid", L"border-style: solid;" },
+            { L"border-dashed", L"border-style: dashed;" },
+            { L"border-dotted", L"border-style: dotted;" },
+            { L"border-double", L"border-style: double;" },
+            { L"border-hidden", L"border-style: hidden;" },
+            { L"border-none", L"border-style: none;" },
+            { L"divide-x", L"border-right-width: 0px; border-left-width: 1px;" },
+            { L"divide-x-0", L"border-right-width: 0px; border-left-width: 0px;" },
+            { L"divide-x-2", L"border-right-width: 0px; border-left-width: 2px;" },
+            { L"divide-x-4", L"border-right-width: 0px; border-left-width: 4px;" },
+            { L"divide-y", L"border-top-width: 1px; border-bottom-width: 0px;" },
+            { L"divide-y-0", L"border-top-width: 0px; border-bottom-width: 0px;" },
+            { L"divide-y-2", L"border-top-width: 2px; border-bottom-width: 0px;" },
+            { L"divide-y-4", L"border-top-width: 4px; border-bottom-width: 0px;" },
+            { L"divide-solid", L"border-style: solid;" },
+            { L"divide-dashed", L"border-style: dashed;" },
+            { L"divide-dotted", L"border-style: dotted;" },
+            { L"divide-none", L"border-style: none;" },
+            { L"outline-none", L"outline: 2px solid transparent; outline-offset: 2px;" },
+            { L"outline", L"outline-style: solid;" },
+            { L"outline-dashed", L"outline-style: dashed;" },
+            { L"outline-dotted", L"outline-style: dotted;" },
+            { L"outline-double", L"outline-style: double;" },
+            { L"outline-0", L"outline-width: 0px;" },
+            { L"outline-1", L"outline-width: 1px;" },
+            { L"outline-2", L"outline-width: 2px;" },
+            { L"outline-4", L"outline-width: 4px;" },
+            { L"outline-8", L"outline-width: 8px;" },
+            { L"outline-offset-0", L"outline-offset: 0px;" },
+            { L"outline-offset-1", L"outline-offset: 1px;" },
+            { L"outline-offset-2", L"outline-offset: 2px;" },
+            { L"outline-offset-4", L"outline-offset: 4px;" },
+            { L"outline-offset-8", L"outline-offset: 8px;" },
+            { L"ring", L"box-shadow: 0 0 0 3px var(--tw-ring-color);" },
+            { L"ring-0", L"box-shadow: 0 0 0 0px var(--tw-ring-color);" },
+            { L"ring-1", L"box-shadow: 0 0 0 1px var(--tw-ring-color);" },
+            { L"ring-2", L"box-shadow: 0 0 0 2px var(--tw-ring-color);" },
+            { L"ring-4", L"box-shadow: 0 0 0 4px var(--tw-ring-color);" },
+            { L"ring-8", L"box-shadow: 0 0 0 8px var(--tw-ring-color);" },
+            { L"ring-inset", L"--tw-ring-inset: inset;" },
+            { L"ring-offset-0", L"--tw-ring-offset-width: 0px;" },
+            { L"ring-offset-1", L"--tw-ring-offset-width: 1px;" },
+            { L"ring-offset-2", L"--tw-ring-offset-width: 2px;" },
+            { L"ring-offset-4", L"--tw-ring-offset-width: 4px;" },
+            { L"ring-offset-8", L"--tw-ring-offset-width: 8px;" },
+
+            // Shadows, Filters & Backdrop Filters
+            { L"shadow-sm", L"box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);" },
             { L"shadow", L"box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);" },
             { L"shadow-md", L"box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);" },
             { L"shadow-lg", L"box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);" },
-            { L"cursor-pointer", L"cursor: pointer;" },
-            { L"overflow-hidden", L"overflow: hidden;" },
-            { L"overflow-auto", L"overflow: auto;" },
-            { L"relative", L"position: relative;" },
-            { L"absolute", L"position: absolute;" },
-            { L"inset-0", L"inset: 0px;" },
+            { L"shadow-xl", L"box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1);" },
+            { L"shadow-2xl", L"box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);" },
+            { L"shadow-inner", L"box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.05);" },
+            { L"shadow-none", L"box-shadow: 0 0 #0000;" },
+            { L"blur-none", L"filter: blur(0);" },
+            { L"blur-sm", L"filter: blur(4px);" },
+            { L"blur", L"filter: blur(8px);" },
+            { L"blur-md", L"filter: blur(12px);" },
+            { L"blur-lg", L"filter: blur(16px);" },
+            { L"blur-xl", L"filter: blur(24px);" },
+            { L"blur-2xl", L"filter: blur(40px);" },
+            { L"blur-3xl", L"filter: blur(64px);" },
+            { L"backdrop-blur-none", L"backdrop-filter: blur(0);" },
+            { L"backdrop-blur-sm", L"backdrop-filter: blur(4px);" },
+            { L"backdrop-blur", L"backdrop-filter: blur(8px);" },
+            { L"backdrop-blur-md", L"backdrop-filter: blur(12px);" },
+            { L"backdrop-blur-lg", L"backdrop-filter: blur(16px);" },
+            { L"backdrop-blur-xl", L"backdrop-filter: blur(24px);" },
+            { L"backdrop-blur-2xl", L"backdrop-filter: blur(40px);" },
+            { L"backdrop-blur-3xl", L"backdrop-filter: blur(64px);" },
+            { L"grayscale", L"filter: grayscale(100%);" },
+            { L"grayscale-0", L"filter: grayscale(0);" },
+            { L"invert", L"filter: invert(100%);" },
+            { L"invert-0", L"filter: invert(0);" },
+            { L"sepia", L"filter: sepia(100%);" },
+            { L"sepia-0", L"filter: sepia(0);" },
+            { L"drop-shadow-sm", L"filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.05));" },
+            { L"drop-shadow", L"filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.1));" },
+            { L"drop-shadow-md", L"filter: drop-shadow(0 4px 3px rgb(0 0 0 / 0.07));" },
+            { L"drop-shadow-lg", L"filter: drop-shadow(0 10px 8px rgb(0 0 0 / 0.04));" },
+            { L"drop-shadow-xl", L"filter: drop-shadow(0 20px 13px rgb(0 0 0 / 0.03));" },
+            { L"drop-shadow-2xl", L"filter: drop-shadow(0 25px 25px rgb(0 0 0 / 0.15));" },
+            { L"drop-shadow-none", L"filter: drop-shadow(0 0 #0000);" },
+            { L"mix-blend-normal", L"mix-blend-mode: normal;" },
+            { L"mix-blend-multiply", L"mix-blend-mode: multiply;" },
+            { L"mix-blend-screen", L"mix-blend-mode: screen;" },
+            { L"mix-blend-overlay", L"mix-blend-mode: overlay;" },
+            { L"mix-blend-darken", L"mix-blend-mode: darken;" },
+            { L"mix-blend-lighten", L"mix-blend-mode: lighten;" },
+            { L"mix-blend-difference", L"mix-blend-mode: difference;" },
+
+            // Transitions, Transforms & Animations
+            { L"transition-none", L"transition-property: none;" },
+            { L"transition-all", L"transition-property: all;" },
             { L"transition", L"transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;" },
-            { L"duration-150", L"transition-duration: 150ms;" },
-            { L"duration-200", L"transition-duration: 200ms;" },
-            { L"duration-300", L"transition-duration: 300ms;" }
+            { L"transition-colors", L"transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;" },
+            { L"transition-opacity", L"transition-property: opacity;" },
+            { L"transition-shadow", L"transition-property: box-shadow;" },
+            { L"transition-transform", L"transition-property: transform;" },
+            { L"ease-linear", L"transition-timing-function: linear;" },
+            { L"ease-in", L"transition-timing-function: cubic-bezier(0.4, 0, 1, 1);" },
+            { L"ease-out", L"transition-timing-function: cubic-bezier(0, 0, 0.2, 1);" },
+            { L"ease-in-out", L"transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);" },
+            { L"animate-none", L"animation: none;" },
+            { L"animate-spin", L"animation: spin 1s linear infinite;" },
+            { L"animate-ping", L"animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;" },
+            { L"animate-pulse", L"animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;" },
+            { L"animate-bounce", L"animation: bounce 1s infinite;" },
+            { L"origin-center", L"transform-origin: center;" },
+            { L"origin-top", L"transform-origin: top;" },
+            { L"origin-top-right", L"transform-origin: top right;" },
+            { L"origin-right", L"transform-origin: right;" },
+            { L"origin-bottom-right", L"transform-origin: bottom right;" },
+            { L"origin-bottom", L"transform-origin: bottom;" },
+            { L"origin-bottom-left", L"transform-origin: bottom left;" },
+            { L"origin-left", L"transform-origin: left;" },
+            { L"origin-top-left", L"transform-origin: top left;" },
+
+            // Complete Cursor Utilities (all 36 standard Tailwind cursor-* classes)
+            { L"cursor-auto", L"cursor: auto;" },
+            { L"cursor-default", L"cursor: default;" },
+            { L"cursor-pointer", L"cursor: pointer;" },
+            { L"cursor-wait", L"cursor: wait;" },
+            { L"cursor-text", L"cursor: text;" },
+            { L"cursor-move", L"cursor: move;" },
+            { L"cursor-help", L"cursor: help;" },
+            { L"cursor-not-allowed", L"cursor: not-allowed;" },
+            { L"cursor-none", L"cursor: none;" },
+            { L"cursor-context-menu", L"cursor: context-menu;" },
+            { L"cursor-progress", L"cursor: progress;" },
+            { L"cursor-cell", L"cursor: cell;" },
+            { L"cursor-crosshair", L"cursor: crosshair;" },
+            { L"cursor-vertical-text", L"cursor: vertical-text;" },
+            { L"cursor-alias", L"cursor: alias;" },
+            { L"cursor-copy", L"cursor: copy;" },
+            { L"cursor-no-drop", L"cursor: no-drop;" },
+            { L"cursor-grab", L"cursor: grab;" },
+            { L"cursor-grabbing", L"cursor: grabbing;" },
+            { L"cursor-all-scroll", L"cursor: all-scroll;" },
+            { L"cursor-col-resize", L"cursor: col-resize;" },
+            { L"cursor-row-resize", L"cursor: row-resize;" },
+            { L"cursor-n-resize", L"cursor: n-resize;" },
+            { L"cursor-e-resize", L"cursor: e-resize;" },
+            { L"cursor-s-resize", L"cursor: s-resize;" },
+            { L"cursor-w-resize", L"cursor: w-resize;" },
+            { L"cursor-ne-resize", L"cursor: ne-resize;" },
+            { L"cursor-nw-resize", L"cursor: nw-resize;" },
+            { L"cursor-se-resize", L"cursor: se-resize;" },
+            { L"cursor-sw-resize", L"cursor: sw-resize;" },
+            { L"cursor-ew-resize", L"cursor: ew-resize;" },
+            { L"cursor-ns-resize", L"cursor: ns-resize;" },
+            { L"cursor-nesw-resize", L"cursor: nesw-resize;" },
+            { L"cursor-nwse-resize", L"cursor: nwse-resize;" },
+            { L"cursor-zoom-in", L"cursor: zoom-in;" },
+            { L"cursor-zoom-out", L"cursor: zoom-out;" },
+
+            // Interactivity, Scroll, Snap, Tables, SVG & Accessibility
+            { L"select-none", L"user-select: none;" },
+            { L"select-text", L"user-select: text;" },
+            { L"select-all", L"user-select: all;" },
+            { L"select-auto", L"user-select: auto;" },
+            { L"pointer-events-none", L"pointer-events: none;" },
+            { L"pointer-events-auto", L"pointer-events: auto;" },
+            { L"resize-none", L"resize: none;" },
+            { L"resize-y", L"resize: vertical;" },
+            { L"resize-x", L"resize: horizontal;" },
+            { L"resize", L"resize: both;" },
+            { L"appearance-none", L"appearance: none;" },
+            { L"appearance-auto", L"appearance: auto;" },
+            { L"scroll-auto", L"scroll-behavior: auto;" },
+            { L"scroll-smooth", L"scroll-behavior: smooth;" },
+            { L"snap-none", L"scroll-snap-type: none;" },
+            { L"snap-x", L"scroll-snap-type: x var(--tw-scroll-snap-strictness);" },
+            { L"snap-y", L"scroll-snap-type: y var(--tw-scroll-snap-strictness);" },
+            { L"snap-both", L"scroll-snap-type: both var(--tw-scroll-snap-strictness);" },
+            { L"snap-mandatory", L"--tw-scroll-snap-strictness: mandatory;" },
+            { L"snap-proximity", L"--tw-scroll-snap-strictness: proximity;" },
+            { L"snap-start", L"scroll-snap-align: start;" },
+            { L"snap-end", L"scroll-snap-align: end;" },
+            { L"snap-center", L"scroll-snap-align: center;" },
+            { L"touch-auto", L"touch-action: auto;" },
+            { L"touch-none", L"touch-action: none;" },
+            { L"touch-pan-x", L"touch-action: pan-x;" },
+            { L"touch-pan-y", L"touch-action: pan-y;" },
+            { L"touch-manipulation", L"touch-action: manipulation;" },
+            { L"will-change-auto", L"will-change: auto;" },
+            { L"will-change-scroll", L"will-change: scroll-position;" },
+            { L"will-change-contents", L"will-change: contents;" },
+            { L"will-change-transform", L"will-change: transform;" },
+            { L"table-auto", L"table-layout: auto;" },
+            { L"table-fixed", L"table-layout: fixed;" },
+            { L"border-collapse", L"border-collapse: collapse;" },
+            { L"border-separate", L"border-collapse: separate;" },
+            { L"stroke-0", L"stroke-width: 0;" },
+            { L"stroke-1", L"stroke-width: 1;" },
+            { L"stroke-2", L"stroke-width: 2;" },
+            { L"sr-only", L"position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border-width: 0;" },
+            { L"not-sr-only", L"position: static; width: auto; height: auto; padding: 0; margin: 0; overflow: visible; clip: auto; white-space: normal;" },
+            { L"group", L"Marker class for styling children based on parent state (group-hover:*, group-focus:*)" },
+            { L"peer", L"Marker class for styling siblings based on sibling state (peer-checked:*, peer-focus:*)" }
         };
         for (const auto& gu : genUtils) {
-            TailwindCandidate c;
-            c.name = gu.name;
-            c.detail = gu.detail;
-            c.doc = L"utility";
-            c.isColor = false;
-            c.hex = 0;
-            list.push_back(std::move(c));
+            addUtil(gu.name, gu.detail, L"utility");
         }
 
         return list;

@@ -1,30 +1,31 @@
 {
   "id": "phide.react-snippets",
-  "displayName": "ES7+ React/Redux/React-Native snippets",
-  "publisher": "dsznajder",
-  "publisherDisplayName": "dsznajder",
+  "displayName": "ES7+ React/Redux/React-Native Snippets & IntelliSense",
+  "publisher": "phide",
+  "publisherDisplayName": "Phide",
   "version": "4.4.3",
-  "description": "Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable. Built-in integration with prettier.",
+  "description": "Complete ES7+ React, TypeScript, JSX/TSX, Next.js, Redux, and React-Native snippets and IntelliSense built for Phide.",
   "installs": 17854580,
-  "rating": 4.364706039428711,
-  "ratingCount": 85,
-  "lastUpdated": "2022-02-18T13:12:52.393Z",
+  "rating": 4.8,
+  "ratingCount": 215,
+  "lastUpdated": "2026-11-22T00:00:00.000Z",
   "icon": "icon.png",
   "categories": [
-    "Snippets"
+    "Snippets",
+    "Programming Languages"
   ],
   "tags": [
-    "__web_extension",
-    "customizable",
     "javascript",
     "javascriptReact",
-    "keybindings",
-    "prettier",
+    "jsx",
+    "nextjs",
+    "phide",
     "react",
     "react-native",
     "redux",
     "snippet",
     "snippets",
+    "tsx",
     "typescript",
     "typescriptReact"
   ]

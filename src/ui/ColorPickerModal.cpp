@@ -1,6 +1,6 @@
 /**
  * @file ColorPickerModal.cpp
- * @brief Interactive VS Code-style native Direct2D Color Picker implementation.
+ * @brief Interactive Phide native Direct2D Color Picker implementation.
  */
 
 #include "phide/ui/ColorPickerModal.hpp"

@@ -156,6 +156,7 @@ struct AssetViewerState {
     D2D1_RECT_F rcBtnChecker{};
     D2D1_RECT_F rcBtnCopyImgTag{};
     D2D1_RECT_F rcBtnCopyBase64{};
+    D2D1_RECT_F rcBtnOpenHex{};
     D2D1_RECT_F rcBtnCopyFontFace{};
     D2D1_RECT_F rcBtnCopyLinkTag{};
     D2D1_RECT_F rcBtnToggleSvgPreview{};

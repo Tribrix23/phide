@@ -9,7 +9,9 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include <wrl/client.h>
 #include "phide/app/AppConfig.hpp"
 #include "phide/ui/Theme.hpp"
 #include "phide/ui/LucideIcons.hpp"
@@ -32,6 +34,8 @@ struct QuickOpenItem {
     std::wstring fullPath;      ///< Full file path (for Type::File)
     std::wstring shortcut;      ///< Shortcut badge (e.g. "Ctrl + P")
     FileIconType iconType = FileIconType::DefaultFile;
+    std::wstring iconFileName;  ///< Filename used for Explorer-matched Seti/asset icon rendering
+    bool isDirectory = false;
     bool isRecent = false;
     D2D1_RECT_F bounds{};
     int targetLine = -1;
@@ -132,6 +136,7 @@ public:
 
 private:
     void FilterItems();
+    ID2D1Bitmap* GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename);
 
     bool m_isOpen = false;
     std::wstring m_query;
@@ -156,6 +161,8 @@ private:
     int m_lastSelectedCol = -1;
 
     LucideIcons m_icons;
+    ID2D1RenderTarget* m_cachedAssetRT = nullptr;
+    std::unordered_map<std::wstring, Microsoft::WRL::ComPtr<ID2D1Bitmap>> m_assetBitmaps;
 };
 
 } // namespace phide::ui

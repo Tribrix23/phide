@@ -4,6 +4,7 @@
  */
 
 #include "phide/ui/AssetViewer.hpp"
+#include "phide/ui/StructuredViewers.hpp"
 #include "phide/editor/OpenDocument.hpp"
 
 #include <algorithm>
@@ -580,14 +581,32 @@ void AssetViewerRenderer::RenderRasterImageView(ID2D1RenderTarget* pRT, Theme& t
         doc.pImageBitmapRT = nullptr;
     }
 
-    // Load WIC bitmap + pixel metadata + quantized dominant color palette once
+    // Load WIC bitmap + pixel metadata + quantized dominant color palette once.
+    // Decode from an in-memory buffer so WIC never holds an OS file handle lock on disk (allowing instant rename/delete while open).
     if ((!doc.pImageBitmap || !st->imageMetadataLoaded) && !doc.filePath.empty()) {
+        std::vector<uint8_t> imgBytes;
+        {
+            std::ifstream ifs(doc.filePath, std::ios::binary | std::ios::ate);
+            if (ifs.is_open()) {
+                std::streamsize sz = ifs.tellg();
+                if (sz > 0 && sz <= static_cast<std::streamsize>(128u * 1024u * 1024u)) {
+                    imgBytes.resize(static_cast<size_t>(sz));
+                    ifs.seekg(0, std::ios::beg);
+                    ifs.read(reinterpret_cast<char*>(imgBytes.data()), sz);
+                    doc.imageFileSize = static_cast<uint64_t>(sz);
+                }
+            }
+        }
         ComPtr<IWICImagingFactory> pWicFactory;
-        if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        if (!imgBytes.empty() &&
+            SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                        IID_PPV_ARGS(&pWicFactory))) && pWicFactory) {
+            ComPtr<IWICStream> pWicStream;
             ComPtr<IWICBitmapDecoder> pDecoder;
-            if (SUCCEEDED(pWicFactory->CreateDecoderFromFilename(doc.filePath.c_str(), nullptr, GENERIC_READ,
-                                                                 WICDecodeMetadataCacheOnDemand, &pDecoder)) && pDecoder) {
+            if (SUCCEEDED(pWicFactory->CreateStream(&pWicStream)) && pWicStream &&
+                SUCCEEDED(pWicStream->InitializeFromMemory(imgBytes.data(), static_cast<DWORD>(imgBytes.size()))) &&
+                SUCCEEDED(pWicFactory->CreateDecoderFromStream(pWicStream.Get(), nullptr,
+                                                               WICDecodeMetadataCacheOnLoad, &pDecoder)) && pDecoder) {
                 ComPtr<IWICBitmapFrameDecode> pFrame;
                 if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame)) && pFrame) {
                     pFrame->GetSize(&doc.imageWidth, &doc.imageHeight);
@@ -661,6 +680,7 @@ void AssetViewerRenderer::RenderRasterImageView(ID2D1RenderTarget* pRT, Theme& t
     st->rcBtnChecker = {};
     st->rcBtnCopyImgTag = {};
     st->rcBtnCopyBase64 = {};
+    st->rcBtnOpenHex = {};
     st->rcBtnCopyFontFace = {};
     st->rcBtnCopyLinkTag = {};
     st->rcBtnToggleSvgPreview = {};
@@ -688,6 +708,7 @@ void AssetViewerRenderer::RenderRasterImageView(ID2D1RenderTarget* pRT, Theme& t
     addBtn(st->rcBtnChecker,    L"Grid",        5, 62.0f, st->showCheckerboard);
     addBtn(st->rcBtnCopyImgTag, L"Copy <img>",  6, 94.0f);
     addBtn(st->rcBtnCopyBase64, L"Copy Base64", 7, 102.0f);
+    addBtn(st->rcBtnOpenHex,    L"Open Hex",   14, 86.0f);
 
     // Dominant color swatches on the right side of the toolbar (when width permits)
     const float swSz = config.ScaleF(18.0f);
@@ -1078,13 +1099,21 @@ void AssetViewerRenderer::RenderFontAssetView(ID2D1RenderTarget* pRT, Theme& the
     float curY = topY + config.ScaleF(14.0f);
 
     // 1. Top Hero Header (Specimen Title + Action Buttons)
+    const float hexW  = CalcToolbarButtonWidth(theme, config, L"Open Hex", 86.0f);
     const float linkW = CalcToolbarButtonWidth(theme, config, L"Copy <link>", 96.0f);
     const float cssW  = CalcToolbarButtonWidth(theme, config, L"Copy @font-face", 132.0f);
-    const float btnReserve = linkW + cssW + config.ScaleF(24.0f);
+    const float btnReserve = hexW + linkW + cssW + config.ScaleF(32.0f);
 
     float rx = maxR;
+    st->rcBtnOpenHex = {};
     st->rcBtnCopyLinkTag = {};
     st->rcBtnCopyFontFace = {};
+    if (rx - hexW > canvasLeft + pad + config.ScaleF(140.0f)) {
+        st->rcBtnOpenHex = D2D1::RectF(rx - hexW, curY, rx, curY + btnH);
+        DrawToolbarButton(pRT, theme, config, st->rcBtnOpenHex, L"Open Hex", false,
+                          st->hoveredButtonId == 14, brBtnBg.Get(), brBtnHover.Get(), brBorder.Get());
+        rx -= hexW + config.ScaleF(8.0f);
+    }
     if (rx - linkW > canvasLeft + pad + config.ScaleF(140.0f)) {
         st->rcBtnCopyLinkTag = D2D1::RectF(rx - linkW, curY, rx, curY + btnH);
         DrawToolbarButton(pRT, theme, config, st->rcBtnCopyLinkTag, L"Copy <link>", false,
@@ -1477,6 +1506,16 @@ bool AssetViewerRenderer::HandleLButtonDown(POINT clientPt, HWND hwnd, phide::ed
             if (CopyWideTextToClipboard(hwnd, link)) SetToast(st, L"Copied font preload <link> tag");
             return true;
         }
+        if (PtInRectF(clientPt, st.rcBtnOpenHex) && !doc.filePath.empty()) {
+            if (!doc.structuredView) {
+                doc.structuredView = std::make_shared<StructuredViewerState>();
+            }
+            doc.structuredView->mode = StructuredViewMode::HexBinary;
+            doc.structuredView->filePath = doc.filePath;
+            doc.structuredView->LoadHexPage(doc.filePath, 0);
+            doc.structuredView->isActive = true;
+            return true;
+        }
         if (PtInRectF(clientPt, st.rcFontTabWaterfall)) { st.fontTab = AssetViewerState::FontViewTab::Waterfall; st.fontScrollY = 0.0f; return true; }
         if (PtInRectF(clientPt, st.rcFontTabGlyphs))    { st.fontTab = AssetViewerState::FontViewTab::Glyphs;    st.fontScrollY = 0.0f; return true; }
         if (PtInRectF(clientPt, st.rcFontTabSpecimen))  { st.fontTab = AssetViewerState::FontViewTab::Specimen;  st.fontScrollY = 0.0f; return true; }
@@ -1563,6 +1602,16 @@ bool AssetViewerRenderer::HandleLButtonDown(POINT clientPt, HWND hwnd, phide::ed
             }
             return true;
         }
+        if (PtInRectF(clientPt, st.rcBtnOpenHex) && !doc.filePath.empty()) {
+            if (!doc.structuredView) {
+                doc.structuredView = std::make_shared<StructuredViewerState>();
+            }
+            doc.structuredView->mode = StructuredViewMode::HexBinary;
+            doc.structuredView->filePath = doc.filePath;
+            doc.structuredView->LoadHexPage(doc.filePath, 0);
+            doc.structuredView->isActive = true;
+            return true;
+        }
         for (size_t i = 0; i < st.dominantColors.size(); ++i) {
             if (PtInRectF(clientPt, st.dominantColors[i].bounds)) {
                 if (CopyWideTextToClipboard(hwnd, st.dominantColors[i].hexString)) {
@@ -1586,6 +1635,7 @@ bool AssetViewerRenderer::HandleMouseMove(POINT clientPt, phide::editor::OpenDoc
     else if (PtInRectF(clientPt, st.rcBtnChecker)) newBtn = 5;
     else if (PtInRectF(clientPt, st.rcBtnCopyImgTag)) newBtn = 6;
     else if (PtInRectF(clientPt, st.rcBtnCopyBase64)) newBtn = 7;
+    else if (PtInRectF(clientPt, st.rcBtnOpenHex)) newBtn = 14;
     else if (PtInRectF(clientPt, st.rcBtnCopyFontFace)) newBtn = 8;
     else if (PtInRectF(clientPt, st.rcBtnCopyLinkTag)) newBtn = 9;
     else if (PtInRectF(clientPt, st.rcFontTabWaterfall)) newBtn = 10;
@@ -1632,7 +1682,7 @@ LPCWSTR AssetViewerRenderer::GetCursorForPoint(POINT clientPt, const phide::edit
     if (PtInRectF(clientPt, st.rcBtnZoomOut) || PtInRectF(clientPt, st.rcBtnZoomFit) ||
         PtInRectF(clientPt, st.rcBtnZoom100) || PtInRectF(clientPt, st.rcBtnZoomIn) ||
         PtInRectF(clientPt, st.rcBtnChecker) || PtInRectF(clientPt, st.rcBtnCopyImgTag) ||
-        PtInRectF(clientPt, st.rcBtnCopyBase64) || PtInRectF(clientPt, st.rcBtnCopyFontFace) ||
+        PtInRectF(clientPt, st.rcBtnCopyBase64) || PtInRectF(clientPt, st.rcBtnOpenHex) || PtInRectF(clientPt, st.rcBtnCopyFontFace) ||
         PtInRectF(clientPt, st.rcBtnCopyLinkTag) || PtInRectF(clientPt, st.rcFontTabWaterfall) ||
         PtInRectF(clientPt, st.rcFontTabGlyphs) || PtInRectF(clientPt, st.rcFontTabSpecimen) ||
         PtInRectF(clientPt, st.rcFontTabSpecs)) {

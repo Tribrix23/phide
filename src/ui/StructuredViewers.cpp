@@ -1498,4 +1498,35 @@ bool StructuredViewRenderer::HandleKeyDown(WPARAM vk, StructuredViewerState& sta
     return false;
 }
 
+LPCWSTR StructuredViewRenderer::GetCursorForPoint(POINT clientPt, const StructuredViewerState& state) noexcept {
+    if (!state.isActive) return nullptr;
+    if (PtInRectF(clientPt, state.rcFilterBox)) {
+        return IDC_IBEAM;
+    }
+    if (PtInRectF(clientPt, state.rcBtnRawText) ||
+        PtInRectF(clientPt, state.rcBtnAction1) ||
+        PtInRectF(clientPt, state.rcBtnAction2) ||
+        PtInRectF(clientPt, state.rcBtnAction3) ||
+        PtInRectF(clientPt, state.rcBtnAction4)) {
+        return IDC_HAND;
+    }
+    if (state.mode == StructuredViewMode::CsvTable) {
+        for (const auto& hh : state.csvHeaderHits) {
+            if (PtInRectF(clientPt, hh.bounds)) return IDC_HAND;
+        }
+    } else if (state.mode == StructuredViewMode::JsonTree) {
+        for (const auto& jh : state.jsonRowHits) {
+            if (PtInRectF(clientPt, jh.bounds)) return IDC_HAND;
+        }
+    } else if (state.mode == StructuredViewMode::HexBinary) {
+        for (const auto& hr : state.hexRowHits) {
+            if (PtInRectF(clientPt, hr.bounds)) return IDC_HAND;
+        }
+    }
+    if (PtInRectF(clientPt, state.rcToolbar) || PtInRectF(clientPt, state.rcViewport)) {
+        return IDC_ARROW;
+    }
+    return nullptr;
+}
+
 } // namespace phide::ui

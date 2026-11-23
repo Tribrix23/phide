@@ -226,6 +226,10 @@ public:
     }
     void DismissRefactorPopup() noexcept { m_showRefactorPopup = false; }
     [[nodiscard]] bool IsRefactorPopupVisible() const noexcept { return m_showRefactorPopup; }
+    [[nodiscard]] static D2D1_RECT_F ComputeRefactorPopupBounds(
+        float tipX, float tipY, float popupW, float popupH,
+        float arrowH, const D2D1_RECT_F& paneBounds, float clientHeight,
+        const app::AppConfig& config, bool& outFlipBelow) noexcept;
 
     // Autocomplete / IntelliSense Popup State (Image 5)
     void ShowAutocomplete(const std::vector<editor::IntelliSenseItem>& items, size_t selectedIndex = 0);
@@ -254,6 +258,7 @@ public:
     void ClearPrediction() noexcept { m_prediction = {}; m_crossFilePillBounds = { 0, 0, 0, 0 }; }
     [[nodiscard]] const editor::CodePrediction& GetPrediction() const noexcept { return m_prediction; }
     [[nodiscard]] bool HasPrediction() const noexcept { return m_prediction.isValid; }
+    [[nodiscard]] bool ShouldShowPrediction(const editor::OpenDocument& doc) const noexcept;
     [[nodiscard]] const D2D1_RECT_F& GetCrossFilePillBounds() const noexcept { return m_crossFilePillBounds; }
     [[nodiscard]] bool HitTestCrossFilePill(POINT pt) const;
     void SetCrossFilePillHovered(bool hovered) noexcept { m_crossFilePillHovered = hovered; }
@@ -266,20 +271,30 @@ public:
     void ResetCaretBlink() noexcept { m_caretVisible = true; }
 
     /**
+     * @brief Computes width of optional dedicated Git blame gutter column (Author · 2d).
+     */
+    [[nodiscard]] static float ComputeGutterBlameWidth(const app::AppConfig& config) noexcept {
+        return config.showGutterBlame ? config.ScaleF(122.0f) : 0.0f;
+    }
+
+    /**
      * @brief Computes dynamic line-number gutter width so 5-7+ digit line numbers never clip.
      */
     [[nodiscard]] static float ComputeGutterWidth(const app::AppConfig& config, size_t lineCount) noexcept {
-        if (!config.showLineNumbers) return config.ScaleF(12.0f);
+        const float blameW = ComputeGutterBlameWidth(config);
+        if (!config.showLineNumbers) return blameW + config.ScaleF(12.0f);
         size_t digits = 1;
         size_t n = lineCount;
         while (n >= 10) {
             n /= 10;
             ++digits;
         }
-        if (digits <= 4) return config.ScaleF(50.0f);
+        if (digits <= 4) return blameW + config.ScaleF(50.0f);
         const float perDigit = (std::max)(11.5f, config.fontSize * 0.80f);
-        return config.ScaleF(50.0f + static_cast<float>(digits - 4) * perDigit);
+        return blameW + config.ScaleF(50.0f + static_cast<float>(digits - 4) * perDigit);
     }
+
+    [[nodiscard]] static std::wstring ExtractCodeLensSymbolFromLine(const std::wstring& line, bool& outIsTest);
 
     /**
      * @brief Tests if mouse clicked on any tab header.
@@ -422,6 +437,7 @@ public:
     const KeyboardShortcutsView& GetKeyboardShortcutsView() const noexcept { return m_keybindingsView; }
     PackageManagerView& GetPackageManagerView() noexcept { return m_packageManagerView; }
     NotebookView& GetNotebookView() noexcept { return m_notebookView; }
+    const NotebookView& GetNotebookView() const noexcept { return m_notebookView; }
     GraphView& GetGraphView() noexcept { return m_graphView; }
     ErdView& GetErdView() noexcept { return m_erdView; }
     const ErdView& GetErdView() const noexcept { return m_erdView; }
@@ -523,7 +539,10 @@ public:
                           editor::OpenDocument& doc, float canvasLeft, float canvasWidth,
                           float topY, float clientHeight);
 
-    void SetWorkspaceRoot(const std::wstring& root) { m_workspaceRoot = root; }
+    void SetWorkspaceRoot(const std::wstring& root) {
+        m_workspaceRoot = root;
+        m_notebookView.SetWorkspacePath(root);
+    }
     [[nodiscard]] const std::wstring& GetWorkspaceRoot() const noexcept { return m_workspaceRoot; }
 
     // --- Floating Debug Toolbar & Cached Debug Resources (#28) ---
@@ -1242,6 +1261,55 @@ public:
     static float GetColumnVisualOffset(const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan);
     static float GetColumnVisualOffset(const std::wstring& lineText, const std::vector<LineColorSpan>& spans, size_t col, float charW, float swatchSpan, int tabSize = 4);
 
+    [[nodiscard]] static size_t HitTestVisualLineColumn(
+        const std::wstring& lineStr,
+        const std::vector<LineColorSpan>& lineColors,
+        float relX, float charW, float swatchSpan, int tabSize = 4) noexcept;
+    [[nodiscard]] static ID2D1Brush* ResolveSyntaxTokenBrush(
+        const Theme& theme,
+        const editor::SyntaxToken& tok,
+        size_t bufLine,
+        const std::wstring& lineStr,
+        const std::unordered_map<size_t, std::vector<const editor::BracketItem*>>& bracketsByLine,
+        BetterCommentType inheritedComment = BetterCommentType::Normal,
+        bool enableBracketColorization = true) noexcept;
+    static void DrawInlineColorSwatch(
+        ID2D1RenderTarget* pRT,
+        const LineColorSpan& cs,
+        float swatchBaseX, float lineY, float lineH,
+        float swatchSpan, float swatchSize,
+        const app::AppConfig& config,
+        D2D1_RECT_F& outRcSwatch);
+    static void DrawWavySquiggle(
+        ID2D1RenderTarget* pRT,
+        float x1, float x2, float lineY, float lineH,
+        ID2D1Brush* brush, const app::AppConfig& config, float strokeW = 1.3f);
+    static void DrawActiveBracketPairFrames(
+        ID2D1RenderTarget* pRT,
+        Theme& theme,
+        const app::AppConfig& config,
+        const editor::BracketPair& pair,
+        float openX, float openY, float closeX, float closeY,
+        float charW, float lineH,
+        bool drawOpen, bool drawClose);
+    static bool HitTestAutocompletePanel(
+        POINT pt,
+        const D2D1_RECT_F& popupBounds,
+        size_t totalItems,
+        size_t scrollOffset,
+        int& outIdx) noexcept;
+    static void RenderAutocompletePopupPanel(
+        ID2D1RenderTarget* pRT,
+        Theme& theme,
+        const app::AppConfig& config,
+        const std::vector<editor::IntelliSenseItem>& items,
+        size_t selectedIdx,
+        size_t& inOutScrollOffset,
+        float anchorX, float anchorY, float lineH, float minY,
+        float clientWidth, float clientHeight,
+        D2D1_RECT_F& outBounds,
+        LucideIcons& icons);
+
     // --- Section 2 Overlay Widgets (#11, #14, #15, #16, #17) ---
     struct BreadcrumbHit {
         D2D1_RECT_F bounds{};
@@ -1330,6 +1398,7 @@ public:
         std::wstring title;
         std::wstring subtitle;
         size_t anchorLine = 0;
+        float anchorScreenY = -1.0f;
         int selectedIndex = 0;
         int listScrollIdx = 0;
         float codeScrollY = 0.0f;
@@ -1479,6 +1548,8 @@ public:
         int selectedIdx = 0;
         int scrollOffset = 0;
         std::vector<lsp::CodeActionItem> items;
+        std::vector<D2D1_RECT_F> itemBounds;
+        std::vector<int> itemIndices;
         D2D1_RECT_F bounds{};
         D2D1_RECT_F lightbulbBounds{};
         bool hasLightbulb = false;
@@ -1490,11 +1561,19 @@ public:
         if (!available) m_codeActionMenu.lightbulbBounds = {};
     }
     void ShowCodeActionMenu(size_t line, const std::vector<lsp::CodeActionItem>& items, bool isRefactorMode = false);
-    void DismissCodeActionMenu() noexcept { m_codeActionMenu.visible = false; m_codeActionMenu.bounds = {}; }
+    void DismissCodeActionMenu() noexcept {
+        m_codeActionMenu.visible = false;
+        m_codeActionMenu.bounds = {};
+        m_codeActionMenu.itemBounds.clear();
+        m_codeActionMenu.itemIndices.clear();
+    }
     [[nodiscard]] bool IsCodeActionMenuVisible() const noexcept { return m_codeActionMenu.visible; }
     [[nodiscard]] bool HitTestLightbulb(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestCodeActionMenu(POINT pt, int& outItemIdx) const noexcept;
+    bool HandleCodeActionMenuMouseMove(POINT pt) noexcept;
     bool HandleCodeActionMenuKeyDown(WPARAM vk, int& outAcceptedIndex);
     bool HandleCodeActionMenuMouseDown(POINT pt, int& outAcceptedIndex);
+    [[nodiscard]] int GetCodeActionMenuSelectedIndex() const noexcept { return m_codeActionMenu.selectedIdx; }
     [[nodiscard]] const std::vector<lsp::CodeActionItem>& GetCodeActionMenuItems() const noexcept { return m_codeActionMenu.items; }
 
 private:

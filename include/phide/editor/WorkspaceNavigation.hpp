@@ -273,12 +273,12 @@ RenamePlan BuildStaticRenamePlan(
     size_t maxFiles = 800);
 
 /**
- * @brief Discovers real runnable tasks (npm scripts, composer scripts, Makefile targets, .vscode/tasks.json, scripts/*).
+ * @brief Discovers real runnable tasks (npm scripts, composer scripts, Makefile targets, .phide/tasks.json, scripts/*).
  */
 std::vector<DiscoveredTask> DiscoverWorkspaceTasks(const std::wstring& workspaceRoot);
 
 /**
- * @brief Discovers debug / launch configurations (.vscode/launch.json and runtime entrypoints).
+ * @brief Discovers debug / launch configurations (.phide/launch.json and runtime entrypoints).
  */
 std::vector<DiscoveredTask> DiscoverLaunchConfigurations(const std::wstring& workspaceRoot);
 

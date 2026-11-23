@@ -83,7 +83,7 @@ struct AppConfig {
     int tabSize = 4;                                    ///< Number of spaces per tab.
     bool insertSpaces = true;                           ///< Insert spaces when pressing Tab.
     std::wstring autoSave = L"afterDelay";              ///< "off", "afterDelay", "onFocusChange", "onWindowChange"
-    int autoSaveDelay = 1000;                           ///< Delay in ms for autosave afterDelay.
+    int autoSaveDelay = 600;                            ///< Delay in ms for autosave afterDelay.
     std::wstring cursorStyle = L"line";                 ///< "line", "block", "underline"
     std::wstring renderWhitespaceMode = L"selection";   ///< "none", "boundary", "selection", "trailing", "all"
     bool formatOnSave = true;                           ///< Automatically format document on save (Shift+Alt+F). Default enabled.
@@ -249,6 +249,10 @@ struct AppConfig {
     // --- Active Document Info ---
     std::wstring documentTitle = L"PHP IDE Concept Design"; ///< Document/project title shown in header pill.
     std::wstring activeModelName = L"High \u25BE";            ///< Active AI model selector label.
+
+    // --- Inline Diagnostics & Blame Polish (I4, I5) ---
+    bool showErrorLens = true;   ///< Render single-line error/warning messages inline at end of code lines.
+    bool showGutterBlame = false; ///< Render dedicated compact Author · age blame column in editor gutter.
 
     // --- High-DPI Scaling ---
     float dpiScale = 1.0f;      ///< Current system DPI scale factor (1.0 = 96 DPI, 1.5 = 144 DPI, etc.).

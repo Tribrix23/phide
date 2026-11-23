@@ -1,7 +1,7 @@
 # phide ESLint extension
 
 
-[![Build Status](https://dev.azure.com/vscode/phide-eslint/_apis/build/status%2Fphide-eslint?branchName=main)](https://dev.azure.com/vscode/phide-eslint/_build?definitionId=51)
+[![Build Status](https://dev.azure.com/phide/phide-eslint/_apis/build/status%2Fphide-eslint?branchName=main)](https://dev.azure.com/phide/phide-eslint/_build?definitionId=51)
 
 Integrates [ESLint](http://eslint.org/) into phide. If you are new to ESLint check the [documentation](http://eslint.org/).
 
@@ -367,7 +367,7 @@ The old `eslint.autoFixOnSave` setting is now deprecated and can safely be remov
 
 If you are using an ESLint extension version < 2.x then please refer to the settings options [here](https://github.com/microsoft/phide-eslint/blob/master/history/settings_1_9_x.md).
 
-This extension contributes the following variables to the [settings](https://code.visualstudio.com/docs/customization/userandworkspace):
+This extension contributes the following variables to the [settings](https://phide.dev/docs/settings):
 
 - `eslint.enable`: enable/disable ESLint for the workspace folder. Is enabled by default.
 - `eslint.debug`: enables ESLint's debug mode (same as --debug  command line option). Please see the ESLint output channel for the debug output. This options is very helpful to track down configuration and installation problems with ESLint since it provides verbose information about how ESLint is validating a file.
@@ -399,7 +399,7 @@ This extension contributes the following variables to the [settings](https://cod
 - `eslint.run` - run the linter `onSave` or `onType`, default is `onType`.
 - `eslint.quiet` - ignore warnings, default is `false`.
 - `eslint.runtime` - use this setting to set the path of the node runtime to run ESLint under. [Use `"node"`](https://github.com/microsoft/phide-eslint/issues/1233#issuecomment-815521280) if you want to use your default system version of node.
-    - _NOTE_ If the error `Unable to resolve your shell environment in a reasonable time.` appears, consider increasing timeout in [`application.shellEnvironmentResolutionTimeout`](https://code.visualstudio.com/updates/v1_75#_setting-to-configure-shell-environment-resolution-timeout)
+    - _NOTE_ If the error `Unable to resolve your shell environment in a reasonable time.` appears, consider increasing timeout in [`application.shellEnvironmentResolutionTimeout`](https://phide.dev/docs/settings#shellEnvironmentResolutionTimeout)
     - _NOTE_ If you are using remote connections (e.g., WSL, Remote SSH, DevContainer, etc.) and don’t want to modify workspace-wide settings, you need to run the "Preferences: Open Remote Settings (JSON)" command via the Command Palette. Set the desired options there, and then reload the editor to ensure the linter server applies the changes.
 - `eslint.execArgv` - use this setting to pass additional arguments to the node runtime like `--max-old-space-size=4096`
     - _NOTE_ If you are using remote connections (e.g., WSL, Remote SSH, DevContainer, etc.) and don’t want to modify workspace-wide settings, you need to run the "Preferences: Open Remote Settings (JSON)" command via the Command Palette. Set the desired options there, and then reload the editor to ensure the linter server applies the changes.

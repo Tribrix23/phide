@@ -90,6 +90,7 @@ static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) 
     if (id == L"editor.wordWrap")                         return &cfg.wordWrap;
     if (id == L"editor.minimap")                          return &cfg.showMinimap;
     if (id == L"editor.codeLens")                         return &cfg.enableCodeLens;
+    if (id == L"editor.errorLens")                        return &cfg.showErrorLens;
     if (id == L"editor.lineNumbers")                      return &cfg.showLineNumbers;
     if (id == L"editor.insertSpaces")                     return &cfg.insertSpaces;
     if (id == L"editor.formatOnSave")                     return &cfg.formatOnSave;
@@ -163,6 +164,7 @@ static bool* ResolveBoolSettingPtr(const std::wstring& id, app::AppConfig& cfg) 
     if (id == L"git.confirmSync")                         return &cfg.gitConfirmSync;
     if (id == L"git.enableSmartCommit")                   return &cfg.gitSmartCommit;
     if (id == L"git.showInlineBlame")                     return &cfg.gitShowInlineBlame;
+    if (id == L"git.showGutterBlame")                     return &cfg.showGutterBlame;
     if (id == L"git.decorations.enabled")                 return &cfg.gitExplorerDecorations;
     if (id == L"debug.allowBreakpointsEverywhere")        return &cfg.debugBreakpointsEverywhere;
     if (id == L"debug.showSubSessionsInToolBar")          return &cfg.debugFloatingToolbar;
@@ -493,6 +495,9 @@ void SettingsView::InitializeSettings() {
     addToggle(L"editor.codeLens", L"EDITOR", L"CodeLens",
               L"Controls whether the editor shows CodeLens Run, Debug, and Reference actions above symbols.",
               SettingCategory::TextEditor, true, true);
+    addToggle(L"editor.errorLens", L"EDITOR", L"Inline Error Lens Badges",
+              L"Render concise single-line diagnostic error and warning badges at the right end of affected code lines.",
+              SettingCategory::TextEditor, false, true);
     addToggle(L"explorer.updateImportsOnRename", L"EXPLORER", L"Update Imports On Rename / Move",
               L"Prompt to update relative imports across all referencing files when renaming or moving a file.",
               SettingCategory::TextEditor, true, false);
@@ -743,6 +748,9 @@ void SettingsView::InitializeSettings() {
               SettingCategory::GitSourceControl, false, false);
     addToggle(L"git.showInlineBlame", L"GIT", L"Inline Blame Author & Age",
               L"Show latest commit author, relative timestamp, and message inline on the active line.",
+              SettingCategory::GitSourceControl, false, false);
+    addToggle(L"git.showGutterBlame", L"GIT", L"Dedicated Gutter Git Blame Column",
+              L"Display a persistent compact Author and age column alongside gutter line numbers.",
               SettingCategory::GitSourceControl, false, false);
     addToggle(L"git.decorations.enabled", L"GIT", L"Explorer Git Status Badges",
               L"Colorize modified, untracked, and staged files with status badges in the Explorer tree.",

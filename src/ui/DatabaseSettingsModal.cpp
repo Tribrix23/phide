@@ -11,23 +11,37 @@
 namespace phide::ui {
 
 static std::filesystem::path GetPhideRoot() {
+    std::error_code ec;
     wchar_t exePath[MAX_PATH] = { 0 };
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::filesystem::path dir = std::filesystem::path(exePath).parent_path();
-    if (std::filesystem::exists(dir / L"include" / L"phide")) {
+    if (!dir.empty() && std::filesystem::exists(dir / L"include" / L"phide", ec)) {
         return dir;
     }
-    if (std::filesystem::exists(dir.parent_path() / L"include" / L"phide")) {
+    if (!dir.parent_path().empty() && std::filesystem::exists(dir.parent_path() / L"include" / L"phide", ec)) {
         return dir.parent_path();
     }
-    if (std::filesystem::exists(std::filesystem::current_path() / L"include" / L"phide")) {
-        return std::filesystem::current_path();
+    std::filesystem::path cwd = std::filesystem::current_path(ec);
+    if (!cwd.empty() && std::filesystem::exists(cwd / L"include" / L"phide", ec)) {
+        return cwd;
     }
-    return std::filesystem::current_path();
+    return !cwd.empty() ? cwd : dir;
 }
 
 static inline bool PtInRectF(POINT pt, const D2D1_RECT_F& rc) {
     return (pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom);
+}
+
+static std::wstring ExtractPhpAssignedSingleQuoted(const std::wstring& line) {
+    size_t eqPos = line.find(L'=');
+    if (eqPos == std::wstring::npos) return L"";
+    size_t firstQ = line.find(L'\'', eqPos + 1);
+    if (firstQ == std::wstring::npos) return L"";
+    size_t semiPos = line.find(L';', eqPos + 1);
+    if (semiPos != std::wstring::npos && firstQ > semiPos) return L"";
+    size_t secondQ = line.find(L'\'', firstQ + 1);
+    if (secondQ == std::wstring::npos || secondQ <= firstQ + 1) return L"";
+    return line.substr(firstQ + 1, secondQ - firstQ - 1);
 }
 
 void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
@@ -39,50 +53,97 @@ void DatabaseSettingsModal::Open(DatabaseModalTab initialTab) {
     m_focusedField = DatabaseEditField::None;
     m_caretVisible = true;
 
-    // Check if config.inc.php exists and parse basic values on first open
+    // Check if config.inc.php exists and parse basic values on first open without clobbering runtime-resolved non-default ports
     if (!m_initialized) {
         m_initialized = true;
+        std::error_code ec;
         std::filesystem::path pmaCfgPath = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin" / L"config.inc.php";
-        if (std::filesystem::exists(pmaCfgPath)) {
+        if (std::filesystem::exists(pmaCfgPath, ec)) {
             std::wifstream in(pmaCfgPath);
             std::wstring line;
             while (std::getline(in, line)) {
-                if (line.find(L"['host']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                    size_t firstQ = line.rfind(L"'");
-                    if (firstQ != std::wstring::npos) {
-                        size_t prevQ = line.rfind(L"'", firstQ - 1);
-                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                            m_host = line.substr(prevQ + 1, firstQ - prevQ - 1);
-                        }
-                    }
-                } else if (line.find(L"['port']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                    size_t firstQ = line.rfind(L"'");
-                    if (firstQ != std::wstring::npos) {
-                        size_t prevQ = line.rfind(L"'", firstQ - 1);
-                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                            m_port = line.substr(prevQ + 1, firstQ - prevQ - 1);
-                        }
-                    }
-                } else if (line.find(L"['user']") != std::wstring::npos && line.find(L"'") != std::wstring::npos) {
-                    size_t firstQ = line.rfind(L"'");
-                    if (firstQ != std::wstring::npos) {
-                        size_t prevQ = line.rfind(L"'", firstQ - 1);
-                        if (prevQ != std::wstring::npos && prevQ < firstQ) {
-                            m_user = line.substr(prevQ + 1, firstQ - prevQ - 1);
-                        }
-                    }
-                }
-            }
-            std::filesystem::path portFile = pmaCfgPath.parent_path() / L"mysql_port.txt";
-            if (std::filesystem::exists(portFile)) {
-                std::wifstream pIn(portFile);
-                std::wstring pVal;
-                if (pIn >> pVal && !pVal.empty()) {
-                    m_port = pVal;
+                if (line.find(L"['host']") != std::wstring::npos) {
+                    std::wstring v = ExtractPhpAssignedSingleQuoted(line);
+                    if (!v.empty()) m_host = v;
+                } else if (line.find(L"['port']") != std::wstring::npos && (m_port.empty() || m_port == L"3306")) {
+                    std::wstring v = ExtractPhpAssignedSingleQuoted(line);
+                    if (!v.empty()) m_port = v;
+                } else if (line.find(L"['user']") != std::wstring::npos) {
+                    std::wstring v = ExtractPhpAssignedSingleQuoted(line);
+                    if (!v.empty()) m_user = v;
                 }
             }
         }
+        if (m_port.empty() || m_port == L"3306") {
+            auto readPortFile = [&](const std::filesystem::path& pf) -> std::wstring {
+                if (!std::filesystem::exists(pf, ec)) return L"";
+                std::wifstream pIn(pf);
+                std::wstring pVal;
+                if (pIn >> pVal && !pVal.empty()) return pVal;
+                return L"";
+            };
+            std::wstring resolved;
+            wchar_t localApp[MAX_PATH] = { 0 };
+            if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
+                resolved = readPortFile(std::filesystem::path(localApp) / L"phide" / L"mysql_port.txt");
+            }
+            if (resolved.empty()) {
+                resolved = readPortFile(pmaCfgPath.parent_path() / L"mysql_port.txt");
+            }
+            if (!resolved.empty()) {
+                m_port = resolved;
+            }
+        }
     }
+    UpdateSnippets();
+    CommitChanges();
+}
+
+void DatabaseSettingsModal::CommitChanges() {
+    m_savedSnapshot.host = m_host;
+    m_savedSnapshot.port = m_port;
+    m_savedSnapshot.user = m_user;
+    m_savedSnapshot.pass = m_pass;
+    m_savedSnapshot.defaultDb = m_defaultDb;
+    m_savedSnapshot.charset = m_charset;
+    m_savedSnapshot.nginxPort = m_nginxPort;
+    m_savedSnapshot.nginxHost = m_nginxHost;
+    m_savedSnapshot.phpVersionIndex = m_phpVersionIndex;
+    m_savedSnapshot.vhostPresetIndex = m_vhostPresetIndex;
+    m_savedSnapshot.liveReloadEnabled = m_liveReloadEnabled;
+    m_hasSavedSnapshot = true;
+}
+
+bool DatabaseSettingsModal::HasUnsavedChanges() const noexcept {
+    if (!m_hasSavedSnapshot) return false;
+    return m_host != m_savedSnapshot.host ||
+           m_port != m_savedSnapshot.port ||
+           m_user != m_savedSnapshot.user ||
+           m_pass != m_savedSnapshot.pass ||
+           m_defaultDb != m_savedSnapshot.defaultDb ||
+           m_charset != m_savedSnapshot.charset ||
+           m_nginxPort != m_savedSnapshot.nginxPort ||
+           m_nginxHost != m_savedSnapshot.nginxHost ||
+           m_phpVersionIndex != m_savedSnapshot.phpVersionIndex ||
+           m_vhostPresetIndex != m_savedSnapshot.vhostPresetIndex ||
+           m_liveReloadEnabled != m_savedSnapshot.liveReloadEnabled;
+}
+
+void DatabaseSettingsModal::RevertChanges() {
+    if (!m_hasSavedSnapshot) return;
+    m_host = m_savedSnapshot.host;
+    m_port = m_savedSnapshot.port;
+    m_user = m_savedSnapshot.user;
+    m_pass = m_savedSnapshot.pass;
+    m_defaultDb = m_savedSnapshot.defaultDb;
+    m_charset = m_savedSnapshot.charset;
+    m_nginxPort = m_savedSnapshot.nginxPort;
+    m_nginxHost = m_savedSnapshot.nginxHost;
+    m_phpVersionIndex = m_savedSnapshot.phpVersionIndex;
+    m_vhostPresetIndex = m_savedSnapshot.vhostPresetIndex;
+    m_liveReloadEnabled = m_savedSnapshot.liveReloadEnabled;
+    m_focusedField = DatabaseEditField::None;
+    m_copiedField.clear();
     UpdateSnippets();
 }
 
@@ -161,8 +222,8 @@ bool DatabaseSettingsModal::HitTestBounds(POINT pt) const noexcept {
 DatabaseModalAction DatabaseSettingsModal::HitTestAction(POINT pt) const noexcept {
     if (!m_isOpen) return DatabaseModalAction::None;
 
-    if (PtInRectF(pt, m_rcCloseBtn)) return DatabaseModalAction::CloseModal;
-    if (PtInRectF(pt, m_rcBtnDone)) return DatabaseModalAction::CloseModal;
+    if (PtInRectF(pt, m_rcCloseBtn)) return DatabaseModalAction::CloseX;
+    if (PtInRectF(pt, m_rcBtnDone)) return DatabaseModalAction::DoneSave;
     if (!m_sqlFileName.empty() && PtInRectF(pt, m_rcBtnImportSql)) return DatabaseModalAction::ImportSql;
 
     if (m_rcTabPma.right > m_rcTabPma.left && PtInRectF(pt, m_rcTabPma)) return DatabaseModalAction::SwitchTabPma;
@@ -275,7 +336,7 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     // Close button [X]
     float closeS = config.ScaleF(24.0f);
     m_rcCloseBtn = D2D1::RectF(cardX + cardW - padX - closeS, topY, cardX + cardW - padX, topY + closeS);
-    bool isCloseHov = (m_hoveredAction == DatabaseModalAction::CloseModal);
+    bool isCloseHov = (m_hoveredAction == DatabaseModalAction::CloseX);
     if (isCloseHov && theme.brushMenuHover) {
         pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcCloseBtn, 4.0f, 4.0f), theme.brushMenuHover.Get());
     }
@@ -603,8 +664,8 @@ void DatabaseSettingsModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const a
     float doneW = config.ScaleF(90.0f);
     float doneH = config.ScaleF(28.0f);
     m_rcBtnDone = D2D1::RectF(cardX + cardW - padX - doneW, footY, cardX + cardW - padX, footY + doneH);
-    bool isDoneHov = (m_hoveredAction == DatabaseModalAction::CloseModal);
-    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnDone, 4.0f, 4.0f), isDoneHov ? theme.brushMenuHover.Get() : pBorderBrush);
+    bool isDoneHov = (m_hoveredAction == DatabaseModalAction::DoneSave);
+    pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcBtnDone, 4.0f, 4.0f), isDoneHov ? pAccentBrush : pBorderBrush);
     pRT->DrawText(L"Done", 4, pFmtBtn, m_rcBtnDone, pWhiteBrush);
 
     if (!m_sqlFileName.empty() && m_activeTab == DatabaseModalTab::PhpMyAdmin) {

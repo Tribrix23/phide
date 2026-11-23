@@ -35,12 +35,25 @@ $cfg['Servers'][$i]['host'] = '127.0.0.1';
 
 /**
  * Dynamic MySQL Port resolution:
- * Checks environment variable PHIDE_MYSQL_PORT first, then mysql_port.txt in PMA directory,
+ * Checks environment variable PHIDE_MYSQL_PORT first, then %LOCALAPPDATA%\phide\mysql_port.txt
+ * (writable under Program Files installs), then mysql_port.txt in PMA directory,
  * then ini mysqli.default_port, falling back to 3306.
- * Allows phpMyAdmin to seamlessly connect to dynamic port (3307+) when 3306 is taken.
+ * Allows phpMyAdmin to seamlessly connect to dynamic port (3307/3308+) when 3306/3307 are taken.
  */
 $mysqlPort = getenv('PHIDE_MYSQL_PORT');
-if (!$mysqlPort && file_exists(__DIR__ . DIRECTORY_SEPARATOR . 'mysql_port.txt')) {
+if (!$mysqlPort) {
+    $localApp = getenv('LOCALAPPDATA');
+    if ($localApp) {
+        $appPortFile = $localApp . DIRECTORY_SEPARATOR . 'phide' . DIRECTORY_SEPARATOR . 'mysql_port.txt';
+        if (@file_exists($appPortFile)) {
+            $filePort = trim((string)@file_get_contents($appPortFile));
+            if (is_numeric($filePort) && (int)$filePort > 0) {
+                $mysqlPort = $filePort;
+            }
+        }
+    }
+}
+if (!$mysqlPort && @file_exists(__DIR__ . DIRECTORY_SEPARATOR . 'mysql_port.txt')) {
     $filePort = trim((string)@file_get_contents(__DIR__ . DIRECTORY_SEPARATOR . 'mysql_port.txt'));
     if (is_numeric($filePort) && (int)$filePort > 0) {
         $mysqlPort = $filePort;

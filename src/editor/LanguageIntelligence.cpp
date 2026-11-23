@@ -2100,6 +2100,40 @@ std::vector<ProblemEntry> ExternalLinterEngine::RunLintersForFile(const std::wst
                 L"\"" + toolPath + L"\" \"" + filePath + L"\"",
                 workspaceRoot);
             all = ParseRuffOrFlake8Output(out, workspaceRoot);
+        } else {
+            // Isolated CPython AST fallback (.venv\Scripts\python.exe -> system python.exe)
+            std::wstring pyTool;
+            std::error_code ecPy;
+            if (!workspaceRoot.empty()) {
+                for (const wchar_t* vdir : { L".venv", L"venv", L"env" }) {
+                    fs::path cand = fs::path(workspaceRoot) / vdir / L"Scripts" / L"python.exe";
+                    if (fs::exists(cand, ecPy) && fs::is_regular_file(cand, ecPy)) {
+                        pyTool = cand.wstring();
+                        break;
+                    }
+                }
+            }
+            if (pyTool.empty()) {
+                std::wstring sysPy;
+                if (ToolExistsOnDisk(L"python.exe", workspaceRoot, sysPy)) {
+                    std::wstring lowerPy = ToLowerW(sysPy);
+                    if (lowerPy.find(L"\\windowsapps\\") == std::wstring::npos) {
+                        pyTool = sysPy;
+                    }
+                }
+            }
+            if (!pyTool.empty()) {
+                std::wstring script =
+                    L"import ast,sys;exec(\"try:\\n with open(sys.argv[1],'rb') as f: ast.parse(f.read(),sys.argv[1])\\n"
+                    L"except SyntaxError as e:\\n print(f'{sys.argv[1]}:{e.lineno or 1}:{e.offset or 1}: AST {type(e).__name__}: {e.msg}')\")";
+                std::wstring out = RunHiddenCliCaptured(
+                    L"\"" + pyTool + L"\" -I -c \"" + script + L"\" \"" + filePath + L"\"",
+                    workspaceRoot, 2000);
+                all = ParseRuffOrFlake8Output(out, workspaceRoot);
+                for (auto& e : all) {
+                    if (e.code == L"AST") e.source = L"python-ast";
+                }
+            }
         }
     } else if (IsJsTsExt(ext)) {
         if (ToolExistsOnDisk(L"eslint.cmd", workspaceRoot, toolPath)) {
@@ -3132,10 +3166,44 @@ std::vector<CodeLensSymbol> InlayAndCodeLensEngine::ScanCodeLensEntries(
         std::wstring tl = TrimW(lines[i]);
         if (tl.empty() || tl.rfind(L"//", 0) == 0 || tl.rfind(L"#", 0) == 0) continue;
 
-        // Test block detection (Jest/Vitest `describe`/`it`/`test`, Python `def test_`, GTest `TEST(`)
-        if ((isJs && (tl.rfind(L"it(", 0) == 0 || tl.rfind(L"test(", 0) == 0 || tl.rfind(L"describe(", 0) == 0)) ||
-            (isCpp && (tl.rfind(L"TEST(", 0) == 0 || tl.rfind(L"TEST_F(", 0) == 0))) {
-            entries.push_back({ i, L"", 0, false, true });
+        // Test block detection (Jest/Vitest `describe`/`it`/`test`, GTest `TEST`/`TEST_F`/`TEST_P`)
+        if (isJs && (tl.rfind(L"it(", 0) == 0 || tl.rfind(L"test(", 0) == 0 || tl.rfind(L"describe(", 0) == 0 ||
+                     tl.rfind(L"it.only(", 0) == 0 || tl.rfind(L"test.only(", 0) == 0 || tl.rfind(L"describe.only(", 0) == 0)) {
+            std::wstring testName;
+            size_t lp = tl.find(L'(');
+            if (lp != std::wstring::npos) {
+                size_t p = lp + 1;
+                while (p < tl.size() && std::iswspace(tl[p])) ++p;
+                if (p < tl.size() && (tl[p] == L'\'' || tl[p] == L'"' || tl[p] == L'`')) {
+                    wchar_t q = tl[p++];
+                    size_t start = p;
+                    while (p < tl.size() && tl[p] != q) {
+                        if (tl[p] == L'\\' && p + 1 < tl.size()) p += 2;
+                        else ++p;
+                    }
+                    if (p > start) testName = tl.substr(start, p - start);
+                }
+            }
+            entries.push_back({ i, std::move(testName), 0, false, true });
+            continue;
+        }
+        if (isCpp && (tl.rfind(L"TEST(", 0) == 0 || tl.rfind(L"TEST_F(", 0) == 0 || tl.rfind(L"TEST_P(", 0) == 0)) {
+            std::wstring testName;
+            size_t lp = tl.find(L'(');
+            size_t rp = (lp != std::wstring::npos) ? tl.find(L')', lp + 1) : std::wstring::npos;
+            if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp + 1) {
+                std::wstring inside = tl.substr(lp + 1, rp - lp - 1);
+                size_t comma = inside.find(L',');
+                if (comma != std::wstring::npos) {
+                    std::wstring suite = TrimW(inside.substr(0, comma));
+                    std::wstring tcase = TrimW(inside.substr(comma + 1));
+                    if (!suite.empty() && !tcase.empty()) testName = suite + L"." + tcase;
+                    else testName = !tcase.empty() ? tcase : suite;
+                } else {
+                    testName = TrimW(inside);
+                }
+            }
+            entries.push_back({ i, std::move(testName), 0, false, true });
             continue;
         }
 

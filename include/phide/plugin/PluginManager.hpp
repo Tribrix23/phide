@@ -1,6 +1,6 @@
 /**
  * @file PluginManager.hpp
- * @brief Unified Extension, Plugin, and Modding Architecture for Phide (VS Code & JetBrains style).
+ * @brief Unified Extension, Plugin, and Modding Architecture for Phide.
  *
  * Supports:
  * 1. Declarative JSON Extensions & Mods (plugin.json / extension.json / mod.json / package.json)

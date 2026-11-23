@@ -2,7 +2,7 @@
  * @file DevWorkflowEngines.hpp
  * @brief Native developer workflow engines for Phase 2:
  *        - #28 Integrated Test Explorer & Runner (Pytest, Unittest, Jest, Vitest, PHPUnit, CTest)
- *        - #29 Configurable Task Runner DAG (.vscode/tasks.json, CMakeLists.txt, package.json, composer.json, Makefile)
+ *        - #29 Configurable Task Runner DAG (.phide/tasks.json, CMakeLists.txt, package.json, composer.json, Makefile)
  *        - #30 Terminal Problem Matchers (MSVC, Clang, GCC, tsc, ESLint, PHPStan)
  */
 
@@ -65,7 +65,7 @@ public:
 };
 
 // =========================================================================
-// #29 Build & Task Runner (.vscode/tasks.json + CMake/npm/composer/Make)
+// #29 Build & Task Runner (.phide/tasks.json + CMake/npm/composer/Make)
 // =========================================================================
 
 struct WorkspaceTaskDef {

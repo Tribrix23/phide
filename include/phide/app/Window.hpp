@@ -24,7 +24,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 
 #include "phide/app/AppConfig.hpp"
 #include "phide/app/Logger.hpp"
@@ -158,6 +160,7 @@ private:
 
     void OnPaint();
     void RenderStatusBar(float clientW, float clientH);
+    void RenderStatusBarImpl(ID2D1RenderTarget* pRT, float clientW, float clientH);
     void OnResize(UINT width, UINT height);
     void OnDpiChanged(int newDpi, const RECT* pNewRect);
 
@@ -207,10 +210,17 @@ public:
     void ComputeDiffHunks(editor::OpenDocument& doc);
     void RefreshMergeConflicts(editor::OpenDocument& doc);
     void CalculateImportCosts(editor::OpenDocument& doc);
+    [[nodiscard]] std::unordered_map<size_t, std::wstring> CalculatePythonBufferImportCosts(
+        const editor::Buffer& buf, const std::wstring& filePath);
+    void ApplyColorPickerEditToActiveDoc(const std::wstring& newColor, size_t line, size_t col, size_t len);
     void MarkDocumentModified(editor::OpenDocument* pDoc);
 
     // Git Branch Switcher Dropdown (Status bar popup)
     ui::DrawerPanel& GetDrawer() noexcept { return m_drawer; }
+    ui::TitleHeader& GetHeader() noexcept { return m_header; }
+    ui::TerminalPanel& GetTerminal() noexcept { return m_terminal; }
+    void UpdateExecutionButtonStatesForTest() { UpdateExecutionButtonStates(); }
+    void DoStopServerForTest() { DoStopServer(); }
     ui::EditorCanvas& GetEditor() noexcept { return m_editor; }
     const ui::EditorCanvas& GetEditor() const noexcept { return m_editor; }
     ui::Theme& GetTheme() noexcept { return m_theme; }
@@ -239,7 +249,42 @@ public:
     void SaveSessionStatePublic() { SaveSessionState(); }
     void LoadSessionStatePublic() { LoadSessionState(); }
     void OpenFileDocumentForTest(const std::wstring& path, bool isPreview = false) { OpenFileDocument(path, isPreview); }
+    void OpenNotebookViewForTest(const std::wstring& filePath = L"") { OpenNotebookView(filePath); }
+    void DoOpenFolderFromPathForTest(const std::wstring& path) { DoOpenFolderFromPath(path); }
     void ProcessPendingFileLoadsForTest() { ApplyPendingFileLoads(); }
+    struct StatusBarRectsSnapshot {
+        D2D1_RECT_F remote{};
+        D2D1_RECT_F gitBranch{};
+        D2D1_RECT_F gitUser{};
+        D2D1_RECT_F gitLens{};
+        D2D1_RECT_F problems{};
+        D2D1_RECT_F commentAnnots{};
+        D2D1_RECT_F encoding{};
+        D2D1_RECT_F spaces{};
+        D2D1_RECT_F lnCol{};
+        D2D1_RECT_F venvTag{};
+        D2D1_RECT_F privacyMask{};
+        D2D1_RECT_F structuredView{};
+    };
+    void SetStatusBarTestState(const std::wstring& branch, const std::wstring& user, int errors, int warnings) {
+        m_statusBarOverrideForTest = true;
+        m_cachedGitBranch = branch;
+        m_cachedGitUserName = user;
+        m_totalProblemErrors = errors;
+        m_totalProblemWarnings = warnings;
+    }
+    void RenderStatusBarForTest(ID2D1RenderTarget* pRT, IDWriteFactory* pDWriteFactory, float clientW, float clientH);
+    [[nodiscard]] StatusBarRectsSnapshot GetStatusBarRectsSnapshot() const noexcept {
+        return {
+            m_rcStatusBarRemote, m_rcStatusBarGitBranch, m_rcStatusBarGitUser,
+            m_rcStatusBarGitLens, m_rcStatusBarProblems, m_rcStatusBarCommentAnnots,
+            m_rcStatusBarEncoding, m_rcStatusBarSpaces, m_rcStatusBarLnCol,
+            m_rcStatusBarVenvTag, m_rcStatusBarPrivacyMask, m_rcStatusBarStructuredView
+        };
+    }
+    [[nodiscard]] int GetMysqlPort() const noexcept { return m_mysqlPort; }
+    void StartMysqlServerForTest() { StartMysqlServer(); }
+    void StopMysqlServerForTest() { StopMysqlServer(); }
 
     /** @brief Tab context menu, pinning, and detached window helpers. */
     void ToggleTabPin(int groupIdx, int docIdx);
@@ -377,10 +422,12 @@ private:
     void OpenCourseTab(const std::wstring& courseTitle, const std::wstring& courseId);
     void ToggleMarkdownPreview();
     void ToggleCodeLens();
+    void ToggleErrorLens();
+    void ToggleGutterBlame();
     void OpenMarkdownPreviewSplit(const std::wstring& path);
     void CloseMarkdownPreviewSplit();
     void OpenExtensionDetail(const std::wstring& extId);
-    void RunCodeLens(size_t bufferLine, bool isDebug);
+    void RunCodeLens(size_t bufferLine, bool isDebug, bool isTest = false, const std::wstring& symbolName = L"");
     void HandleCodeLensClick(const ui::EditorCanvas::CodeLensAction& act);
     static bool IsMarkdownFile(const std::wstring& path);
     void SyncActiveTabWithDrawer();
@@ -522,6 +569,11 @@ private:
     /** @brief Opens the Nginx Web Server configuration settings modal. */
     void DoOpenServerSettings();
 
+    void ApplySavedDatabaseAndServerSettings();
+    void RevertDatabaseAndServerSettings();
+    void RequestCloseDatabaseSettings(bool saveImmediately);
+    bool HandleUnsavedSettingsPopupResult(bool confirmed, bool cancelBtnClicked);
+
     /** @brief Cycles through Dark, Light, and Auto themes directly. */
     void DoToggleTheme();
 
@@ -590,8 +642,9 @@ private:
     /** @brief Jumps to implementation of symbol under cursor. */
     void DoImplementation();
 
-    /** @brief Finds all references of symbol under cursor (Shift+F12). */
-    void DoFindReferences();
+    /** @brief Finds all references of symbol under cursor (Shift+F12) or explicit CodeLens symbol. */
+    void DoFindReferences(const std::wstring& symbolOverride = L"",
+                          size_t anchorLineOverride = static_cast<size_t>(-1));
 
     /** @brief Opens Call Hierarchy view for symbol under cursor. */
     void DoCallHierarchy();
@@ -820,6 +873,9 @@ private:
 
     /** @brief Saves current workspace folder, open tabs, and active tab index to AppData JSON file. */
     void SaveSessionState();
+    void SaveSessionStateNow();
+    bool m_sessionSavePending = false;
+    ULONGLONG m_sessionSaveDueTick = 0;
 
     /** @brief Restores previous workspace folder, open tabs, and active tab index from AppData JSON file. */
     void LoadSessionState();
@@ -955,6 +1011,7 @@ private:
     ui::EditorCanvas m_editor;
     ui::ThemePickerModal m_themePicker;
     ui::ColorPickerModal m_colorPicker;
+    int m_colorPickerNotebookCellIdx = -1;
     ui::QuickOpenModal m_quickOpen;
     ui::ConfirmDiscardModal m_confirmDiscardModal;
     ui::GitErrorModal m_gitErrorModal;
@@ -1299,6 +1356,9 @@ private:
     std::mutex m_testsMutex;
     std::vector<phide::dev::TestItem> m_workspaceTests;
     phide::dev::TestRunSummary m_workspaceTestSummary{};
+    std::wstring m_activeTestFilterName;
+    std::wstring m_activeTestFilterFile;
+    phide::dev::TestFramework m_activeTestFilterFw = phide::dev::TestFramework::Unknown;
 
     // Port Conflict Detector & Process Killer Modal
     struct PortConflictModalState {
@@ -1312,7 +1372,7 @@ private:
         D2D1_RECT_F rcSwitchPortBtn{};
         D2D1_RECT_F rcCancelBtn{};
     } m_portConflictModal;
-    bool m_skipNextPortPrompt = false;
+    int m_skipNextPortPromptPort = 0;
     bool CheckPortBeforeServerStart(int port, const std::wstring& serverLabel, HANDLE ownServerHandle,
                                     std::function<void(int)> onStartWithPort);
     void RenderPortConflictModal(float clientW, float clientH);
@@ -1374,6 +1434,7 @@ private:
     [[nodiscard]] bool IsExplorerKeyboardFocused() const noexcept;
     void CopyExplorerSelectionToClipboard(bool isCut, const std::wstring& fallbackPath = L"");
     void PasteClipboardToExplorerTarget(const std::wstring& targetPath, bool targetIsFolder);
+    void HandleExternalDropFiles(HDROP hDrop, bool isFloatingWindow);
     bool ExecuteMoveExplorerItems(const std::vector<std::wstring>& srcPaths, const std::filesystem::path& destDir);
     void ExecuteDeleteBatchAsync(const std::vector<std::wstring>& targetPaths);
     void FinishDeleteBatch(const std::vector<std::wstring>& deletedPaths, size_t successCount);
@@ -1485,6 +1546,8 @@ private:
     bool m_isHoveredStatusBarRemote = false;
     D2D1_RECT_F m_rcStatusBarGitUser{};
     bool m_isHoveredStatusBarGitUser = false;
+    D2D1_RECT_F m_rcStatusBarGitLens{};
+    bool m_statusBarOverrideForTest = false;
     D2D1_RECT_F m_rcStatusBarLnCol{};
     bool m_isHoveredStatusBarLnCol = false;
     D2D1_RECT_F m_rcStatusBarSpaces{};
@@ -1602,6 +1665,26 @@ private:
     uint64_t m_pendingWsCommentGen = 0;
     bool m_hasPendingWsCommentAnnots = false;
 
+    struct PendingOpenFolder {
+        uint64_t gen = 0;
+        std::wstring path;
+        ui::DrawerPanel::PreparedFolderData drawerData;
+        std::unique_ptr<workspace::IgnoreEngine> ignoreEngine;
+        std::unique_ptr<ui::GraphView> graphData;
+        std::wstring cachedRuntimeId;
+    };
+    std::atomic<uint64_t> m_openFolderGen{ 0 };
+    std::mutex m_openFolderMutex;
+    std::optional<PendingOpenFolder> m_pendingOpenFolder;
+    void ApplyPendingOpenFolder();
+    void CompleteOpenFolderSideEffects(const std::wstring& path, const std::wstring& detectedRuntime);
+
+public:
+    [[nodiscard]] std::wstring ResolvePythonExeForFile(const std::wstring& filePath) const;
+    [[nodiscard]] std::wstring BuildPythonRunCommand(const std::wstring& filePath, ui::TerminalShellType shellType) const;
+    void CalculateImportCostsForTest(editor::OpenDocument& doc) { CalculateImportCosts(doc); }
+private:
+
     void RenderFloatingTooltip(ID2D1RenderTarget* pRT, const std::wstring& text, const D2D1_RECT_F& anchorBounds, float clientW);
 
     // Sidebar Resizing State (Left Explorer & Right Runtimes/Extensions)
@@ -1673,6 +1756,7 @@ private:
     std::wstring ResolveWorkspaceRelativePath(const std::wstring& path) const;
     void FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::wstring& resolvedPath, bool runLspAndLinters, bool runGitAndExtraDiagnostics);
     void ApplyPendingFileLoads();
+    void ScheduleGitHeadDiffAsync(const std::wstring& docPath, const std::wstring& relPath);
 };
 
 } // namespace phide::app

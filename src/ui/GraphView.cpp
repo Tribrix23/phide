@@ -1463,4 +1463,15 @@ bool GraphView::HandleMouseWheel(short delta, POINT clientPt) {
     return true;
 }
 
+void GraphView::ApplyWorkspaceDataFrom(GraphView&& other) {
+    m_currentRootPath = std::move(other.m_currentRootPath);
+    m_nodes = std::move(other.m_nodes);
+    m_edges = std::move(other.m_edges);
+    m_hoveredNode = -1;
+    m_draggedNode = -1;
+    m_animAlpha = other.m_animAlpha;
+    m_animFrames = other.m_animFrames;
+    m_isAnimating = other.m_isAnimating;
+}
+
 } // namespace phide::ui

@@ -59,7 +59,8 @@ enum class DatabaseModalAction {
     OpenSqlConsole,
     SwitchTabPma,
     SwitchTabNginx,
-    CloseModal
+    CloseX,
+    DoneSave
 };
 
 class DatabaseSettingsModal {
@@ -68,8 +69,12 @@ public:
     ~DatabaseSettingsModal() = default;
 
     void Open(DatabaseModalTab initialTab = DatabaseModalTab::PhpMyAdmin);
-    void Close() noexcept { m_isOpen = false; }
+    void Close() noexcept { m_isOpen = false; m_focusedField = DatabaseEditField::None; m_hoveredAction = DatabaseModalAction::None; }
     [[nodiscard]] bool IsOpen() const noexcept { return m_isOpen; }
+
+    void CommitChanges();
+    [[nodiscard]] bool HasUnsavedChanges() const noexcept;
+    void RevertChanges();
 
     void SetActiveTab(DatabaseModalTab tab) noexcept { m_activeTab = tab; }
     [[nodiscard]] DatabaseModalTab GetActiveTab() const noexcept { return m_activeTab; }
@@ -144,8 +149,9 @@ public:
 
     [[nodiscard]] const std::wstring& GetHost() const noexcept { return m_host; }
     [[nodiscard]] const std::wstring& GetPort() const noexcept { return m_port; }
-    void SetPort(const std::wstring& port) {
+    void SetPort(const std::wstring& port, bool syncSaved = true) {
         m_port = port;
+        if (syncSaved && m_hasSavedSnapshot) m_savedSnapshot.port = port;
         UpdateSnippets();
     }
     [[nodiscard]] const std::wstring& GetUser() const noexcept { return m_user; }
@@ -163,14 +169,18 @@ public:
     void SetPmaUrl(const std::wstring& url) { m_pmaUrl = url; }
     [[nodiscard]] const std::wstring& GetNginxUrl() const noexcept { return m_nginxUrl; }
     [[nodiscard]] const std::wstring& GetNginxPort() const noexcept { return m_nginxPort; }
-    void SetNginxPort(const std::wstring& port) {
+    void SetNginxPort(const std::wstring& port, bool syncSaved = true) {
         m_nginxPort = port;
+        if (syncSaved && m_hasSavedSnapshot) m_savedSnapshot.nginxPort = port;
         std::wstring host = m_nginxHost.empty() ? L"localhost" : m_nginxHost;
         m_nginxUrl = L"http://" + host + L":" + port;
     }
     [[nodiscard]] const std::wstring& GetNginxHost() const noexcept { return m_nginxHost; }
     [[nodiscard]] const std::wstring& GetPmaConfigPath() const noexcept { return m_pmaConfigFile; }
     [[nodiscard]] const std::wstring& GetNginxConfigPath() const noexcept { return m_nginxConfigFile; }
+
+    [[nodiscard]] const D2D1_RECT_F& GetCloseBtnBoundsForTest() const noexcept { return m_rcCloseBtn; }
+    [[nodiscard]] const D2D1_RECT_F& GetDoneBtnBoundsForTest() const noexcept { return m_rcBtnDone; }
 
 private:
     bool m_isOpen = false;
@@ -261,6 +271,22 @@ private:
     bool m_liveReloadEnabled = true;
 
     DatabaseModalAction m_hoveredAction = DatabaseModalAction::None;
+
+    struct SettingsSnapshot {
+        std::wstring host;
+        std::wstring port;
+        std::wstring user;
+        std::wstring pass;
+        std::wstring defaultDb;
+        std::wstring charset;
+        std::wstring nginxPort;
+        std::wstring nginxHost;
+        size_t phpVersionIndex = 0;
+        size_t vhostPresetIndex = 0;
+        bool liveReloadEnabled = true;
+    };
+    SettingsSnapshot m_savedSnapshot{};
+    bool m_hasSavedSnapshot = false;
 };
 
 } // namespace phide::ui

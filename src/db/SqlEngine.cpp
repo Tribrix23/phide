@@ -182,9 +182,40 @@ bool RunProcessCapture(const std::wstring& exePath,
     SetHandleInformation(hInW, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(hOutR, HANDLE_FLAG_INHERIT, 0);
 
-    for (const auto& kv : extraEnvs) {
-        if (!kv.first.empty()) {
-            SetEnvironmentVariableW(kv.first.c_str(), kv.second.empty() ? nullptr : kv.second.c_str());
+    // Build a child-only Unicode environment block so concurrent threads never mutate process-global env vars.
+    std::vector<wchar_t> envBlock;
+    void* lpEnv = nullptr;
+    if (!extraEnvs.empty()) {
+        LPWCH baseEnv = GetEnvironmentStringsW();
+        if (baseEnv) {
+            std::vector<std::wstring> entries;
+            for (const wchar_t* p = baseEnv; *p != L'\0'; p += wcslen(p) + 1) {
+                std::wstring entry(p);
+                size_t eq = entry.find(L'=');
+                std::wstring key = (eq != std::wstring::npos) ? entry.substr(0, eq) : entry;
+                bool overridden = false;
+                for (const auto& kv : extraEnvs) {
+                    if (!kv.first.empty() && _wcsicmp(key.c_str(), kv.first.c_str()) == 0) {
+                        overridden = true;
+                        break;
+                    }
+                }
+                if (!overridden) {
+                    entries.push_back(std::move(entry));
+                }
+            }
+            FreeEnvironmentStringsW(baseEnv);
+            for (const auto& kv : extraEnvs) {
+                if (!kv.first.empty() && !kv.second.empty()) {
+                    entries.push_back(kv.first + L"=" + kv.second);
+                }
+            }
+            for (const auto& entry : entries) {
+                envBlock.insert(envBlock.end(), entry.begin(), entry.end());
+                envBlock.push_back(L'\0');
+            }
+            envBlock.push_back(L'\0');
+            lpEnv = envBlock.data();
         }
     }
 
@@ -198,15 +229,10 @@ bool RunProcessCapture(const std::wstring& exePath,
 
     std::wstring cmd = L"\"" + exePath + L"\" " + args;
     PROCESS_INFORMATION pi{};
-    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    DWORD createFlags = CREATE_NO_WINDOW | (lpEnv ? CREATE_UNICODE_ENVIRONMENT : 0);
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, createFlags, lpEnv, nullptr, &si, &pi);
     CloseHandle(hInR);
     CloseHandle(hOutW);
-
-    for (const auto& kv : extraEnvs) {
-        if (!kv.first.empty()) {
-            SetEnvironmentVariableW(kv.first.c_str(), nullptr);
-        }
-    }
 
     if (!ok) {
         CloseHandle(hInW);
@@ -536,11 +562,12 @@ void PersistMysqlPort(int port) {
         if (out.is_open()) out << port;
     }
     fs::path exeDir(GetExeDirW());
+    fs::path cwd = fs::current_path(ec);
     std::vector<fs::path> roots = {
         exeDir,
         exeDir.parent_path(),
         exeDir.parent_path().parent_path(),
-        fs::current_path(),
+        cwd,
         fs::path(L"C:\\Program Files\\phide")
     };
     for (const auto& r : roots) {
@@ -554,17 +581,19 @@ void PersistMysqlPort(int port) {
 }
 
 int ReadMysqlPortFromPmaConfig() {
+    std::error_code ec;
     wchar_t localApp[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
         int p = ReadPortFile(fs::path(localApp) / L"phide" / L"mysql_port.txt");
         if (p > 0) return p;
     }
     fs::path exeDir(GetExeDirW());
+    fs::path cwd = fs::current_path(ec);
     std::vector<fs::path> roots = {
         exeDir,
         exeDir.parent_path(),
         exeDir.parent_path().parent_path(),
-        fs::current_path(),
+        cwd,
         fs::path(L"C:\\Program Files\\phide")
     };
     for (const auto& r : roots) {
@@ -762,6 +791,84 @@ bool SqlEngine::IsTcpPortOpen(const std::wstring& host, int port, int timeoutMs)
     }
     freeaddrinfo(res);
     return anyOpen;
+}
+
+bool SqlEngine::IsPortAvailableForBind(int port) {
+    if (port <= 0 || port > 65535) return false;
+    EnsureWsaInitialized();
+
+    if (IsTcpPortOpen(L"127.0.0.1", port, 25)) {
+        return false;
+    }
+
+    auto hasListenerOnPort = [&](ULONG family) -> bool {
+        DWORD dwSize = 0;
+        DWORD rc = GetExtendedTcpTable(nullptr, &dwSize, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        for (int retry = 0; retry < 4 && (rc == ERROR_INSUFFICIENT_BUFFER || rc == NO_ERROR) && dwSize > 0; ++retry) {
+            std::vector<BYTE> buffer(dwSize);
+            rc = GetExtendedTcpTable(buffer.data(), &dwSize, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+            if (rc != NO_ERROR) continue;
+            if (family == AF_INET) {
+                const auto* tbl = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+                for (DWORD i = 0; i < tbl->dwNumEntries; ++i) {
+                    DWORD p = tbl->table[i].dwLocalPort;
+                    int lp = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+                    if (lp == port) return true;
+                }
+            } else {
+                const auto* tbl6 = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buffer.data());
+                for (DWORD i = 0; i < tbl6->dwNumEntries; ++i) {
+                    DWORD p = tbl6->table[i].dwLocalPort;
+                    int lp = static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF));
+                    if (lp == port) return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    };
+
+    if (hasListenerOnPort(AF_INET) || hasListenerOnPort(AF_INET6)) {
+        return false;
+    }
+
+    // Probe exclusive socket bind on IPv4 0.0.0.0 to catch TIME_WAIT, BOUND sockets, and Hyper-V/WinNAT excluded ports
+    {
+        SOCKET s4 = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s4 == INVALID_SOCKET) return false;
+        BOOL excl = TRUE;
+        setsockopt(s4, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&excl), sizeof(excl));
+        sockaddr_in sa4{};
+        sa4.sin_family = AF_INET;
+        sa4.sin_addr.s_addr = htonl(INADDR_ANY);
+        sa4.sin_port = htons(static_cast<u_short>(port));
+        int bindRc = bind(s4, reinterpret_cast<const sockaddr*>(&sa4), sizeof(sa4));
+        closesocket(s4);
+        if (bindRc != 0) return false;
+    }
+
+    // Probe IPv6 :: with IPV6_V6ONLY=1 when IPv6 stack is enabled (mysqld/php may bind dual-stack '::')
+    {
+        SOCKET s6 = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+        if (s6 != INVALID_SOCKET) {
+            DWORD v6only = 1;
+            setsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
+            BOOL excl = TRUE;
+            setsockopt(s6, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&excl), sizeof(excl));
+            sockaddr_in6 sa6{};
+            sa6.sin6_family = AF_INET6;
+            sa6.sin6_addr = in6addr_any;
+            sa6.sin6_port = htons(static_cast<u_short>(port));
+            int bindRc6 = bind(s6, reinterpret_cast<const sockaddr*>(&sa6), sizeof(sa6));
+            int wsaErr6 = (bindRc6 != 0) ? WSAGetLastError() : 0;
+            closesocket(s6);
+            if (bindRc6 != 0 && (wsaErr6 == WSAEADDRINUSE || wsaErr6 == WSAEACCES)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 int SqlEngine::ResolveDynamicMysqlPort(int preferredPort, const std::wstring& workspaceRoot) {
@@ -1062,8 +1169,54 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
     }
 
     if (profile.dialect == SqlDialect::MySQL) {
+        auto isListenerMysqlExe = [](int port) -> bool {
+            auto scanFamily = [&](ULONG family) -> DWORD {
+                DWORD sz = 0;
+                DWORD rc = GetExtendedTcpTable(nullptr, &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+                for (int r = 0; r < 3 && (rc == ERROR_INSUFFICIENT_BUFFER || rc == NO_ERROR) && sz > 0; ++r) {
+                    std::vector<BYTE> buf(sz);
+                    rc = GetExtendedTcpTable(buf.data(), &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+                    if (rc != NO_ERROR) continue;
+                    if (family == AF_INET) {
+                        const auto* t = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buf.data());
+                        for (DWORD i = 0; i < t->dwNumEntries; ++i) {
+                            DWORD p = t->table[i].dwLocalPort;
+                            if (static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF)) == port && t->table[i].dwOwningPid > 4) {
+                                return t->table[i].dwOwningPid;
+                            }
+                        }
+                    } else {
+                        const auto* t6 = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buf.data());
+                        for (DWORD i = 0; i < t6->dwNumEntries; ++i) {
+                            DWORD p = t6->table[i].dwLocalPort;
+                            if (static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF)) == port && t6->table[i].dwOwningPid > 4) {
+                                return t6->table[i].dwOwningPid;
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                return 0;
+            };
+            DWORD pid = scanFamily(AF_INET);
+            if (pid == 0) pid = scanFamily(AF_INET6);
+            if (pid <= 4) return false;
+            HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (!hp) return false;
+            wchar_t img[MAX_PATH] = {};
+            DWORD len = MAX_PATH;
+            bool isSql = false;
+            if (QueryFullProcessImageNameW(hp, 0, img, &len) && len > 0) {
+                std::wstring fn = ToLowerW(fs::path(img).filename().wstring());
+                isSql = (fn == L"mysqld.exe" || fn == L"mariadbd.exe");
+            }
+            CloseHandle(hp);
+            return isSql;
+        };
+
         int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : ResolveDynamicMysqlPort(3306);
-        if (IsTcpPortOpen(connectHost, effPort, 35)) {
+        const bool isLocalTarget = (connectHost == L"127.0.0.1" || connectHost == L"::1" || ToLowerW(connectHost) == L"localhost");
+        if (IsTcpPortOpen(connectHost, effPort, 35) && (!isLocalTarget || isListenerMysqlExe(effPort))) {
             PersistMysqlPort(effPort);
             if (outResolvedPort) *outResolvedPort = effPort;
             outMessage = L"MySQL is already running (" + profile.host + L":" + std::to_wstring(effPort) + L")";
@@ -1081,7 +1234,7 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
             ULONGLONG svcDeadline = GetTickCount64() + 3000;
             while (GetTickCount64() < svcDeadline) {
                 for (int p : probePorts) {
-                    if (IsTcpPortOpen(connectHost, p, 35)) {
+                    if (IsTcpPortOpen(connectHost, p, 35) && isListenerMysqlExe(p)) {
                         PersistMysqlPort(p);
                         if (outResolvedPort) *outResolvedPort = p;
                         outMessage = L"Started MySQL (" + profile.host + L":" + std::to_wstring(p) + L")";
@@ -1092,10 +1245,7 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
             }
         }
 
-        // 2. Spawn bundled or local mysqld.exe on effPort (picking free port if non-MySQL occupies effPort)
-        while (IsTcpPortOpen(L"127.0.0.1", effPort, 35) && effPort < 65535) {
-            ++effPort;
-        }
+        // 2. Spawn bundled or local mysqld.exe on next bindable port (skipping any occupied 3306/3307/etc.)
         std::wstring mysqldExe = FindMysqldExe();
         if (mysqldExe.empty()) {
             outMessage = !svcErr.empty()
@@ -1113,65 +1263,106 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
             fs::copy(mysqlDir / L"initial_data", mysqlDir / L"data", fs::copy_options::recursive, ec);
         }
 
-        fs::path myIni = binDir / L"my.ini";
-        if (!fs::exists(myIni, ec)) myIni = mysqlDir / L"my.ini";
+        auto isDirWritable = [&](const fs::path& dir) -> bool {
+            if (dir.empty() || !fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return false;
+            fs::path probe = dir / (L".phide_wtest_" + std::to_wstring(GetCurrentProcessId()));
+            HANDLE hf = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+            if (hf == INVALID_HANDLE_VALUE) return false;
+            CloseHandle(hf);
+            return true;
+        };
 
         fs::path pidDir = mysqlDir / L"data";
+        fs::path appDataPhide;
         wchar_t localApp[MAX_PATH] = {};
         if (GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH) > 0 && localApp[0] != 0) {
-            fs::path appDataPhide = fs::path(localApp) / L"phide";
+            appDataPhide = fs::path(localApp) / L"phide";
             fs::create_directories(appDataPhide, ec);
             if (fs::exists(appDataPhide, ec)) pidDir = appDataPhide;
         }
-        fs::path pidFile = pidDir / (L"mysql_" + std::to_wstring(effPort) + L".pid");
 
-        std::wostringstream cmd;
-        cmd << L"\"" << mysqldExe << L"\"";
-        if (fs::exists(myIni, ec)) {
-            cmd << L" --defaults-file=\"" << myIni.wstring() << L"\"";
+        fs::path dataDir = mysqlDir / L"data";
+        if ((!fs::exists(dataDir, ec) || !isDirWritable(dataDir)) && !appDataPhide.empty()) {
+            fs::path localData = appDataPhide / L"mysql_data";
+            if (!fs::exists(localData, ec)) {
+                fs::create_directories(localData, ec);
+                if (fs::exists(mysqlDir / L"initial_data", ec)) {
+                    fs::copy(mysqlDir / L"initial_data", localData, fs::copy_options::recursive, ec);
+                } else if (fs::exists(dataDir, ec)) {
+                    fs::copy(dataDir, localData, fs::copy_options::recursive, ec);
+                }
+            }
+            if (fs::exists(localData, ec)) dataDir = localData;
         }
-        cmd << L" --port=" << effPort
-            << L" --pid-file=\"" << pidFile.wstring() << L"\""
-            << L" --skip-grant-tables --standalone --console";
-        if (fs::exists(mysqlDir / L"data", ec)) {
-            std::wstring dataStr = (mysqlDir / L"data").wstring();
-            cmd << L" --datadir=\"" << dataStr << L"\""
-                << L" --innodb-data-home-dir=\"" << dataStr << L"\""
-                << L" --innodb-log-group-home-dir=\"" << dataStr << L"\"";
-        }
-        cmd << L" --basedir=\"" << mysqlDir.wstring() << L"\"";
 
-        std::wstring cmdStr = cmd.str();
-        std::vector<wchar_t> cmdBuf(cmdStr.begin(), cmdStr.end());
-        cmdBuf.push_back(L'\0');
+        fs::path myIni = binDir / L"my.ini";
+        if (!fs::exists(myIni, ec)) myIni = mysqlDir / L"my.ini";
 
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                            nullptr, mysqlDir.wstring().c_str(), &si, &pi)) {
-            outMessage = L"Failed to launch mysqld.exe (error " + std::to_wstring(GetLastError()) + L").";
-            return false;
-        }
-        CloseHandle(pi.hThread);
+        int candidatePort = effPort;
+        for (int portTry = 0; portTry < 6 && candidatePort < 65535; ++portTry) {
+            while (!IsPortAvailableForBind(candidatePort) && candidatePort < 65535) {
+                ++candidatePort;
+            }
+            if (candidatePort >= 65535) break;
 
-        ULONGLONG deadline = GetTickCount64() + 5000;
-        while (GetTickCount64() < deadline) {
-            if (IsTcpPortOpen(L"127.0.0.1", effPort, 35)) break;
-            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
-            Sleep(80);
-        }
-        CloseHandle(pi.hProcess);
+            fs::path pidFile = pidDir / (L"mysql_" + std::to_wstring(candidatePort) + L".pid");
+            std::wostringstream cmd;
+            cmd << L"\"" << mysqldExe << L"\"";
+            if (fs::exists(myIni, ec)) {
+                cmd << L" --defaults-file=\"" << myIni.wstring() << L"\"";
+            }
+            cmd << L" --port=" << candidatePort
+                << L" --pid-file=\"" << pidFile.wstring() << L"\""
+                << L" --skip-grant-tables --standalone --console";
+            if (fs::exists(dataDir, ec)) {
+                std::wstring dataStr = dataDir.wstring();
+                cmd << L" --datadir=\"" << dataStr << L"\""
+                    << L" --innodb-data-home-dir=\"" << dataStr << L"\""
+                    << L" --innodb-log-group-home-dir=\"" << dataStr << L"\"";
+            }
+            cmd << L" --basedir=\"" << mysqlDir.wstring() << L"\"";
 
-        if (IsTcpPortOpen(L"127.0.0.1", effPort, 35)) {
-            PersistMysqlPort(effPort);
-            if (outResolvedPort) *outResolvedPort = effPort;
-            outMessage = L"Started MySQL (localhost:" + std::to_wstring(effPort) + L")";
-            return true;
+            std::wstring cmdStr = cmd.str();
+            std::vector<wchar_t> cmdBuf(cmdStr.begin(), cmdStr.end());
+            cmdBuf.push_back(L'\0');
+
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+            if (!CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                                nullptr, mysqlDir.wstring().c_str(), &si, &pi)) {
+                outMessage = L"Failed to launch mysqld.exe (error " + std::to_wstring(GetLastError()) + L").";
+                return false;
+            }
+            CloseHandle(pi.hThread);
+
+            bool exitedEarly = false;
+            ULONGLONG deadline = GetTickCount64() + 4000;
+            while (GetTickCount64() < deadline) {
+                if (IsTcpPortOpen(L"127.0.0.1", candidatePort, 35)) break;
+                if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+                    exitedEarly = true;
+                    break;
+                }
+                Sleep(60);
+            }
+            CloseHandle(pi.hProcess);
+
+            if (IsTcpPortOpen(L"127.0.0.1", candidatePort, 35)) {
+                PersistMysqlPort(candidatePort);
+                if (outResolvedPort) *outResolvedPort = candidatePort;
+                outMessage = L"Started MySQL (localhost:" + std::to_wstring(candidatePort) + L")";
+                return true;
+            }
+            if (!exitedEarly) {
+                break;
+            }
+            ++candidatePort;
         }
-        outMessage = L"MySQL did not start listening on port " + std::to_wstring(effPort) + L". Check port or runtime data folder.";
+        outMessage = L"MySQL did not start listening on port " + std::to_wstring(candidatePort) + L". Check port or runtime data folder.";
         return false;
     }
 

@@ -7,6 +7,7 @@
 #include "phide/ui/ActivityRail.hpp"
 #include "phide/ui/GitLogManager.hpp"
 #include "phide/editor/Buffer.hpp"
+#include "phide/editor/PythonEnvironment.hpp"
 #include "phide/editor/SemanticCommitEngine.hpp"
 #include "phide/plugin/PluginManager.hpp"
 #include <wincodec.h>
@@ -239,6 +240,7 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
     }
 
     m_hasOpenFolder = true;
+    m_isProjectLoading = false;
     m_extraWorkspaceRoots.clear();
     m_gitHubRepoUrlCached = false;
     m_cachedGitHubRepoUrl.clear();
@@ -268,6 +270,97 @@ void DrawerPanel::OpenFolder(const std::wstring& folderPath, const std::set<std:
     RebuildVisibleItems();
 }
 
+void DrawerPanel::BeginAsyncOpenFolder(const std::wstring& folderPath) {
+    if (folderPath.empty()) return;
+    std::filesystem::path raw(folderPath);
+    std::wstring name = raw.filename().wstring();
+    if (name.empty()) name = raw.parent_path().filename().wstring();
+    if (name.empty()) name = folderPath;
+
+    m_openFolderPath = folderPath;
+    m_rootName = name;
+    m_hasOpenFolder = true;
+    m_isProjectLoading = true;
+    m_projectLoadSpinnerAngle = 0.0f;
+    m_extraWorkspaceRoots.clear();
+    m_gitHubRepoUrlCached = false;
+    m_cachedGitHubRepoUrl.clear();
+    m_publishRepoName.clear();
+    m_publishRepoSelectedChoice = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+        m_isGitRepo = false;
+        m_hasGitRemote = false;
+        m_gitBranch.clear();
+        m_gitChanges.clear();
+        m_gitCommits.clear();
+        m_unpushedCommitsCount = 0;
+        m_isGitLoading = false;
+        m_isGitRefreshing = false;
+    }
+    m_visibleItems.clear();
+    m_scrollIndex = 0;
+    m_hoveredIndex = -1;
+}
+
+bool DrawerPanel::PrepareFolderData(
+    const std::wstring& folderPath,
+    const std::set<std::wstring>* pInitialExpanded,
+    bool hideDotfiles,
+    workspace::IgnoreEngine& ignoreEngine,
+    PreparedFolderData& outData,
+    const std::atomic<bool>* cancelFlag) {
+    if (folderPath.empty() || (cancelFlag && cancelFlag->load())) return false;
+    std::error_code ec;
+    std::filesystem::path fsPath(folderPath);
+    if (!std::filesystem::exists(fsPath, ec) || !std::filesystem::is_directory(fsPath, ec)) {
+        return false;
+    }
+
+    outData.canonPath = std::filesystem::canonical(fsPath, ec).wstring();
+    if (outData.canonPath.empty()) outData.canonPath = folderPath;
+    if (outData.canonPath.size() >= 4 && outData.canonPath.rfind(L"\\\\?\\", 0) == 0) {
+        outData.canonPath = outData.canonPath.substr(4);
+    }
+    std::filesystem::path canon(outData.canonPath);
+    outData.rootName = canon.filename().wstring();
+    if (outData.rootName.empty()) outData.rootName = canon.parent_path().filename().wstring();
+    if (outData.rootName.empty()) outData.rootName = outData.canonPath;
+
+    outData.expandedDirs.clear();
+    if (pInitialExpanded && !pInitialExpanded->empty()) {
+        outData.expandedDirs = *pInitialExpanded;
+    }
+    outData.expandedDirs.insert(outData.canonPath);
+
+    if (cancelFlag && cancelFlag->load()) return false;
+    ignoreEngine.LoadWorkspaceIgnoreFiles(outData.canonPath);
+    if (cancelFlag && cancelFlag->load()) return false;
+    DetectProjectLanguagesForPath(outData.canonPath, outData.hasPythonFiles, outData.hasPhpFiles, outData.hasNodeFiles);
+    if (cancelFlag && cancelFlag->load()) return false;
+
+    std::vector<workspace::WorkspaceFolderEntry> noExtra;
+    PopulateTreeItemsInto(outData.canonPath, noExtra, outData.expandedDirs,
+                          outData.hasPythonFiles, outData.hasPhpFiles, outData.hasNodeFiles,
+                          hideDotfiles, outData.visibleItems);
+    return true;
+}
+
+void DrawerPanel::ApplyPreparedFolderData(PreparedFolderData&& data) {
+    m_openFolderPath = std::move(data.canonPath);
+    m_rootName = std::move(data.rootName);
+    m_hasOpenFolder = true;
+    m_isProjectLoading = false;
+    m_extraWorkspaceRoots.clear();
+    m_expandedDirs = std::move(data.expandedDirs);
+    m_hasPythonFiles = data.hasPythonFiles;
+    m_hasPhpFiles = data.hasPhpFiles;
+    m_hasNodeFiles = data.hasNodeFiles;
+    m_visibleItems = std::move(data.visibleItems);
+    m_scrollIndex = 0;
+    m_hoveredIndex = -1;
+}
+
 void DrawerPanel::SetExpandedDirs(const std::set<std::wstring>& dirs) {
     m_expandedDirs = dirs;
     if (m_hasOpenFolder && !m_openFolderPath.empty()) {
@@ -279,6 +372,7 @@ void DrawerPanel::SetExpandedDirs(const std::set<std::wstring>& dirs) {
 void DrawerPanel::CloseFolder() {
     m_ignoreEngine.Clear();
     m_hasOpenFolder = false;
+    m_isProjectLoading = false;
     m_openFolderPath.clear();
     m_rootName.clear();
     m_extraWorkspaceRoots.clear();
@@ -314,15 +408,17 @@ void DrawerPanel::ReloadIgnoreFiles() {
 }
 
 void DrawerPanel::RefreshTree() {
-    if (m_hasOpenFolder) {
+    if (m_hasOpenFolder && !m_isProjectLoading) {
         if (!m_openFolderPath.empty()) {
             m_ignoreEngine.LoadWorkspaceIgnoreFiles(m_openFolderPath);
         }
+        DetectProjectLanguages();
         RebuildVisibleItems();
     }
 }
 
 void DrawerPanel::ToggleFolder(int index) {
+    if (m_isProjectLoading) return;
     if (index >= 0 && index < static_cast<int>(m_visibleItems.size())) {
         auto& item = m_visibleItems[index];
         if (item.isFolder) {
@@ -336,7 +432,7 @@ void DrawerPanel::ToggleFolder(int index) {
     }
 }
 
-std::wstring DrawerPanel::GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const {
+std::wstring DrawerPanel::GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) {
     if (isDir) {
         if (filename == L".venv" || filename == L"venv") {
             return isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
@@ -372,15 +468,29 @@ void DrawerPanel::DetectProjectLanguages() {
     m_hasPhpFiles = false;
     m_hasNodeFiles = false;
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
+    DetectProjectLanguagesForPath(m_openFolderPath, m_hasPythonFiles, m_hasPhpFiles, m_hasNodeFiles);
+}
+
+void DrawerPanel::DetectProjectLanguagesForPath(const std::wstring& rootPath, bool& outPy, bool& outPhp, bool& outNode) {
+    outPy = false;
+    outPhp = false;
+    outNode = false;
+    if (rootPath.empty()) return;
 
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(m_openFolderPath, std::filesystem::directory_options::skip_permission_denied, ec), end;
-         it != end && !ec; it.increment(ec)) {
+    size_t visited = 0;
+    constexpr size_t kMaxDetectEntries = 2000;
+    for (std::filesystem::recursive_directory_iterator it(rootPath, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         it != end && !ec && visited < kMaxDetectEntries; it.increment(ec)) {
+        visited++;
         if (it->is_directory(ec)) {
             std::wstring dirName = it->path().filename().wstring();
-            if (dirName.rfind(L".", 0) == 0 || dirName == L"node_modules" ||
-                dirName == L"vendor" || dirName == L"dist" || dirName == L"build" ||
-                dirName == L"out" || dirName == L"target" || dirName == L"bin" || dirName == L"obj" ||
+            std::wstring lowerDir = dirName;
+            for (auto& ch : lowerDir) ch = static_cast<wchar_t>(towlower(ch));
+            if (lowerDir.rfind(L".", 0) == 0 || lowerDir == L"node_modules" ||
+                lowerDir == L"vendor" || lowerDir == L"dist" || lowerDir == L"build" ||
+                lowerDir == L"out" || lowerDir == L"target" || lowerDir == L"bin" || lowerDir == L"obj" ||
+                lowerDir == L"venv" || lowerDir == L"env" || lowerDir == L"__pycache__" ||
                 it.depth() >= 2) {
                 it.disable_recursion_pending();
             }
@@ -391,16 +501,34 @@ void DrawerPanel::DetectProjectLanguages() {
         std::wstring fn = it->path().filename().wstring();
         std::transform(fn.begin(), fn.end(), fn.begin(), ::towlower);
 
-        if (ext == L".py" || fn == L"requirements.txt" || fn == L"pyproject.toml" || fn == L"pipfile") {
-            m_hasPythonFiles = true;
+        if (ext == L".py" || ext == L".pyw" || ext == L".ipynb" ||
+            fn == L"requirements.txt" || fn == L"pyproject.toml" || fn == L"pipfile" || fn == L"setup.py") {
+            outPy = true;
         }
         if (ext == L".php" || fn == L"composer.json" || fn == L"composer.lock") {
-            m_hasPhpFiles = true;
+            outPhp = true;
         }
         if (ext == L".js" || ext == L".ts" || ext == L".jsx" || ext == L".tsx" || fn == L"package.json") {
-            m_hasNodeFiles = true;
+            outNode = true;
         }
-        if (m_hasPythonFiles && m_hasPhpFiles && m_hasNodeFiles) break;
+        if (outPy && outPhp && outNode) break;
+    }
+
+    // If a clean workspace has an active virtualenv (.venv/venv) and no competing PHP/Node project,
+    // surface .venv and External Libraries right away even before main.py is created.
+    if (!outPy && !outPhp && !outNode) {
+        std::filesystem::path rootFs(rootPath);
+        for (const wchar_t* vname : { L".venv", L"venv" }) {
+            std::filesystem::path vp = rootFs / vname;
+            if (std::filesystem::is_directory(vp, ec)) {
+                if (std::filesystem::exists(vp / L"pyvenv.cfg", ec) ||
+                    std::filesystem::exists(vp / L"Scripts" / L"python.exe", ec) ||
+                    std::filesystem::exists(vp / L"Lib" / L"site-packages", ec)) {
+                    outPy = true;
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -655,22 +783,45 @@ std::vector<std::wstring> DrawerPanel::GetTopLevelSelectedPaths() const {
 void DrawerPanel::RebuildVisibleItems() {
     m_visibleItems.clear();
     if (!m_hasOpenFolder || m_openFolderPath.empty()) return;
+    PopulateTreeItemsInto(m_openFolderPath, m_extraWorkspaceRoots, m_expandedDirs,
+                          m_hasPythonFiles, m_hasPhpFiles, m_hasNodeFiles, m_hideDotfiles,
+                          m_visibleItems);
 
-    // Directly populate root directory contents at depth 0 (standard modern IDE / VS Code behavior)
-    AddDirectoryChildren(m_openFolderPath, 0);
+    // Re-sync inline rename item index if the tree rebuilt while renaming
+    if (m_isRenaming && !m_renameOriginalPath.empty()) {
+        for (size_t i = 0; i < m_visibleItems.size(); ++i) {
+            if (_wcsicmp(m_visibleItems[i].fullPath.c_str(), m_renameOriginalPath.c_str()) == 0) {
+                m_renamingItemIdx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+}
+
+void DrawerPanel::PopulateTreeItemsInto(
+    const std::wstring& openFolderPath,
+    const std::vector<workspace::WorkspaceFolderEntry>& extraRoots,
+    const std::set<std::wstring>& expandedDirs,
+    bool hasPy, bool hasPhp, bool hasNode, bool hideDotfiles,
+    std::vector<DrawerTreeItem>& outItems) {
+    outItems.clear();
+    if (openFolderPath.empty()) return;
+
+    // Directly populate root directory contents at depth 0
+    AddDirectoryChildrenInto(openFolderPath, 0, expandedDirs, hasPy, hasPhp, hasNode, hideDotfiles, outItems);
 
     // Additional Multi-Root Workspace folders (.phide-workspace) rendered as collapsible top-level roots
-    for (const auto& root : m_extraWorkspaceRoots) {
+    for (const auto& root : extraRoots) {
         DrawerTreeItem rootItem;
         rootItem.label = root.name;
         rootItem.fullPath = root.path;
         rootItem.depth = 0;
         rootItem.isFolder = true;
-        rootItem.isExpanded = (m_expandedDirs.count(root.path) > 0);
+        rootItem.isExpanded = (expandedDirs.count(root.path) > 0);
         rootItem.iconGlyph = rootItem.isExpanded ? L"\u25BE" : L"\u25B8";
-        m_visibleItems.push_back(rootItem);
+        outItems.push_back(rootItem);
         if (rootItem.isExpanded) {
-            AddDirectoryChildren(root.path, 1);
+            AddDirectoryChildrenInto(root.path, 1, expandedDirs, hasPy, hasPhp, hasNode, hideDotfiles, outItems);
         }
     }
 
@@ -681,47 +832,99 @@ void DrawerPanel::RebuildVisibleItems() {
     extLibItem.fullPath = extLibPath;
     extLibItem.depth = 0;
     extLibItem.isFolder = true;
-    extLibItem.isExpanded = (m_expandedDirs.count(extLibPath) > 0);
+    extLibItem.isExpanded = (expandedDirs.count(extLibPath) > 0);
     extLibItem.iconGlyph = extLibItem.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
-    m_visibleItems.push_back(extLibItem);
+    outItems.push_back(extLibItem);
 
     if (extLibItem.isExpanded) {
         std::error_code ecCheck;
 
-        // 1. Python Global System (Only shown if project has Python files!)
-        if (m_hasPythonFiles) {
+        // 1. Python Global System (Keep workspace .venv strictly in project tree; never conflate with External Libraries)
+        if (hasPy) {
+            std::wstring pyBaseFromVenv;
+            std::filesystem::path wsRootFs(openFolderPath);
+            for (const wchar_t* vname : { L".venv", L"venv" }) {
+                std::filesystem::path cfgPath = wsRootFs / vname / L"pyvenv.cfg";
+                if (std::filesystem::exists(cfgPath, ecCheck)) {
+                    std::wifstream cfgIn(cfgPath);
+                    std::wstring cfgLine;
+                    while (std::getline(cfgIn, cfgLine)) {
+                        size_t eq = cfgLine.find(L'=');
+                        if (eq == std::wstring::npos) continue;
+                        std::wstring k = cfgLine.substr(0, eq);
+                        while (!k.empty() && iswspace(k.back())) k.pop_back();
+                        while (!k.empty() && iswspace(k.front())) k.erase(k.begin());
+                        std::wstring v = cfgLine.substr(eq + 1);
+                        while (!v.empty() && iswspace(v.front())) v.erase(v.begin());
+                        while (!v.empty() && (iswspace(v.back()) || v.back() == L'\r')) v.pop_back();
+                        if (_wcsicmp(k.c_str(), L"home") == 0 && !v.empty()) {
+                            pyBaseFromVenv = v;
+                            break;
+                        }
+                    }
+                    if (!pyBaseFromVenv.empty()) break;
+                }
+            }
+
             static std::wstring s_cachedPyExePath;
-            static bool s_hasCheckedPy = false;
-            std::wstring pyExePath;
-            std::wstring pyVer;
-            if (!s_hasCheckedPy) {
-                s_hasCheckedPy = true;
+            std::wstring pyExePath = s_cachedPyExePath;
+            if (!pyExePath.empty() && !std::filesystem::exists(pyExePath, ecCheck)) {
+                pyExePath.clear();
+                s_cachedPyExePath.clear();
+            }
+            if (pyExePath.empty() && !pyBaseFromVenv.empty()) {
+                std::filesystem::path baseExe = std::filesystem::path(pyBaseFromVenv) / L"python.exe";
+                if (std::filesystem::exists(baseExe, ecCheck)) {
+                    pyExePath = baseExe.wstring();
+                }
+            }
+            if (pyExePath.empty()) {
                 wchar_t found[MAX_PATH] = { 0 };
                 if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) > 0 &&
                     std::wstring(found).find(L"WindowsApps") == std::wstring::npos &&
                     std::filesystem::exists(found, ecCheck)) {
-                    s_cachedPyExePath = found;
-                } else {
-                    wchar_t szLocalApp[MAX_PATH] = { 0 };
-                    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
-                        std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
-                        if (std::filesystem::exists(pyBase, ecCheck)) {
-                            for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
-                                if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
-                                    if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
-                                        s_cachedPyExePath = (entry.path() / L"python.exe").wstring();
-                                        break;
-                                    } else if (s_cachedPyExePath.empty()) {
-                                        s_cachedPyExePath = (entry.path() / L"python.exe").wstring();
-                                    }
+                    pyExePath = found;
+                }
+            }
+            if (pyExePath.empty()) {
+                wchar_t szLocalApp[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                    std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                    if (std::filesystem::exists(pyBase, ecCheck)) {
+                        for (const auto& entry : std::filesystem::directory_iterator(pyBase, ecCheck)) {
+                            if (entry.is_directory(ecCheck) && std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                                if (std::filesystem::exists(entry.path() / L"Scripts" / L"pip.exe", ecCheck)) {
+                                    pyExePath = (entry.path() / L"python.exe").wstring();
+                                    break;
+                                } else if (pyExePath.empty()) {
+                                    pyExePath = (entry.path() / L"python.exe").wstring();
                                 }
                             }
                         }
                     }
                 }
             }
-            pyExePath = s_cachedPyExePath;
+            if (pyExePath.empty()) {
+                wchar_t pfBuf[MAX_PATH] = { 0 };
+                std::vector<std::filesystem::path> pyRoots = { std::filesystem::path(L"C:\\") };
+                if (GetEnvironmentVariableW(L"ProgramFiles", pfBuf, MAX_PATH) > 0 && pfBuf[0] != 0) {
+                    pyRoots.push_back(std::filesystem::path(pfBuf));
+                }
+                for (const auto& r : pyRoots) {
+                    if (!std::filesystem::is_directory(r, ecCheck)) continue;
+                    for (const auto& entry : std::filesystem::directory_iterator(r, std::filesystem::directory_options::skip_permission_denied, ecCheck)) {
+                        std::wstring dn = entry.path().filename().wstring();
+                        if (entry.is_directory(ecCheck) && _wcsnicmp(dn.c_str(), L"Python", 6) == 0 &&
+                            std::filesystem::exists(entry.path() / L"python.exe", ecCheck)) {
+                            pyExePath = (entry.path() / L"python.exe").wstring();
+                            break;
+                        }
+                    }
+                    if (!pyExePath.empty()) break;
+                }
+            }
             if (!pyExePath.empty()) {
+                s_cachedPyExePath = pyExePath;
                 std::wstring dirName = std::filesystem::path(pyExePath).parent_path().filename().wstring();
                 std::wstring verStr;
                 if (dirName.rfind(L"Python-", 0) == 0) {
@@ -729,11 +932,9 @@ void DrawerPanel::RebuildVisibleItems() {
                 } else if (dirName.rfind(L"Python", 0) == 0 && dirName.length() >= 8) {
                     verStr = dirName.substr(6, 1) + L"." + dirName.substr(7);
                 }
-                if (!verStr.empty()) {
-                    pyVer = L"Python " + verStr + L" (Global System)";
-                } else {
-                    pyVer = L"Python (Global System)";
-                }
+                std::wstring pyVer = !verStr.empty()
+                    ? (L"Python " + verStr + L" (Global System)")
+                    : L"Python (Global System)";
 
                 std::wstring pyNodePath = L"__EXT_PY__" + pyExePath;
                 DrawerTreeItem pyNode;
@@ -741,9 +942,9 @@ void DrawerPanel::RebuildVisibleItems() {
                 pyNode.fullPath = pyNodePath;
                 pyNode.depth = 1;
                 pyNode.isFolder = true;
-                pyNode.isExpanded = (m_expandedDirs.count(pyNodePath) > 0);
+                pyNode.isExpanded = (expandedDirs.count(pyNodePath) > 0);
                 pyNode.iconGlyph = pyNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
-                m_visibleItems.push_back(pyNode);
+                outItems.push_back(pyNode);
 
                 if (pyNode.isExpanded) {
                     std::filesystem::path spDir = std::filesystem::path(pyExePath).parent_path() / L"Lib" / L"site-packages";
@@ -756,12 +957,12 @@ void DrawerPanel::RebuildVisibleItems() {
                         spNode.fullPath = spDir.wstring();
                         spNode.depth = 2;
                         spNode.isFolder = true;
-                        spNode.isExpanded = (m_expandedDirs.count(spDir.wstring()) > 0);
+                        spNode.isExpanded = (expandedDirs.count(spDir.wstring()) > 0);
                         spNode.iconGlyph = spNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
-                        m_visibleItems.push_back(spNode);
+                        outItems.push_back(spNode);
 
                         if (spNode.isExpanded) {
-                            AddDirectoryChildren(spDir.wstring(), 3);
+                            AddDirectoryChildrenInto(spDir.wstring(), 3, expandedDirs, hasPy, hasPhp, hasNode, hideDotfiles, outItems);
                         }
                     }
                 }
@@ -769,7 +970,7 @@ void DrawerPanel::RebuildVisibleItems() {
         }
 
         // 2. PHP Global System (Only shown if project has PHP files!)
-        if (m_hasPhpFiles) {
+        if (hasPhp) {
             std::wstring phpExePath;
             std::wstring phpVer;
             wchar_t foundPhp[MAX_PATH] = { 0 };
@@ -825,9 +1026,9 @@ void DrawerPanel::RebuildVisibleItems() {
                 phpNode.fullPath = phpNodePath;
                 phpNode.depth = 1;
                 phpNode.isFolder = true;
-                phpNode.isExpanded = (m_expandedDirs.count(phpNodePath) > 0);
+                phpNode.isExpanded = (expandedDirs.count(phpNodePath) > 0);
                 phpNode.iconGlyph = phpNode.isExpanded ? L"\u25BE \u26A1" : L"\u25B8 \u26A1";
-                m_visibleItems.push_back(phpNode);
+                outItems.push_back(phpNode);
 
                 if (phpNode.isExpanded) {
                     std::filesystem::path extDir = std::filesystem::path(phpExePath).parent_path() / L"ext";
@@ -837,12 +1038,12 @@ void DrawerPanel::RebuildVisibleItems() {
                         extNode.fullPath = extDir.wstring();
                         extNode.depth = 2;
                         extNode.isFolder = true;
-                        extNode.isExpanded = (m_expandedDirs.count(extDir.wstring()) > 0);
+                        extNode.isExpanded = (expandedDirs.count(extDir.wstring()) > 0);
                         extNode.iconGlyph = extNode.isExpanded ? L"\u25BE \u25A4" : L"\u25B8 \u25A4";
-                        m_visibleItems.push_back(extNode);
+                        outItems.push_back(extNode);
 
                         if (extNode.isExpanded) {
-                            AddDirectoryChildren(extDir.wstring(), 3);
+                            AddDirectoryChildrenInto(extDir.wstring(), 3, expandedDirs, hasPy, hasPhp, hasNode, hideDotfiles, outItems);
                         }
                     }
                 }
@@ -852,6 +1053,16 @@ void DrawerPanel::RebuildVisibleItems() {
 }
 
 void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
+    AddDirectoryChildrenInto(dirPath, depth, m_expandedDirs,
+                             m_hasPythonFiles, m_hasPhpFiles, m_hasNodeFiles, m_hideDotfiles,
+                             m_visibleItems);
+}
+
+void DrawerPanel::AddDirectoryChildrenInto(
+    const std::wstring& dirPath, int depth,
+    const std::set<std::wstring>& expandedDirs,
+    bool hasPy, bool hasPhp, bool hasNode, bool hideDotfiles,
+    std::vector<DrawerTreeItem>& outItems) {
     std::error_code ec;
     std::filesystem::path fsPath(dirPath);
     if (!std::filesystem::exists(fsPath, ec) || !std::filesystem::is_directory(fsPath, ec)) {
@@ -872,20 +1083,22 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
         if (name == L".git" || name == L".vs") {
             continue; // Skip internal VCS control metadata
         }
-        if (m_hideDotfiles && name[0] == L'.') {
-            continue;
+        bool isDir = entry.is_directory(ec);
+        if (hideDotfiles && name[0] == L'.') {
+            // Keep .venv visible when workspace is Python-active even if dotfiles are hidden
+            if (!(isDir && name == L".venv" && hasPy)) {
+                continue;
+            }
         }
 
-        bool isDir = entry.is_directory(ec);
         if (isDir) {
-            // User requirement: ".venv shows only on correct files if the file doesnt even have any python file then the .venv of python would not be shown"
-            if ((name == L".venv" || name == L"venv") && !m_hasPythonFiles) {
+            if ((name == L".venv" || name == L"venv") && !hasPy) {
                 continue;
             }
-            if ((name == L"vendor") && !m_hasPhpFiles) {
+            if ((name == L"vendor") && !hasPhp) {
                 continue;
             }
-            if ((name == L"node_modules") && !m_hasNodeFiles) {
+            if ((name == L"node_modules") && !hasNode) {
                 continue;
             }
             folders.push_back({ name, entry.path().wstring(), true });
@@ -907,13 +1120,13 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
         item.fullPath = f.fullPath;
         item.depth = depth;
         item.isFolder = true;
-        item.isExpanded = (m_expandedDirs.count(f.fullPath) > 0);
+        item.isExpanded = (expandedDirs.count(f.fullPath) > 0);
         item.iconGlyph = GetIconForFile(f.name, true, item.isExpanded);
-        m_visibleItems.push_back(item);
+        outItems.push_back(item);
 
         if (item.isExpanded) {
             if (depth < 12) {
-                AddDirectoryChildren(f.fullPath, depth + 1);
+                AddDirectoryChildrenInto(f.fullPath, depth + 1, expandedDirs, hasPy, hasPhp, hasNode, hideDotfiles, outItems);
             }
         }
     }
@@ -927,7 +1140,7 @@ void DrawerPanel::AddDirectoryChildren(const std::wstring& dirPath, int depth) {
         item.isFolder = false;
         item.isExpanded = false;
         item.iconGlyph = GetIconForFile(f.name, false, false);
-        m_visibleItems.push_back(item);
+        outItems.push_back(item);
     }
 }
 
@@ -1487,6 +1700,92 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
             );
 
             curY += config.ScaleF(30.0f);
+
+            if (m_isProjectLoading) {
+                m_rcExplorerNewFileBtn = {};
+                m_rcExplorerNewFolderBtn = {};
+                m_rcExplorerScrollTrack = {};
+                m_rcExplorerScrollThumb = {};
+                const float areaTop = curY;
+                const float areaLeft = railW;
+                const float areaW = fullDrawerW;
+                const float areaH = (std::max)(config.ScaleF(120.0f), treeBottomY - areaTop);
+
+                // Sleek animated progress bar strip matching EditorCanvas loading UI
+                const float barH = config.ScaleF(2.5f);
+                pRT->FillRectangle(D2D1::RectF(areaLeft, areaTop, areaLeft + areaW, areaTop + barH),
+                                   theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+                const float slideT = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+                const float slideW = (std::max)(config.ScaleF(64.0f), areaW * 0.30f);
+                const float slideX = areaLeft - slideW + slideT * (areaW + slideW * 2.0f);
+                const float sL = (std::max)(areaLeft, slideX);
+                const float sR = (std::min)(areaLeft + areaW, slideX + slideW);
+                if (sR > sL && theme.brushBrandAccent) {
+                    pRT->FillRectangle(D2D1::RectF(sL, areaTop, sR, areaTop + barH), theme.brushBrandAccent.Get());
+                }
+
+                // Centered D2D rotating arc spinner + Loading label
+                const float spinCy = areaTop + (std::min)(areaH * 0.36f, config.ScaleF(120.0f));
+                const float spinCx = areaLeft + areaW * 0.5f;
+                const float spinR = config.ScaleF(13.0f);
+
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush, arcBrush;
+                pRT->CreateSolidColorBrush(
+                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f),
+                    &trackBrush);
+                if (trackBrush) {
+                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinCx, spinCy), spinR, spinR), trackBrush.Get(), 2.2f);
+                }
+
+                D2D1_MATRIX_3X2_F oldTrans;
+                pRT->GetTransform(&oldTrans);
+                pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_projectLoadSpinnerAngle, D2D1::Point2F(spinCx, spinCy)) * oldTrans);
+                if (theme.brushBrandAccent) {
+                    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+                    pRT->GetFactory(&pFactory);
+                    if (pFactory) {
+                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+                        if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                            if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                                sink->BeginFigure(D2D1::Point2F(spinCx - spinR, spinCy), D2D1_FIGURE_BEGIN_HOLLOW);
+                                D2D1_ARC_SEGMENT arc{};
+                                arc.point = D2D1::Point2F(spinCx, spinCy - spinR);
+                                arc.size = D2D1::SizeF(spinR, spinR);
+                                arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                                sink->AddArc(arc);
+                                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                sink->Close();
+                                pRT->DrawGeometry(pArcGeo.Get(), theme.brushBrandAccent.Get(), 2.4f);
+                            }
+                        }
+                    }
+                }
+                pRT->SetTransform(oldTrans);
+
+                float txtTop = spinCy + spinR + config.ScaleF(16.0f);
+                D2D1_RECT_F rcLoadTitle = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
+                                                      areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(22.0f));
+                if (theme.fontBody && theme.brushTextPrimary) {
+                    DWRITE_TEXT_ALIGNMENT prevAlign = theme.fontBody->GetTextAlignment();
+                    theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    const wchar_t* msg = L"Loading project files...";
+                    pRT->DrawText(msg, static_cast<UINT32>(wcslen(msg)), theme.fontBody.Get(), rcLoadTitle, theme.brushTextPrimary.Get());
+                    theme.fontBody->SetTextAlignment(prevAlign);
+                }
+                txtTop += config.ScaleF(22.0f);
+                IDWriteTextFormat* subFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+                D2D1_RECT_F rcLoadSub = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
+                                                    areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(32.0f));
+                if (subFmt && theme.brushTextSecondary) {
+                    DWRITE_TEXT_ALIGNMENT prevAlign = subFmt->GetTextAlignment();
+                    subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    const wchar_t* subMsg = L"Indexing workspace tree in background";
+                    pRT->DrawText(subMsg, static_cast<UINT32>(wcslen(subMsg)), subFmt, rcLoadSub, theme.brushTextSecondary.Get());
+                    subFmt->SetTextAlignment(prevAlign);
+                }
+                return;
+            }
 
             // Clamp vertical scroll index to visible items bounds
             const float itemH = config.ScaleF(24.0f);
@@ -2245,6 +2544,80 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
     // 2. Search Box Row
     const float inputH = config.ScaleF(26.0f);
+    auto drawSearchField = [&](const std::wstring& value, const wchar_t* placeholder, size_t placeholderLen,
+                               const D2D1_RECT_F& rcField, float boxTopY, bool isFocused) {
+        if (value.empty()) {
+            pRT->DrawText(placeholder, static_cast<UINT32>(placeholderLen),
+                          theme.fontBody.Get(), rcField, theme.brushTextMuted.Get());
+            if (isFocused) {
+                const float caretX = rcField.left + 1.0f;
+                if (caretX < rcField.right) {
+                    pRT->DrawLine(D2D1::Point2F(caretX, boxTopY + config.ScaleF(4.0f)),
+                                  D2D1::Point2F(caretX, boxTopY + inputH - config.ScaleF(4.0f)),
+                                  theme.brushTextPrimary.Get(), 1.5f);
+                }
+            }
+            return;
+        }
+        pRT->PushAxisAlignedClip(rcField, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        float caretX = rcField.right;
+        if (theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    value.c_str(), static_cast<UINT32>(value.length()),
+                    theme.fontBody.Get(), 4000.0f, rcField.bottom - rcField.top, &pLayout)) && pLayout) {
+                const size_t clampedCaret = isFocused ? (std::min)(m_searchCaretPos, value.length()) : value.length();
+                DWRITE_HIT_TEST_METRICS cHtm{};
+                FLOAT cRelX = 0.0f, cRelY = 0.0f;
+                pLayout->HitTestTextPosition(static_cast<UINT32>(clampedCaret), FALSE, &cRelX, &cRelY, &cHtm);
+
+                const float fieldW = (std::max)(1.0f, rcField.right - rcField.left - 2.0f);
+                const float scrollX = (cRelX > fieldW) ? (cRelX - fieldW) : 0.0f;
+                const float textOriginX = rcField.left - scrollX;
+
+                if (isFocused && HasSearchSelection()) {
+                    auto [selMin, selMax] = GetSearchSelectionRange();
+                    selMin = (std::min)(selMin, value.length());
+                    selMax = (std::min)(selMax, value.length());
+                    if (selMax > selMin) {
+                        DWRITE_HIT_TEST_METRICS hitRanges[8];
+                        UINT32 hitCount = 0;
+                        if (SUCCEEDED(pLayout->HitTestTextRange(
+                                static_cast<UINT32>(selMin), static_cast<UINT32>(selMax - selMin),
+                                0.0f, 0.0f, hitRanges, 8, &hitCount))) {
+                            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selBrush;
+                            pRT->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.471f, 0.831f, 0.42f), &selBrush);
+                            ID2D1Brush* pSelBrush = selBrush ? selBrush.Get() : theme.brushTreeSelected.Get();
+                            if (pSelBrush) {
+                                for (UINT32 r = 0; r < hitCount; ++r) {
+                                    D2D1_RECT_F rcSel = D2D1::RectF(
+                                        textOriginX + hitRanges[r].left,
+                                        boxTopY + config.ScaleF(3.5f),
+                                        textOriginX + hitRanges[r].left + hitRanges[r].width,
+                                        boxTopY + inputH - config.ScaleF(3.5f));
+                                    pRT->FillRectangle(rcSel, pSelBrush);
+                                }
+                            }
+                        }
+                    }
+                }
+                pRT->DrawTextLayout(D2D1::Point2F(textOriginX, rcField.top), pLayout.Get(), theme.brushTextPrimary.Get());
+                caretX = textOriginX + cRelX + 1.0f;
+            } else {
+                pRT->DrawText(value.c_str(), static_cast<UINT32>(value.length()),
+                              theme.fontBody.Get(), rcField, theme.brushTextPrimary.Get());
+            }
+        } else {
+            pRT->DrawText(value.c_str(), static_cast<UINT32>(value.length()),
+                          theme.fontBody.Get(), rcField, theme.brushTextPrimary.Get());
+        }
+        if (isFocused && caretX >= rcField.left && caretX <= rcField.right) {
+            pRT->DrawLine(D2D1::Point2F(caretX, boxTopY + config.ScaleF(4.0f)),
+                          D2D1::Point2F(caretX, boxTopY + inputH - config.ScaleF(4.0f)),
+                          theme.brushTextPrimary.Get(), 1.5f);
+        }
+        pRT->PopAxisAlignedClip();
+    };
     m_rcSearchBox = D2D1::RectF(
         railW + paddingX,
         curY,
@@ -2309,41 +2682,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
         rightBtnX - config.ScaleF(4.0f),
         curY + inputH - config.ScaleF(3.0f)
     );
-
-    float textWidth = 0.0f;
-    if (m_searchQuery.empty()) {
-        const wchar_t* placeholder = L"Search";
-        pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
-                      theme.fontBody.Get(), rcSearchText, theme.brushTextMuted.Get());
-    } else {
-        // High contrast text in both Light Mode (#1E1E1E) and Dark Mode (#D8D8D8 / #FFFFFF)
-        pRT->DrawText(m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
-                      theme.fontBody.Get(), rcSearchText, theme.brushTextPrimary.Get());
-
-        if (theme.dwriteFactory) {
-            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                    m_searchQuery.c_str(), static_cast<UINT32>(m_searchQuery.length()),
-                    theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
-                DWRITE_TEXT_METRICS tm{};
-                if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                    textWidth = tm.width;
-                }
-            }
-        }
-    }
-
-    // Caret '|' in Search Box
-    if (m_focusedSearchInput == 1) {
-        float caretX = rcSearchText.left + textWidth + 1.0f;
-        if (caretX < rcSearchText.right) {
-            pRT->DrawLine(
-                D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
-                D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
-                theme.brushTextPrimary.Get(), 1.5f
-            );
-        }
-    }
+    drawSearchField(m_searchQuery, L"Search", 6, rcSearchText, curY, m_focusedSearchInput == 1);
 
     curY += inputH + config.ScaleF(6.0f);
 
@@ -2422,40 +2761,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
             abBtnX - config.ScaleF(4.0f),
             curY + inputH - config.ScaleF(3.0f)
         );
-
-        float repTextWidth = 0.0f;
-        if (m_replaceQuery.empty()) {
-            const wchar_t* placeholder = L"Replace";
-            pRT->DrawText(placeholder, static_cast<UINT32>(wcslen(placeholder)),
-                      theme.fontBody.Get(), rcReplaceText, theme.brushTextMuted.Get());
-        } else {
-            pRT->DrawText(m_replaceQuery.c_str(), static_cast<UINT32>(m_replaceQuery.length()),
-                          theme.fontBody.Get(), rcReplaceText, theme.brushTextPrimary.Get());
-
-            if (theme.dwriteFactory) {
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                        m_replaceQuery.c_str(), static_cast<UINT32>(m_replaceQuery.length()),
-                        theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
-                    DWRITE_TEXT_METRICS tm{};
-                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                        repTextWidth = tm.width;
-                    }
-                }
-            }
-        }
-
-        // Caret '|' in Replace Box
-        if (m_focusedSearchInput == 2) {
-            float caretX = rcReplaceText.left + repTextWidth + 1.0f;
-            if (caretX < rcReplaceText.right) {
-                pRT->DrawLine(
-                    D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
-                    D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
-                    theme.brushTextPrimary.Get(), 1.5f
-                );
-            }
-        }
+        drawSearchField(m_replaceQuery, L"Replace", 7, rcReplaceText, curY, m_focusedSearchInput == 2);
 
         // Replace All Action Button outside Replace Box (to the right)
         m_rcReplaceAllBtn = D2D1::RectF(
@@ -2579,30 +2885,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
             incBtnX - config.ScaleF(4.0f),
             curY + inputH - config.ScaleF(3.0f)
         );
-        float incTextWidth = 0.0f;
-        if (m_filesToInclude.empty()) {
-            pRT->DrawText(L"e.g. *.ts, src/**/include", 24, theme.fontBody.Get(), rcIncText, theme.brushTextMuted.Get());
-        } else {
-            pRT->DrawText(m_filesToInclude.c_str(), static_cast<UINT32>(m_filesToInclude.length()),
-                          theme.fontBody.Get(), rcIncText, theme.brushTextPrimary.Get());
-            if (theme.dwriteFactory) {
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                        m_filesToInclude.c_str(), static_cast<UINT32>(m_filesToInclude.length()),
-                        theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
-                    DWRITE_TEXT_METRICS tm{};
-                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) incTextWidth = tm.width;
-                }
-            }
-        }
-        if (m_focusedSearchInput == 3) {
-            float caretX = rcIncText.left + incTextWidth + 1.0f;
-            if (caretX < rcIncText.right) {
-                pRT->DrawLine(D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
-                              D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
-                              theme.brushTextPrimary.Get(), 1.5f);
-            }
-        }
+        drawSearchField(m_filesToInclude, L"e.g. *.ts, src/**/include", 24, rcIncText, curY, m_focusedSearchInput == 3);
         curY += inputH + config.ScaleF(6.0f);
 
         // --- B. "files to exclude" ---
@@ -2666,28 +2949,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
             excBtnX - config.ScaleF(4.0f),
             curY + inputH - config.ScaleF(3.0f)
         );
-        float excTextWidth = 0.0f;
-        if (!m_filesToExclude.empty()) {
-            pRT->DrawText(m_filesToExclude.c_str(), static_cast<UINT32>(m_filesToExclude.length()),
-                          theme.fontBody.Get(), rcExcText, theme.brushTextPrimary.Get());
-            if (theme.dwriteFactory) {
-                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
-                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
-                        m_filesToExclude.c_str(), static_cast<UINT32>(m_filesToExclude.length()),
-                        theme.fontBody.Get(), 1000.0f, inputH, &pLayout))) {
-                    DWRITE_TEXT_METRICS tm{};
-                    if (SUCCEEDED(pLayout->GetMetrics(&tm))) excTextWidth = tm.width;
-                }
-            }
-        }
-        if (m_focusedSearchInput == 4) {
-            float caretX = rcExcText.left + excTextWidth + 1.0f;
-            if (caretX < rcExcText.right) {
-                pRT->DrawLine(D2D1::Point2F(caretX, curY + config.ScaleF(4.0f)),
-                              D2D1::Point2F(caretX, curY + inputH - config.ScaleF(4.0f)),
-                              theme.brushTextPrimary.Get(), 1.5f);
-            }
-        }
+        drawSearchField(m_filesToExclude, L"e.g. node_modules, bin", 22, rcExcText, curY, m_focusedSearchInput == 4);
         curY += inputH + config.ScaleF(8.0f);
     }
 
@@ -3175,7 +3437,7 @@ void DrawerPanel::RenderSearchPane(ID2D1RenderTarget* pRT, Theme& theme, const a
 
 int DrawerPanel::HitTest(POINT pt, const app::AppConfig& config) const {
     (void)config;
-    if (!m_hasOpenFolder) return -1;
+    if (!m_hasOpenFolder || m_isProjectLoading) return -1;
 
     for (size_t i = 0; i < m_visibleItems.size(); ++i) {
         const auto& item = m_visibleItems[i];
@@ -3197,14 +3459,14 @@ bool DrawerPanel::HitTestOpenFolderButton(POINT pt, const app::AppConfig& config
 }
 
 bool DrawerPanel::HitTestExplorerNewFileButton(POINT pt) const noexcept {
-    if (!m_hasOpenFolder || m_isCourseExplorerMode) return false;
+    if (!m_hasOpenFolder || m_isProjectLoading || m_isCourseExplorerMode) return false;
     return (m_rcExplorerNewFileBtn.right > m_rcExplorerNewFileBtn.left &&
             pt.x >= m_rcExplorerNewFileBtn.left && pt.x <= m_rcExplorerNewFileBtn.right &&
             pt.y >= m_rcExplorerNewFileBtn.top && pt.y <= m_rcExplorerNewFileBtn.bottom);
 }
 
 bool DrawerPanel::HitTestExplorerNewFolderButton(POINT pt) const noexcept {
-    if (!m_hasOpenFolder || m_isCourseExplorerMode) return false;
+    if (!m_hasOpenFolder || m_isProjectLoading || m_isCourseExplorerMode) return false;
     return (m_rcExplorerNewFolderBtn.right > m_rcExplorerNewFolderBtn.left &&
             pt.x >= m_rcExplorerNewFolderBtn.left && pt.x <= m_rcExplorerNewFolderBtn.right &&
             pt.y >= m_rcExplorerNewFolderBtn.top && pt.y <= m_rcExplorerNewFolderBtn.bottom);
@@ -3338,7 +3600,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     // 9. Search Input Box
     if (pt.x >= m_rcSearchBox.left && pt.x <= m_rcSearchBox.right &&
         pt.y >= m_rcSearchBox.top && pt.y <= m_rcSearchBox.bottom) {
-        m_focusedSearchInput = 1;
+        OnSearchInputFocusChanged(1);
         return true;
     }
 
@@ -3346,7 +3608,7 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
     if (m_isReplaceOpen &&
         pt.x >= m_rcReplaceBox.left && pt.x <= m_rcReplaceBox.right &&
         pt.y >= m_rcReplaceBox.top && pt.y <= m_rcReplaceBox.bottom) {
-        m_focusedSearchInput = 2;
+        OnSearchInputFocusChanged(2);
         return true;
     }
 
@@ -3378,14 +3640,14 @@ bool DrawerPanel::HitTestSearch(POINT pt, const app::AppConfig& config, std::wst
         // Files to Include Box
         if (pt.x >= m_rcFilesToIncludeBox.left && pt.x <= m_rcFilesToIncludeBox.right &&
             pt.y >= m_rcFilesToIncludeBox.top && pt.y <= m_rcFilesToIncludeBox.bottom) {
-            m_focusedSearchInput = 3;
+            OnSearchInputFocusChanged(3);
             return true;
         }
 
         // Files to Exclude Box
         if (pt.x >= m_rcFilesToExcludeBox.left && pt.x <= m_rcFilesToExcludeBox.right &&
             pt.y >= m_rcFilesToExcludeBox.top && pt.y <= m_rcFilesToExcludeBox.bottom) {
-            m_focusedSearchInput = 4;
+            OnSearchInputFocusChanged(4);
             return true;
         }
     }
@@ -3517,79 +3779,198 @@ bool DrawerPanel::PollSearchThrottle(ULONGLONG nowMs) {
     return needRepaint;
 }
 
+static void CopyPlainTextToClipboard(HWND hwnd, const std::wstring& text) {
+    if (text.empty() || !OpenClipboard(hwnd ? hwnd : GetActiveWindow())) return;
+    EmptyClipboard();
+    const size_t bytes = (text.length() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlob = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hGlob) {
+        void* pData = GlobalLock(hGlob);
+        if (pData) {
+            memcpy(pData, text.c_str(), bytes);
+            GlobalUnlock(hGlob);
+            SetClipboardData(CF_UNICODETEXT, hGlob);
+        }
+    }
+    CloseClipboard();
+}
+
+static std::wstring ReadSingleLineClipboardText(HWND hwnd) {
+    std::wstring out;
+    if (!OpenClipboard(hwnd ? hwnd : GetActiveWindow())) return out;
+    if (HANDLE hData = GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* pText = static_cast<const wchar_t*>(GlobalLock(hData))) {
+            for (size_t i = 0; pText[i] != L'\0'; ++i) {
+                if (pText[i] == L'\r' || pText[i] == L'\n') {
+                    if (out.empty() || out.back() != L' ') out.push_back(L' ');
+                } else {
+                    out.push_back(pText[i]);
+                }
+            }
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
 void DrawerPanel::HandleSearchChar(wchar_t ch) {
     if (ch < 32) return;
+    std::wstring* fld = GetFocusedSearchField();
+    if (!fld) return;
 
-    if (m_focusedSearchInput == 1) {
-        m_searchQuery.push_back(ch);
-        m_searchPending = true;
-        m_lastKeystrokeTime = GetTickCount64();
-    } else if (m_focusedSearchInput == 2) {
-        m_replaceQuery.push_back(ch);
-    } else if (m_focusedSearchInput == 3) {
-        m_filesToInclude.push_back(ch);
-        m_searchPending = true;
-        m_lastKeystrokeTime = GetTickCount64();
-    } else if (m_focusedSearchInput == 4) {
-        m_filesToExclude.push_back(ch);
+    DeleteSearchSelection();
+    if (m_searchCaretPos > fld->length()) m_searchCaretPos = fld->length();
+    fld->insert(m_searchCaretPos, 1, ch);
+    m_searchCaretPos++;
+
+    if (m_focusedSearchInput != 2) {
         m_searchPending = true;
         m_lastKeystrokeTime = GetTickCount64();
     }
 }
 
-void DrawerPanel::HandleSearchKeyDown(WPARAM wParam) {
-    if (wParam == VK_BACK) {
-        if (m_focusedSearchInput == 1 && !m_searchQuery.empty()) {
-            m_searchQuery.pop_back();
+void DrawerPanel::HandleSearchKeyDown(WPARAM wParam, HWND hwnd, int forceModifiers) {
+    const bool isCtrl = (forceModifiers >= 0) ? ((forceModifiers & 1) != 0) : ((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+    const bool isShift = (forceModifiers >= 0) ? ((forceModifiers & 2) != 0) : ((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+    const bool isAlt = (forceModifiers >= 0) ? ((forceModifiers & 4) != 0) : ((GetKeyState(VK_MENU) & 0x8000) != 0);
+    std::wstring* fld = GetFocusedSearchField();
+
+    auto markSearchQueryChanged = [&]() {
+        if (m_focusedSearchInput == 1 || m_focusedSearchInput == 3 || m_focusedSearchInput == 4) {
             m_searchPending = true;
             m_lastKeystrokeTime = GetTickCount64();
-            if (m_searchQuery.empty()) {
+            if (m_focusedSearchInput == 1 && m_searchQuery.empty()) {
                 ClearSearchResults();
             }
-        } else if (m_focusedSearchInput == 2 && !m_replaceQuery.empty()) {
-            m_replaceQuery.pop_back();
-        } else if (m_focusedSearchInput == 3 && !m_filesToInclude.empty()) {
-            m_filesToInclude.pop_back();
-            m_searchPending = true;
-            m_lastKeystrokeTime = GetTickCount64();
-        } else if (m_focusedSearchInput == 4 && !m_filesToExclude.empty()) {
-            m_filesToExclude.pop_back();
-            m_searchPending = true;
-            m_lastKeystrokeTime = GetTickCount64();
+        }
+    };
+
+    if (isCtrl && !isAlt && (wParam == 'A' || wParam == 'a')) {
+        if (fld) {
+            m_searchSelStart = 0;
+            m_searchSelEnd = static_cast<int>(fld->length());
+            m_searchCaretPos = fld->length();
+        }
+        return;
+    }
+    if (isCtrl && !isAlt && (wParam == 'C' || wParam == 'c')) {
+        if (fld && HasSearchSelection()) {
+            auto [selMin, selMax] = GetSearchSelectionRange();
+            selMin = (std::min)(selMin, fld->length());
+            selMax = (std::min)(selMax, fld->length());
+            if (selMax > selMin) {
+                CopyPlainTextToClipboard(hwnd, fld->substr(selMin, selMax - selMin));
+            }
+        }
+        return;
+    }
+    if (isCtrl && !isAlt && (wParam == 'X' || wParam == 'x')) {
+        if (fld && HasSearchSelection()) {
+            auto [selMin, selMax] = GetSearchSelectionRange();
+            selMin = (std::min)(selMin, fld->length());
+            selMax = (std::min)(selMax, fld->length());
+            if (selMax > selMin) {
+                CopyPlainTextToClipboard(hwnd, fld->substr(selMin, selMax - selMin));
+                DeleteSearchSelection();
+                markSearchQueryChanged();
+            }
+        }
+        return;
+    }
+    if (isCtrl && !isAlt && (wParam == 'V' || wParam == 'v')) {
+        if (fld) {
+            std::wstring pasted = ReadSingleLineClipboardText(hwnd);
+            if (!pasted.empty()) {
+                DeleteSearchSelection();
+                if (m_searchCaretPos > fld->length()) m_searchCaretPos = fld->length();
+                fld->insert(m_searchCaretPos, pasted);
+                m_searchCaretPos += pasted.length();
+                markSearchQueryChanged();
+            }
+        }
+        return;
+    }
+
+    if (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_HOME || wParam == VK_END) {
+        if (!fld) return;
+        if (m_searchCaretPos > fld->length()) m_searchCaretPos = fld->length();
+        const size_t oldPos = m_searchCaretPos;
+        if (!isShift && HasSearchSelection() && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
+            auto [selMin, selMax] = GetSearchSelectionRange();
+            m_searchCaretPos = (wParam == VK_LEFT) ? (std::min)(selMin, fld->length()) : (std::min)(selMax, fld->length());
+            ClearSearchSelection();
+            return;
+        }
+        if (wParam == VK_LEFT) {
+            if (m_searchCaretPos > 0) m_searchCaretPos--;
+        } else if (wParam == VK_RIGHT) {
+            if (m_searchCaretPos < fld->length()) m_searchCaretPos++;
+        } else if (wParam == VK_HOME) {
+            m_searchCaretPos = 0;
+        } else if (wParam == VK_END) {
+            m_searchCaretPos = fld->length();
+        }
+        if (isShift) {
+            if (m_searchSelStart < 0) m_searchSelStart = static_cast<int>(oldPos);
+            m_searchSelEnd = static_cast<int>(m_searchCaretPos);
+        } else {
+            ClearSearchSelection();
+        }
+        return;
+    }
+
+    if (wParam == VK_BACK || wParam == VK_DELETE) {
+        if (!fld) return;
+        if (DeleteSearchSelection()) {
+            markSearchQueryChanged();
+            return;
+        }
+        if (m_searchCaretPos > fld->length()) m_searchCaretPos = fld->length();
+        if (wParam == VK_BACK && m_searchCaretPos > 0) {
+            fld->erase(m_searchCaretPos - 1, 1);
+            m_searchCaretPos--;
+            markSearchQueryChanged();
+        } else if (wParam == VK_DELETE && m_searchCaretPos < fld->length()) {
+            fld->erase(m_searchCaretPos, 1);
+            markSearchQueryChanged();
         }
     } else if (wParam == VK_TAB) {
+        int nextFocus = m_focusedSearchInput;
         if (m_focusedSearchInput == 1) {
-            m_focusedSearchInput = m_isReplaceOpen ? 2 : (m_isSearchDetailsOpen ? 3 : 1);
+            nextFocus = m_isReplaceOpen ? 2 : (m_isSearchDetailsOpen ? 3 : 1);
         } else if (m_focusedSearchInput == 2) {
-            m_focusedSearchInput = m_isSearchDetailsOpen ? 3 : 1;
+            nextFocus = m_isSearchDetailsOpen ? 3 : 1;
         } else if (m_focusedSearchInput == 3) {
-            m_focusedSearchInput = 4;
+            nextFocus = 4;
         } else if (m_focusedSearchInput == 4) {
-            m_focusedSearchInput = 1;
+            nextFocus = 1;
         }
+        OnSearchInputFocusChanged(nextFocus);
     } else if (wParam == VK_ESCAPE) {
+        ClearSearchSelection();
         m_focusedSearchInput = 0;
     } else if (wParam == VK_RETURN) {
         m_searchPending = false;
         m_lastSearchExecutionTime = GetTickCount64();
         LaunchAsyncSearch();
     } else if (wParam == 'L' || wParam == 'l') {
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        if (isAlt) {
             m_searchOnlyOpenEditors = !m_searchOnlyOpenEditors;
             LaunchAsyncSearch();
         }
     } else if (wParam == 'C' || wParam == 'c') {
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        if (isAlt) {
             m_matchCase = !m_matchCase;
             LaunchAsyncSearch();
         }
     } else if (wParam == 'W' || wParam == 'w') {
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        if (isAlt) {
             m_matchWholeWord = !m_matchWholeWord;
             LaunchAsyncSearch();
         }
     } else if (wParam == 'R' || wParam == 'r') {
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        if (isAlt) {
             m_useRegex = !m_useRegex;
             LaunchAsyncSearch();
         }
@@ -4508,28 +4889,58 @@ void DrawerPanel::CancelInlineRename() {
 bool DrawerPanel::CommitInlineRename(std::wstring& outOldPath, std::wstring& outNewPath) {
     outOldPath.clear();
     outNewPath.clear();
+    m_lastRenameError.clear();
     if (!m_isRenaming || m_renameOriginalPath.empty() || m_renameText.empty()) {
         CancelInlineRename();
         return false;
     }
 
-    std::filesystem::path oldP(m_renameOriginalPath);
-    if (m_renameText == oldP.filename().wstring()) {
+    std::wstring trimmedName = m_renameText;
+    while (!trimmedName.empty() && (trimmedName.front() == L' ' || trimmedName.front() == L'\t')) trimmedName.erase(trimmedName.begin());
+    while (!trimmedName.empty() && (trimmedName.back() == L' ' || trimmedName.back() == L'\t')) trimmedName.pop_back();
+    if (trimmedName.empty() || trimmedName == L"." || trimmedName == L"..") {
         CancelInlineRename();
         return false;
     }
 
-    std::filesystem::path newP = oldP.parent_path() / m_renameText;
+    std::filesystem::path oldP(m_renameOriginalPath);
+    if (trimmedName == oldP.filename().wstring()) {
+        CancelInlineRename();
+        return false;
+    }
+
+    std::filesystem::path newP = oldP.parent_path() / trimmedName;
     std::error_code ec;
 
     // Prevent collision/overwrite if a file or folder with the destination name already exists
     if (std::filesystem::exists(newP, ec) && _wcsicmp(oldP.c_str(), newP.c_str()) != 0) {
+        m_lastRenameError = L"A file or folder named '" + trimmedName + L"' already exists.";
         CancelInlineRename();
         return false;
     }
 
-    std::filesystem::rename(oldP, newP, ec);
-    if (!ec) {
+    bool renamed = false;
+    DWORD lastWinErr = 0;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        ec.clear();
+        std::filesystem::rename(oldP, newP, ec);
+        if (!ec) {
+            renamed = true;
+            break;
+        }
+        if (MoveFileExW(oldP.c_str(), newP.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            renamed = true;
+            break;
+        }
+        lastWinErr = GetLastError();
+        if (lastWinErr == ERROR_SHARING_VIOLATION || lastWinErr == ERROR_LOCK_VIOLATION || lastWinErr == ERROR_ACCESS_DENIED) {
+            Sleep(30);
+            continue;
+        }
+        break;
+    }
+
+    if (renamed) {
         outOldPath = oldP.wstring();
         outNewPath = newP.wstring();
         CancelInlineRename();
@@ -4537,6 +4948,13 @@ bool DrawerPanel::CommitInlineRename(std::wstring& outOldPath, std::wstring& out
         return true;
     }
 
+    if (lastWinErr == ERROR_SHARING_VIOLATION || lastWinErr == ERROR_LOCK_VIOLATION) {
+        m_lastRenameError = L"The file is currently locked by another process (Windows error " + std::to_wstring(lastWinErr) + L").";
+    } else if (lastWinErr != 0) {
+        m_lastRenameError = L"Windows could not rename the item (error code " + std::to_wstring(lastWinErr) + L").";
+    } else if (ec) {
+        m_lastRenameError = L"Could not rename the item (error code " + std::to_wstring(ec.value()) + L").";
+    }
     CancelInlineRename();
     return false;
 }
@@ -9171,6 +9589,24 @@ std::wstring DrawerPanel::GetGitStagedFileContent(const std::wstring& relPath) {
     return L"";
 }
 
+wchar_t DrawerPanel::GetCachedGitChangeStatus(const std::wstring& relPath) const {
+    if (relPath.empty()) return L'\0';
+    std::wstring cleanRel = relPath;
+    for (auto& c : cleanRel) if (c == L'\\') c = L'/';
+    std::lock_guard<std::recursive_mutex> lock(m_gitMutex);
+    for (const auto& item : m_gitChanges) {
+        std::wstring itemClean = item.path;
+        for (auto& c : itemClean) if (c == L'\\') c = L'/';
+        if (_wcsicmp(itemClean.c_str(), cleanRel.c_str()) == 0) {
+            if (item.status.empty()) return L'M';
+            wchar_t ch = item.status[0];
+            if (ch == L'?') return L'U';
+            return ch;
+        }
+    }
+    return L'\0';
+}
+
 void DrawerPanel::ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted) {
     outAdded.clear();
     outDeleted.clear();
@@ -12590,7 +13026,7 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             float fileRowH = config.ScaleF(22.0f);
             float timelineX = railW + config.ScaleF(24.0f);
 
-            // VS Code Git Graph multi-lane color palette (Image 2)
+            // Git Graph multi-lane color palette
             static const D2D1_COLOR_F s_gitLaneColors[] = {
                 D2D1::ColorF(0.23f, 0.51f, 0.96f), // 0: Blue #3B82F6
                 D2D1::ColorF(0.93f, 0.28f, 0.60f), // 1: Pink #EC4899

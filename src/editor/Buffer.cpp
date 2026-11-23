@@ -534,7 +534,8 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
                 continue;
             }
         } else {
-            if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'/') {
+            if (i + 1 < len && line[i] == L'/' && line[i + 1] == L'/' &&
+                (i == 0 || line[i - 1] != L':')) {
                 tokens.push_back({ TokenType::Comment, i, len - i });
                 break;
             }
@@ -552,6 +553,16 @@ std::vector<SyntaxToken> SyntaxLexer::TokenizeLine(const std::wstring& line, con
 
         // 8. String literals ("..." or '...' or `...`) with PHP "$var" interpolation highlighting
         if (line[i] == L'"' || line[i] == L'\'' || line[i] == L'`') {
+            // Contraction / possessive apostrophe in JSX/HTML prose (e.g. what's, don't, user's) is NOT a string literal
+            if (line[i] == L'\'' && i > 0 && iswalnum(line[i - 1]) &&
+                (lowerExt == L".jsx" || lowerExt == L"jsx" || lowerExt == L".tsx" || lowerExt == L"tsx" ||
+                 lowerExt == L".html" || lowerExt == L"html" || lowerExt == L".htm" || lowerExt == L"htm" ||
+                 lowerExt == L".xml" || lowerExt == L"xml" || lowerExt == L".svg" || lowerExt == L"svg" ||
+                 lowerExt == L".php" || lowerExt == L"php" || lowerExt == L".phtml" || lowerExt == L"phtml")) {
+                tokens.push_back({ TokenType::Default, i, 1 });
+                ++i;
+                continue;
+            }
             wchar_t quote = line[i];
             bool allowVarInterp = (quote == L'"' && (lowerExt == L".php" || lowerExt == L"php" ||
                                                      lowerExt == L".phar" || lowerExt == L"phar" || lowerExt.empty()));
@@ -2853,7 +2864,7 @@ bool Buffer::ExpandEmmet(const std::wstring& fileExt) {
 }
 
 bool Buffer::ReplacePrefixWithSnippet(size_t prefixLen, const std::vector<std::wstring>& bodyLines, int targetCursorLineOffset, int targetCursorCol) {
-    if (m_mappedState || m_lines.empty() || bodyLines.empty() || prefixLen == 0) return false;
+    if (m_mappedState || m_lines.empty() || bodyLines.empty()) return false;
     if (m_cursor.line >= m_lines.size()) m_cursor.line = m_lines.size() - 1;
     auto& line = m_lines[m_cursor.line];
     if (m_cursor.col < prefixLen) return false;

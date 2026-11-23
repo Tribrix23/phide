@@ -815,7 +815,7 @@ std::string EncodeDapFrame(const std::string& jsonPayload) {
 }
 
 // =========================================================================
-// Launch Configurations (.vscode/launch.json)
+// Launch Configurations (.phide/launch.json, with .vscode fallback)
 // =========================================================================
 
 std::vector<LaunchConfig> ParseLaunchJson(
@@ -876,8 +876,10 @@ std::vector<LaunchConfig> LoadWorkspaceLaunchConfigs(
     const std::wstring& activeFilePath) {
     std::vector<LaunchConfig> out;
     if (workspaceRoot.empty()) return out;
-    fs::path p = fs::path(workspaceRoot) / L".vscode" / L"launch.json";
     std::error_code ec;
+    fs::path phidePath = fs::path(workspaceRoot) / L".phide" / L"launch.json";
+    fs::path legacyPath = fs::path(workspaceRoot) / L".vscode" / L"launch.json";
+    fs::path p = fs::exists(phidePath, ec) ? phidePath : legacyPath;
     if (!fs::exists(p, ec)) return out;
     std::ifstream ifs(p, std::ios::binary);
     if (!ifs.is_open()) return out;

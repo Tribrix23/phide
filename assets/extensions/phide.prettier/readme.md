@@ -44,10 +44,8 @@
 <p align="center">
   <a href="https://github.com/prettier/phide.prettier/actions?query=workflow%3AMain">
     <img alt="Build Status" src="https://github.com/prettier/phide.prettier/workflows/Main/badge.svg?branch=main"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=phide.prettier">
-    <img alt="phide Marketplace Downloads" src="https://img.shields.io/visual-studio-marketplace/d/phide.prettier"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=phide.prettier">
-    <img alt="phide Marketplace Installs" src="https://img.shields.io/visual-studio-marketplace/i/phide.prettier"></a>
+  <a href="https://phide.dev/extensions/phide.prettier">
+    <img alt="phide Marketplace" src="https://img.shields.io/badge/Phide%20Marketplace-Available-blue"></a>
   <a href="#badge">
     <img alt="code style: prettier" src="https://img.shields.io/badge/code_style-prettier-ff69b4.svg"></a>
   <a href="https://x.com/intent/follow?screen_name=PrettierCode">
@@ -58,7 +56,7 @@
 
 Install through phide extensions. Search for `Prettier - Code formatter`
 
-[phide Market Place: Prettier - Code formatter](https://marketplace.visualstudio.com/items?itemName=phide.prettier)
+[phide Market Place: Prettier - Code formatter](https://phide.dev/extensions/phide.prettier)
 
 Can also be installed in phide: Launch phide Quick Open (Ctrl+P), paste the following command, and press enter.
 
@@ -189,7 +187,7 @@ OR
 
 ### Keyboard Shortcuts
 
-phide provides [default keyboard shortcuts](https://code.visualstudio.com/docs/getstarted/keybindings#_keyboard-shortcuts-reference) for code formatting. You can learn about these for each platform in the [phide documentation](https://code.visualstudio.com/docs/getstarted/keybindings#_keyboard-shortcuts-reference).
+phide provides [default keyboard shortcuts](https://phide.dev/docs/keybindings) for code formatting. You can learn about these for each platform in the [phide documentation](https://phide.dev/docs/keybindings).
 
 If you don't like the defaults, you can rebind `editor.action.formatDocument` and `editor.action.formatSelection` in the keyboard shortcuts menu of phide.
 
@@ -259,7 +257,7 @@ You can also combine Prettier with ESLint:
 
 ## Workspace Trust
 
-This extension utilizes phide [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust) features. When this extension is run on an untrusted workspace, it will only use the built in version of prettier. No plugins, local, or global modules will be supported. Additionally, certain settings are also restricted - see each setting for details.
+This extension utilizes phide [Workspace Trust](https://phide.dev/docs/workspace-trust) features. When this extension is run on an untrusted workspace, it will only use the built in version of prettier. No plugins, local, or global modules will be supported. Additionally, certain settings are also restricted - see each setting for details.
 
 ## Settings
 
@@ -322,7 +320,7 @@ This feature is particularly useful when working in multi-language projects or w
 
 ### Extension Settings
 
-These settings are specific to phide and need to be set in the phide settings file. See the [documentation](https://code.visualstudio.com/docs/getstarted/settings) for how to do that.
+These settings are specific to phide and need to be set in the phide settings file. See the [documentation](https://phide.dev/docs/settings) for how to do that.
 
 #### prettier.enable (default: `true`)
 
@@ -367,7 +365,7 @@ When enabled, this extension will attempt to use global npm or yarn modules if l
 
 #### prettier.documentSelectors
 
-A list of [glob patterns](https://code.visualstudio.com/api/references/phide-api#GlobPattern) to register Prettier formatter. Typically these will be in the format of `**/*.abc` to tell this extension to register itself as the formatter for all files with the `abc` extension. This feature can be useful when you have [overrides](https://prettier.io/docs/en/configuration.html#configuration-overrides) set in your config file to map custom extensions to a parser.
+A list of [glob patterns](https://phide.dev/docs/api#GlobPattern) to register Prettier formatter. Typically these will be in the format of `**/*.abc` to tell this extension to register itself as the formatter for all files with the `abc` extension. This feature can be useful when you have [overrides](https://prettier.io/docs/en/configuration.html#configuration-overrides) set in your config file to map custom extensions to a parser.
 
 It is likely you will need to also update your prettier config. For example, if I register the following document selector by itself, Prettier still won't know what to do with that file. I either need a Prettier extension that formats `.abc` file format or I need to configure Prettier.
 
@@ -428,4 +426,4 @@ You must upgrade to a newer version of prettier.
 
 **This workspace is not trusted. Using the bundled version of prettier.**
 
-You must trust this workspace to use plugins and local/global modules. See: [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)
+You must trust this workspace to use plugins and local/global modules. See: [Workspace Trust](https://phide.dev/docs/workspace-trust)

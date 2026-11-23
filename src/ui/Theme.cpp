@@ -163,7 +163,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.600f, 0.721f, 0.835f, 1.0f), &brushIconFolderOpen);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushIconGray);
 
-    // Official VS Code Seti Brand Palette Brushes
+    // Phide Seti Brand Palette Brushes
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.533f, 0.572f, 0.749f, 1.0f), &brushSetiPhp);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.968f, 0.874f, 0.117f, 1.0f), &brushSetiJs);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.318f, 0.604f, 0.729f, 1.0f), &brushSetiTs);
@@ -183,7 +183,7 @@ HRESULT Theme::CreateDeviceResources(ID2D1RenderTarget* pRT, IDWriteFactory* pDW
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.550f, 0.680f, 0.810f, 1.0f), &brushSetiFolderOpen);
     pRT->CreateSolidColorBrush(D2D1::ColorF(0.620f, 0.620f, 0.620f, 1.0f), &brushSetiDefault);
 
-    // Load Official VS Code Seti Font and Koda Mono Fonts into DirectWrite Custom Font Collection
+    // Load Seti Icon Font and Koda Mono Fonts into DirectWrite Custom Font Collection
     static const std::vector<std::wstring> fontFiles = {
         L"seti.ttf",
         L"KodaMono-Regular.ttf",
@@ -1744,6 +1744,8 @@ Theme::SetiIconInfo Theme::GetSetiIcon(const std::wstring& filename, bool isFold
         if (ext == L".ps1") return { 0xE074, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
         if (ext == L".exe" || ext == L".dll" || ext == L".bin" || ext == L".so" || ext == L".obj") return { 0xE088, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
         if (ext == L".sql") return { 0xE022, brushIconOrange ? brushIconOrange.Get() : brushIconBlue.Get() };
+        if (ext == L".csv" || ext == L".tsv") return { 0xE01E, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
+        if (ext == L".xls" || ext == L".xlsx") return { 0xE0A3, brushSetiShell ? brushSetiShell.Get() : brushIconGreen.Get() };
         if (ext == L".zip" || ext == L".tar" || ext == L".gz" || ext == L".7z" || ext == L".rar") return { 0xE0A8, brushSetiJson ? brushSetiJson.Get() : brushIconYellow.Get() };
         if (ext == L".lock") return { 0xE05D, brushSetiDefault ? brushSetiDefault.Get() : brushIconGray.Get() };
         if (ext == L".ini" || ext == L".conf" || ext == L".cfg" || ext == L".toml" || ext == L".properties" || ext == L".dist") {

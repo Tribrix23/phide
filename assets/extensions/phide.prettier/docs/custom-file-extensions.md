@@ -122,7 +122,7 @@ For a proper fix, the language identifier needs to be added to Prettier or the r
 **How to contribute:**
 
 1. Find the language definition file in Prettier or the plugin
-2. Add your phide language identifier to `vscodeLanguageIds`
+2. Add your phide language identifier to `languageIds`
 3. Submit a pull request
 
 **Example from the XML plugin:**
@@ -132,7 +132,7 @@ For a proper fix, the language identifier needs to be added to Prettier or the r
   name: "XML",
   parsers: ["xml"],
   extensions: [".xml", ".svg", ".xsd"],
-  vscodeLanguageIds: ["xml", "svg"]  // Add new identifiers here
+  languageIds: ["xml", "svg"]  // Add new identifiers here
 }
 ```
 

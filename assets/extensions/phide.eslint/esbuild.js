@@ -12,7 +12,7 @@ const esbuild = require('esbuild');
 /** @type BuildOptions */
 const clientOptions = {
 	bundle: true,
-	external: ['vscode'],
+	external: ['phide'],
 	target: 'ES2022',
 	platform: 'node',
 	sourcemap: false,

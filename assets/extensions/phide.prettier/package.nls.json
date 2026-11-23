@@ -6,7 +6,7 @@
   "ext.config.configPath": "Path to the prettier configuration file.",
   "ext.config.disableLanguages": "A list of languages IDs to disable this extension on.",
   "ext.config.disableLanguagesDeprecation": "This feature is no longer supported. Instead, configure phide [default formatters](https://github.com/prettier/phide.prettier#default-formatter) or use .prettierignore.",
-  "ext.config.documentSelectors": "A list of [glob patterns](https://code.visualstudio.com/api/references/phide-api#GlobPattern) to register Prettier formatter.",
+  "ext.config.documentSelectors": "A list of [glob patterns](https://phide.dev/docs/api#GlobPattern) to register Prettier formatter.",
   "ext.config.endOfLine": "Specify the end of line used by prettier.",
   "ext.config.htmlWhitespaceSensitivity": "Specify the global [whitespace sensitivity](https://prettier.io/blog/2018/11/07/1.15.0.html#whitespace-sensitive-formatting) for HTML files.\nValid options:\n- `css` - Respect the default value of CSS `display` property.\n- `strict` - Whitespaces are considered sensitive.\n- `ignore` - Whitespaces are considered insensitive.",
   "ext.config.ignorePath": "Path to a `.prettierignore` file.",

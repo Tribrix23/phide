@@ -158,6 +158,7 @@ public:
                           const app::AppConfig& config);
     bool HandleChar(wchar_t ch, StructuredViewerState& state);
     bool HandleKeyDown(WPARAM vk, StructuredViewerState& state);
+    [[nodiscard]] static LPCWSTR GetCursorForPoint(POINT clientPt, const StructuredViewerState& state) noexcept;
 
 private:
     void EnsureBrushes(ID2D1RenderTarget* pRT, const Theme& theme);

@@ -93,9 +93,9 @@ npm run release preview
 
 The workflow detects preview tags and:
 
-- Packages with `vsce package --pre-release`
+- Packages with `phide-ext package --pre-release`
 - Creates a GitHub Release marked as prerelease
-- Publishes to Marketplace with `vsce publish --pre-release`
+- Publishes to Marketplace with `phide-ext publish --pre-release`
 
 ### Promoting to Stable
 
@@ -113,18 +113,18 @@ This will update the changelog (moving all `[Unreleased]` entries to the new sta
 If automated publishing fails, you can publish manually:
 
 ```bash
-# Install vsce
-npm install -g @phide/vsce
+# Install phide-ext
+npm install -g @phide/ext-cli
 
 # Package the extension
 npm install
-npx @phide/vsce package
+npx @phide/ext-cli package
 
 # Publish (requires personal access token)
-npx @phide/vsce publish -p <YOUR_TOKEN>
+npx @phide/ext-cli publish -p <YOUR_TOKEN>
 
 # Or for prerelease
-npx @phide/vsce publish --pre-release -p <YOUR_TOKEN>
+npx @phide/ext-cli publish --pre-release -p <YOUR_TOKEN>
 ```
 
 ## Troubleshooting
@@ -137,7 +137,7 @@ npx @phide/vsce publish --pre-release -p <YOUR_TOKEN>
 ### Marketplace publish failed
 
 - Verify `MARKETPLACE_TOKEN` secret is valid and not expired
-- Check the [phide Marketplace Publisher Dashboard](https://marketplace.visualstudio.com/manage)
+- Check the [phide Marketplace Publisher Dashboard](https://phide.dev/marketplace/manage)
 
 ### Version mismatch
 

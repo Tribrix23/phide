@@ -38,12 +38,12 @@ public:
     void LoadSnippets();
 
     /**
-     * @brief Imports a VS Code .code-snippets or language JSON snippets file (bounded <= 1 MB).
+     * @brief Imports a Phide .code-snippets or language JSON snippets file (bounded <= 1 MB).
      */
     bool ImportVscodeSnippetsFromFile(const std::wstring& filePath, const std::wstring& defaultScope = L"");
 
     /**
-     * @brief Imports all .vscode/*.code-snippets files inside a workspace folder (bounded <= 32 files).
+     * @brief Imports all .phide/*.code-snippets (or legacy .vscode/*.code-snippets) files inside a workspace folder (bounded <= 32 files).
      */
     size_t ImportVscodeWorkspaceSnippets(const std::wstring& workspaceRoot);
 

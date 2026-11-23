@@ -145,7 +145,7 @@ Change default configuration for trailingComma to all to match Prettier 3.0.
 ## [9.6.0]
 
 - Prettier 2.7.1
-- Register `mongodb` in `vscodeLanguageIds` to support formatting mongodb queries in phide
+- Register `mongodb` in `languageIds` to support formatting mongodb queries in phide
 - Search for ignore file in all containing workspace folders, not just innermost
 - Fix wrong time unit in log.
 - Allow formatting ranges in `jsonc` (JSON with Comments).
@@ -196,14 +196,14 @@ Change default configuration for trailingComma to all to match Prettier 3.0.
 
 ## [8.0.1]
 
-- Forced version of vsce on build
+- Forced version of phide-ext on build
 
 ## [8.0.0]
 
 - Updated Prettier to 2.3.1
 - Minimum supported phide version is now 1.57.0
 - Added `id` and `name` properties to status bar (#2003)
-- Uses phide [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)
+- Uses phide [Workspace Trust](https://phide.dev/docs/workspace-trust)
 
 ## [7.1.0]
 

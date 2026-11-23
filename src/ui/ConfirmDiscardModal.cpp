@@ -21,6 +21,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
 
     // 2. Card Dimensions and Center Placement
     const bool isNotice = (m_type == ConfirmModalType::Notice);
+    const bool isUnsavedSettings = (m_type == ConfirmModalType::UnsavedSettings);
     const bool isDelete = (m_type == ConfirmModalType::DeleteFile || m_type == ConfirmModalType::DeleteFolder || m_type == ConfirmModalType::DeleteBatch);
     const bool isRestore = (m_type == ConfirmModalType::RestoreFile || m_status == L"D");
     const bool isDiscardAll = (m_type == ConfirmModalType::DiscardAll || m_status == L"ALL");
@@ -134,6 +135,8 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     std::wstring titleText;
     if (isNotice) {
         titleText = m_title.empty() ? L"Commit Message Required" : m_title;
+    } else if (isUnsavedSettings) {
+        titleText = m_title.empty() ? L"Changes Never Saved" : m_title;
     } else if (isUpdateImports) {
         titleText = (m_type == ConfirmModalType::UpdateImportsOnMove) ? L"Update Imports on Move?" : L"Update Imports on Rename?";
     } else if (isDelete) {
@@ -169,6 +172,9 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
     if (isNotice) {
         mainMsg = m_message.empty() ? L"Please enter a commit message before committing your changes." : m_message;
         subMsg = m_subtext.empty() ? L"Git requires a descriptive message to record changes in the repository history." : m_subtext;
+    } else if (isUnsavedSettings) {
+        mainMsg = m_message.empty() ? L"Your settings changes have not been saved." : m_message;
+        subMsg = m_subtext.empty() ? L"Save changes before closing, or click Close to revert to previous settings." : m_subtext;
     } else if (isUpdateImports) {
         mainMsg = L"This file is being referenced in " + std::to_wstring(m_changeCount) + (m_changeCount == 1 ? L" file." : L" files.");
         subMsg = (m_type == ConfirmModalType::UpdateImportsOnMove)
@@ -250,11 +256,12 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
             pFmtBody->SetParagraphAlignment(prevPAlign);
         }
     } else {
-        // Cancel + Primary Action (Discard, Restore, or Delete)
+        // Cancel + Primary Action (Discard, Restore, Delete, or UnsavedSettings Save/Close)
         const float cancelBtnW = config.ScaleF(75.0f);
-        float confirmBtnW = isDelete ? config.ScaleF(105.0f) :
+        float confirmBtnW = isUnsavedSettings ? config.ScaleF(86.0f) :
+                            (isDelete ? config.ScaleF(105.0f) :
                             (isRestore ? config.ScaleF(122.0f) :
-                            (isDiscardAll ? config.ScaleF(138.0f) : config.ScaleF(122.0f)));
+                            (isDiscardAll ? config.ScaleF(138.0f) : config.ScaleF(122.0f))));
 
         m_confirmBtnBounds = D2D1::RectF(
             cardX + cardW - config.ScaleF(18.0f) - confirmBtnW,
@@ -270,7 +277,7 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
             btnY + btnH
         );
 
-        // Render Cancel Button
+        // Render Cancel / Close Button
         D2D1_ROUNDED_RECT rrcCancel = D2D1::RoundedRect(m_cancelBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
         if (m_isCancelHovered && !m_isLoading) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cancelHoverBrush;
@@ -290,20 +297,21 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
         if (cancelBorderBrush) pRT->DrawRoundedRectangle(rrcCancel, cancelBorderBrush.Get(), 1.0f);
 
         ID2D1Brush* cancelTextBrush = m_isLoading ? theme.brushTextMuted.Get() : textPrimary;
+        const wchar_t* cancelLabel = isUnsavedSettings ? L"Close" : L"Cancel";
         if (pFmtBody && cancelTextBrush) {
             DWRITE_TEXT_ALIGNMENT prevAlign = pFmtBody->GetTextAlignment();
             DWRITE_PARAGRAPH_ALIGNMENT prevPAlign = pFmtBody->GetParagraphAlignment();
             pFmtBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             pFmtBody->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            pRT->DrawText(L"Cancel", 6, pFmtBody, m_cancelBtnBounds, cancelTextBrush);
+            pRT->DrawText(cancelLabel, static_cast<UINT32>(wcslen(cancelLabel)), pFmtBody, m_cancelBtnBounds, cancelTextBrush);
             pFmtBody->SetTextAlignment(prevAlign);
             pFmtBody->SetParagraphAlignment(prevPAlign);
         }
 
-        // Render Primary Action Button (Restore, Delete, or Discard)
+        // Render Primary Action Button (Save, Restore, Delete, or Discard)
         D2D1_ROUNDED_RECT rrcConfirm = D2D1::RoundedRect(m_confirmBtnBounds, config.ScaleF(4.0f), config.ScaleF(4.0f));
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> confirmBgBrush;
-        if (isRestore || isUpdateImports) {
+        if (isUnsavedSettings || isRestore || isUpdateImports) {
             pRT->CreateSolidColorBrush(
                 m_isLoading ? D2D1::ColorF(0.09f, 0.34f, 0.65f, 1.0f) :
                 (m_isConfirmHovered ? D2D1::ColorF(0.20f, 0.56f, 0.98f, 1.0f) : D2D1::ColorF(0.12f, 0.46f, 0.88f, 1.0f)),
@@ -337,7 +345,9 @@ void ConfirmDiscardModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app
                 confirmBtnText = L"Discarding...";
             }
         } else {
-            if (isUpdateImports) {
+            if (isUnsavedSettings) {
+                confirmBtnText = L"Save";
+            } else if (isUpdateImports) {
                 confirmBtnText = L"Proceed";
             } else if (isRestore) {
                 confirmBtnText = L"Restore File";
@@ -455,6 +465,7 @@ bool ConfirmDiscardModal::HandleMouseMove(POINT pt) noexcept {
 
 bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wstring& outPath, std::wstring& outFileName, std::wstring& outStatus) noexcept {
     if (!m_isOpen) return false;
+    m_lastWasCancelButton = false;
 
     // Strict idempotency: when loading, completely ignore any clicks to prevent spamming
     if (m_isLoading) {
@@ -468,7 +479,7 @@ bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wst
         outPath = m_filePath;
         outFileName = m_fileName;
         outStatus = m_status;
-        if (m_type == ConfirmModalType::Notice) {
+        if (m_type == ConfirmModalType::Notice || m_type == ConfirmModalType::UnsavedSettings) {
             Close();
         } else {
             // Enter loading state and disable button immediately!
@@ -478,9 +489,10 @@ bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wst
         return true;
     }
 
-    // Check Cancel Button
+    // Check Cancel / Close Button
     if (pt.x >= m_cancelBtnBounds.left && pt.x <= m_cancelBtnBounds.right &&
         pt.y >= m_cancelBtnBounds.top && pt.y <= m_cancelBtnBounds.bottom) {
+        m_lastWasCancelButton = true;
         outConfirmed = false;
         Close();
         return true;
@@ -508,6 +520,7 @@ bool ConfirmDiscardModal::HandleMouseDown(POINT pt, bool& outConfirmed, std::wst
 
 bool ConfirmDiscardModal::HandleKeyDown(WPARAM wParam, bool& outConfirmed, std::wstring& outPath, std::wstring& outFileName, std::wstring& outStatus) noexcept {
     if (!m_isOpen) return false;
+    m_lastWasCancelButton = false;
 
     // Strict idempotency: consume all keys while loading
     if (m_isLoading) {
@@ -519,7 +532,7 @@ bool ConfirmDiscardModal::HandleKeyDown(WPARAM wParam, bool& outConfirmed, std::
         outPath = m_filePath;
         outFileName = m_fileName;
         outStatus = m_status;
-        if (m_type == ConfirmModalType::Notice) {
+        if (m_type == ConfirmModalType::Notice || m_type == ConfirmModalType::UnsavedSettings) {
             Close();
         } else {
             m_isLoading = true;

@@ -1,11 +1,11 @@
-[![Visual Studio Marketplace](https://img.shields.io/badge/Visual%20Studio%20Marketplace-Available-blue?style=for-the-badge&logo=visual-studio-code)](https://phide.dev/extensions)
+[![Phide Marketplace](https://img.shields.io/badge/Phide%20Marketplace-Available-blue?style=for-the-badge)](https://phide.dev/extensions)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/redhat-developer/phide-yaml/CI.yaml?branch=main&style=for-the-badge&logo=github)](https://github.com/redhat-developer/yaml-language-server/actions?query=workflow:CI)
 [![License](https://img.shields.io/github/license/redhat-developer/phide-yaml?style=for-the-badge)](https://github.com/redhat-developer/yaml-language-server/blob/main/LICENSE)
 [![OpenVSX Registry](https://img.shields.io/open-vsx/dt/redhat/phide-yaml?color=purple&label=OpenVSX%20Downloads&style=for-the-badge)](https://open-vsx.org/extension/redhat/phide-yaml)
 
 # YAML Language Support by Red Hat
 
-Provides comprehensive YAML language support for [phide](https://code.visualstudio.com/) through [yaml-language-server](https://github.com/redhat-developer/yaml-language-server), with built-in Kubernetes schema support.
+Provides comprehensive YAML language support for [Phide](https://phide.dev/) through [yaml-language-server](https://github.com/redhat-developer/yaml-language-server), with built-in Kubernetes schema support.
 
 Starting from version `1.0.0`, the language server uses [eemeli/yaml](https://github.com/eemeli/yaml) as its YAML parser, which strictly enforces the specified YAML spec version. The default YAML spec version is `1.2`. Set `yaml.yamlVersion` to `1.1` for compatibility with older YAML files.
 

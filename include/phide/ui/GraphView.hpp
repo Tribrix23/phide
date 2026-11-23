@@ -164,6 +164,7 @@ public:
     void ClearLastClickedFile() noexcept { m_lastClickedFile.clear(); }
 
     [[nodiscard]] const std::wstring& GetCurrentRootPath() const noexcept { return m_currentRootPath; }
+    void ApplyWorkspaceDataFrom(GraphView&& other);
 
 private:
     std::wstring m_currentRootPath;

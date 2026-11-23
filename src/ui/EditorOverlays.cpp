@@ -615,6 +615,7 @@ void EditorCanvas::OpenPeekPanel(
     m_peekPanel.title = title;
     m_peekPanel.subtitle = subtitle;
     m_peekPanel.anchorLine = anchorLine;
+    m_peekPanel.anchorScreenY = -1.0f;
     m_peekPanel.items = std::move(items);
     m_peekPanel.selectedIndex = 0;
     m_peekPanel.listScrollIdx = 0;
@@ -796,8 +797,20 @@ void EditorCanvas::RenderInlinePeekPanel(
     const float pLeft = m_lastActivePaneBounds.left + pad;
     const float pRight = (std::max)(pLeft + config.ScaleF(360.0f), m_lastActivePaneBounds.right - pad);
     const float panelH = (std::min)(config.ScaleF(300.0f), (std::max)(config.ScaleF(160.0f), clientHeight * 0.44f));
-    const float pTop = (std::max)(m_lastActivePaneBounds.top + config.ScaleF(42.0f),
-                                  (m_lastActivePaneBounds.bottom - panelH) * 0.45f);
+    const float lineH = config.ScaleF(std::round(config.fontSize * config.lineHeightMultiplier));
+    const float minTop = m_lastActivePaneBounds.top + config.ScaleF(38.0f);
+    const float maxTop = (std::max)(minTop, m_lastActivePaneBounds.bottom - panelH - config.ScaleF(8.0f));
+    float pTop = (std::max)(minTop, (m_lastActivePaneBounds.bottom - panelH) * 0.45f);
+    if (m_peekPanel.mode != PeekMode::CodeMetrics && m_peekPanel.anchorScreenY > 0.0f) {
+        float belowTop = m_peekPanel.anchorScreenY + config.ScaleF(4.0f);
+        if (belowTop + panelH <= m_lastActivePaneBounds.bottom - config.ScaleF(6.0f)) {
+            pTop = (std::max)(minTop, belowTop);
+        } else {
+            // Flip neatly above the anchored CodeLens/code line if near bottom of pane
+            float aboveTop = m_peekPanel.anchorScreenY - lineH - panelH - config.ScaleF(6.0f);
+            pTop = (std::max)(minTop, (std::min)(maxTop, (aboveTop >= minTop) ? aboveTop : belowTop));
+        }
+    }
 
     m_peekPanel.rcPanel = D2D1::RectF(pLeft, pTop, pRight, pTop + panelH);
     D2D1_ROUNDED_RECT rrcPanel = D2D1::RoundedRect(m_peekPanel.rcPanel, 6.0f, 6.0f);
@@ -1448,12 +1461,40 @@ void EditorCanvas::ShowCodeActionMenu(size_t line, const std::vector<lsp::CodeAc
     m_codeActionMenu.isRefactorMode = isRefactorMode;
     m_codeActionMenu.selectedIdx = 0;
     m_codeActionMenu.scrollOffset = 0;
+    m_codeActionMenu.itemBounds.clear();
+    m_codeActionMenu.itemIndices.clear();
     m_codeActionMenu.visible = !items.empty();
     if (!m_codeActionMenu.visible) m_codeActionMenu.bounds = {};
 }
 
 bool EditorCanvas::HitTestLightbulb(POINT pt) const noexcept {
     return m_codeActionMenu.hasLightbulb && PtInRectF(pt, m_codeActionMenu.lightbulbBounds);
+}
+
+bool EditorCanvas::HitTestCodeActionMenu(POINT pt, int& outItemIdx) const noexcept {
+    outItemIdx = -1;
+    if (!m_codeActionMenu.visible || !PtInRectF(pt, m_codeActionMenu.bounds)) {
+        return false;
+    }
+    const size_t n = (std::min)(m_codeActionMenu.itemBounds.size(), m_codeActionMenu.itemIndices.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (PtInRectF(pt, m_codeActionMenu.itemBounds[i])) {
+            outItemIdx = m_codeActionMenu.itemIndices[i];
+            break;
+        }
+    }
+    return true;
+}
+
+bool EditorCanvas::HandleCodeActionMenuMouseMove(POINT pt) noexcept {
+    int hitIdx = -1;
+    if (!HitTestCodeActionMenu(pt, hitIdx)) return false;
+    if (hitIdx >= 0 && hitIdx < static_cast<int>(m_codeActionMenu.items.size()) &&
+        m_codeActionMenu.selectedIdx != hitIdx) {
+        m_codeActionMenu.selectedIdx = hitIdx;
+        return true;
+    }
+    return false;
 }
 
 bool EditorCanvas::HandleCodeActionMenuKeyDown(WPARAM vk, int& outAcceptedIndex) {
@@ -1498,15 +1539,22 @@ bool EditorCanvas::HandleCodeActionMenuMouseDown(POINT pt, int& outAcceptedIndex
         DismissCodeActionMenu();
         return false;
     }
-    // Check item rows cleanly using rendered row height inside m_codeActionMenu.bounds
+    int hitIdx = -1;
+    if (HitTestCodeActionMenu(pt, hitIdx) && hitIdx >= 0 && hitIdx < static_cast<int>(m_codeActionMenu.items.size())) {
+        m_codeActionMenu.selectedIdx = hitIdx;
+        outAcceptedIndex = hitIdx;
+        DismissCodeActionMenu();
+        return true;
+    }
+    // Check item rows cleanly using rendered row height inside m_codeActionMenu.bounds (fallback before Render)
     constexpr int kMaxVis = 9;
-    float headerH = 26.0f;
+    float headerH = 24.0f;
     float rowH = 26.0f;
     if (m_codeActionMenu.bounds.bottom > m_codeActionMenu.bounds.top) {
         float innerH = (m_codeActionMenu.bounds.bottom - m_codeActionMenu.bounds.top);
         int visRows = (std::min)(kMaxVis, static_cast<int>(m_codeActionMenu.items.size()));
         if (visRows > 0) {
-            headerH = (innerH > 26.0f * (visRows + 0.5f)) ? innerH / (visRows + 1) : 26.0f;
+            headerH = (innerH > 26.0f * (visRows + 0.5f)) ? innerH / (visRows + 1) : 24.0f;
             rowH = (innerH - headerH) / static_cast<float>(visRows);
         }
     }
@@ -1581,12 +1629,16 @@ void EditorCanvas::RenderCodeActionMenu(ID2D1RenderTarget* pRT, Theme& theme, co
                   rcHdrText, theme.brushTextSecondary ? theme.brushTextSecondary.Get() : theme.brushTextPrimary.Get());
 
     IDWriteTextFormat* rowFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get();
+    m_codeActionMenu.itemBounds.clear();
+    m_codeActionMenu.itemIndices.clear();
     float curY = y + headerH + config.ScaleF(2.0f);
     for (int r = 0; r < visCount; ++r) {
         int idx = m_codeActionMenu.scrollOffset + r;
         if (idx < 0 || idx >= total) break;
         const auto& act = m_codeActionMenu.items[static_cast<size_t>(idx)];
         D2D1_RECT_F rcRow = D2D1::RectF(x + config.ScaleF(4.0f), curY, x + boxW - config.ScaleF(4.0f), curY + rowH);
+        m_codeActionMenu.itemBounds.push_back(rcRow);
+        m_codeActionMenu.itemIndices.push_back(idx);
         if (idx == m_codeActionMenu.selectedIdx && selBrush) {
             pRT->FillRoundedRectangle(D2D1::RoundedRect(rcRow, 3.0f, 3.0f), selBrush.Get());
         }

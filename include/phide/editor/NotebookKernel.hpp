@@ -12,6 +12,12 @@
 
 namespace phide::editor {
 
+struct KernelOutputSegment {
+    bool isImage = false;
+    std::string textUtf8;
+    std::string base64Png;
+};
+
 /**
  * @struct KernelExecutionResult
  * @brief Output and execution status from a kernel cell run.
@@ -22,6 +28,7 @@ struct KernelExecutionResult {
     uint64_t elapsedMs = 0;
     bool hasError = false;
     std::vector<std::string> base64Pngs;
+    std::vector<KernelOutputSegment> segments;
 };
 
 /**
@@ -41,6 +48,9 @@ public:
     NotebookKernel(const NotebookKernel&) = delete;
     NotebookKernel& operator=(const NotebookKernel&) = delete;
 
+    [[nodiscard]] const std::wstring& GetPythonPath() const noexcept { return m_pythonPath; }
+    [[nodiscard]] const std::wstring& GetWorkingDir() const noexcept { return m_workingDir; }
+
     /**
      * @brief Ensures the persistent Python kernel process is running.
      * @param pythonExe Path to the Python executable.
@@ -49,13 +59,27 @@ public:
      */
     bool EnsureStarted(const std::wstring& pythonExe, const std::wstring& workingDir = L"") {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (IsProcessAlive()) {
+        auto samePath = [](const std::wstring& a, const std::wstring& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                wchar_t ca = (a[i] == L'/') ? L'\\' : static_cast<wchar_t>(towlower(a[i]));
+                wchar_t cb = (b[i] == L'/') ? L'\\' : static_cast<wchar_t>(towlower(b[i]));
+                if (ca != cb) return false;
+            }
             return true;
+        };
+        if (IsProcessAlive()) {
+            const bool samePy = samePath(m_pythonPath, pythonExe);
+            const bool sameWd = workingDir.empty() || samePath(m_workingDir, workingDir);
+            if (samePy && sameWd) {
+                return true;
+            }
         }
 
         CleanupProcess();
 
         m_pythonPath = pythonExe;
+        m_workingDir = workingDir;
         std::wstring driverPath = EnsureDriverScriptCreated();
         if (driverPath.empty()) {
             return false;
@@ -90,6 +114,57 @@ public:
         si.hStdOutput = hStdoutWrite;
         si.hStdError = hStdoutWrite;
 
+        // Build clean Unicode environment: strip conflicting PYTHONHOME/PYTHONPATH/PYTHONNOUSERSITE
+        // and configure VIRTUAL_ENV + Scripts PATH when launching a virtualenv interpreter.
+        std::wstring envBlock;
+        {
+            std::filesystem::path pyPathObj(pythonExe);
+            std::filesystem::path scriptsDir = pyPathObj.parent_path();
+            std::filesystem::path venvRoot = scriptsDir.parent_path();
+            std::error_code ecEnv;
+            bool isVenv = std::filesystem::exists(scriptsDir / L"pyvenv.cfg", ecEnv) ||
+                          std::filesystem::exists(venvRoot / L"pyvenv.cfg", ecEnv);
+            std::wstring activeVenvDir = std::filesystem::exists(scriptsDir / L"pyvenv.cfg", ecEnv)
+                ? scriptsDir.wstring() : (isVenv ? venvRoot.wstring() : L"");
+
+            LPWCH rawEnv = GetEnvironmentStringsW();
+            if (rawEnv) {
+                for (const wchar_t* p = rawEnv; *p; p += wcslen(p) + 1) {
+                    std::wstring kv(p);
+                    size_t eq = kv.find(L'=');
+                    if (eq == 0 || eq == std::wstring::npos) {
+                        envBlock.append(kv);
+                        envBlock.push_back(L'\0');
+                        continue;
+                    }
+                    std::wstring keyUpper = kv.substr(0, eq);
+                    for (auto& c : keyUpper) c = static_cast<wchar_t>(towupper(c));
+                    if (keyUpper == L"PYTHONHOME" || keyUpper == L"PYTHONPATH" || keyUpper == L"PYTHONNOUSERSITE") {
+                        continue;
+                    }
+                    if (!activeVenvDir.empty() && keyUpper == L"VIRTUAL_ENV") {
+                        continue;
+                    }
+                    if (keyUpper == L"PATH" && !scriptsDir.empty()) {
+                        std::wstring val = kv.substr(eq + 1);
+                        envBlock.append(L"PATH=" + scriptsDir.wstring() + L";" + val);
+                        envBlock.push_back(L'\0');
+                        continue;
+                    }
+                    envBlock.append(kv);
+                    envBlock.push_back(L'\0');
+                }
+                FreeEnvironmentStringsW(rawEnv);
+            }
+            if (!activeVenvDir.empty()) {
+                envBlock.append(L"VIRTUAL_ENV=" + activeVenvDir);
+                envBlock.push_back(L'\0');
+            }
+            if (!envBlock.empty()) {
+                envBlock.push_back(L'\0');
+            }
+        }
+
         PROCESS_INFORMATION pi{};
         std::wstring cmd = L"\"" + pythonExe + L"\" -u \"" + driverPath + L"\"";
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
@@ -97,7 +172,8 @@ public:
 
         BOOL ok = CreateProcessW(
             NULL, cmdBuf.data(), NULL, NULL, TRUE,
-            CREATE_NO_WINDOW, NULL,
+            CREATE_NO_WINDOW | (!envBlock.empty() ? CREATE_UNICODE_ENVIRONMENT : 0),
+            !envBlock.empty() ? static_cast<LPVOID>(envBlock.data()) : NULL,
             workingDir.empty() ? NULL : workingDir.c_str(),
             &si, &pi
         );
@@ -190,7 +266,9 @@ public:
         }
 
         // Read stdout pipe until delimiter sentinel: __PHIDE_NB_END__<exitCode>__
-        std::string rawOutput;
+        // Keep fullTranscript intact even while streamBuf flushes live chunks so earlier print(...) output is NEVER lost!
+        std::string fullTranscript;
+        std::string streamBuf;
         char buffer[4096];
         DWORD bytesRead = 0;
         const std::string sentinelPrefix = "__PHIDE_NB_END__";
@@ -219,7 +297,8 @@ public:
                         BOOL rOk = ReadFile(hRead, buffer, (std::min)(rem, static_cast<DWORD>(sizeof(buffer) - 1)), &bytesRead, NULL);
                         if (rOk && bytesRead > 0) {
                             buffer[bytesRead] = '\0';
-                            rawOutput.append(buffer, bytesRead);
+                            fullTranscript.append(buffer, bytesRead);
+                            streamBuf.append(buffer, bytesRead);
                         }
                     }
                     CleanupProcess();
@@ -232,7 +311,8 @@ public:
             BOOL readOk = ReadFile(hRead, buffer, (std::min)(avail, static_cast<DWORD>(sizeof(buffer) - 1)), &bytesRead, NULL);
             if (!readOk || bytesRead == 0 || m_shouldInterrupt.load()) {
                 if (m_shouldInterrupt.load()) {
-                    rawOutput.clear();
+                    fullTranscript.clear();
+                    streamBuf.clear();
                     res.hasError = false;
                     res.exitCode = 0;
                 }
@@ -240,40 +320,41 @@ public:
                 break;
             }
             buffer[bytesRead] = '\0';
-            rawOutput.append(buffer, bytesRead);
+            fullTranscript.append(buffer, bytesRead);
+            streamBuf.append(buffer, bytesRead);
 
             // Check for interactive input() prompt sentinel
-            size_t pPos = rawOutput.find(promptPrefix);
+            size_t pPos = streamBuf.find(promptPrefix);
             if (pPos != std::string::npos) {
-                size_t pEnd = rawOutput.find("__", pPos + promptPrefix.size());
+                size_t pEnd = streamBuf.find("__", pPos + promptPrefix.size());
                 if (pEnd != std::string::npos) {
-                    std::string pText = rawOutput.substr(pPos + promptPrefix.size(), pEnd - (pPos + promptPrefix.size()));
-                    std::string displayChunk = rawOutput.substr(0, pPos);
-                    rawOutput.erase(0, pEnd + 2);
+                    std::string pText = streamBuf.substr(pPos + promptPrefix.size(), pEnd - (pPos + promptPrefix.size()));
+                    std::string displayChunk = streamBuf.substr(0, pPos);
+                    streamBuf.erase(0, pEnd + 2);
                     if (onOutputChunk) {
                         onOutputChunk(Utf8ToWide(displayChunk), true, Utf8ToWide(pText));
                     }
                 }
-            } else if (onOutputChunk && !rawOutput.empty()) {
-                if (rawOutput.find("__PHIDE") == std::string::npos &&
-                    rawOutput.find("PHIDE_IMG_PNG:") == std::string::npos &&
-                    rawOutput.find("PHIDE_VARS_JSON:") == std::string::npos) {
-                    onOutputChunk(Utf8ToWide(rawOutput), false, L"");
-                    rawOutput.clear();
+            } else if (onOutputChunk && !streamBuf.empty()) {
+                if (streamBuf.find("__PHIDE") == std::string::npos &&
+                    streamBuf.find("PHIDE_IMG_PNG:") == std::string::npos &&
+                    streamBuf.find("PHIDE_VARS_JSON:") == std::string::npos) {
+                    onOutputChunk(Utf8ToWide(streamBuf), false, L"");
+                    streamBuf.clear();
                 }
             }
 
-            size_t sPos = rawOutput.find(sentinelPrefix);
+            size_t sPos = fullTranscript.find(sentinelPrefix);
             if (sPos != std::string::npos) {
-                size_t sEnd = rawOutput.find("__", sPos + sentinelPrefix.size());
+                size_t sEnd = fullTranscript.find("__", sPos + sentinelPrefix.size());
                 if (sEnd != std::string::npos) {
-                    std::string codeStr = rawOutput.substr(sPos + sentinelPrefix.size(), sEnd - (sPos + sentinelPrefix.size()));
+                    std::string codeStr = fullTranscript.substr(sPos + sentinelPrefix.size(), sEnd - (sPos + sentinelPrefix.size()));
                     try {
                         res.exitCode = std::stoi(codeStr);
                     } catch (...) {
                         res.exitCode = 0;
                     }
-                    rawOutput.erase(sPos);
+                    fullTranscript.erase(sPos);
                     break;
                 }
             }
@@ -283,47 +364,70 @@ public:
         res.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
         res.hasError = (res.exitCode != 0);
 
-        // Extract PHIDE_IMG_PNG:<b64> lines cleanly (bounded <= 4 images per cell, <= ~2.8MB b64 each)
+        // Parse ordered text & PHIDE_IMG_PNG:<b64> segments cleanly (bounded <= 4 images per cell, <= ~2.8MB b64 each)
         {
-            std::string cleanText;
-            cleanText.reserve(rawOutput.size());
+            auto trimSegmentText = [](std::string s) -> std::string {
+                while (!s.empty() && (s.front() == '\r' || s.front() == '\n')) s.erase(s.begin());
+                while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
+                if (!s.empty()) s += "\n";
+                return s;
+            };
+            std::string allCleanText;
+            std::string curTextSeg;
+            allCleanText.reserve(fullTranscript.size());
             size_t pos = 0;
-            const size_t n = rawOutput.size();
+            const size_t n = fullTranscript.size();
             static constexpr size_t kMaxB64Len = (2u * 1024u * 1024u * 4u) / 3u + 64u;
             while (pos < n) {
-                size_t eol = rawOutput.find('\n', pos);
-                std::string line = (eol == std::string::npos)
-                    ? rawOutput.substr(pos)
-                    : rawOutput.substr(pos, eol - pos);
+                size_t eol = fullTranscript.find('\n', pos);
+                std::string rawLine = (eol == std::string::npos)
+                    ? fullTranscript.substr(pos)
+                    : fullTranscript.substr(pos, eol - pos);
                 pos = (eol == std::string::npos) ? n : (eol + 1);
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (line.rfind("PHIDE_IMG_PNG:", 0) == 0) {
+                if (!rawLine.empty() && rawLine.back() == '\r') rawLine.pop_back();
+
+                if (rawLine.rfind(promptPrefix, 0) == 0) {
+                    continue;
+                }
+                if (rawLine.rfind("PHIDE_IMG_PNG:", 0) == 0) {
+                    std::string trimmedText = trimSegmentText(curTextSeg);
+                    if (!trimmedText.empty()) {
+                        KernelOutputSegment tSeg;
+                        tSeg.isImage = false;
+                        tSeg.textUtf8 = std::move(trimmedText);
+                        res.segments.push_back(std::move(tSeg));
+                    }
+                    curTextSeg.clear();
                     if (res.base64Pngs.size() < 4u) {
-                        std::string b64 = line.substr(14);
+                        std::string b64 = rawLine.substr(14);
                         if (!b64.empty() && b64.size() <= kMaxB64Len) {
-                            res.base64Pngs.push_back(std::move(b64));
+                            res.base64Pngs.push_back(b64);
+                            KernelOutputSegment iSeg;
+                            iSeg.isImage = true;
+                            iSeg.base64Png = std::move(b64);
+                            res.segments.push_back(std::move(iSeg));
                         }
                     }
                     continue;
                 }
-                cleanText += line;
-                if (eol != std::string::npos) cleanText += '\n';
+                curTextSeg += rawLine;
+                allCleanText += rawLine;
+                if (eol != std::string::npos) {
+                    curTextSeg += '\n';
+                    allCleanText += '\n';
+                }
             }
-            rawOutput = std::move(cleanText);
+            std::string tailText = trimSegmentText(curTextSeg);
+            if (!tailText.empty()) {
+                KernelOutputSegment tSeg;
+                tSeg.isImage = false;
+                tSeg.textUtf8 = std::move(tailText);
+                res.segments.push_back(std::move(tSeg));
+            }
+            allCleanText = trimSegmentText(allCleanText);
+            res.output = Utf8ToWide(allCleanText);
         }
 
-        // Strip leading/trailing excess whitespace while preserving internal structure
-        while (!rawOutput.empty() && (rawOutput.front() == '\r' || rawOutput.front() == '\n')) {
-            rawOutput.erase(rawOutput.begin());
-        }
-        while (!rawOutput.empty() && (rawOutput.back() == '\r' || rawOutput.back() == '\n' || rawOutput.back() == ' ')) {
-            rawOutput.pop_back();
-        }
-
-        if (!rawOutput.empty()) {
-            rawOutput += "\n";
-        }
-        res.output = Utf8ToWide(rawOutput);
         if (res.hasError && res.output.empty()) {
             res.output = L"Error: Python kernel process exited unexpectedly (exit code " +
                          std::to_wstring(res.exitCode) +
@@ -437,6 +541,56 @@ public:
         return !outJson.empty();
     }
 
+    /**
+     * @brief Queries a bounded 2D tabular slice (DataFrame/ndarray/dict/list) for a variable in live kernel namespace.
+     */
+    bool QueryVariableTableJson(const std::wstring& varName, std::string& outJson) {
+        outJson.clear();
+        if (varName.empty()) return false;
+        std::unique_lock<std::mutex> lk(m_mutex, std::try_to_lock);
+        if (!lk.owns_lock() || m_isBusy.load()) return false;
+        HANDLE hWrite = m_hStdinWrite.load();
+        HANDLE hRead = m_hStdoutRead.load();
+        if (!hWrite || !hRead || !IsProcessAlive()) return false;
+
+        std::string safeName;
+        for (char c : WideToUtf8(varName)) {
+            if (c != '\r' && c != '\n') safeName.push_back(c);
+        }
+        std::string cmd = "INSPECT_VAR " + safeName + "\n";
+        DWORD written = 0;
+        if (!WriteFile(hWrite, cmd.data(), static_cast<DWORD>(cmd.size()), &written, NULL)) return false;
+
+        std::string raw;
+        char buf[4096];
+        auto t0 = std::chrono::steady_clock::now();
+        while (raw.size() < 1048576) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL)) break;
+            if (avail > 0) {
+                DWORD rd = 0;
+                if (ReadFile(hRead, buf, (std::min)(avail, static_cast<DWORD>(sizeof(buf) - 1)), &rd, NULL) && rd > 0) {
+                    raw.append(buf, rd);
+                    if (raw.find("__PHIDE_NB_END__") != std::string::npos) break;
+                } else {
+                    break;
+                }
+            } else {
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count() > 1500) {
+                    break;
+                }
+                Sleep(10);
+            }
+        }
+        size_t pos = raw.find("PHIDE_VAR_TABLE_JSON:");
+        if (pos == std::string::npos) return false;
+        pos += 21;
+        size_t eol = raw.find_first_of("\r\n", pos);
+        outJson = (eol == std::string::npos) ? raw.substr(pos) : raw.substr(pos, eol - pos);
+        return !outJson.empty();
+    }
+
 private:
     std::atomic<HANDLE> m_hProcess{ NULL };
     std::atomic<HANDLE> m_hStdinWrite{ NULL };
@@ -446,6 +600,7 @@ private:
     std::atomic<bool> m_isBusy{ false };
     std::atomic<bool> m_shouldInterrupt{ false };
     std::wstring m_pythonPath;
+    std::wstring m_workingDir;
 
     bool IsProcessAlive() const {
         HANDLE hProc = m_hProcess.load();
@@ -488,19 +643,24 @@ private:
         if (!ofs.is_open()) return L"";
 
         const char* driverCode =
-            "import sys, os, site, base64, traceback, ast, io, json\n\n"
+            "import sys, os, site, base64, traceback, ast, io, json, importlib\n\n"
             "# 1. Ensure current working directory and local virtual environments are configured\n"
             "cwd = os.getcwd()\n"
             "if cwd and cwd not in sys.path:\n"
             "    sys.path.insert(0, cwd)\n\n"
-            "# 2. Auto-detect project virtual environments and register site-packages\n"
-            "for vname in ('.venv', 'venv', 'env', '.env'):\n"
-            "    candidate = os.path.join(cwd, vname)\n"
-            "    if os.path.isdir(candidate):\n"
-            "        for sub in ('Lib/site-packages', 'lib/site-packages'):\n"
-            "            sp = os.path.normpath(os.path.join(candidate, sub))\n"
-            "            if os.path.isdir(sp):\n"
-            "                site.addsitedir(sp)\n\n"
+            "# 2. Ensure active interpreter site-packages (and cwd venv when using base Python) are registered\n"
+            "for sub in ('Lib/site-packages', 'lib/site-packages'):\n"
+            "    sp_self = os.path.normpath(os.path.join(sys.prefix, sub))\n"
+            "    if os.path.isdir(sp_self) and sp_self not in sys.path:\n"
+            "        site.addsitedir(sp_self)\n"
+            "if sys.prefix == sys.base_prefix:\n"
+            "    for vname in ('.venv', 'venv', 'env', '.env'):\n"
+            "        candidate = os.path.join(cwd, vname)\n"
+            "        if os.path.isdir(candidate):\n"
+            "            for sub in ('Lib/site-packages', 'lib/site-packages'):\n"
+            "                sp = os.path.normpath(os.path.join(candidate, sub))\n"
+            "                if os.path.isdir(sp):\n"
+            "                    site.addsitedir(sp)\n\n"
             "# 3. Ensure user global site-packages is available\n"
             "try:\n"
             "    usp = site.getusersitepackages()\n"
@@ -524,9 +684,14 @@ private:
             "        for fn in fnums:\n"
             "            fig = plt.figure(fn)\n"
             "            buf = io.BytesIO()\n"
-            "            fig.savefig(buf, format='png', bbox_inches='tight', dpi=120)\n"
+            "            fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.18, dpi=144, facecolor='white')\n"
             "            data = buf.getvalue()\n"
             "            buf.close()\n"
+            "            if len(data) > 1900 * 1024:\n"
+            "                buf = io.BytesIO()\n"
+            "                fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.15, dpi=100, facecolor='white')\n"
+            "                data = buf.getvalue()\n"
+            "                buf.close()\n"
             "            if 0 < len(data) <= 2 * 1024 * 1024:\n"
             "                b64 = base64.b64encode(data).decode('ascii')\n"
             "                sys.stdout.write('\\nPHIDE_IMG_PNG:' + b64 + '\\n')\n"
@@ -571,7 +736,12 @@ private:
             "                    continue\n"
             "                try:\n"
             "                    tname = type(v).__name__\n"
-            "                    r = repr(v)\n"
+            "                    shape = getattr(v, 'shape', None)\n"
+            "                    dtype = getattr(v, 'dtype', None)\n"
+            "                    if shape is not None:\n"
+            "                        dt_str = f' {dtype}' if dtype is not None else ''\n"
+            "                        tname = f'{tname}{shape}{dt_str}'\n"
+            "                    r = repr(v).replace('\\n', ' ')\n"
             "                    if len(r) > 120:\n"
             "                        r = r[:117] + '...'\n"
             "                    items.append({'name': str(k), 'type': tname, 'value': r})\n"
@@ -580,6 +750,108 @@ private:
             "                if len(items) >= 64:\n"
             "                    break\n"
             "            sys.stdout.write('PHIDE_VARS_JSON:' + json.dumps(items) + '\\n')\n"
+            "            sys.stdout.flush()\n"
+            "            print('__PHIDE_NB_END__0__', flush=True)\n"
+            "            continue\n"
+            "        if line.startswith('INSPECT_VAR '):\n"
+            "            vname = line[12:].strip()\n"
+            "            def _clip(s, n=64):\n"
+            "                t = str(s).replace('\\n', ' ').replace('\\r', '')\n"
+            "                return t if len(t) <= n else (t[:n-3] + '...')\n"
+            "            payload = {'name': vname, 'type': 'missing', 'shape': '', 'columns': [], 'rows': [], 'truncated': False}\n"
+            "            if vname in _ns:\n"
+            "                v = _ns[vname]\n"
+            "                tname = type(v).__name__\n"
+            "                payload['type'] = tname\n"
+            "                cols = []\n"
+            "                rows = []\n"
+            "                trunc = False\n"
+            "                try:\n"
+            "                    if hasattr(v, 'columns') and hasattr(v, 'iloc'):\n"
+            "                        nr, nc = v.shape[0], v.shape[1]\n"
+            "                        payload['shape'] = f'{nr} x {nc}'\n"
+            "                        mr, mc = min(nr, 80), min(nc, 16)\n"
+            "                        trunc = (nr > mr or nc > mc)\n"
+            "                        cols = ['index'] + [_clip(c, 28) for c in list(v.columns)[:mc]]\n"
+            "                        sub = v.iloc[:mr, :mc]\n"
+            "                        for idx_v, row_v in zip(list(sub.index), sub.itertuples(index=False, name=None)):\n"
+            "                            rows.append([_clip(idx_v, 24)] + [_clip(x, 48) for x in row_v])\n"
+            "                    elif hasattr(v, 'index') and hasattr(v, 'values') and hasattr(v, 'shape') and len(getattr(v, 'shape', ())) == 1:\n"
+            "                        nr = v.shape[0]\n"
+            "                        payload['shape'] = f'{nr}'\n"
+            "                        mr = min(nr, 80)\n"
+            "                        trunc = (nr > mr)\n"
+            "                        cols = ['index', vname]\n"
+            "                        sub = v.iloc[:mr] if hasattr(v, 'iloc') else v[:mr]\n"
+            "                        for idx_v, val_v in zip(list(sub.index), list(sub.values)):\n"
+            "                            rows.append([_clip(idx_v, 24), _clip(val_v, 56)])\n"
+            "                    elif hasattr(v, 'shape') and hasattr(v, 'tolist'):\n"
+            "                        shp = v.shape\n"
+            "                        dt = str(getattr(v, 'dtype', ''))\n"
+            "                        payload['shape'] = f'{shp} {dt}'.strip()\n"
+            "                        if len(shp) == 0:\n"
+            "                            cols = ['value']\n"
+            "                            rows = [[_clip(v.tolist(), 64)]]\n"
+            "                        elif len(shp) == 1:\n"
+            "                            nr = shp[0]\n"
+            "                            mr = min(nr, 80)\n"
+            "                            trunc = (nr > mr)\n"
+            "                            cols = ['[i]', 'value']\n"
+            "                            for ri, val_v in enumerate(v[:mr].tolist()):\n"
+            "                                rows.append([str(ri), _clip(val_v, 56)])\n"
+            "                        else:\n"
+            "                            sl = v\n"
+            "                            if len(shp) > 2:\n"
+            "                                sl = v[(0,) * (len(shp) - 2)]\n"
+            "                                payload['shape'] = payload['shape'] + ' (slice [0,..,:,:])'\n"
+            "                            nr, nc = sl.shape[0], sl.shape[1]\n"
+            "                            mr, mc = min(nr, 80), min(nc, 16)\n"
+            "                            trunc = (nr > mr or nc > mc)\n"
+            "                            cols = ['row'] + [f'[{j}]' for j in range(mc)]\n"
+            "                            for ri, row_v in enumerate(sl[:mr, :mc].tolist()):\n"
+            "                                rows.append([f'[{ri}]'] + [_clip(x, 40) for x in row_v])\n"
+            "                    elif isinstance(v, dict):\n"
+            "                        payload['shape'] = f'{len(v)} keys'\n"
+            "                        trunc = len(v) > 100\n"
+            "                        cols = ['key', 'type', 'value']\n"
+            "                        for ki, (dk, dv) in enumerate(v.items()):\n"
+            "                            if ki >= 100:\n"
+            "                                break\n"
+            "                            rows.append([_clip(dk, 32), type(dv).__name__, _clip(dv, 56)])\n"
+            "                    elif isinstance(v, (list, tuple, set)):\n"
+            "                        seq = list(v)\n"
+            "                        payload['shape'] = f'{len(seq)} items'\n"
+            "                        if seq and isinstance(seq[0], (list, tuple)):\n"
+            "                            mr = min(len(seq), 80)\n"
+            "                            mc = min(max((len(r) for r in seq[:mr]), default=1), 16)\n"
+            "                            trunc = (len(seq) > mr or mc >= 16)\n"
+            "                            cols = ['row'] + [f'[{j}]' for j in range(mc)]\n"
+            "                            for ri, r_it in enumerate(seq[:mr]):\n"
+            "                                rl = list(r_it)\n"
+            "                                rows.append([str(ri)] + [(_clip(rl[j], 40) if j < len(rl) else '') for j in range(mc)])\n"
+            "                        elif seq and isinstance(seq[0], dict):\n"
+            "                            keys = list(seq[0].keys())[:16]\n"
+            "                            mr = min(len(seq), 80)\n"
+            "                            trunc = (len(seq) > mr or len(seq[0]) > 16)\n"
+            "                            cols = ['row'] + [_clip(k_i, 28) for k_i in keys]\n"
+            "                            for ri, d_it in enumerate(seq[:mr]):\n"
+            "                                if isinstance(d_it, dict):\n"
+            "                                    rows.append([str(ri)] + [_clip(d_it.get(k_i, ''), 40) for k_i in keys])\n"
+            "                        else:\n"
+            "                            trunc = len(seq) > 100\n"
+            "                            cols = ['index', 'type', 'value']\n"
+            "                            for ri, it_v in enumerate(seq[:100]):\n"
+            "                                rows.append([str(ri), type(it_v).__name__, _clip(it_v, 56)])\n"
+            "                    else:\n"
+            "                        cols = ['property', 'value']\n"
+            "                        rows = [['type', tname], ['value', _clip(v, 120)]]\n"
+            "                except Exception as _ex:\n"
+            "                    cols = ['error']\n"
+            "                    rows = [[_clip(_ex, 120)]]\n"
+            "                payload['columns'] = cols\n"
+            "                payload['rows'] = rows\n"
+            "                payload['truncated'] = trunc\n"
+            "            sys.stdout.write('PHIDE_VAR_TABLE_JSON:' + json.dumps(payload) + '\\n')\n"
             "            sys.stdout.flush()\n"
             "            print('__PHIDE_NB_END__0__', flush=True)\n"
             "            continue\n"
@@ -594,6 +866,7 @@ private:
             "                code_str = ''\n\n"
             "        exit_code = 0\n"
             "        try:\n"
+            "            importlib.invalidate_caches()\n"
             "            _phide_ensure_plt_hook()\n"
             "            if code_str.strip():\n"
             "                tree = ast.parse(code_str, '<cell>', 'exec')\n"

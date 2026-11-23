@@ -630,6 +630,162 @@ float EditorCanvas::GetColumnVisualOffset(const std::vector<LineColorSpan>& span
     return static_cast<float>(col) * charW + static_cast<float>(CountSwatchesBefore(spans, col)) * swatchSpan;
 }
 
+size_t EditorCanvas::HitTestVisualLineColumn(
+    const std::wstring& lineStr,
+    const std::vector<LineColorSpan>& lineColors,
+    float relX, float charW, float swatchSpan, int tabSize) noexcept {
+    if (relX <= 0.0f || lineStr.empty()) return 0;
+    const size_t safeTab = static_cast<size_t>((std::max)(1, tabSize));
+    size_t col = 0;
+    float bestDiff = relX;
+    size_t visualCols = 0;
+    size_t swIdx = 0;
+    size_t swCount = 0;
+    for (size_t c = 0; c < lineStr.length(); ++c) {
+        while (swIdx < lineColors.size() && lineColors[swIdx].col <= c) {
+            ++swCount;
+            ++swIdx;
+        }
+        const float curVx = static_cast<float>(visualCols) * charW + static_cast<float>(swCount) * swatchSpan;
+        const float diff = std::abs(relX - curVx);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            col = c;
+        }
+        if (lineStr[c] == L'\t') {
+            visualCols += safeTab - (visualCols % safeTab);
+        } else {
+            ++visualCols;
+        }
+    }
+    while (swIdx < lineColors.size() && lineColors[swIdx].col <= lineStr.length()) {
+        ++swCount;
+        ++swIdx;
+    }
+    const float lineEndX = static_cast<float>(visualCols) * charW + static_cast<float>(swCount) * swatchSpan;
+    if (std::abs(relX - lineEndX) < bestDiff || relX >= lineEndX) {
+        col = lineStr.length();
+    }
+    return col;
+}
+
+ID2D1Brush* EditorCanvas::ResolveSyntaxTokenBrush(
+    const Theme& theme,
+    const editor::SyntaxToken& tok,
+    size_t bufLine,
+    const std::wstring& lineStr,
+    const std::unordered_map<size_t, std::vector<const editor::BracketItem*>>& bracketsByLine,
+    BetterCommentType inheritedComment,
+    bool enableBracketColorization) noexcept {
+    if (enableBracketColorization && tok.type == editor::TokenType::Operator && tok.length == 1) {
+        auto it = bracketsByLine.find(bufLine);
+        if (it != bracketsByLine.end()) {
+            for (const auto* b : it->second) {
+                if (b->col == tok.startCol) {
+                    if (ID2D1Brush* bBrush = theme.GetBracketBrush(b->depth)) {
+                        return bBrush;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    switch (tok.type) {
+        case editor::TokenType::Keyword:   return theme.brushSyntaxKeyword.Get();
+        case editor::TokenType::Type:      return theme.brushSyntaxType.Get();
+        case editor::TokenType::String:    return theme.brushSyntaxString.Get();
+        case editor::TokenType::Comment: {
+            auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inheritedComment);
+            return ResolveBetterCommentBrush(theme, cInfo.type);
+        }
+        case editor::TokenType::Number:    return theme.brushSyntaxNumber.Get();
+        case editor::TokenType::Operator:  return theme.brushSyntaxOperator.Get();
+        case editor::TokenType::Tag:       return theme.brushSyntaxTag.Get();
+        case editor::TokenType::Attribute: return theme.brushSyntaxAttribute.Get();
+        default:                           return theme.brushTextPrimary.Get();
+    }
+}
+
+void EditorCanvas::DrawInlineColorSwatch(
+    ID2D1RenderTarget* pRT,
+    const LineColorSpan& cs,
+    float swatchBaseX, float lineY, float lineH,
+    float swatchSpan, float swatchSize,
+    const app::AppConfig& config,
+    D2D1_RECT_F& outRcSwatch) {
+    if (!pRT) return;
+    const float swatchX = swatchBaseX + (swatchSpan - swatchSize) * 0.5f;
+    const float swatchY = lineY + (lineH - swatchSize) * 0.5f;
+    outRcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);
+    const float swatchRadius = (std::max)(3.0f, config.ScaleF(3.5f));
+    D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(outRcSwatch, swatchRadius, swatchRadius);
+
+    if (cs.hasAlpha && cs.color.a < 0.999f) {
+        const float half = swatchSize * 0.5f;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bWhite;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bLightGray;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &bWhite);
+        pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f), &bLightGray);
+        if (bWhite && bLightGray) {
+            pRT->FillRoundedRectangle(rrcSwatch, bWhite.Get());
+            pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bLightGray.Get());
+            pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bLightGray.Get());
+        }
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bCol;
+    pRT->CreateSolidColorBrush(cs.color, &bCol);
+    if (bCol) pRT->FillRoundedRectangle(rrcSwatch, bCol.Get());
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBorder;
+    pRT->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.5f), &bBorder);
+    if (bBorder) pRT->DrawRoundedRectangle(rrcSwatch, bBorder.Get(), 1.0f);
+}
+
+void EditorCanvas::DrawWavySquiggle(
+    ID2D1RenderTarget* pRT,
+    float x1, float x2, float lineY, float lineH,
+    ID2D1Brush* brush, const app::AppConfig& config, float strokeW) {
+    if (!pRT || !brush || x2 <= x1) return;
+    const float waveY = lineY + lineH - config.ScaleF(2.0f);
+    const float waveH = config.ScaleF(2.0f);
+    const float step = config.ScaleF(2.5f);
+    for (float wx = x1; wx < x2; wx += step * 2.0f) {
+        pRT->DrawLine(D2D1::Point2F(wx, waveY), D2D1::Point2F(wx + step, waveY - waveH), brush, strokeW);
+        pRT->DrawLine(D2D1::Point2F(wx + step, waveY - waveH), D2D1::Point2F((std::min)(wx + step * 2.0f, x2), waveY), brush, strokeW);
+    }
+}
+
+void EditorCanvas::DrawActiveBracketPairFrames(
+    ID2D1RenderTarget* pRT,
+    Theme& theme,
+    const app::AppConfig& config,
+    const editor::BracketPair& pair,
+    float openX, float openY, float closeX, float closeY,
+    float charW, float lineH,
+    bool drawOpen, bool drawClose) {
+    if (!pRT) return;
+    ID2D1Brush* frameBrush = theme.GetBracketBrush(pair.depth);
+    if (!frameBrush) return;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
+    auto* solid = static_cast<ID2D1SolidColorBrush*>(frameBrush);
+    D2D1_COLOR_F c = solid->GetColor();
+    pRT->CreateSolidColorBrush(D2D1::ColorF(c.r, c.g, c.b, 0.22f), &fillBrush);
+
+    auto drawOne = [&](float bx, float by) {
+        D2D1_RECT_F rc = D2D1::RectF(
+            bx - config.ScaleF(1.0f),
+            by + config.ScaleF(2.0f),
+            bx + charW + config.ScaleF(1.0f),
+            by + lineH - config.ScaleF(2.0f)
+        );
+        D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, config.ScaleF(2.5f), config.ScaleF(2.5f));
+        if (fillBrush) pRT->FillRoundedRectangle(rrc, fillBrush.Get());
+        pRT->DrawRoundedRectangle(rrc, frameBrush, 1.5f);
+    };
+    if (drawOpen) drawOne(openX, openY);
+    if (drawClose) drawOne(closeX, closeY);
+}
+
 static bool IsFunctionOrTestLine(std::wstring_view line) {
     if (line.empty()) return false;
     size_t start = 0;
@@ -711,6 +867,84 @@ static bool IsFunctionOrTestLine(std::wstring_view line) {
     }
 
     return false;
+}
+
+std::wstring EditorCanvas::ExtractCodeLensSymbolFromLine(const std::wstring& line, bool& outIsTest) {
+    outIsTest = false;
+    size_t start = 0;
+    while (start < line.length() && (line[start] == L' ' || line[start] == L'\t')) ++start;
+    if (start >= line.length()) return L"";
+    std::wstring tl(line.substr(start));
+    while (!tl.empty() && (tl.back() == L' ' || tl.back() == L'\t' || tl.back() == L'\r' || tl.back() == L'\n')) tl.pop_back();
+
+    auto isIdent = [](wchar_t ch) { return iswalnum(ch) || ch == L'_'; };
+    auto readIdentAt = [&](size_t pos) {
+        size_t e = pos;
+        while (e < tl.size() && isIdent(tl[e])) ++e;
+        return tl.substr(pos, e - pos);
+    };
+
+    if (tl.rfind(L"it(", 0) == 0 || tl.rfind(L"test(", 0) == 0 || tl.rfind(L"describe(", 0) == 0 ||
+        tl.rfind(L"it.only(", 0) == 0 || tl.rfind(L"test.only(", 0) == 0 || tl.rfind(L"describe.only(", 0) == 0) {
+        outIsTest = true;
+        size_t lp = tl.find(L'(');
+        if (lp != std::wstring::npos) {
+            size_t p = lp + 1;
+            while (p < tl.size() && iswspace(tl[p])) ++p;
+            if (p < tl.size() && (tl[p] == L'\'' || tl[p] == L'"' || tl[p] == L'`')) {
+                wchar_t q = tl[p++];
+                size_t s = p;
+                while (p < tl.size() && tl[p] != q) {
+                    if (tl[p] == L'\\' && p + 1 < tl.size()) p += 2;
+                    else ++p;
+                }
+                if (p > s) return tl.substr(s, p - s);
+            }
+        }
+        return L"";
+    }
+
+    if (tl.rfind(L"TEST(", 0) == 0 || tl.rfind(L"TEST_F(", 0) == 0 || tl.rfind(L"TEST_P(", 0) == 0) {
+        outIsTest = true;
+        size_t lp = tl.find(L'(');
+        size_t rp = (lp != std::wstring::npos) ? tl.find(L')', lp + 1) : std::wstring::npos;
+        if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp + 1) {
+            std::wstring inside = tl.substr(lp + 1, rp - lp - 1);
+            size_t comma = inside.find(L',');
+            if (comma != std::wstring::npos) {
+                auto trimS = [](std::wstring s) {
+                    size_t a = 0; while (a < s.size() && iswspace(s[a])) ++a;
+                    size_t b = s.size(); while (b > a && iswspace(s[b - 1])) --b;
+                    return s.substr(a, b - a);
+                };
+                std::wstring suite = trimS(inside.substr(0, comma));
+                std::wstring tcase = trimS(inside.substr(comma + 1));
+                if (!suite.empty() && !tcase.empty()) return suite + L"." + tcase;
+                return !tcase.empty() ? tcase : suite;
+            }
+        }
+        return L"";
+    }
+
+    static const wchar_t* const kPrefixes[] = {
+        L"export default async function ", L"export default function ",
+        L"export async function ", L"export function ", L"async function ", L"function ",
+        L"public static function ", L"public function ", L"protected function ", L"private function ",
+        L"async def ", L"def ", L"class ", L"export class ", L"interface ", L"export interface ", L"struct "
+    };
+    for (const wchar_t* pfx : kPrefixes) {
+        size_t len = wcslen(pfx);
+        if (tl.rfind(pfx, 0) == 0) {
+            size_t pos = len;
+            while (pos < tl.size() && iswspace(tl[pos])) ++pos;
+            std::wstring sym = readIdentAt(pos);
+            if (sym.size() > 4 && (_wcsnicmp(sym.c_str(), L"test", 4) == 0)) {
+                outIsTest = true;
+            }
+            return sym;
+        }
+    }
+    return L"";
 }
 
 static Microsoft::WRL::ComPtr<ID2D1Bitmap> CanvasLoadPngBitmap(ID2D1RenderTarget* pRT, const std::wstring& path) {
@@ -1039,9 +1273,11 @@ void EditorCanvas::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCo
         groups.push_back(editor::EditorGroup{});
     }
 
-    const float headerH = config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight));
+    const float headerH = m_isRenderingFloatingWindow
+        ? config.ScaleF(34.0f)
+        : (config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight)));
     const float canvasRight = canvasLeft + canvasWidth;
-    const float cornerRadius = hasLeftDrawer ? 0.0f : config.ScaleF(14.0f);
+    const float cornerRadius = (hasLeftDrawer || m_isRenderingFloatingWindow) ? 0.0f : config.ScaleF(14.0f);
 
     // Check if cached geometry needs rebuilding (e.g. on resize, layout changes, or drawer open/close)
     if (!m_pCanvasGeometry ||
@@ -1542,6 +1778,9 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
             RenderFileLoadingView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isFolderView) {
             RenderFolderView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
+        } else if (activeDoc.structuredView && activeDoc.structuredView->isActive) {
+            m_structuredRenderer.Render(pRT, theme, config, *activeDoc.structuredView,
+                                        canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isImageView) {
             RenderImageView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isFontView) {
@@ -1560,9 +1799,6 @@ void EditorCanvas::RenderSinglePane(ID2D1RenderTarget* pRT, Theme& theme, const 
             AssetViewerRenderer::RenderSvgPreviewPane(pRT, theme, config, activeDoc,
                                                       prevLeft + 1.0f, (std::max)(1.0f, prevW - 1.0f),
                                                       contentTopY, clientHeight);
-        } else if (activeDoc.structuredView && activeDoc.structuredView->isActive) {
-            m_structuredRenderer.Render(pRT, theme, config, *activeDoc.structuredView,
-                                        canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isUnsupportedBinary) {
             RenderUnsupportedBinaryView(pRT, theme, config, activeDoc, canvasLeft, canvasWidth, contentTopY, clientHeight);
         } else if (activeDoc.isMergeView) {
@@ -3707,8 +3943,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
     // Remove eager pre-allocation for huge memory-mapped files (lazy below)
 
     // Pre-calculate multi-line prediction ghost lines if active (Zed-style virtual space)
+    // Strictly suppress prediction whenever text is selected or caret is in the middle of existing code.
     std::vector<std::wstring> predGhostLines;
-    if (isFocused && m_prediction.isValid && m_prediction.line == cursor.line && !IsAutocompleteVisible()) {
+    const bool canShowPred = (isFocused && ShouldShowPrediction(doc));
+    if (canShowPred) {
         const std::wstring& predGhost = m_prediction.ghostText;
         size_t pStart = 0;
         while (pStart < predGhost.length()) {
@@ -4042,41 +4280,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     // Render skeletal highlight frames around opening and closing brackets of the active pair (Images 4 & 5)
     if (pActivePair) {
-        ID2D1Brush* frameBrush = theme.GetBracketBrush(pActivePair->depth);
-        if (frameBrush) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush;
-            auto* solid = static_cast<ID2D1SolidColorBrush*>(frameBrush);
-            D2D1_COLOR_F c = solid->GetColor();
-            pRT->CreateSolidColorBrush(D2D1::ColorF(c.r, c.g, c.b, 0.22f), &fillBrush);
-
-            // Opening bracket skeletal frame
-            if (hasActiveOpenY && (activeOpenLineY + lineH >= topY) && (activeOpenLineY <= clientHeight)) {
-                float ox = codeLeft - scrollX + static_cast<float>(pActivePair->openCol) * charW;
-                D2D1_RECT_F rcOpen = D2D1::RectF(
-                    ox - config.ScaleF(1.0f),
-                    activeOpenLineY + config.ScaleF(2.0f),
-                    ox + charW + config.ScaleF(1.0f),
-                    activeOpenLineY + lineH - config.ScaleF(2.0f)
-                );
-                D2D1_ROUNDED_RECT rrcOpen = D2D1::RoundedRect(rcOpen, config.ScaleF(2.5f), config.ScaleF(2.5f));
-                if (fillBrush) pRT->FillRoundedRectangle(rrcOpen, fillBrush.Get());
-                pRT->DrawRoundedRectangle(rrcOpen, frameBrush, 1.5f);
-            }
-
-            // Closing bracket skeletal frame
-            if (hasActiveCloseY && (activeCloseLineY + lineH >= topY) && (activeCloseLineY <= clientHeight)) {
-                float cx = codeLeft - scrollX + static_cast<float>(pActivePair->closeCol) * charW;
-                D2D1_RECT_F rcClose = D2D1::RectF(
-                    cx - config.ScaleF(1.0f),
-                    activeCloseLineY + config.ScaleF(2.0f),
-                    cx + charW + config.ScaleF(1.0f),
-                    activeCloseLineY + lineH - config.ScaleF(2.0f)
-                );
-                D2D1_ROUNDED_RECT rrcClose = D2D1::RoundedRect(rcClose, config.ScaleF(2.5f), config.ScaleF(2.5f));
-                if (fillBrush) pRT->FillRoundedRectangle(rrcClose, fillBrush.Get());
-                pRT->DrawRoundedRectangle(rrcClose, frameBrush, 1.5f);
-            }
-        }
+        const float ox = codeLeft - scrollX + static_cast<float>(pActivePair->openCol) * charW;
+        const float cx = codeLeft - scrollX + static_cast<float>(pActivePair->closeCol) * charW;
+        const bool drawOpen = hasActiveOpenY && (activeOpenLineY + lineH >= topY) && (activeOpenLineY <= clientHeight);
+        const bool drawClose = hasActiveCloseY && (activeCloseLineY + lineH >= topY) && (activeCloseLineY <= clientHeight);
+        DrawActiveBracketPairFrames(pRT, theme, config, *pActivePair, ox, activeOpenLineY, cx, activeCloseLineY, charW, lineH, drawOpen, drawClose);
     }
 
     size_t htmlOpenL = 0, htmlOpenC = 0, htmlOpenLen = 0;
@@ -4304,25 +4512,18 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 default: break;
             }
         }
-        switch (tok.type) {
-            case editor::TokenType::Keyword:   return theme.brushSyntaxKeyword.Get();
-            case editor::TokenType::Type:      return theme.brushSyntaxType.Get();
-            case editor::TokenType::String:    return theme.brushSyntaxString.Get();
-            case editor::TokenType::Comment: {
-                BetterCommentType inh = BetterCommentType::Normal;
-                auto inhIt = docCommentSummary.inheritedLineTypes.find(bufLine);
-                if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
-                auto cInfo = ClassifyBetterComment(lineStr, tok.startCol, tok.length, inh);
-                return ResolveBetterCommentBrush(theme, cInfo.type);
-            }
-            case editor::TokenType::Number:    return theme.brushSyntaxNumber.Get();
-            case editor::TokenType::Operator:  return theme.brushSyntaxOperator.Get();
-            case editor::TokenType::Tag:       return theme.brushSyntaxTag.Get();
-            case editor::TokenType::Attribute: return theme.brushSyntaxAttribute.Get();
-            default:                           return theme.brushTextPrimary.Get();
+        BetterCommentType inh = BetterCommentType::Normal;
+        if (tok.type == editor::TokenType::Comment) {
+            auto inhIt = docCommentSummary.inheritedLineTypes.find(bufLine);
+            if (inhIt != docCommentSummary.inheritedLineTypes.end()) inh = inhIt->second;
         }
+        return ResolveSyntaxTokenBrush(theme, tok, bufLine, lineStr, bracketsByLine, inh, config.enableBracketPairColorization);
     };
 
+    float cursorErrorLensEndX = 0.0f;
+    if (isFocused && m_peekPanel.isOpen) {
+        m_peekPanel.anchorScreenY = -1.0f;
+    }
     for (size_t v = startV; v < endV; ++v) {
         const auto vl = getVisualLineAt(v);
         const float relLineIdx = static_cast<float>(static_cast<ptrdiff_t>(v) - static_cast<ptrdiff_t>(doc.scrollLine));
@@ -4454,12 +4655,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
 
             bool isTestLens = false;
-            bool hasStaticLens = IsFunctionOrTestLine(buffer.GetLine(vl.bufferLine));
+            const auto& rawDeclLine = buffer.GetLine(vl.bufferLine);
+            bool hasStaticLens = IsFunctionOrTestLine(rawDeclLine);
+            std::wstring staticSym = ExtractCodeLensSymbolFromLine(rawDeclLine, isTestLens);
             bool emittedAnyCl = false;
             auto clIt = doc.codeLensMap.find(vl.bufferLine);
+            std::wstring lensSym = staticSym;
             if (clIt != doc.codeLensMap.end()) {
-                isTestLens = clIt->second.isTestEntry;
+                if (clIt->second.isTestEntry) isTestLens = true;
                 if (!clIt->second.symbolName.empty()) {
+                    lensSym = clIt->second.symbolName;
                     std::wstring refTxt = std::to_wstring(clIt->second.referenceCount) +
                                           (clIt->second.referenceCount == 1 ? L" reference" : L" references");
                     emitClItem(refTxt, CodeLensAction::ActionKind::References, false, clIt->second.symbolName, config.ScaleF(68.0f));
@@ -4469,7 +4674,11 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             for (const auto& lspCl : doc.lspCodeLenses) {
                 if (lspCl.startLine == vl.bufferLine && !lspCl.title.empty()) {
                     if (emittedAnyCl) emitClSep();
-                    emitClItem(lspCl.title, CodeLensAction::ActionKind::References, false, L"", config.ScaleF(78.0f));
+                    bool isRef = (lspCl.title.find(L"reference") != std::wstring::npos || lspCl.command.find(L"references") != std::wstring::npos);
+                    bool isDbg = (lspCl.title.find(L"Debug") != std::wstring::npos);
+                    emitClItem(lspCl.title,
+                               isRef ? CodeLensAction::ActionKind::References : (isDbg ? CodeLensAction::ActionKind::Debug : CodeLensAction::ActionKind::Run),
+                               isDbg, lensSym, config.ScaleF(78.0f));
                     emittedAnyCl = true;
                 }
             }
@@ -4477,11 +4686,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 if (emittedAnyCl) emitClSep();
                 emitClItem(isTestLens ? L"Run Test" : L"Run",
                            isTestLens ? CodeLensAction::ActionKind::RunTest : CodeLensAction::ActionKind::Run,
-                           false, L"", config.ScaleF(isTestLens ? 52.0f : 26.0f));
+                           false, lensSym, config.ScaleF(isTestLens ? 52.0f : 26.0f));
                 emitClSep();
                 emitClItem(isTestLens ? L"Debug Test" : L"Debug",
                            isTestLens ? CodeLensAction::ActionKind::DebugTest : CodeLensAction::ActionKind::Debug,
-                           true, L"", config.ScaleF(isTestLens ? 62.0f : 38.0f));
+                           true, lensSym, config.ScaleF(isTestLens ? 62.0f : 38.0f));
+            }
+            if (isFocused && m_peekPanel.isOpen && vl.bufferLine == m_peekPanel.anchorLine) {
+                m_peekPanel.anchorScreenY = lineY + lineH;
             }
 
             continue; // Virtual CodeLens line has no code tokens
@@ -5330,32 +5542,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             const auto& cs = lineColors[sIdx];
             float swatchBaseX = getColVisualX(cs.col) - swatchSpan;
             float swatchX = swatchBaseX + (swatchSpan - swatchSize) / 2.0f;
-            float swatchY = lineY + (lineH - swatchSize) / 2.0f;
             if (swatchX >= codeLeft - swatchSize && swatchX + swatchSize < codeRight) {
-                D2D1_RECT_F rcSwatch = D2D1::RectF(swatchX, swatchY, swatchX + swatchSize, swatchY + swatchSize);
-                const float swatchRadius = (std::max)(3.0f, config.ScaleF(3.5f));
-                D2D1_ROUNDED_RECT rrcSwatch = D2D1::RoundedRect(rcSwatch, swatchRadius, swatchRadius);
-
-                if (cs.hasAlpha && cs.color.a < 0.999f) {
-                    float half = swatchSize / 2.0f;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bWhite;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bLightGray;
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &bWhite);
-                    pRT->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f), &bLightGray);
-                    if (bWhite && bLightGray) {
-                        pRT->FillRoundedRectangle(rrcSwatch, bWhite.Get());
-                        pRT->FillRectangle(D2D1::RectF(swatchX + half, swatchY, swatchX + swatchSize, swatchY + half), bLightGray.Get());
-                        pRT->FillRectangle(D2D1::RectF(swatchX, swatchY + half, swatchX + half, swatchY + swatchSize), bLightGray.Get());
-                    }
-                }
-
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bCol;
-                pRT->CreateSolidColorBrush(cs.color, &bCol);
-                if (bCol) pRT->FillRoundedRectangle(rrcSwatch, bCol.Get());
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bBorder;
-                pRT->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.5f), &bBorder);
-                if (bBorder) pRT->DrawRoundedRectangle(rrcSwatch, bBorder.Get(), 1.0f);
-
+                D2D1_RECT_F rcSwatch{};
+                DrawInlineColorSwatch(pRT, cs, swatchBaseX, lineY, lineH, swatchSpan, swatchSize, config, rcSwatch);
                 m_visibleColorSwatches.push_back({ rcSwatch, vl.bufferLine, cs.col, cs.len, cs.colorStr });
             }
         }
@@ -5442,16 +5631,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float errX2 = (std::max)(getColVisualX(diag.col + errLen), errX1 + config.ScaleF(14.0f));
                 if (errX1 < codeRight) {
                     errX2 = (std::min)(errX2, codeRight);
-                    float waveY = lineY + lineH - config.ScaleF(2.0f);
-                    float waveH = config.ScaleF(2.0f);
-                    float step = config.ScaleF(2.5f);
                     ID2D1Brush* pErrBrush = (diag.severity == 1) ?
                         (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
                         (theme.brushIconOrange ? theme.brushIconOrange.Get() : theme.brushSyntaxNumber.Get());
-                    for (float wx = errX1; wx < errX2; wx += step * 2.0f) {
-                        pRT->DrawLine(D2D1::Point2F(wx, waveY), D2D1::Point2F(wx + step, waveY - waveH), pErrBrush, 1.3f);
-                        pRT->DrawLine(D2D1::Point2F(wx + step, waveY - waveH), D2D1::Point2F((std::min)(wx + step * 2.0f, errX2), waveY), pErrBrush, 1.3f);
-                    }
+                    DrawWavySquiggle(pRT, errX1, errX2, lineY, lineH, pErrBrush, config, 1.3f);
                 }
             }
         }
@@ -5459,6 +5642,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         // Import Cost Inline Annotations (Image 2)
         // When the user's cursor is on this active line and GitLens inline blame is enabled,
         // hide the import cost annotation on this line so GitLens blame renders at its natural position with zero overlap!
+        // Track exact Peek anchor bottom Y on the regular code line as fallback (e.g. if CodeLens is off)
+        if (isFocused && m_peekPanel.isOpen && vl.bufferLine == m_peekPanel.anchorLine && m_peekPanel.anchorScreenY < 0.0f) {
+            m_peekPanel.anchorScreenY = lineY + lineH;
+        }
+
+        // Inline Python Import Cost Annotation (right after code line end)
+        float lineRightCursorX = curCodeEndX;
         bool isCursorOnThisLine = (isFocused && vl.bufferLine == cursor.line &&
                                    (config.enableGitLens || config.gitShowInlineBlame) &&
                                    config.gitShowInlineBlame && !doc.gitBlameMap.empty());
@@ -5487,6 +5677,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     float costTextX = curCodeEndX + config.ScaleF(16.0f);
                     float availCostW = codeRight - costTextX - config.ScaleF(8.0f);
                     if (availCostW >= config.ScaleF(30.0f) && costTextX + config.ScaleF(500.0f) >= codeLeft) {
+                        float usedCostW = static_cast<float>(costText.length()) * charW * 0.85f;
                         if (theme.dwriteFactory) {
                             Microsoft::WRL::ComPtr<IDWriteTextLayout> pCostLayout;
                             if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
@@ -5500,12 +5691,107 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                                 if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(costFmt, &inlineEllipsis))) {
                                     pCostLayout->SetTrimming(&trimming, inlineEllipsis.Get());
                                 }
+                                DWRITE_TEXT_METRICS tmCost{};
+                                if (SUCCEEDED(pCostLayout->GetMetrics(&tmCost))) usedCostW = tmCost.widthIncludingTrailingWhitespace;
                                 pRT->DrawTextLayout(D2D1::Point2F(costTextX, lineY), pCostLayout.Get(), brushCost.Get());
                             }
                         } else {
                             D2D1_RECT_F rcCost = D2D1::RectF(costTextX, lineY, costTextX + availCostW, lineY + lineH);
                             IDWriteTextFormat* drawFmt = theme.fontCode ? theme.fontCode.Get() : costFmt;
                             pRT->DrawText(costText.c_str(), static_cast<UINT32>(costText.length()), drawFmt, rcCost, brushCost.Get());
+                        }
+                        lineRightCursorX = costTextX + (std::min)(availCostW, usedCostW);
+                    }
+                }
+            }
+        }
+
+        // I4: Inline Error Lens Annotation at end of affected code lines
+        if (config.showErrorLens) {
+            auto dIt = visDiagsByLine.find(vl.bufferLine);
+            if (dIt != visDiagsByLine.end() && !dIt->second.empty()) {
+                const lsp::Diagnostic* bestDiag = nullptr;
+                for (const auto* d : dIt->second) {
+                    if (!d || d->isUnnecessary || d->severity >= 4) continue;
+                    if (!bestDiag || d->severity < bestDiag->severity) bestDiag = d;
+                }
+                if (bestDiag && !bestDiag->message.empty()) {
+                    // Advance trailing anchor past active cursor-line ghost text / [tab Accept] pill so Error Lens never overlaps
+                    if (isFocused && vl.bufferLine == cursor.line && !doc.HasSelection()) {
+                        if (!predGhostLines.empty()) {
+                            std::wstring disp0;
+                            const int tSz = config.tabSize > 0 ? config.tabSize : 4;
+                            for (wchar_t ch : predGhostLines[0]) {
+                                if (ch == L'\t') disp0.append(tSz, L' ');
+                                else disp0.push_back(ch);
+                            }
+                            float predEndX = getColVisualX(cursor.col) + config.ScaleF(2.0f) +
+                                             static_cast<float>(disp0.length()) * charW;
+                            if (!m_prediction.isCrossFile && !predGhostLines[0].empty()) {
+                                predEndX += config.ScaleF(10.0f) + config.ScaleF(28.0f + 56.0f);
+                            }
+                            lineRightCursorX = (std::max)(lineRightCursorX, predEndX);
+                        } else if (!m_ghostText.empty() && !IsAutocompleteVisible()) {
+                            bool endOk = true;
+                            for (size_t col = cursor.col; col < lineStr.length(); ++col) {
+                                if (lineStr[col] != L' ' && lineStr[col] != L'\t' && lineStr[col] != L'\r' && lineStr[col] != L'\n') {
+                                    endOk = false;
+                                    break;
+                                }
+                            }
+                            if (endOk) {
+                                float ghostEndX = getColVisualX(cursor.col) + config.ScaleF(2.0f) +
+                                                  static_cast<float>(m_ghostText.length()) * charW;
+                                lineRightCursorX = (std::max)(lineRightCursorX, ghostEndX);
+                            }
+                        }
+                    }
+                    float lensX = (std::max)(codeLeft + config.ScaleF(24.0f), lineRightCursorX + config.ScaleF(16.0f));
+                    float availLensW = codeRight - lensX - config.ScaleF(8.0f);
+                    if (availLensW >= config.ScaleF(48.0f)) {
+                        const bool isErr = (bestDiag->severity == 1);
+                        const bool isWarn = (bestDiag->severity == 2);
+                        std::wstring msgFlat = bestDiag->message;
+                        for (auto& ch : msgFlat) if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' ';
+                        std::wstring badgeTxt = (isErr ? L"\u2716 " : (isWarn ? L"\u26A0 " : L"\u2139 ")) + msgFlat;
+                        D2D1_COLOR_F pillBgCol = isErr
+                            ? D2D1::ColorF(0.86f, 0.24f, 0.28f, theme.IsDarkMode() ? 0.14f : 0.10f)
+                            : (isWarn ? D2D1::ColorF(0.88f, 0.68f, 0.18f, theme.IsDarkMode() ? 0.13f : 0.10f)
+                                      : D2D1::ColorF(0.28f, 0.58f, 0.90f, theme.IsDarkMode() ? 0.12f : 0.09f));
+                        D2D1_COLOR_F txtCol = isErr
+                            ? (theme.IsDarkMode() ? D2D1::ColorF(0.96f, 0.52f, 0.54f, 0.95f) : D2D1::ColorF(0.75f, 0.16f, 0.20f, 0.95f))
+                            : (isWarn ? (theme.IsDarkMode() ? D2D1::ColorF(0.96f, 0.80f, 0.36f, 0.95f) : D2D1::ColorF(0.68f, 0.45f, 0.06f, 0.95f))
+                                      : (theme.IsDarkMode() ? D2D1::ColorF(0.55f, 0.78f, 0.98f, 0.92f) : D2D1::ColorF(0.16f, 0.45f, 0.78f, 0.92f)));
+                        IDWriteTextFormat* lensFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontCode.Get();
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgB, txtB;
+                        pRT->CreateSolidColorBrush(pillBgCol, &bgB);
+                        pRT->CreateSolidColorBrush(txtCol, &txtB);
+                        if (lensFmt && bgB && txtB && theme.dwriteFactory) {
+                            const float padX = config.ScaleF(6.0f);
+                            const float maxTextW = (std::max)(config.ScaleF(24.0f), availLensW - padX * 2.0f);
+                            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLensLayout;
+                            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                    badgeTxt.c_str(), static_cast<UINT32>(badgeTxt.length()),
+                                    lensFmt, maxTextW, lineH, &pLensLayout)) && pLensLayout) {
+                                pLensLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                                pLensLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                                pLensLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                                DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                                Microsoft::WRL::ComPtr<IDWriteInlineObject> inlineEllipsis;
+                                if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(lensFmt, &inlineEllipsis))) {
+                                    pLensLayout->SetTrimming(&trimming, inlineEllipsis.Get());
+                                }
+                                DWRITE_TEXT_METRICS tmLens{};
+                                pLensLayout->GetMetrics(&tmLens);
+                                float badgeW = (std::min)(availLensW, tmLens.widthIncludingTrailingWhitespace + padX * 2.0f);
+                                D2D1_RECT_F rcPill = D2D1::RectF(lensX, lineY + config.ScaleF(1.5f),
+                                                                 lensX + badgeW, lineY + lineH - config.ScaleF(1.5f));
+                                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcPill, 3.0f, 3.0f), bgB.Get());
+                                pRT->DrawTextLayout(D2D1::Point2F(lensX + padX, lineY), pLensLayout.Get(), txtB.Get());
+                                if (isFocused && vl.bufferLine == cursor.line) {
+                                    cursorErrorLensEndX = rcPill.right;
+                                }
+                            }
                         }
                     }
                 }
@@ -5630,14 +5916,16 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             }
         }
 
-        if (!isAtEndOfLine || (m_prediction.isValid && m_prediction.line == cursor.line)) {
+        if (!isAtEndOfLine || doc.HasSelection() || canShowPred || IsAutocompleteVisible()) {
             displayGhost.clear();
         }
 
+        float activePredLine0RightX = 0.0f;
         if (isFocused && !displayGhost.empty() && caretX + config.ScaleF(40.0f) < codeRight) {
             float ghostX = caretX + config.ScaleF(2.0f);
             float ghostW = static_cast<float>(displayGhost.length()) * charW;
             D2D1_RECT_F rcGhost = D2D1::RectF(ghostX, caretY, (std::min)(ghostX + ghostW, codeRight), caretY + lineH);
+            activePredLine0RightX = ghostX + ghostW;
 
             pRT->DrawText(
                 displayGhost.c_str(),
@@ -5649,7 +5937,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         }
 
         // NEXT: In-File & Cross-File Multi-Line Code Prediction (Images 3, 4, 5)
-        if (isFocused && m_prediction.isValid && m_prediction.line == cursor.line && !IsAutocompleteVisible()) {
+        if (canShowPred) {
             std::wstring predGhost = m_prediction.ghostText;
             std::vector<std::wstring> ghostLines;
             size_t pStart = 0;
@@ -5697,6 +5985,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     rcG,
                     theme.brushTextMuted.Get()
                 );
+                if (k == 0) {
+                    activePredLine0RightX = (std::max)(activePredLine0RightX, gX + gW);
+                }
 
                 // Zed-Style [tab Accept] Pill Badge next to the first non-empty predicted line (Screenshot 2)
                 if (k == badgeLineIdx && !m_prediction.isCrossFile) {
@@ -5706,6 +5997,9 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     float keyH   = config.ScaleF(15.0f);
                     float badgeW = keyW + config.ScaleF(56.0f);
                     float badgeY = curY + (lineH - badgeH) * 0.5f;
+                    if (k == 0) {
+                        activePredLine0RightX = (std::max)(activePredLine0RightX, badgeX + badgeW);
+                    }
 
                     if (badgeX + badgeW < codeRight) {
                         D2D1_RECT_F rcBadge = D2D1::RectF(badgeX, badgeY, badgeX + badgeW, badgeY + badgeH);
@@ -5844,10 +6138,13 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     }
                 }
 
-                // Place blame strictly in empty space after both line text and active cursor, at its natural standard position
+                // Place blame strictly in empty space after line text, active cursor, ghost prediction + [tab Accept], and Error Lens badge
                 float lineEndX = (std::max)(codeLeft - scrollX + textVisualW, caretX) + config.ScaleF(40.0f);
-                if (m_prediction.isValid && m_prediction.line == cursor.line && !m_prediction.ghostText.empty()) {
-                    lineEndX += static_cast<float>(m_prediction.ghostText.length()) * charW + config.ScaleF(24.0f);
+                if (activePredLine0RightX > 0.0f) {
+                    lineEndX = (std::max)(lineEndX, activePredLine0RightX + config.ScaleF(24.0f));
+                }
+                if (cursorErrorLensEndX > 0.0f) {
+                    lineEndX = (std::max)(lineEndX, cursorErrorLensEndX + config.ScaleF(20.0f));
                 }
 
                 // Available horizontal width before reaching the minimap/scrollbar boundary
@@ -5886,14 +6183,24 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
     pRT->PopAxisAlignedClip();
 
-    // 4b. Gutter Elements (Line Numbers, Glowing Active Line, Breakpoints, Error Dots, Chevrons)
-    if (config.showLineNumbers) {
+    // 4b. Gutter Elements (I5 Blame Column, Line Numbers, Breakpoints, Error Dots, Chevrons)
+    if (config.showLineNumbers || config.showGutterBlame) {
         m_codeActionMenu.lightbulbBounds = D2D1::RectF(0, 0, 0, 0);
+        const float blameColW = ComputeGutterBlameWidth(config);
+        const float gutterLeft = canvasLeft + blameColW;
         D2D1_RECT_F clipGutter = D2D1::RectF(canvasLeft, topY, canvasLeft + gutterW, clientHeight);
         pRT->PushAxisAlignedClip(clipGutter, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        // Gutter Background & Subtle Divider Line
+        // Gutter Background & Subtle Divider Lines
         pRT->FillRectangle(clipGutter, theme.brushCanvasBg.Get());
+        if (config.showGutterBlame && blameColW > 0.0f) {
+            pRT->DrawLine(
+                D2D1::Point2F(gutterLeft - 0.5f, topY),
+                D2D1::Point2F(gutterLeft - 0.5f, clientHeight),
+                theme.brushBorderSubtle.Get(),
+                1.0f
+            );
+        }
         pRT->DrawLine(
             D2D1::Point2F(canvasLeft + gutterW - 0.5f, topY),
             D2D1::Point2F(canvasLeft + gutterW - 0.5f, clientHeight),
@@ -5901,13 +6208,23 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             1.0f
         );
 
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> blameGutterBrush, blameGutterHoverBrush;
+        if (config.showGutterBlame && blameColW > 0.0f) {
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.55f, 0.58f, 0.65f, 0.78f) : D2D1::ColorF(0.42f, 0.46f, 0.52f, 0.85f),
+                &blameGutterBrush);
+            pRT->CreateSolidColorBrush(
+                theme.IsDarkMode() ? D2D1::ColorF(0.84f, 0.88f, 0.96f, 0.96f) : D2D1::ColorF(0.15f, 0.18f, 0.24f, 0.96f),
+                &blameGutterHoverBrush);
+        }
+
         for (size_t v = startV; v < endV; ++v) {
             const auto vl = getVisualLineAt(v);
             float lineY = calcVisualLineY(v);
             if (lineY + lineH < topY || lineY > clientHeight) continue;
 
             if (vl.isCodeLens) {
-                // CodeLens virtual line: gutter remains completely empty, matching VS Code Image 1!
+                // CodeLens virtual line: gutter remains completely empty!
                 continue;
             }
 
@@ -5924,37 +6241,98 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 continue;
             }
 
+            bool isActiveLine = (isFocused && vl.bufferLine == cursor.line);
+
+            // I5: Dedicated compact Gutter Git Blame Column ("Author · 2d")
+            if (config.showGutterBlame && blameColW > 0.0f) {
+                D2D1_RECT_F rcBlameCell = D2D1::RectF(
+                    canvasLeft + config.ScaleF(6.0f), lineY,
+                    gutterLeft - config.ScaleF(6.0f), lineY + lineH);
+                auto blIt = doc.gitBlameMap.find(vl.bufferLine);
+                if (blIt != doc.gitBlameMap.end() && rcBlameCell.right > rcBlameCell.left + config.ScaleF(12.0f)) {
+                    const auto& bl = blIt->second;
+                    std::wstring shortAuthor = bl.isUncommitted ? L"You" : (bl.author.empty() ? L"?" : bl.author);
+                    size_t spPos = shortAuthor.find(L' ');
+                    if (spPos != std::wstring::npos && spPos > 0) shortAuthor = shortAuthor.substr(0, spPos);
+                    if (shortAuthor.size() > 9) shortAuthor = shortAuthor.substr(0, 8) + L"\u2026";
+                    std::wstring compactAge = bl.isUncommitted ? L"dirty" : bl.relativeTime;
+                    auto replaceUnit = [&](const wchar_t* full, const wchar_t* ab) {
+                        size_t p = compactAge.find(full);
+                        if (p != std::wstring::npos) compactAge.replace(p, wcslen(full), ab);
+                    };
+                    replaceUnit(L" seconds ago", L"s");
+                    replaceUnit(L" second ago", L"s");
+                    replaceUnit(L" minutes ago", L"m");
+                    replaceUnit(L" minute ago", L"m");
+                    replaceUnit(L" hours ago", L"h");
+                    replaceUnit(L" hour ago", L"h");
+                    replaceUnit(L" days ago", L"d");
+                    replaceUnit(L" day ago", L"d");
+                    replaceUnit(L" weeks ago", L"w");
+                    replaceUnit(L" week ago", L"w");
+                    replaceUnit(L" months ago", L"mo");
+                    replaceUnit(L" month ago", L"mo");
+                    replaceUnit(L" years ago", L"y");
+                    replaceUnit(L" year ago", L"y");
+                    if (compactAge == L"just now") compactAge = L"now";
+                    std::wstring colText = compactAge.empty() ? shortAuthor : (shortAuthor + L" \u00B7 " + compactAge);
+                    const bool isBlameHighlighted = (doc.hoveredBlameLine == vl.bufferLine || isActiveLine);
+                    ID2D1Brush* colB = isBlameHighlighted ? blameGutterHoverBrush.Get() : blameGutterBrush.Get();
+                    IDWriteTextFormat* colFmt = theme.fontHint ? theme.fontHint.Get()
+                                              : (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get());
+                    if (colB && colFmt && theme.dwriteFactory) {
+                        Microsoft::WRL::ComPtr<IDWriteTextLayout> pBlLayout;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                                colText.c_str(), static_cast<UINT32>(colText.length()),
+                                colFmt, rcBlameCell.right - rcBlameCell.left, lineH, &pBlLayout)) && pBlLayout) {
+                            pBlLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                            pBlLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                            pBlLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                            DWRITE_TRIMMING trimming = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                            Microsoft::WRL::ComPtr<IDWriteInlineObject> inlineEllipsis;
+                            if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(colFmt, &inlineEllipsis))) {
+                                pBlLayout->SetTrimming(&trimming, inlineEllipsis.Get());
+                            }
+                            pRT->DrawTextLayout(D2D1::Point2F(rcBlameCell.left, lineY), pBlLayout.Get(), colB);
+                        }
+                    } else if (colB && colFmt) {
+                        pRT->DrawText(colText.c_str(), static_cast<UINT32>(colText.length()), colFmt, rcBlameCell, colB);
+                    }
+                }
+            }
+
             // Diagnostic error in gutter (O(1) pre-indexed visible set)
             const bool hasDiagError = (!visDiagErrorLines.empty() && visDiagErrorLines.count(vl.bufferLine) > 0);
 
-            // Line Number in Gutter (Right-aligned, Consolas Monospace)
-            std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
-            D2D1_RECT_F rcNum = D2D1::RectF(
-                canvasLeft + config.ScaleF(4.0f),
-                lineY,
-                canvasLeft + gutterW - config.ScaleF(16.0f),
-                lineY + lineH
-            );
+            if (config.showLineNumbers) {
+                // Line Number in Gutter (Right-aligned, Consolas Monospace)
+                std::wstring lineNumStr = std::to_wstring(vl.bufferLine + 1);
+                D2D1_RECT_F rcNum = D2D1::RectF(
+                    gutterLeft + config.ScaleF(4.0f),
+                    lineY,
+                    canvasLeft + gutterW - config.ScaleF(16.0f),
+                    lineY + lineH
+                );
 
-            bool isActiveLine = (isFocused && vl.bufferLine == cursor.line);
-            ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
-                (isActiveLine ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushLineNumber.Get());
-            IDWriteTextFormat* numFormat = isActiveLine ?
-                (theme.fontLineNumberActive ? theme.fontLineNumberActive.Get() : (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get())) :
-                (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get());
+                ID2D1Brush* numBrush = hasDiagError ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get()) :
+                    (isActiveLine ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushLineNumber.Get());
+                IDWriteTextFormat* numFormat = isActiveLine ?
+                    (theme.fontLineNumberActive ? theme.fontLineNumberActive.Get() : (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get())) :
+                    (theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get());
 
-            pRT->DrawText(
-                lineNumStr.c_str(),
-                static_cast<UINT32>(lineNumStr.length()),
-                numFormat,
-                rcNum,
-                numBrush
-            );
+                pRT->DrawText(
+                    lineNumStr.c_str(),
+                    static_cast<UINT32>(lineNumStr.length()),
+                    numFormat,
+                    rcNum,
+                    numBrush
+                );
+            }
 
             // Breakpoint Marker in Gutter (F9 / Debug Menu / Click Gutter / #26 Conditional & Logpoint)
             bool hasBreakpoint = (std::find(doc.breakpoints.begin(), doc.breakpoints.end(), vl.bufferLine) != doc.breakpoints.end());
             if (hasBreakpoint) {
-                float bpX = canvasLeft + config.ScaleF(12.0f);
+                float bpX = gutterLeft + config.ScaleF(12.0f);
                 float bpY = lineY + lineH / 2.0f;
                 float bpR = config.ScaleF(4.5f);
                 const auto* bpCond = doc.GetBreakpointCondition(vl.bufferLine);
@@ -5995,7 +6373,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             // Integrated Test Gutter Status Indicator (#28) - O(1) pre-indexed lookup
             if (auto tbIt = visTestBadgesByLine.find(vl.bufferLine); tbIt != visTestBadgesByLine.end()) {
                 const auto& tb = *tbIt->second;
-                float gtX = canvasLeft + config.ScaleF(20.0f);
+                float gtX = gutterLeft + config.ScaleF(20.0f);
                 float gtY = lineY + lineH * 0.5f;
                 float gtR = config.ScaleF(4.2f);
                 D2D1_COLOR_F gtCol = D2D1::ColorF(0.55f, 0.62f, 0.72f);
@@ -6029,12 +6407,12 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cGutterBrush;
                     pRT->CreateSolidColorBrush(cc, &cGutterBrush);
                     if (cGutterBrush) {
-                        const float barL = canvasLeft + config.ScaleF(0.5f);
+                        const float barL = gutterLeft + config.ScaleF(0.5f);
                         const float barW = config.ScaleF(3.0f);
                         pRT->FillRectangle(D2D1::RectF(barL, lineY + 1.5f, barL + barW, lineY + lineH - 1.5f), cGutterBrush.Get());
                     }
                     m_visibleCommentIndicators.push_back({
-                        D2D1::RectF(canvasLeft, lineY, canvasLeft + gutterW - config.ScaleF(10.0f), lineY + lineH),
+                        D2D1::RectF(gutterLeft, lineY, canvasLeft + gutterW - config.ScaleF(10.0f), lineY + lineH),
                         cAnn->line, cAnn->type, cAnn->tagLabel, cAnn->preview
                     });
                 }
@@ -6042,7 +6420,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             // Line Bookmark Ribbon Marker in Gutter (#18)
             if (doc.HasBookmark(vl.bufferLine)) {
-                float bmX = canvasLeft + config.ScaleF(3.0f);
+                float bmX = gutterLeft + config.ScaleF(3.0f);
                 float bmW = config.ScaleF(5.5f);
                 float bmH = (std::max)(config.ScaleF(9.0f), lineH * 0.58f);
                 float bmTop = lineY + (lineH - bmH) * 0.5f;
@@ -6057,7 +6435,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             // Debugger Paused Execution Arrow in Gutter
             if (vl.bufferLine == doc.debugPausedLine) {
                 EnsureCachedEditorBrushes(pRT, theme);
-                float arX = canvasLeft + config.ScaleF(8.0f);
+                float arX = gutterLeft + config.ScaleF(8.0f);
                 float arY = lineY + lineH / 2.0f;
                 float arW = config.ScaleF(9.0f);
                 if (!m_pPausedArrowGeo) {
@@ -6087,14 +6465,14 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
             // Gutter Diagnostic Error Indicator Dot (Image 4)
             if (hasDiagError && !hasBreakpoint) {
-                float errDotX = canvasLeft + config.ScaleF(8.0f);
+                float errDotX = gutterLeft + config.ScaleF(8.0f);
                 float errDotY = lineY + lineH / 2.0f;
                 float errDotR = config.ScaleF(2.5f);
                 pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR), theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushCloseHoverBg.Get());
             }
 
             // NEXT: In-File & Cross-File Prediction Gutter Indicator (Images 3, 4, 5)
-            if (m_prediction.isValid && m_prediction.line == vl.bufferLine) {
+            if (canShowPred && m_prediction.line == vl.bufferLine) {
                 float barW = config.ScaleF(2.5f);
                 D2D1_RECT_F rcPredBar = D2D1::RectF(canvasLeft + gutterW - barW, lineY, canvasLeft + gutterW, lineY + lineH);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> predBrush;
@@ -6103,7 +6481,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     pRT->FillRectangle(rcPredBar, predBrush.Get());
 
                     // Green ->| icon symbol (arrow pointing right with stop bar)
-                    float symX = canvasLeft + config.ScaleF(6.0f);
+                    float symX = gutterLeft + config.ScaleF(6.0f);
                     float symY = lineY + lineH * 0.5f;
                     float arrowLen = config.ScaleF(6.5f);
                     float barH = config.ScaleF(4.0f);
@@ -6121,7 +6499,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bulbBrush;
                     pRT->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.78f, 0.15f, 1.0f), &bulbBrush);
                     if (bulbBrush) {
-                        float bulbX = canvasLeft + config.ScaleF(18.0f);
+                        float bulbX = gutterLeft + config.ScaleF(18.0f);
                         float bulbY = lineY + lineH * 0.5f;
                         pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(bulbX, bulbY - config.ScaleF(1.0f)), config.ScaleF(3.0f), config.ScaleF(3.0f)), bulbBrush.Get());
                     }
@@ -6131,7 +6509,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             // Code Action Lightbulb (#24) in Gutter on active line when quick fixes / refactorings exist
             if (!vl.isCodeLens && !vl.isPredictionVirtual &&
                 m_codeActionMenu.hasLightbulb && vl.bufferLine == m_codeActionMenu.lightbulbLine) {
-                float bulbX = canvasLeft + config.ScaleF(10.0f);
+                float bulbX = gutterLeft + config.ScaleF(10.0f);
                 float bulbY = lineY + lineH * 0.5f;
                 float r = config.ScaleF(4.0f);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> actBulbBrush;
@@ -6218,7 +6596,7 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
                 float barLeft = barRight - barW;
 
                 if (doc.diffModifiedLines.count(vl.bufferLine)) {
-                    // Blue Bar for Modified line (Solid clean VS Code accent blue bar)
+                    // Blue Bar for Modified line (Solid clean accent blue bar)
                     D2D1_RECT_F rcBar = D2D1::RectF(barLeft, lineY, barRight, lineY + lineH);
                     if (m_pGutterBlueBrush) {
                         pRT->FillRectangle(rcBar, m_pGutterBlueBrush.Get());
@@ -6322,9 +6700,10 @@ void EditorCanvas::RenderCode(ID2D1RenderTarget* pRT, Theme& theme, const app::A
 
                 // Gutter number & divider
                 if (config.showLineNumbers) {
+                    const float stickyBlameW = ComputeGutterBlameWidth(config);
                     std::wstring numStr = std::to_wstring(sLine + 1);
                     D2D1_RECT_F rcNum = D2D1::RectF(
-                        canvasLeft + config.ScaleF(4.0f), rowTop,
+                        canvasLeft + stickyBlameW + config.ScaleF(4.0f), rowTop,
                         canvasLeft + gutterW - config.ScaleF(16.0f), rowTop + lineH);
                     IDWriteTextFormat* numFmt = theme.fontLineNumber ? theme.fontLineNumber.Get() : theme.fontMenuShortcut.Get();
                     ID2D1Brush* numBrush = isRowHovered
@@ -7734,10 +8113,12 @@ bool EditorCanvas::SetHoveredStickyIndex(int idx) noexcept {
 
 bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const editor::OpenDocument& doc,
                                  float canvasLeft, float clientHeight, size_t& outLine) const {
-    if (!config.showLineNumbers) {
+    if (!config.showLineNumbers && !config.showGutterBlame) {
         return false;
     }
-    float paneTop = config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneTop = m_isRenderingFloatingWindow
+        ? config.ScaleF(34.0f)
+        : (config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight)));
     float paneBottom = clientHeight;
     if (m_pCurrentGroups) {
         for (const auto& grp : *m_pCurrentGroups) {
@@ -7773,12 +8154,16 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
         return false;
     }
 
-    float relY = pt.y - (topY + config.ScaleF(6.0f));
-    if (relY < 0.0f || lineH <= 0.0f) {
+    float relY = static_cast<float>(pt.y) - (topY + config.ScaleF(6.0f) + doc.smoothScrollOffsetPx);
+    if (lineH <= 0.0f) {
         return false;
     }
-
-    size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+    const ptrdiff_t slotDelta = static_cast<ptrdiff_t>(std::floor(relY / lineH));
+    const ptrdiff_t rawVisualSlot = static_cast<ptrdiff_t>(doc.scrollLine) + slotDelta;
+    if (rawVisualSlot < 0) {
+        return false;
+    }
+    size_t visualSlot = static_cast<size_t>(rawVisualSlot);
     const auto& buffer = doc.buffer;
     size_t totalBufLines = buffer.GetLineCount();
 
@@ -7795,8 +8180,8 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     const bool isFastLargeBuf = isMmapLarge || (totalBufLines > 15000);
     const bool supportsCodeLens = !isFastLargeBuf && config.enableCodeLens && !doc.isDiffView &&
         (docExt != L".json" && docExt != L".txt" && docExt != L".md" && docExt != L".css" && docExt != L".html" && docExt != L".svg" && docExt != L".xml");
-    const bool hasMultiLinePred = (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() &&
-        m_prediction.ghostText.find(L'\n') != std::wstring::npos);
+    const bool predActiveForDoc = ShouldShowPrediction(doc);
+    const bool hasMultiLinePred = (predActiveForDoc && m_prediction.ghostText.find(L'\n') != std::wstring::npos);
     const bool useFastDirectVisualMap = isMmapLarge || (isFastLargeBuf && doc.foldedLines.empty() && doc.mergeConflicts.empty() && !hasMultiLinePred);
 
     if (useFastDirectVisualMap) {
@@ -7808,7 +8193,7 @@ bool EditorCanvas::HitTestGutter(POINT pt, const app::AppConfig& config, const e
     const auto& baseLines = EnsureBaseVisualLines(doc, supportsCodeLens, docExt);
     size_t predLines = 0;
     size_t predAnchorBaseIdx = 0;
-    if (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() && !baseLines.empty()) {
+    if (predActiveForDoc && !baseLines.empty()) {
         bool predFound = false;
         size_t idx = FindBaseVisualIndexForBufferLine(baseLines, m_prediction.line, predFound);
         if (predFound && baseLines[idx].bufferLine == m_prediction.line && !baseLines[idx].isCodeLens) {
@@ -7834,7 +8219,9 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
                                    float canvasLeft, float clientHeight, size_t& outLine, size_t& outCol,
                                    bool clampToLineEnd, bool* outIsActualTextChar) const {
     if (outIsActualTextChar) *outIsActualTextChar = false;
-    float paneTop = config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight));
+    float paneTop = m_isRenderingFloatingWindow
+        ? config.ScaleF(34.0f)
+        : (config.zenMode ? 0.0f : config.ScaleF(static_cast<float>(config.headerHeight)));
     float paneRight = canvasLeft + 99999.0f;
     float paneBottom = clientHeight;
     if (m_pCurrentGroups) {
@@ -7878,9 +8265,10 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         return false;
     }
 
-    float relY = pt.y - (topY + config.ScaleF(6.0f));
-    if (relY < 0.0f) relY = 0.0f;
-    size_t visualSlot = doc.scrollLine + static_cast<size_t>(relY / lineH);
+    float relY = static_cast<float>(pt.y) - (topY + config.ScaleF(6.0f) + doc.smoothScrollOffsetPx);
+    const ptrdiff_t slotDelta = (lineH > 0.0f) ? static_cast<ptrdiff_t>(std::floor(relY / lineH)) : 0;
+    const ptrdiff_t rawVisualSlot = static_cast<ptrdiff_t>(doc.scrollLine) + slotDelta;
+    size_t visualSlot = (rawVisualSlot > 0) ? static_cast<size_t>(rawVisualSlot) : 0;
 
     // Map visual slot back to buffer line taking fold state and large-buffer fast direct mapping into account
     auto& buffer = doc.buffer;
@@ -7901,8 +8289,8 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
     const bool isFastLargeBuf = isMmapLarge || (totalBufLines > 15000);
     const bool supportsCodeLens = !isFastLargeBuf && config.enableCodeLens && !doc.isDiffView &&
         (docExt != L".json" && docExt != L".txt" && docExt != L".md" && docExt != L".css" && docExt != L".html" && docExt != L".svg" && docExt != L".xml");
-    const bool hasMultiLinePred = (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() &&
-        m_prediction.ghostText.find(L'\n') != std::wstring::npos);
+    const bool predActiveForDoc = ShouldShowPrediction(doc);
+    const bool hasMultiLinePred = (predActiveForDoc && m_prediction.ghostText.find(L'\n') != std::wstring::npos);
     const bool useFastDirectVisualMap = isMmapLarge || (isFastLargeBuf && doc.foldedLines.empty() && doc.mergeConflicts.empty() && !hasMultiLinePred);
 
     if (useFastDirectVisualMap) {
@@ -7913,7 +8301,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         const auto& baseLines = EnsureBaseVisualLines(doc, supportsCodeLens, docExt);
         size_t predLines = 0;
         size_t predAnchorBaseIdx = 0;
-        if (m_prediction.isValid && !m_prediction.ghostText.empty() && !IsAutocompleteVisible() && !baseLines.empty()) {
+        if (predActiveForDoc && !baseLines.empty()) {
             bool predFound = false;
             size_t idx = FindBaseVisualIndexForBufferLine(baseLines, m_prediction.line, predFound);
             if (predFound && baseLines[idx].bufferLine == m_prediction.line && !baseLines[idx].isCodeLens) {
@@ -8045,7 +8433,7 @@ bool EditorCanvas::HitTestCodeArea(POINT pt, const app::AppConfig& config, const
         const float codeRight = config.showMinimap ? (paneRight - minimapW - config.ScaleF(6.0f)) : (paneRight - scrollbarW);
         *outIsActualTextChar = hitActualBufferLine &&
                                !lineStr.empty() &&
-                               static_cast<float>(pt.y) >= (topY + config.ScaleF(6.0f)) &&
+                               static_cast<float>(pt.y) >= (topY + config.ScaleF(6.0f) + doc.smoothScrollOffsetPx) &&
                                static_cast<float>(pt.x) <= codeRight &&
                                rawRelX >= -charW * 0.25f &&
                                rawRelX <= lineEndX + charW * 0.5f;
@@ -10894,18 +11282,18 @@ static ExtDetailMeta GetExtensionMeta(const std::wstring& extId) {
     } else {
         return {
             L"phide.react-snippets",
-            L"ES7+ React/Redux/React-Native snippets",
-            L"rodrigovallades",
+            L"ES7+ React/Redux/React-Native Snippets & IntelliSense",
+            L"Phide",
             L"v4.4.3",
-            L"Extensions for React, React-Native and Redux in JS/TS with ES7+ syntax. Customizable. Built-in integration with prettier.",
+            L"Complete React 19, TypeScript, JSX/TSX, Next.js, Redux, and React-Native IntelliSense & ES7+ snippets for Phide.",
             L"17,854,580",
-            4.4f,
-            85,
-            L"Snippets",
+            4.8f,
+            215,
+            L"Snippets, Programming Languages",
             L"2/18/2022",
-            L"2/18/2022",
-            L"https://github.com/ults-io/react-javascript-snippets",
-            L"https://github.com/ults-io/react-javascript-snippets/issues",
+            L"11/22/2026",
+            L"https://github.com/phide-ide/react-snippets",
+            L"https://github.com/phide-ide/react-snippets/issues",
             L"MIT"
         };
     }
@@ -11554,6 +11942,72 @@ const LearningCourseDef& EditorCanvas::GetLearningCourse(size_t index) const {
     return s_empty;
 }
 
+bool EditorCanvas::ShouldShowPrediction(const editor::OpenDocument& doc) const noexcept {
+    if (!m_prediction.isValid || m_prediction.ghostText.empty() || IsAutocompleteVisible()) {
+        return false;
+    }
+    if (doc.HasSelection()) {
+        return false;
+    }
+    const auto cursor = doc.buffer.GetCursor();
+    if (cursor.line != m_prediction.line || cursor.line >= doc.buffer.GetLineCount()) {
+        return false;
+    }
+    const auto& lineText = doc.buffer.GetLine(cursor.line);
+    size_t nonWsAfter = 0;
+    for (size_t col = cursor.col; col < lineText.length(); ++col) {
+        const wchar_t c = lineText[col];
+        if (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n') {
+            ++nonWsAfter;
+            if (nonWsAfter > m_prediction.replaceCharCount) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+D2D1_RECT_F EditorCanvas::ComputeRefactorPopupBounds(
+    float tipX, float tipY, float popupW, float popupH,
+    float arrowH, const D2D1_RECT_F& paneBounds, float clientHeight,
+    const app::AppConfig& config, bool& outFlipBelow) noexcept
+{
+    const float marginX = config.ScaleF(8.0f);
+    const float minEdge = config.ScaleF(8.0f);
+    const bool hasValidPane = (paneBounds.right > paneBounds.left + config.ScaleF(40.0f));
+    const float paneLeft = hasValidPane ? paneBounds.left : 0.0f;
+    const float paneRight = hasValidPane ? paneBounds.right : (paneLeft + config.ScaleF(1100.0f));
+    const float paneTop = (paneBounds.top > 1.0f) ? paneBounds.top : config.ScaleF(36.0f);
+
+    float popupLeft = tipX - popupW * 0.5f;
+    const float minLeft = paneLeft + marginX;
+    const float maxLeft = (std::max)(minLeft, paneRight - popupW - marginX);
+    if (popupLeft < minLeft) popupLeft = minLeft;
+    if (popupLeft > maxLeft) popupLeft = maxLeft;
+
+    const float minTop = paneTop + config.ScaleF(6.0f);
+    outFlipBelow = (tipY - popupH - arrowH < minTop);
+    float popupTop = 0.0f;
+    float popupBottom = 0.0f;
+    if (!outFlipBelow) {
+        popupBottom = tipY - arrowH;
+        popupTop = popupBottom - popupH;
+        if (popupTop < minTop) {
+            popupTop = minTop;
+            popupBottom = popupTop + popupH;
+        }
+    } else {
+        popupTop = tipY + config.ScaleF(20.0f) + arrowH;
+        popupBottom = popupTop + popupH;
+        const float maxBottom = (std::max)(minTop + popupH, clientHeight - minEdge);
+        if (popupBottom > maxBottom) {
+            popupBottom = maxBottom;
+            popupTop = popupBottom - popupH;
+        }
+    }
+    return D2D1::RectF(popupLeft, popupTop, popupLeft + popupW, popupBottom);
+}
+
 void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight) {
     if (!pRT || m_refactorMessage.empty()) return;
 
@@ -11573,6 +12027,14 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
 
     if (!bgBrush || !borderBrush || !textBrush) return;
 
+    const float padX = config.ScaleF(12.0f);
+    const float padY = config.ScaleF(5.0f);
+    const bool hasValidPane = (m_lastActivePaneBounds.right > m_lastActivePaneBounds.left + config.ScaleF(40.0f));
+    const float availPaneW = hasValidPane
+        ? (std::max)(config.ScaleF(140.0f), (m_lastActivePaneBounds.right - m_lastActivePaneBounds.left) - padX * 2.0f - config.ScaleF(20.0f))
+        : config.ScaleF(400.0f);
+    const float maxLayoutW = (std::min)(config.ScaleF(420.0f), availPaneW);
+
     float textW = 160.0f;
     float textH = 18.0f;
     IDWriteTextFormat* pFmt = theme.fontMenu ? theme.fontMenu.Get() : theme.fontBody.Get();
@@ -11582,17 +12044,15 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
         if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
                 m_refactorMessage.c_str(),
                 static_cast<UINT32>(m_refactorMessage.length()),
-                pFmt, 400.0f, 100.0f, &pLayout))) {
+                pFmt, maxLayoutW, 100.0f, &pLayout))) {
             DWRITE_TEXT_METRICS tm{};
             if (SUCCEEDED(pLayout->GetMetrics(&tm))) {
-                textW = tm.widthIncludingTrailingWhitespace;
+                textW = (std::min)(maxLayoutW, tm.widthIncludingTrailingWhitespace);
                 textH = tm.height;
             }
         }
     }
 
-    const float padX = config.ScaleF(12.0f);
-    const float padY = config.ScaleF(5.0f);
     const float popupW = textW + padX * 2.0f;
     const float popupH = textH + padY * 2.0f;
     const float arrowW = config.ScaleF(10.0f);
@@ -11603,27 +12063,23 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
     float tipY = m_lastCaretY;
     if (tipY < 40.0f) tipY = 150.0f;
 
-    float popupLeft = tipX - popupW * 0.5f;
-    if (popupLeft < config.ScaleF(10.0f)) popupLeft = config.ScaleF(10.0f);
-
-    bool flipBelow = (tipY - popupH - arrowH < config.ScaleF(60.0f));
-    float popupTop = 0.0f;
-    float popupBottom = 0.0f;
-
-    if (!flipBelow) {
-        popupBottom = tipY - arrowH;
-        popupTop = popupBottom - popupH;
-    } else {
-        popupTop = tipY + config.ScaleF(20.0f) + arrowH;
-        popupBottom = popupTop + popupH;
-    }
-
-    D2D1_RECT_F rcBox = D2D1::RectF(popupLeft, popupTop, popupLeft + popupW, popupBottom);
+    bool flipBelow = false;
+    D2D1_RECT_F rcBox = ComputeRefactorPopupBounds(tipX, tipY, popupW, popupH, arrowH,
+                                                   m_lastActivePaneBounds, clientHeight, config, flipBelow);
+    const float popupLeft = rcBox.left;
+    const float popupTop = rcBox.top;
+    const float popupBottom = rcBox.bottom;
     D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rcBox, 4.0f, 4.0f);
 
     // Draw main popover balloon body
     pRT->FillRoundedRectangle(rrc, bgBrush.Get());
     pRT->DrawRoundedRectangle(rrc, borderBrush.Get(), 1.2f);
+
+    // Keep pointer triangle cleanly inside the clamped popup rounded rect edges
+    const float triHalf = arrowW * 0.5f;
+    const float minTriCenter = popupLeft + triHalf + config.ScaleF(6.0f);
+    const float maxTriCenter = (std::max)(minTriCenter, popupLeft + popupW - triHalf - config.ScaleF(6.0f));
+    const float triCenterX = std::clamp(tipX, minTriCenter, maxTriCenter);
 
     // Draw pointer triangle
     Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
@@ -11635,15 +12091,15 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
             if (SUCCEEDED(pTri->Open(&sink))) {
                 if (!flipBelow) {
                     // Downward triangle pointing at caret
-                    sink->BeginFigure(D2D1::Point2F(tipX - arrowW * 0.5f, popupBottom - 0.5f), D2D1_FIGURE_BEGIN_FILLED);
-                    sink->AddLine(D2D1::Point2F(tipX + arrowW * 0.5f, popupBottom - 0.5f));
-                    sink->AddLine(D2D1::Point2F(tipX, tipY));
+                    sink->BeginFigure(D2D1::Point2F(triCenterX - triHalf, popupBottom - 0.5f), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(triCenterX + triHalf, popupBottom - 0.5f));
+                    sink->AddLine(D2D1::Point2F(triCenterX, popupBottom + arrowH));
                     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 } else {
                     // Upward triangle pointing at caret
-                    sink->BeginFigure(D2D1::Point2F(tipX - arrowW * 0.5f, popupTop + 0.5f), D2D1_FIGURE_BEGIN_FILLED);
-                    sink->AddLine(D2D1::Point2F(tipX + arrowW * 0.5f, popupTop + 0.5f));
-                    sink->AddLine(D2D1::Point2F(tipX, tipY + config.ScaleF(20.0f)));
+                    sink->BeginFigure(D2D1::Point2F(triCenterX - triHalf, popupTop + 0.5f), D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLine(D2D1::Point2F(triCenterX + triHalf, popupTop + 0.5f));
+                    sink->AddLine(D2D1::Point2F(triCenterX, popupTop - arrowH));
                     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 }
                 sink->Close();
@@ -11660,7 +12116,8 @@ void EditorCanvas::RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, con
         static_cast<UINT32>(m_refactorMessage.length()),
         pFmt,
         rcText,
-        textBrush.Get()
+        textBrush.Get(),
+        D2D1_DRAW_TEXT_OPTIONS_CLIP
     );
 }
 
@@ -11738,28 +12195,29 @@ const editor::IntelliSenseItem* EditorCanvas::GetSelectedAutocompleteItem() cons
     return &m_autocompleteItems[m_autocompleteSelectedIdx];
 }
 
-bool EditorCanvas::HitTestAutocomplete(POINT pt, int& outIdx) const {
+bool EditorCanvas::HitTestAutocompletePanel(
+    POINT pt,
+    const D2D1_RECT_F& popupBounds,
+    size_t totalItems,
+    size_t scrollOffset,
+    int& outIdx) noexcept {
     outIdx = -1;
-    if (!m_showAutocomplete || m_autocompleteItems.empty()) return false;
-    if (pt.x < m_autocompleteBounds.left || pt.x > m_autocompleteBounds.right ||
-        pt.y < m_autocompleteBounds.top || pt.y > m_autocompleteBounds.bottom) {
+    if (totalItems == 0) return false;
+    if (pt.x < popupBounds.left || pt.x > popupBounds.right ||
+        pt.y < popupBounds.top || pt.y > popupBounds.bottom) {
         return false;
     }
 
-    float itemsTop = m_autocompleteBounds.top + 4.0f;
-    float itemsBottom = m_autocompleteBounds.bottom - 26.0f;
+    const float itemsTop = popupBounds.top + 4.0f;
+    const float itemsBottom = popupBounds.bottom - 26.0f;
     if (pt.y >= itemsTop && pt.y < itemsBottom) {
-        size_t visibleCount = (std::min)(m_autocompleteItems.size(), static_cast<size_t>(8));
+        const size_t visibleCount = (std::min)(totalItems, static_cast<size_t>(8));
         if (visibleCount > 0) {
-            float itemH = (itemsBottom - itemsTop) / static_cast<float>(visibleCount);
-            size_t scrollOffset = m_autocompleteScrollOffset;
-
-
-
-            int relIdx = static_cast<int>((pt.y - itemsTop) / itemH);
+            const float itemH = (itemsBottom - itemsTop) / static_cast<float>(visibleCount);
+            const int relIdx = static_cast<int>((pt.y - itemsTop) / itemH);
             if (relIdx >= 0 && relIdx < static_cast<int>(visibleCount)) {
-                size_t actualIdx = scrollOffset + static_cast<size_t>(relIdx);
-                if (actualIdx < m_autocompleteItems.size()) {
+                const size_t actualIdx = scrollOffset + static_cast<size_t>(relIdx);
+                if (actualIdx < totalItems) {
                     outIdx = static_cast<int>(actualIdx);
                 }
             }
@@ -11768,33 +12226,56 @@ bool EditorCanvas::HitTestAutocomplete(POINT pt, int& outIdx) const {
     return true;
 }
 
+bool EditorCanvas::HitTestAutocomplete(POINT pt, int& outIdx) const {
+    outIdx = -1;
+    if (!m_showAutocomplete || m_autocompleteItems.empty()) return false;
+    return HitTestAutocompletePanel(pt, m_autocompleteBounds, m_autocompleteItems.size(), m_autocompleteScrollOffset, outIdx);
+}
+
 void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                            float clientWidth, float clientHeight) {
     if (!pRT || !m_showAutocomplete || m_autocompleteItems.empty()) return;
+    RenderAutocompletePopupPanel(
+        pRT, theme, config,
+        m_autocompleteItems, m_autocompleteSelectedIdx, m_autocompleteScrollOffset,
+        m_lastCaretX, m_lastCaretY, config.ScaleF(22.0f), config.ScaleF(35.0f),
+        clientWidth, clientHeight, m_autocompleteBounds, m_icons);
+}
+
+void EditorCanvas::RenderAutocompletePopupPanel(
+    ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+    const std::vector<editor::IntelliSenseItem>& items,
+    size_t selectedIdx,
+    size_t& inOutScrollOffset,
+    float anchorX, float anchorY, float lineH, float minY,
+    float clientWidth, float clientHeight,
+    D2D1_RECT_F& outBounds,
+    LucideIcons& icons) {
+    if (!pRT || items.empty()) return;
 
     const float itemH = config.ScaleF(24.0f);
     const float footerH = config.ScaleF(26.0f);
     const size_t maxVisible = 8;
-    const size_t totalItems = m_autocompleteItems.size();
+    const size_t totalItems = items.size();
     const size_t visibleCount = (std::min)(totalItems, maxVisible);
 
-    // VS Code IntelliSense card dimensions (Image 5 benchmark: 440px wide for ample breathing room)
+    // Phide IntelliSense card dimensions (440px wide for ample breathing room)
     float popupW = config.ScaleF(440.0f);
     if (popupW > clientWidth - config.ScaleF(24.0f)) {
         popupW = (std::max)(config.ScaleF(300.0f), clientWidth - config.ScaleF(24.0f));
     }
     const float popupH = static_cast<float>(visibleCount) * itemH + footerH + config.ScaleF(8.0f);
 
-    float popupX = m_lastCaretX;
+    float popupX = anchorX;
     if (popupX + popupW > clientWidth - config.ScaleF(12.0f)) {
         popupX = (std::max)(config.ScaleF(10.0f), clientWidth - popupW - config.ScaleF(12.0f));
     }
-    float popupY = m_lastCaretY + config.ScaleF(22.0f);
+    float popupY = anchorY + lineH;
     if (popupY + popupH > clientHeight - config.ScaleF(10.0f)) {
-        popupY = (std::max)(config.ScaleF(35.0f), m_lastCaretY - popupH - config.ScaleF(4.0f));
+        popupY = (std::max)(minY, anchorY - popupH - config.ScaleF(4.0f));
     }
 
-    m_autocompleteBounds = D2D1::RectF(popupX, popupY, popupX + popupW, popupY + popupH);
+    outBounds = D2D1::RectF(popupX, popupY, popupX + popupW, popupY + popupH);
 
     // 1. Elevated soft drop shadow (Image 5)
     for (int s = 1; s <= 3; ++s) {
@@ -11810,8 +12291,8 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         if (shadowBrush) pRT->FillRoundedRectangle(rrcShadow, shadowBrush.Get());
     }
 
-    // 2. VS Code Card Body (#1e1e1e / #252526 dark card with subtle #3c3c3c border)
-    D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(m_autocompleteBounds, 6.0f, 6.0f);
+    // 2. Card Body (#1e1e1e / #252526 dark card with subtle #3c3c3c border)
+    D2D1_ROUNDED_RECT rrcPopup = D2D1::RoundedRect(outBounds, 6.0f, 6.0f);
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
     pRT->CreateSolidColorBrush(
@@ -11827,19 +12308,19 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     if (borderBrush) pRT->DrawRoundedRectangle(rrcPopup, borderBrush.Get(), 1.0f);
 
     // Compute scroll window
-    if (m_autocompleteSelectedIdx < m_autocompleteScrollOffset) {
-        m_autocompleteScrollOffset = m_autocompleteSelectedIdx;
-    } else if (m_autocompleteSelectedIdx >= m_autocompleteScrollOffset + visibleCount) {
-        m_autocompleteScrollOffset = m_autocompleteSelectedIdx - visibleCount + 1;
+    if (selectedIdx < inOutScrollOffset) {
+        inOutScrollOffset = selectedIdx;
+    } else if (selectedIdx >= inOutScrollOffset + visibleCount) {
+        inOutScrollOffset = selectedIdx - visibleCount + 1;
     }
     if (totalItems > visibleCount) {
-        if (m_autocompleteScrollOffset > totalItems - visibleCount) {
-            m_autocompleteScrollOffset = totalItems - visibleCount;
+        if (inOutScrollOffset > totalItems - visibleCount) {
+            inOutScrollOffset = totalItems - visibleCount;
         }
     } else {
-        m_autocompleteScrollOffset = 0;
+        inOutScrollOffset = 0;
     }
-    size_t scrollOffset = m_autocompleteScrollOffset;
+    size_t scrollOffset = inOutScrollOffset;
 
     const bool hasScrollbar = (totalItems > visibleCount);
     float itemY = popupY + config.ScaleF(4.0f);
@@ -11848,8 +12329,8 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
         size_t itemIdx = scrollOffset + i;
         if (itemIdx >= totalItems) break;
 
-        const auto& item = m_autocompleteItems[itemIdx];
-        bool isSelected = (itemIdx == m_autocompleteSelectedIdx);
+        const auto& item = items[itemIdx];
+        bool isSelected = (itemIdx == selectedIdx);
 
         D2D1_RECT_F rcItem = D2D1::RectF(popupX + config.ScaleF(4.0f), itemY, popupX + popupW - config.ScaleF(4.0f), itemY + itemH);
 
@@ -11929,7 +12410,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             if (theme.fontSeti && setiInfo.pBrush) {
                 pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
             } else {
-                m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Folder);
+                icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Folder);
             }
         } else if (item.kind == editor::CompletionKind::File) {
             auto setiInfo = theme.GetSetiIcon(item.label, false, false);
@@ -11937,7 +12418,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
                 pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
             } else {
                 auto fType = LucideIcons::GetIconTypeForPath(item.label, false, false);
-                m_icons.DrawFileIcon(pRT, theme, rcIcon, fType);
+                icons.DrawFileIcon(pRT, theme, rcIcon, fType);
             }
         } else if (item.origin == L"css-class" || item.origin == L"css" || item.origin == L"tailwind" ||
                    (item.kind == editor::CompletionKind::Class && item.detail.find(L"CSS") != std::wstring::npos)) {
@@ -11946,7 +12427,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
             if (theme.fontSeti && setiInfo.pBrush) {
                 pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcIcon, setiInfo.pBrush);
             } else {
-                m_icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Css);
+                icons.DrawFileIcon(pRT, theme, rcIcon, FileIconType::Css);
             }
         } else {
             // Pill container for symbol badge (ⓟ, ⓜ, ⓕ, ⓥ, ⓚ, ⓣ, ⓐ, ⓢ)
@@ -12093,7 +12574,7 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
 
         float maxScroll = static_cast<float>(totalItems - visibleCount);
         float thumbH = (std::max)(config.ScaleF(14.0f), sbH * (static_cast<float>(visibleCount) / static_cast<float>(totalItems)));
-        float thumbY = sbTop + (static_cast<float>(m_autocompleteScrollOffset) / maxScroll) * (sbH - thumbH);
+        float thumbY = sbTop + (static_cast<float>(scrollOffset) / maxScroll) * (sbH - thumbH);
 
         D2D1_ROUNDED_RECT rrcSbThumb = D2D1::RoundedRect(D2D1::RectF(sbLeft, thumbY, sbRight, thumbY + thumbH), 2.0f, 2.0f);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> thumbBrush;
@@ -12141,8 +12622,8 @@ void EditorCanvas::RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme,
     pRT->PopAxisAlignedClip(); // End footer clip
 
     // 10. Documentation Sidecar Flyout Card (Dynamic width, height, word-wrap, and strict clipping)
-    if (m_autocompleteSelectedIdx < m_autocompleteItems.size()) {
-        const auto& selItem = m_autocompleteItems[m_autocompleteSelectedIdx];
+    if (selectedIdx < items.size()) {
+        const auto& selItem = items[selectedIdx];
         auto hasVisibleChars = [](const std::wstring& s) -> bool {
             for (wchar_t ch : s) {
                 if (!iswspace(ch)) return true;
@@ -16197,7 +16678,7 @@ void EditorCanvas::RenderTaskRunnerView(ID2D1RenderTarget* pRT, Theme& theme, co
 
     if (m_workspaceTasks.empty()) {
         if (fBody && textMuted) {
-            const wchar_t* emptyMsg = L"No workspace tasks discovered (.vscode/tasks.json, package.json, composer.json, Makefile, CMakeLists.txt).";
+            const wchar_t* emptyMsg = L"No workspace tasks discovered (.phide/tasks.json, package.json, composer.json, Makefile, CMakeLists.txt).";
             pRT->DrawText(emptyMsg, static_cast<UINT32>(wcslen(emptyMsg)), fBody,
                           D2D1::RectF(rcList.left + config.ScaleF(14.0f), rcList.top + config.ScaleF(14.0f), rcList.right - config.ScaleF(14.0f), rcList.bottom),
                           textMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);

@@ -2901,7 +2901,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
   - Adds a new _Rename Stash..._ command to the _Stashes_ view
 - Adds new _Commit Graph_ features and improvements
   - Adds a _Push_ or _Pull_ toolbar button depending the current branch being ahead or behind it's upstream
-  - Adds support for the _Commit Graph_ over [Visual Studio Live Share](https://visualstudio.microsoft.com/services/live-share/) sessions
+  - Adds support for the _Commit Graph_ over Live Share sessions
   - Adds the ability to move all of the columns, including the ones that were previously unmovable
   - Automatically switches column headers from text to icons when the column's width is too small for the text to be useful
   - Automatically switches the Author column to shows avatars rather than text when the column is sized to its minimum width
@@ -2946,7 +2946,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 - Fixes [#2660](https://github.com/gitkraken/gitlens/issues/2660) - Commands executed in the terminal fail to honor found Git path
 - Fixes [#2654](https://github.com/gitkraken/gitlens/issues/2654) - Toggle zen mode not working until you restart phide
 - Fixes [#2629](https://github.com/gitkraken/gitlens/issues/2629) - When on phide web, add handling for failing repo discovery
-- Fixes many issues with using GitLens over [Visual Studio Live Share](https://visualstudio.microsoft.com/services/live-share/) sessions
+- Fixes many issues with using GitLens over Live Share sessions
 - Fixes mouse scrubbing issues with the minimap on the _Commit Graph_
 - Fixes _Refresh Repository Access_ and _Reset Repository Access Cache_ commands to always be available
 - Fixes state not being restored on the Home webview
@@ -3655,7 +3655,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 ### Changed
 
-- GitLens joins forces with GitKraken! &mdash; [Learn more](https://gitkraken.com/blog/gitkraken-acquires-gitlens-for-visual-studio-code)
+- GitLens joins forces with GitKraken! &mdash; [Learn more](https://gitkraken.com/blog/gitkraken-acquires-gitlens-for-phide)
 
 ## [11.6.0] - 2021-07-13
 

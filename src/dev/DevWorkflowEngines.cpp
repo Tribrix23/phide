@@ -514,10 +514,15 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
     fs::path root(workspaceRoot);
     if (!fs::exists(root, ec)) return tasks;
 
-    // 1. .vscode/tasks.json
+    // 1. .phide/tasks.json (and legacy .vscode/tasks.json fallback)
     {
         std::wstring txt;
-        if (ReadFileWideBounded(root / L".vscode" / L"tasks.json", txt)) {
+        fs::path phideTasks = root / L".phide" / L"tasks.json";
+        if (ReadFileWideBounded(phideTasks, txt)) {
+            auto parsed = ParseVscodeTasksJson(txt, workspaceRoot);
+            for (auto& t : parsed) t.source = L".phide/tasks.json";
+            tasks.insert(tasks.end(), parsed.begin(), parsed.end());
+        } else if (ReadFileWideBounded(root / L".vscode" / L"tasks.json", txt)) {
             auto parsed = ParseVscodeTasksJson(txt, workspaceRoot);
             tasks.insert(tasks.end(), parsed.begin(), parsed.end());
         }

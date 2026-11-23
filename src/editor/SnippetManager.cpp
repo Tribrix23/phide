@@ -6,6 +6,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cwctype>
+#include <unordered_map>
 
 namespace phide::editor {
 
@@ -19,7 +20,7 @@ void SnippetManager::Initialize(const std::wstring& snippetsFilePath) {
 void SnippetManager::LoadDefaults() {
     m_snippets.clear();
 
-    // 1. HTML5 Boilerplate & HTML Templates (Image 3 request: "like you know ! in vs code create html template")
+    // 1. HTML5 Boilerplate & HTML Templates
     m_snippets.push_back({
         L"HTML5 Boilerplate Template (!)",
         L"!",
@@ -2352,20 +2353,21 @@ bool SnippetManager::ImportVscodeSnippetsFromFile(const std::wstring& filePath, 
 size_t SnippetManager::ImportVscodeWorkspaceSnippets(const std::wstring& workspaceRoot) {
     if (workspaceRoot.empty()) return 0;
     std::error_code ec;
-    std::filesystem::path vsDir = std::filesystem::path(workspaceRoot) / L".vscode";
-    if (!std::filesystem::exists(vsDir, ec) || !std::filesystem::is_directory(vsDir, ec)) return 0;
-
     size_t filesImported = 0;
     size_t filesScanned = 0;
-    for (const auto& ent : std::filesystem::directory_iterator(vsDir, ec)) {
-        if (ec || filesScanned >= 32) break;
-        if (!ent.is_regular_file(ec)) continue;
-        std::wstring ext = ent.path().extension().wstring();
-        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
-        if (ext == L".code-snippets") {
-            ++filesScanned;
-            if (ImportVscodeSnippetsFromFile(ent.path().wstring(), L"")) {
-                ++filesImported;
+    for (const wchar_t* dirName : { L".phide", L".vscode" }) {
+        std::filesystem::path snipDir = std::filesystem::path(workspaceRoot) / dirName;
+        if (!std::filesystem::exists(snipDir, ec) || !std::filesystem::is_directory(snipDir, ec)) continue;
+        for (const auto& ent : std::filesystem::directory_iterator(snipDir, ec)) {
+            if (ec || filesScanned >= 32) break;
+            if (!ent.is_regular_file(ec)) continue;
+            std::wstring ext = ent.path().extension().wstring();
+            for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+            if (ext == L".code-snippets") {
+                ++filesScanned;
+                if (ImportVscodeSnippetsFromFile(ent.path().wstring(), L"")) {
+                    ++filesImported;
+                }
             }
         }
     }
@@ -2487,6 +2489,71 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
         return false;
     };
 
+    std::unordered_map<std::wstring, std::wstring> tabstopValues;
+
+    auto findMatchingBrace = [](const std::wstring& str, size_t openBracePos) -> size_t {
+        int depth = 0;
+        for (size_t i = openBracePos; i < str.length(); ++i) {
+            if (str[i] == L'\\' && i + 1 < str.length()) { ++i; continue; }
+            if (str[i] == L'{') ++depth;
+            else if (str[i] == L'}') {
+                --depth;
+                if (depth == 0) return i;
+            }
+        }
+        return std::wstring::npos;
+    };
+
+    auto resolveInlineVars = [&](const std::wstring& input) -> std::wstring {
+        std::wstring out;
+        out.reserve(input.size());
+        for (size_t i = 0; i < input.size(); ++i) {
+            if (input[i] == L'$') {
+                if (i + 1 < input.size() && input[i + 1] == L'$') {
+                    out.push_back(L'$');
+                    ++i;
+                    continue;
+                }
+                if (i + 1 < input.size() && input[i + 1] == L'{') {
+                    size_t cl = findMatchingBrace(input, i + 1);
+                    if (cl != std::wstring::npos) {
+                        std::wstring innerVar = input.substr(i + 2, cl - (i + 2));
+                        std::wstring v;
+                        if (resolveVariable(innerVar, v)) {
+                            out += v;
+                            i = cl;
+                            continue;
+                        }
+                        size_t colPos = innerVar.find(L':');
+                        if (colPos != std::wstring::npos) {
+                            std::wstring vName = innerVar.substr(0, colPos);
+                            std::wstring vDef = innerVar.substr(colPos + 1);
+                            if (resolveVariable(vName, v) && !v.empty()) {
+                                out += v;
+                            } else {
+                                out += vDef;
+                            }
+                            i = cl;
+                            continue;
+                        }
+                    }
+                } else if (i + 1 < input.size() && iswalpha(input[i + 1])) {
+                    size_t endId = i + 1;
+                    while (endId < input.size() && (iswalnum(input[endId]) || input[endId] == L'_')) ++endId;
+                    std::wstring vName = input.substr(i + 1, endId - (i + 1));
+                    std::wstring v;
+                    if (resolveVariable(vName, v)) {
+                        out += v;
+                        i = endId - 1;
+                        continue;
+                    }
+                }
+            }
+            out.push_back(input[i]);
+        }
+        return out;
+    };
+
     for (size_t lIdx = 0; lIdx < snippet.body.size(); ++lIdx) {
         const std::wstring& raw = snippet.body[lIdx];
         std::wstring clean;
@@ -2499,12 +2566,30 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                     continue;
                 }
                 if (c + 1 < raw.length() && raw[c + 1] == L'{') {
-                    size_t close = raw.find(L'}', c + 2);
+                    size_t close = findMatchingBrace(raw, c + 1);
                     if (close != std::wstring::npos) {
                         std::wstring inner = raw.substr(c + 2, close - (c + 2));
                         std::wstring varVal;
                         if (resolveVariable(inner, varVal)) {
                             clean += varVal;
+                            c = close;
+                            continue;
+                        }
+                        // Transform placeholder: ${1/(.*)/${1:/capitalize}/}
+                        size_t slash1 = inner.find(L'/');
+                        if (slash1 != std::wstring::npos && slash1 > 0 && iswdigit(inner[0])) {
+                            std::wstring numStr = inner.substr(0, slash1);
+                            std::wstring baseVal;
+                            auto tvIt = tabstopValues.find(numStr);
+                            if (tvIt != tabstopValues.end()) baseVal = tvIt->second;
+                            if (inner.find(L"/capitalize") != std::wstring::npos && !baseVal.empty()) {
+                                baseVal[0] = static_cast<wchar_t>(towupper(baseVal[0]));
+                            } else if (inner.find(L"/upcase") != std::wstring::npos) {
+                                for (auto& ch : baseVal) ch = static_cast<wchar_t>(towupper(ch));
+                            } else if (inner.find(L"/downcase") != std::wstring::npos) {
+                                for (auto& ch : baseVal) ch = static_cast<wchar_t>(towlower(ch));
+                            }
+                            clean += baseVal;
                             c = close;
                             continue;
                         }
@@ -2518,6 +2603,9 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                                 : inner.substr(pipe1 + 1);
                             size_t comma = choices.find(L',');
                             std::wstring firstChoice = (comma == std::wstring::npos) ? choices : choices.substr(0, comma);
+                            if (tabstopValues.find(numStr) == tabstopValues.end()) {
+                                tabstopValues[numStr] = firstChoice;
+                            }
                             if (numStr == L"1" && !foundPlaceholder1 && !foundPlaceholder0) {
                                 targetCursorLineOffset = static_cast<int>(lIdx);
                                 targetCursorCol = static_cast<int>(clean.length());
@@ -2527,14 +2615,17 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                             c = close;
                             continue;
                         }
-                        // ${1:default}
+                        // ${1:default} (supports nested variables like ${1:${TM_FILENAME_BASE}})
                         size_t colon = inner.find(L':');
                         if (colon != std::wstring::npos) {
                             std::wstring numStr = inner.substr(0, colon);
-                            std::wstring defVal = inner.substr(colon + 1);
+                            std::wstring defVal = resolveInlineVars(inner.substr(colon + 1));
                             if ((defVal == L"ComponentName" || defVal.find(L"ComponentName") != std::wstring::npos) &&
                                 !compName.empty() && compName != L"ComponentName") {
                                 defVal = compName;
+                            }
+                            if (tabstopValues.find(numStr) == tabstopValues.end() && !defVal.empty()) {
+                                tabstopValues[numStr] = defVal;
                             }
                             if ((numStr == L"1" || !foundPlaceholder1) && !foundPlaceholder1 && !foundPlaceholder0) {
                                 targetCursorLineOffset = static_cast<int>(lIdx);
@@ -2554,6 +2645,9 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                             targetCursorLineOffset = static_cast<int>(lIdx);
                             targetCursorCol = static_cast<int>(clean.length());
                             foundPlaceholder0 = true;
+                        } else if (!inner.empty() && iswdigit(inner[0])) {
+                            auto tvIt = tabstopValues.find(inner);
+                            if (tvIt != tabstopValues.end()) clean += tvIt->second;
                         }
                         c = close;
                         continue;
@@ -2575,6 +2669,8 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                         targetCursorLineOffset = static_cast<int>(lIdx);
                         targetCursorCol = static_cast<int>(clean.length());
                         foundPlaceholder1 = true;
+                    } else if (auto tvIt = tabstopValues.find(L"1"); tvIt != tabstopValues.end()) {
+                        clean += tvIt->second;
                     }
                     ++c;
                     continue;
@@ -2585,6 +2681,10 @@ bool SnippetManager::ExpandSnippet(const Snippet& snippet, Buffer& buffer, size_
                     ++c;
                     continue;
                 } else if (c + 1 < raw.length() && iswdigit(raw[c + 1])) {
+                    std::wstring dKey(1, raw[c + 1]);
+                    if (auto tvIt = tabstopValues.find(dKey); tvIt != tabstopValues.end()) {
+                        clean += tvIt->second;
+                    }
                     ++c;
                     continue;
                 }

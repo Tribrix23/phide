@@ -720,6 +720,18 @@ void PluginManager::Initialize(const std::wstring& exeDir) {
         }
     }
 
+    // 1b. Load bundled declarative snippet/completion extensions from assets/extensions
+    {
+        std::error_code ec;
+        std::filesystem::path bundledReact = exePath / L"assets" / L"extensions" / L"phide.react-snippets" / L"package.json";
+        if (!std::filesystem::exists(bundledReact, ec) && rootPath != exePath) {
+            bundledReact = rootPath / L"assets" / L"extensions" / L"phide.react-snippets" / L"package.json";
+        }
+        if (std::filesystem::exists(bundledReact, ec)) {
+            LoadPluginFromManifest(bundledReact);
+        }
+    }
+
     // 2. Scan %LOCALAPPDATA%\phide\{plugins,extensions,mods}
     wchar_t* pLocalAppData = nullptr;
     size_t len = 0;
@@ -1119,9 +1131,77 @@ bool PluginManager::LoadPluginFromJsonString(const std::wstring& jsonContent, co
         }
     };
     if (const JsonVal* snipNode = getSection(L"snippets")) {
+        auto registerJsonSnippetsObject = [&](const JsonVal& snipsObj, const std::wstring& fallbackScope) {
+            if (snipsObj.type != JsonVal::Type::Object) return;
+            for (const auto& [sName, sObj] : snipsObj.objVal) {
+                if (sObj.type != JsonVal::Type::Object) continue;
+                std::vector<std::wstring> prefixes;
+                if (const JsonVal* pVal = sObj.Get(L"prefix")) {
+                    if (pVal->type == JsonVal::Type::String && !pVal->strVal.empty()) {
+                        prefixes.push_back(pVal->strVal);
+                    } else if (pVal->type == JsonVal::Type::Array) {
+                        for (const auto& pe : pVal->arrVal) {
+                            if (pe.type == JsonVal::Type::String && !pe.strVal.empty()) {
+                                prefixes.push_back(pe.strVal);
+                            }
+                        }
+                    }
+                }
+                if (prefixes.empty()) continue;
+                std::vector<std::wstring> bodyLines;
+                parseSnippetBody(sObj.Get(L"body"), bodyLines);
+                if (bodyLines.empty()) continue;
+
+                std::wstring desc = sObj.GetString(L"description", sName);
+                std::wstring scope = sObj.GetString(L"scope", fallbackScope);
+                if (scope == L"*") scope.clear();
+                for (const auto& pfx : prefixes) {
+                    editor::Snippet snip;
+                    snip.name = sName;
+                    snip.prefix = pfx;
+                    snip.body = bodyLines;
+                    snip.description = desc;
+                    snip.scope = scope;
+                    RegisterSnippet(snip);
+                }
+            }
+        };
+
         if (snipNode->type == JsonVal::Type::Array) {
+            // Collect external snippet file contributions ("language" + "path") so duplicate file entries merge scopes cleanly
+            std::unordered_map<std::wstring, std::pair<std::filesystem::path, std::wstring>> externalFiles;
+            std::vector<std::wstring> externalFileOrder;
+
             for (const auto& sObj : snipNode->arrVal) {
                 if (sObj.type != JsonVal::Type::Object) continue;
+                std::wstring extPathStr = sObj.GetString(L"path");
+                if (!extPathStr.empty() && !baseDir.empty()) {
+                    std::error_code ecPath;
+                    std::filesystem::path baseP(baseDir);
+                    std::filesystem::path fullP = baseP / extPathStr;
+                    if (!std::filesystem::exists(fullP, ecPath)) {
+                        std::filesystem::path flatP = baseP / std::filesystem::path(extPathStr).filename();
+                        if (std::filesystem::exists(flatP, ecPath)) {
+                            fullP = flatP;
+                        }
+                    }
+                    if (std::filesystem::exists(fullP, ecPath)) {
+                        std::wstring key = ToLowerW(fullP.lexically_normal().wstring());
+                        std::wstring lang = sObj.GetString(L"language", L"");
+                        auto it = externalFiles.find(key);
+                        if (it == externalFiles.end()) {
+                            externalFiles.emplace(key, std::make_pair(fullP, lang));
+                            externalFileOrder.push_back(key);
+                        } else if (!lang.empty()) {
+                            if (it->second.second.empty()) it->second.second = lang;
+                            else if (it->second.second.find(lang) == std::wstring::npos) {
+                                it->second.second += L"," + lang;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 editor::Snippet snip;
                 snip.prefix = sObj.GetString(L"prefix");
                 if (snip.prefix.empty()) continue;
@@ -1132,19 +1212,17 @@ bool PluginManager::LoadPluginFromJsonString(const std::wstring& jsonContent, co
                 if (snip.scope == L"*") snip.scope.clear();
                 RegisterSnippet(snip);
             }
-        } else if (snipNode->type == JsonVal::Type::Object) {
-            for (const auto& [sName, sObj] : snipNode->objVal) {
-                if (sObj.type != JsonVal::Type::Object) continue;
-                editor::Snippet snip;
-                snip.name = sName;
-                snip.prefix = sObj.GetString(L"prefix");
-                if (snip.prefix.empty()) continue;
-                parseSnippetBody(sObj.Get(L"body"), snip.body);
-                snip.description = sObj.GetString(L"description", sName);
-                snip.scope = sObj.GetString(L"scope", L"");
-                if (snip.scope == L"*") snip.scope.clear();
-                RegisterSnippet(snip);
+
+            for (const auto& fKey : externalFileOrder) {
+                const auto& [fullP, mergedScope] = externalFiles[fKey];
+                std::wstring snText = ReadFileWide(fullP);
+                if (snText.empty()) continue;
+                JsonParser snParser(snText);
+                JsonVal snRoot = snParser.Parse();
+                registerJsonSnippetsObject(snRoot, mergedScope);
             }
+        } else if (snipNode->type == JsonVal::Type::Object) {
+            registerJsonSnippetsObject(*snipNode, L"");
         }
     }
 

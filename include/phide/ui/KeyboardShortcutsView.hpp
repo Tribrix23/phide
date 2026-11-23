@@ -1,6 +1,6 @@
 /**
  * @file KeyboardShortcutsView.hpp
- * @brief Interactive VS Code-styled Keyboard Shortcuts table view with live search filtering and keycap badges.
+ * @brief Interactive Phide Keyboard Shortcuts table view with live search filtering and keycap badges.
  */
 
 #pragma once

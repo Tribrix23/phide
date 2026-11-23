@@ -48,7 +48,7 @@ enum class ThemeMode {
 
 /**
  * @struct ThemeColors
- * @brief Professional IDE color palette (VS Code / JetBrains inspired).
+ * @brief Professional Phide IDE color palette.
  */
 struct ThemeColors {
     // Window & Canvas Backgrounds
@@ -91,18 +91,18 @@ struct ThemeColors {
     D2D1_COLOR_F menuBg          = D2D1::ColorF(0.122f, 0.122f, 0.122f, 1.0f);  // #1F1F1F (100% Opaque)
     D2D1_COLOR_F menuBorder      = D2D1::ColorF(0.271f, 0.271f, 0.271f, 1.0f);  // #454545
     D2D1_COLOR_F menuSeparator   = D2D1::ColorF(0.235f, 0.235f, 0.235f, 1.0f);  // #3C3C3C
-    D2D1_COLOR_F menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (VS Code Selection Blue)
+    D2D1_COLOR_F menuHover       = D2D1::ColorF(0.0f, 0.471f, 0.831f, 1.0f);   // #0078D4 (Selection Blue)
     D2D1_COLOR_F menuText        = D2D1::ColorF(0.800f, 0.800f, 0.800f, 1.0f);  // #CCCCCC
     D2D1_COLOR_F menuShortcut    = D2D1::ColorF(0.550f, 0.550f, 0.550f, 1.0f);  // #8C8C8C
 
     // Syntax Highlighting & Code Surface Colors
-    D2D1_COLOR_F syntaxKeyword   = D2D1::ColorF(0.773f, 0.525f, 0.753f, 1.0f);  // #C586C0 (VS Code Keyword Purple)
+    D2D1_COLOR_F syntaxKeyword   = D2D1::ColorF(0.773f, 0.525f, 0.753f, 1.0f);  // #C586C0 (Keyword Purple)
     D2D1_COLOR_F syntaxType      = D2D1::ColorF(0.306f, 0.788f, 0.690f, 1.0f);  // #4EC9B0 (Turquoise)
     D2D1_COLOR_F syntaxString    = D2D1::ColorF(0.808f, 0.569f, 0.471f, 1.0f);  // #CE9178 (Orange-Brown)
     D2D1_COLOR_F syntaxComment   = D2D1::ColorF(0.416f, 0.600f, 0.333f, 1.0f);  // #6A9955 (Green)
     D2D1_COLOR_F syntaxNumber    = D2D1::ColorF(0.710f, 0.808f, 0.659f, 1.0f);  // #B5CEA8 (Light Mint)
     D2D1_COLOR_F syntaxOperator  = D2D1::ColorF(0.831f, 0.831f, 0.831f, 1.0f);  // #D4D4D4 (Light Neutral)
-    D2D1_COLOR_F syntaxTag       = D2D1::ColorF(0.337f, 0.612f, 0.839f, 1.0f);  // #569CD6 (VS Code Blue for tags)
+    D2D1_COLOR_F syntaxTag       = D2D1::ColorF(0.337f, 0.612f, 0.839f, 1.0f);  // #569CD6 (Tag Blue)
     D2D1_COLOR_F syntaxAttribute = D2D1::ColorF(0.612f, 0.863f, 0.996f, 1.0f);  // #9CDCFE (Light Blue for attributes)
     D2D1_COLOR_F lineNumber      = D2D1::ColorF(0.522f, 0.522f, 0.522f, 1.0f);  // #858585 (Gutter Line Numbers)
     D2D1_COLOR_F currentLineBg   = D2D1::ColorF(0.145f, 0.145f, 0.145f, 1.0f);  // #252525 (Current Line Highlight)

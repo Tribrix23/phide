@@ -101,6 +101,11 @@ public:
     static bool IsTcpPortOpen(const std::wstring& host, int port, int timeoutMs = 35);
 
     /**
+     * @brief Checks whether a TCP port can be exclusively bound locally (0.0.0.0 and ::).
+     */
+    static bool IsPortAvailableForBind(int port);
+
+    /**
      * @brief Resolves the active dynamic MySQL/MariaDB port (env PHIDE_MYSQL_PORT, mysql_port.txt, .env, or live scan).
      */
     static int ResolveDynamicMysqlPort(int preferredPort = 3306, const std::wstring& workspaceRoot = L"");

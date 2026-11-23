@@ -1280,16 +1280,18 @@ std::vector<DiscoveredTask> DiscoverWorkspaceTasks(const std::wstring& workspace
         }
     }
 
-    // 5. .vscode/tasks.json labels
+    // 5. .phide/tasks.json (with .vscode/tasks.json compatibility fallback)
     {
-        std::wstring vscTasks;
-        if (ReadUtf8TextFileBounded(root / L".vscode" / L"tasks.json", vscTasks, 256 * 1024)) {
+        std::wstring tasksTxt;
+        bool fromPhide = ReadUtf8TextFileBounded(root / L".phide" / L"tasks.json", tasksTxt, 256 * 1024);
+        bool hasTasks = fromPhide || ReadUtf8TextFileBounded(root / L".vscode" / L"tasks.json", tasksTxt, 256 * 1024);
+        if (hasTasks) {
             static const std::wregex kTaskLabelRe(LR"(\"label\"\s*:\s*\"([^\"]+)\")");
-            auto begin = std::wsregex_iterator(vscTasks.begin(), vscTasks.end(), kTaskLabelRe);
+            auto begin = std::wsregex_iterator(tasksTxt.begin(), tasksTxt.end(), kTaskLabelRe);
             auto end = std::wsregex_iterator();
             for (auto it = begin; it != end; ++it) {
                 std::wstring lbl = (*it)[1].str();
-                tasks.push_back({ L"task: " + lbl, lbl, L".vscode/tasks.json", false });
+                tasks.push_back({ L"task: " + lbl, lbl, fromPhide ? L".phide/tasks.json" : L".vscode/tasks.json", false });
             }
         }
     }
@@ -1300,15 +1302,17 @@ std::vector<DiscoveredTask> DiscoverWorkspaceTasks(const std::wstring& workspace
 std::vector<DiscoveredTask> DiscoverLaunchConfigurations(const std::wstring& workspaceRoot) {
     std::vector<DiscoveredTask> cfgs;
     if (workspaceRoot.empty()) return cfgs;
-    std::filesystem::path launchPath = std::filesystem::path(workspaceRoot) / L".vscode" / L"launch.json";
+    std::filesystem::path phidePath = std::filesystem::path(workspaceRoot) / L".phide" / L"launch.json";
+    std::filesystem::path legacyPath = std::filesystem::path(workspaceRoot) / L".vscode" / L"launch.json";
     std::wstring text;
-    if (ReadUtf8TextFileBounded(launchPath, text, 256 * 1024)) {
+    bool fromPhide = ReadUtf8TextFileBounded(phidePath, text, 256 * 1024);
+    if (fromPhide || ReadUtf8TextFileBounded(legacyPath, text, 256 * 1024)) {
         static const std::wregex kNameRe(LR"(\"name\"\s*:\s*\"([^\"]+)\")");
         auto begin = std::wsregex_iterator(text.begin(), text.end(), kNameRe);
         auto end = std::wsregex_iterator();
         for (auto it = begin; it != end; ++it) {
             std::wstring name = (*it)[1].str();
-            cfgs.push_back({ L"Debug: " + name, L"cmd_start_debugging", L".vscode/launch.json", true });
+            cfgs.push_back({ L"Debug: " + name, L"cmd_start_debugging", fromPhide ? L".phide/launch.json" : L".vscode/launch.json", true });
         }
     }
     return cfgs;

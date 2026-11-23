@@ -1,6 +1,6 @@
 /**
  * @file KeyboardShortcutsView.cpp
- * @brief Implementation of interactive VS Code-styled Keyboard Shortcuts view.
+ * @brief Implementation of interactive Phide Keyboard Shortcuts view.
  */
 
 #include "phide/ui/KeyboardShortcutsView.hpp"

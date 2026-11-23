@@ -98,7 +98,7 @@
     "@phide/test-cli": "0.0.12",
     "@phide/test-electron": "^2.5.2",
     "@phide/test-web": "^0.0.80",
-    "@phide/vsce": "^3.7.1",
+    "@phide/ext-cli": "^3.7.1",
     "esbuild": "^0.27.3",
     "eslint": "^9.28.0",
     "eslint-config-prettier": "^10.1.5",

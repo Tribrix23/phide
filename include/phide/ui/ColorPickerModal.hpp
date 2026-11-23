@@ -1,6 +1,6 @@
 /**
  * @file ColorPickerModal.hpp
- * @brief Interactive VS Code-style native Direct2D Color Picker popup modal.
+ * @brief Interactive Phide native Direct2D Color Picker popup modal.
  * 
  * Supports 2D Saturation/Value gradient picker, Hue rainbow slider,
  * Alpha opacity slider, format toggling (HEX, RGBA, HSLA), and live in-place code editing.

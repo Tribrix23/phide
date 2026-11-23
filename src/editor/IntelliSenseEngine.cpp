@@ -3210,12 +3210,72 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     isInsideQuotes = (activeQuote != L'\0');
 
     std::wstring enclosingAttrName;
+    std::wstring enclosingJsxTagName;
     bool insideHtmlTag = false;
+    bool insideMultiLineTag = false;
+    auto isJsxOrHtmlOpenTag = [](const std::wstring& line, size_t openPos) -> bool {
+        if (openPos == std::wstring::npos) return false;
+        // TypeScript generics (e.g. useState<Props>, React.FC<MyProps>, Array<string>) have an identifier right before '<'
+        if (openPos > 0) {
+            wchar_t prevCh = line[openPos - 1];
+            if (iswalnum(prevCh) || prevCh == L'_' || prevCh == L'$' || prevCh == L')' || prevCh == L']') {
+                return false;
+            }
+        }
+        if (openPos + 1 >= line.length()) {
+            return true;
+        }
+        wchar_t nextCh = line[openPos + 1];
+        return iswalpha(nextCh) || nextCh == L'_' || nextCh == L'/';
+    };
+    auto extractTagNameAt = [](const std::wstring& line, size_t openPos) -> std::wstring {
+        size_t p = openPos + 1;
+        if (p < line.length() && line[p] == L'/') return L"";
+        size_t start = p;
+        while (p < line.length() && (iswalnum(line[p]) || line[p] == L'_' || line[p] == L'-' || line[p] == L'.' || line[p] == L'$')) {
+            ++p;
+        }
+        return (p > start) ? line.substr(start, p - start) : L"";
+    };
     if (isHtml || isJs || isPhp) {
-        size_t openTag = currentLine.rfind(L'<', openQuotePos);
-        size_t closeTag = currentLine.rfind(L'>', openQuotePos);
-        if (openTag != std::wstring::npos && (closeTag == std::wstring::npos || openTag > closeTag)) {
+        size_t searchFrom = (openQuotePos != std::wstring::npos)
+            ? openQuotePos
+            : (cursorCol > 0 ? cursorCol - 1 : 0);
+        size_t openTag = (!currentLine.empty()) ? currentLine.rfind(L'<', (std::min)(searchFrom, currentLine.length() - 1)) : std::wstring::npos;
+        size_t closeTag = (!currentLine.empty()) ? currentLine.rfind(L'>', (std::min)(searchFrom, currentLine.length() - 1)) : std::wstring::npos;
+        if (openTag != std::wstring::npos && (closeTag == std::wstring::npos || openTag > closeTag) && isJsxOrHtmlOpenTag(currentLine, openTag)) {
             insideHtmlTag = true;
+            enclosingJsxTagName = extractTagNameAt(currentLine, openTag);
+        } else if (closeTag == std::wstring::npos && pDocLines && !pDocLines->empty()) {
+            // Multi-line JSX / HTML opening tag detection (e.g. <Image\n  src="..."\n  |)
+            size_t curIdx = std::wstring::npos;
+            const std::wstring* basePtr = pDocLines->data();
+            if (&currentLine >= basePtr && &currentLine < basePtr + pDocLines->size()) {
+                curIdx = static_cast<size_t>(&currentLine - basePtr);
+            }
+            if (curIdx != std::wstring::npos && curIdx > 0) {
+                const size_t minScan = (curIdx > 18) ? (curIdx - 18) : 0;
+                for (size_t li = curIdx; li-- > minScan;) {
+                    const auto& pl = (*pDocLines)[li];
+                    if (pl.empty()) continue;
+                    size_t pOpen = pl.rfind(L'<');
+                    size_t pClose = pl.rfind(L'>');
+                    if (pOpen != std::wstring::npos && (pClose == std::wstring::npos || pOpen > pClose)) {
+                        if (isJsxOrHtmlOpenTag(pl, pOpen)) {
+                            std::wstring candTag = extractTagNameAt(pl, pOpen);
+                            if (!candTag.empty() && (iswalpha(candTag[0]) || candTag[0] == L'_')) {
+                                insideHtmlTag = true;
+                                insideMultiLineTag = true;
+                                enclosingJsxTagName = std::move(candTag);
+                            }
+                        }
+                        break;
+                    }
+                    if (pClose != std::wstring::npos) {
+                        break;
+                    }
+                }
+            }
         }
     }
     if ((isHtml || isJs || isPhp) && isInsideQuotes && openQuotePos != std::wstring::npos) {
@@ -3239,7 +3299,11 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 for (auto& chA : candAttr) chA = static_cast<wchar_t>(towlower(chA));
                 if (insideHtmlTag || candAttr == L"class" || candAttr == L"classname" || candAttr == L"id" ||
                     candAttr == L"style" || candAttr == L"href" || candAttr == L"src" || candAttr == L"type" ||
-                    candAttr == L"rel" || candAttr == L"target" || candAttr == L"method" || candAttr == L"htmlfor") {
+                    candAttr == L"rel" || candAttr == L"target" || candAttr == L"method" || candAttr == L"htmlfor" ||
+                    candAttr == L"loading" || candAttr == L"decoding" || candAttr == L"placeholder" ||
+                    candAttr == L"strategy" || candAttr == L"role" || candAttr == L"dir" ||
+                    candAttr == L"autocomplete" || candAttr == L"crossorigin" || candAttr == L"referrerpolicy" ||
+                    candAttr == L"aria-live" || candAttr == L"aria-current") {
                     enclosingAttrName = candAttr;
                     insideHtmlTag = true;
                 }
@@ -3480,9 +3544,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code, inside quotes, or right after '<')
+    // 0. Include matching user & built-in snippets (exclude HTML markup snippets when inside <?php ... ?> code, inside quotes, inside JSX/HTML tags, or right after '<')
     std::wstring extNoDot = ext.empty() ? L"" : (ext[0] == L'.' ? ext.substr(1) : ext);
-    if (m_pSnippetManager && !isInsideQuotes && !afterDoubleColon && !afterArrow && !afterDot && !insideServerKey && !afterOpenAngle) {
+    if (m_pSnippetManager && !isInsideQuotes && !insideHtmlTag && !afterDoubleColon && !afterArrow && !afterDot && !insideServerKey && !afterOpenAngle) {
         for (const auto& snip : m_pSnippetManager->GetSnippets()) {
             if (insidePhp && snip.scope != L"php") continue;
             if (SnippetManager::MatchesScope(snip.scope, extNoDot)) {
@@ -4157,7 +4221,27 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     }
                 }
 
-                if (isCanvasContext) {
+                if (receiver == L"React") {
+                    for (auto item : GetReactNamespaceMembers()) {
+                        item.score += 2000;
+                        rawCandidates.push_back(std::move(item));
+                    }
+                } else if (receiver == L"ReactDOM") {
+                    for (auto item : GetReactDomNamespaceMembers()) {
+                        item.score += 2000;
+                        rawCandidates.push_back(std::move(item));
+                    }
+                } else if (receiver == L"NextResponse") {
+                    static const struct { const wchar_t* name; const wchar_t* desc; const wchar_t* ins; } nrMethods[] = {
+                        { L"json", L"NextResponse.json(body, init?): NextResponse", L"json($0)" },
+                        { L"next", L"NextResponse.next(init?): NextResponse", L"next()" },
+                        { L"redirect", L"NextResponse.redirect(url, init?): NextResponse", L"redirect(new URL('${1:/}', request.url))" },
+                        { L"rewrite", L"NextResponse.rewrite(destination, init?): NextResponse", L"rewrite(new URL('${1:/}', request.url))" },
+                    };
+                    for (const auto& m : nrMethods) {
+                        rawCandidates.push_back({ m.name, m.desc, m.ins, CompletionKind::Method, 4500, 0, 0, L"next/server", m.desc });
+                    }
+                } else if (isCanvasContext) {
                     const auto& canvasMethods = WebIntelliSenseData::GetCanvasRenderingContext2DMethods();
                     for (auto item : canvasMethods) {
                         item.score = 5000;
@@ -4174,14 +4258,16 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 }
             } else {
                 bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos || insideHtmlTag)));
-                size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
-                size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
-                bool insideTag = isJsx && ((lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag)) || insideHtmlTag);
+                size_t lastOpenTag = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'<', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
+                size_t lastCloseTag = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'>', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
+                bool openTagOnLineValid = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag) && isJsxOrHtmlOpenTag(currentLine, lastOpenTag));
+                bool insideTag = isJsx && (openTagOnLineValid || insideHtmlTag);
 
                 if (insideTag) {
-                    size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : 0;
-                    if (lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen)) {
-                        // Tag name inside JSX: <div, <Camera, <Button, etc.
+                    size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : std::wstring::npos;
+                    bool typingTagName = (!insideMultiLineTag && lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen));
+                    if (typingTagName) {
+                        // Tag name inside JSX: <div, <Image, <Link, <Button, etc.
                         for (const auto& imp : importedDocSymbols) {
                             if (imp.kind == CompletionKind::Class || imp.kind == CompletionKind::Function) {
                                 rawCandidates.push_back(imp);
@@ -4195,25 +4281,162 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                             }
                         }
                     } else if (!isInsideQuotes) {
-                        // Inside JSX Tag Attributes (attribute name context): e.g. <div class|
-                        // 1. Propose all React JSX Attributes from @types/react (with className at score 4500!)
+                        // Inside JSX Tag Attributes (attribute name context): e.g. <div class| or multi-line <Image\n  |
+                        // 1. Specialized Next.js component props (<Image>, <Link>, <Script>)
+                        if (!enclosingJsxTagName.empty()) {
+                            const auto& nextProps = GetNextJsComponentProps(enclosingJsxTagName);
+                            for (const auto& np : nextProps) {
+                                rawCandidates.push_back(np);
+                            }
+                            // 2. Local custom React component props (interface <Tag>Props / type <Tag>Props / destructured params)
+                            if (iswupper(enclosingJsxTagName[0]) && pDocLines && !pDocLines->empty()) {
+                                std::unordered_set<std::wstring> customSeen;
+                                std::wstring propsTypeName = enclosingJsxTagName + L"Props";
+                                bool inPropsBlock = false;
+                                int braceDepth = 0;
+                                for (const auto& dl : *pDocLines) {
+                                    if (!inPropsBlock) {
+                                        if ((dl.find(L"interface " + propsTypeName) != std::wstring::npos ||
+                                             dl.find(L"type " + propsTypeName) != std::wstring::npos) &&
+                                            dl.find(L'{') != std::wstring::npos) {
+                                            inPropsBlock = true;
+                                            braceDepth = 0;
+                                            for (wchar_t ch : dl) {
+                                                if (ch == L'{') ++braceDepth;
+                                                else if (ch == L'}') --braceDepth;
+                                            }
+                                            if (braceDepth <= 0) inPropsBlock = false;
+                                            continue;
+                                        }
+                                        // Also extract destructured params: function MyComp({ title, onClick }: ...)
+                                        size_t compPos = dl.find(enclosingJsxTagName);
+                                        if (compPos != std::wstring::npos &&
+                                            (dl.find(L"function ") != std::wstring::npos || dl.find(L"const ") != std::wstring::npos)) {
+                                            size_t lp = dl.find(L'(', compPos);
+                                            size_t lb = (lp != std::wstring::npos) ? dl.find(L'{', lp) : std::wstring::npos;
+                                            size_t rb = (lb != std::wstring::npos) ? dl.find(L'}', lb + 1) : std::wstring::npos;
+                                            if (lb != std::wstring::npos && rb != std::wstring::npos && rb > lb + 1) {
+                                                std::wstring inside = dl.substr(lb + 1, rb - lb - 1);
+                                                std::wstringstream pss(inside);
+                                                std::wstring tok;
+                                                while (std::getline(pss, tok, L',')) {
+                                                    std::wstring cleaned = TrimWs(tok);
+                                                    size_t cut = cleaned.find_first_of(L"=: ");
+                                                    if (cut != std::wstring::npos) cleaned = cleaned.substr(0, cut);
+                                                    if (!cleaned.empty() && cleaned[0] != L'.' && iswalpha(cleaned[0]) && customSeen.insert(cleaned).second) {
+                                                        rawCandidates.push_back({
+                                                            cleaned,
+                                                            enclosingJsxTagName + L" prop: " + cleaned,
+                                                            cleaned + L"={$0}",
+                                                            CompletionKind::Property,
+                                                            5000, 0, 0, L"component-prop",
+                                                            L"Component prop on <" + enclosingJsxTagName + L" />"
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        for (wchar_t ch : dl) {
+                                            if (ch == L'{') ++braceDepth;
+                                            else if (ch == L'}') --braceDepth;
+                                        }
+                                        std::wstring tr = TrimWs(dl);
+                                        if (!tr.empty() && iswalpha(tr[0])) {
+                                            size_t endId = 0;
+                                            while (endId < tr.size() && (iswalnum(tr[endId]) || tr[endId] == L'_')) ++endId;
+                                            size_t afterId = endId;
+                                            if (afterId < tr.size() && tr[afterId] == L'?') ++afterId;
+                                            if (endId > 0 && afterId < tr.size() && tr[afterId] == L':') {
+                                                std::wstring propName = tr.substr(0, endId);
+                                                std::wstring propType = TrimWs(tr.substr(afterId + 1));
+                                                if (customSeen.insert(propName).second) {
+                                                    bool isBoolProp = (propType.rfind(L"boolean", 0) == 0);
+                                                    bool isStrProp = (propType.rfind(L"string", 0) == 0);
+                                                    std::wstring ins = isBoolProp ? propName : (isStrProp ? (propName + L"=\"$0\"") : (propName + L"={$0}"));
+                                                    rawCandidates.push_back({
+                                                        propName,
+                                                        propsTypeName + L"." + propName + L": " + propType,
+                                                        ins,
+                                                        CompletionKind::Property,
+                                                        5000, 0, 0, L"component-prop",
+                                                        propsTypeName + L"." + propName + L": " + propType
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        if (braceDepth <= 0) inPropsBlock = false;
+                                    }
+                                }
+                            }
+                        }
+                        // 3. Complete React JSX Attributes from @types/react (events, HTML, ARIA, SVG)
                         const auto& jsxAttrs = GetReactJsxAttributes();
                         for (const auto& attr : jsxAttrs) {
                             rawCandidates.push_back(attr);
                         }
-                        // 2. Also propose standard HTML attributes (excluding HTML 'class', which is invalid in React)
+                        // 4. Also propose standard HTML attributes (excluding HTML 'class', which is invalid in React)
                         for (const auto& attr : m_htmlAttributes) {
                             if (attr.label == L"class") continue;
                             rawCandidates.push_back(attr);
                         }
                         insideTagAttr = true;
                     } else {
-                        // Inside JSX Attribute Value: e.g. <div className="|" or <div id="|"
+                        // Inside JSX Attribute Value: e.g. <div className="|", <input type="|", <Image loading="|"
                         insideTagAttr = true;
+                        auto pushAttrVals = [&](std::initializer_list<const wchar_t*> vals, const wchar_t* desc) {
+                            for (const wchar_t* v : vals) {
+                                rawCandidates.push_back({ v, desc, v, CompletionKind::Constant, 3200, 0, 0, L"react-jsx", desc });
+                            }
+                        };
                         if (isIdAttrContext) {
                             ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
                         } else if (isClassAttrContext) {
                             ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot, currentLine);
+                        } else if (enclosingAttrName == L"type") {
+                            ProvideHtmlTypeCompletions(rawCandidates);
+                        } else if (enclosingAttrName == L"rel") {
+                            ProvideHtmlRelCompletions(rawCandidates);
+                        } else if (enclosingAttrName == L"target") {
+                            ProvideHtmlTargetCompletions(rawCandidates);
+                        } else if (enclosingAttrName == L"method") {
+                            ProvideHtmlMethodCompletions(rawCandidates);
+                        } else if (enclosingAttrName == L"loading") {
+                            pushAttrVals({ L"lazy", L"eager" }, L"Image / iframe loading strategy");
+                        } else if (enclosingAttrName == L"decoding") {
+                            pushAttrVals({ L"async", L"auto", L"sync" }, L"Image decoding mode");
+                        } else if (enclosingAttrName == L"placeholder" && enclosingJsxTagName == L"Image") {
+                            pushAttrVals({ L"blur", L"empty" }, L"Next.js Image placeholder mode");
+                        } else if (enclosingAttrName == L"strategy" && enclosingJsxTagName == L"Script") {
+                            pushAttrVals({ L"afterInteractive", L"lazyOnload", L"beforeInteractive", L"worker" }, L"Next.js Script loading strategy");
+                        } else if (enclosingAttrName == L"role") {
+                            pushAttrVals({
+                                L"button", L"link", L"dialog", L"alertdialog", L"menu", L"menuitem",
+                                L"navigation", L"main", L"banner", L"contentinfo", L"complementary",
+                                L"region", L"search", L"status", L"alert", L"tab", L"tablist", L"tabpanel",
+                                L"listbox", L"option", L"combobox", L"checkbox", L"radio", L"switch",
+                                L"slider", L"progressbar", L"tooltip", L"presentation", L"none"
+                            }, L"WAI-ARIA role");
+                        } else if (enclosingAttrName == L"dir") {
+                            pushAttrVals({ L"ltr", L"rtl", L"auto" }, L"Text direction");
+                        } else if (enclosingAttrName == L"autocomplete") {
+                            pushAttrVals({
+                                L"off", L"on", L"name", L"email", L"username", L"new-password",
+                                L"current-password", L"one-time-code", L"tel", L"street-address",
+                                L"postal-code", L"country", L"organization"
+                            }, L"Browser autofill hint");
+                        } else if (enclosingAttrName == L"crossorigin") {
+                            pushAttrVals({ L"anonymous", L"use-credentials" }, L"CORS setting");
+                        } else if (enclosingAttrName == L"referrerpolicy") {
+                            pushAttrVals({
+                                L"no-referrer", L"no-referrer-when-downgrade", L"origin",
+                                L"origin-when-cross-origin", L"same-origin", L"strict-origin",
+                                L"strict-origin-when-cross-origin", L"unsafe-url"
+                            }, L"Referrer policy");
+                        } else if (enclosingAttrName == L"aria-live") {
+                            pushAttrVals({ L"off", L"polite", L"assertive" }, L"ARIA live region politeness");
+                        } else if (enclosingAttrName == L"aria-current") {
+                            pushAttrVals({ L"page", L"step", L"location", L"date", L"time", L"true", L"false" }, L"ARIA current item state");
                         }
                     }
                 } else {
@@ -4714,10 +4937,73 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
         if (isTailwind) {
-            static const auto allTailwindCandidates = TailwindHelper::GetAllCandidates();
+            static const auto& allTailwindCandidates = TailwindHelper::GetAllCandidates();
+
+            // Support Tailwind variant prefixes (e.g., hover:underline, dark:bg-zinc-900, md:grid-cols-3)
+            std::wstring variantPrefix;
+            std::wstring utilPrefix = prefix;
+            size_t lastColon = prefix.rfind(L':');
+            if (lastColon != std::wstring::npos) {
+                variantPrefix = prefix.substr(0, lastColon + 1);
+                utilPrefix = prefix.substr(lastColon + 1);
+            }
+            std::wstring utilPrefixLower = utilPrefix;
+            for (auto& ch : utilPrefixLower) ch = static_cast<wchar_t>(towlower(ch));
+
+            // Suggest Tailwind variant modifiers when not already mid-utility
+            static const struct TwVariant { const wchar_t* name; const wchar_t* desc; } twVariants[] = {
+                { L"hover:", L"Apply on pointer hover (:hover)" },
+                { L"focus:", L"Apply on focus (:focus)" },
+                { L"focus-visible:", L"Apply on keyboard focus (:focus-visible)" },
+                { L"focus-within:", L"Apply when child has focus (:focus-within)" },
+                { L"active:", L"Apply while active (:active)" },
+                { L"disabled:", L"Apply when disabled (:disabled)" },
+                { L"checked:", L"Apply when checked (:checked)" },
+                { L"dark:", L"Apply in dark mode" },
+                { L"sm:", L"Min-width 640px breakpoint" },
+                { L"md:", L"Min-width 768px breakpoint" },
+                { L"lg:", L"Min-width 1024px breakpoint" },
+                { L"xl:", L"Min-width 1280px breakpoint" },
+                { L"2xl:", L"Min-width 1536px breakpoint" },
+                { L"group-hover:", L"Apply when parent .group is hovered" },
+                { L"group-focus:", L"Apply when parent .group is focused" },
+                { L"peer-focus:", L"Apply when sibling .peer is focused" },
+                { L"peer-checked:", L"Apply when sibling .peer is checked" },
+                { L"first:", L"Apply to first child (:first-child)" },
+                { L"last:", L"Apply to last child (:last-child)" },
+                { L"odd:", L"Apply to odd children (:nth-child(odd))" },
+                { L"even:", L"Apply to even children (:nth-child(even))" },
+                { L"before:", L"Style ::before pseudo-element" },
+                { L"after:", L"Style ::after pseudo-element" },
+                { L"placeholder:", L"Style input ::placeholder" },
+                { L"selection:", L"Style text ::selection" },
+                { L"file:", L"Style file input button" },
+                { L"open:", L"Apply when <details>/<dialog> is open" }
+            };
+            for (const auto& v : twVariants) {
+                std::wstring fullVar = variantPrefix + v.name;
+                if (utilPrefixLower.empty() || std::wstring(v.name).find(utilPrefixLower) != std::wstring::npos) {
+                    IntelliSenseItem item;
+                    item.label = fullVar;
+                    item.detail = v.desc;
+                    item.documentation = L"Tailwind variant modifier";
+                    item.kind = CompletionKind::Keyword;
+                    item.origin = L"tailwind";
+                    item.score = 2400;
+                    rawCandidates.push_back(std::move(item));
+                }
+            }
+
+            // Pre-filter utilities by utilPrefixLower so ~6,000+ Tailwind utilities complete in <1ms
+            size_t addedTw = 0;
             for (const auto& tw : allTailwindCandidates) {
+                if (!utilPrefixLower.empty()) {
+                    if (tw.name.find(utilPrefixLower) == std::wstring::npos) continue;
+                } else if (addedTw >= 120) {
+                    break;
+                }
                 IntelliSenseItem item;
-                item.label = tw.name;
+                item.label = variantPrefix.empty() ? tw.name : (variantPrefix + tw.name);
                 item.detail = tw.detail;
                 item.documentation = tw.doc;
                 item.isColor = tw.isColor;
@@ -4726,6 +5012,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 item.origin = L"tailwind";
                 item.score = 2500;
                 rawCandidates.push_back(std::move(item));
+                ++addedTw;
             }
         }
     }
@@ -4740,10 +5027,10 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         for (auto& pi : pluginItems) {
             rawCandidates.push_back(std::move(pi));
         }
-        if (!isInsideQuotes) {
+        if (!isInsideQuotes && !insideTagAttr && !insideHtmlTag && !afterDoubleColon && !afterArrow && !afterDot && !afterOpenAngle) {
             auto pluginSnippets = phide::plugin::PluginManager::Instance().GetContributedSnippets();
             for (const auto& sn : pluginSnippets) {
-                if (SnippetManager::MatchesScope(sn.scope, ext)) {
+                if (SnippetManager::MatchesScope(sn.scope, extNoDot)) {
                     IntelliSenseItem sItem;
                     sItem.label = sn.prefix;
                     sItem.detail = sn.description.empty() ? sn.name : sn.description;
@@ -4755,7 +5042,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     sItem.insertText = joined;
                     sItem.kind = CompletionKind::Snippet;
                     sItem.origin = L"plugin-snippet";
-                    sItem.score = 120;
+                    sItem.score = 750;
                     rawCandidates.push_back(std::move(sItem));
                 }
             }

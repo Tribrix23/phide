@@ -370,10 +370,45 @@ public:
     void SetLiveServerRunning(bool running) noexcept { m_liveServerRunning = running; }
     [[nodiscard]] bool IsLiveServerRunning() const noexcept { return m_liveServerRunning; }
 
+    // --- I1: Active CodeLens Test Filter Chip (Top-Center Command/Filter Strip) ---
+    void SetActiveTestFilter(const std::wstring& label, const std::wstring& filePath, int frameworkId, bool isRunning) {
+        m_testFilterLabel = label;
+        m_testFilterFile = filePath;
+        m_testFilterFw = frameworkId;
+        m_testFilterRunning = isRunning;
+    }
+    void ClearActiveTestFilter() noexcept {
+        m_testFilterLabel.clear();
+        m_testFilterFile.clear();
+        m_testFilterFw = 0;
+        m_testFilterRunning = false;
+        m_hoveredTestFilter = 0;
+        m_rcTestFilterChip = {};
+        m_rcTestFilterClose = {};
+    }
+    [[nodiscard]] bool HasActiveTestFilter() const noexcept { return !m_testFilterLabel.empty(); }
+    [[nodiscard]] const std::wstring& GetActiveTestFilterLabel() const noexcept { return m_testFilterLabel; }
+    [[nodiscard]] const std::wstring& GetActiveTestFilterFile() const noexcept { return m_testFilterFile; }
+    [[nodiscard]] int GetActiveTestFilterFramework() const noexcept { return m_testFilterFw; }
+    [[nodiscard]] bool HitTestTestFilterChip(POINT pt) const noexcept;
+    [[nodiscard]] bool HitTestTestFilterClose(POINT pt) const noexcept;
+    bool SetHoveredTestFilter(int mode) noexcept;
+    [[nodiscard]] int GetHoveredTestFilter() const noexcept { return m_hoveredTestFilter; }
+    [[nodiscard]] D2D1_RECT_F GetTestFilterChipBounds() const noexcept { return m_rcTestFilterChip; }
+
 private:
     bool m_runEnabled = true;
     bool m_debugEnabled = true;
     bool m_liveServerRunning = false;
+
+    // I1 Test Filter Chip state
+    std::wstring m_testFilterLabel;
+    std::wstring m_testFilterFile;
+    int m_testFilterFw = 0;
+    bool m_testFilterRunning = false;
+    int m_hoveredTestFilter = 0; // 0=none, 1=chip body, 2=clear x
+    D2D1_RECT_F m_rcTestFilterChip{};
+    D2D1_RECT_F m_rcTestFilterClose{};
 
     HeaderMenuId m_hoveredMenu = HeaderMenuId::None;
     HeaderMenuId m_activeMenu = HeaderMenuId::None;

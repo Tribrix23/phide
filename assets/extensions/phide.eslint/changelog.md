@@ -202,7 +202,7 @@ Extended support for ESLint V8.0. This release also provides an option to use th
 ### 2.1.17
 
 - add user confirmation for the `eslint.runtime` and the `eslint.nodePath` setting
-- fixed [command to restart server or plugins without quitting vscode](https://github.com/microsoft/phide-eslint/issues/164)
+- fixed [command to restart server or plugins without quitting phide](https://github.com/microsoft/phide-eslint/issues/164)
 
 ### 2.1.16
 
@@ -375,11 +375,11 @@ Internal version to track down [ESLint server crashed 5 times in the last 3 minu
 
 ### 1.4.9
 
-- Using latest vscode-languageclient library to fix problems with server restarts and double change notifications.
+- Using latest phide-languageclient library to fix problems with server restarts and double change notifications.
 
 ### 1.4.8
 
-- Using latest vscode-languageclient library to get rid of unnecessary console.log statements.
+- Using latest phide-languageclient library to get rid of unnecessary console.log statements.
 
 ### 1.4.7
 
@@ -401,7 +401,7 @@ Internal version to track down [ESLint server crashed 5 times in the last 3 minu
 
 ### 1.4.3
 
-- Moved to version 3.5.0 of the vscode-languageserver-node libraries.
+- Moved to version 3.5.0 of the phide-languageserver-node libraries.
 
 ### 1.4.2
 

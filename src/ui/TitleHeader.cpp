@@ -169,6 +169,7 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
         curX += btnSize + config.ScaleF(4.0f);
     }
+    const float leftMenusEndX = curX;
 
     // Floating Tooltip for Hovered Header Button
     if (hoveredItemPtr) {
@@ -363,6 +364,53 @@ void TitleHeader::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppCon
 
     const float dbBtnX = srvBtnX - config.ScaleF(6.0f) - dbW;
     m_rcDatabase = D2D1::RectF(dbBtnX, extBtnY, dbBtnX + dbW, extBtnY + extBtnH);
+    const float rightZoneLeftX = dbBtnX;
+
+    // --- I1: Active CodeLens Test Filter Chip (centered in available header space) ---
+    m_rcTestFilterChip = {};
+    m_rcTestFilterClose = {};
+    if (!m_testFilterLabel.empty()) {
+        const float midLeft = leftMenusEndX + config.ScaleF(10.0f);
+        const float midRight = rightZoneLeftX - config.ScaleF(10.0f);
+        const float availMidW = midRight - midLeft;
+        if (availMidW >= config.ScaleF(110.0f)) {
+            std::wstring chipText = (m_testFilterRunning ? L"\u27F3 Running test: " : L"\u25B6 Test filter: ") + m_testFilterLabel;
+            if (chipText.size() > 38) chipText = chipText.substr(0, 35) + L"\u2026";
+            IDWriteTextFormat* pChipFmt = theme.fontCounterBadge ? theme.fontCounterBadge.Get()
+                                        : (theme.fontHint ? theme.fontHint.Get() : theme.fontMenuItem.Get());
+            float txtW = static_cast<float>(chipText.size()) * config.ScaleF(6.2f);
+            if (theme.dwriteFactory && pChipFmt) {
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pL;
+                if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                        chipText.c_str(), static_cast<UINT32>(chipText.size()),
+                        pChipFmt, availMidW - config.ScaleF(28.0f), extBtnH, &pL)) && pL) {
+                    DWRITE_TEXT_METRICS tm{};
+                    if (SUCCEEDED(pL->GetMetrics(&tm))) txtW = tm.widthIncludingTrailingWhitespace;
+                }
+            }
+            const float closeW = config.ScaleF(18.0f);
+            const float chipW = (std::min)(availMidW, txtW + config.ScaleF(18.0f) + closeW);
+            const float chipX = midLeft + (availMidW - chipW) * 0.5f;
+            m_rcTestFilterChip = D2D1::RectF(chipX, extBtnY, chipX + chipW, extBtnY + extBtnH);
+            m_rcTestFilterClose = D2D1::RectF(chipX + chipW - closeW - config.ScaleF(2.0f), extBtnY + config.ScaleF(2.0f),
+                                              chipX + chipW - config.ScaleF(2.0f), extBtnY + extBtnH - config.ScaleF(2.0f));
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> cBg, cBdr, cTxt, cCloseBg;
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.48f, 0.84f, m_hoveredTestFilter == 1 ? 0.30f : 0.18f), &cBg);
+            pRT->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.68f, 0.98f, 0.58f), &cBdr);
+            pRT->CreateSolidColorBrush(theme.IsDarkMode() ? D2D1::ColorF(0.76f, 0.90f, 1.0f, 1.0f) : D2D1::ColorF(0.08f, 0.32f, 0.65f, 1.0f), &cTxt);
+            if (m_hoveredTestFilter == 2) pRT->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.30f, 0.34f, 0.30f), &cCloseBg);
+            D2D1_ROUNDED_RECT rrcChip = D2D1::RoundedRect(m_rcTestFilterChip, 5.0f, 5.0f);
+            if (cBg) pRT->FillRoundedRectangle(rrcChip, cBg.Get());
+            if (cBdr) pRT->DrawRoundedRectangle(rrcChip, cBdr.Get(), 1.0f);
+            if (pChipFmt && cTxt) {
+                D2D1_RECT_F rcChipLbl = D2D1::RectF(m_rcTestFilterChip.left + config.ScaleF(8.0f), extBtnY,
+                                                    m_rcTestFilterClose.left - config.ScaleF(2.0f), extBtnY + extBtnH);
+                pRT->DrawText(chipText.c_str(), static_cast<UINT32>(chipText.size()), pChipFmt, rcChipLbl, cTxt.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                if (cCloseBg) pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcTestFilterClose, 3.0f, 3.0f), cCloseBg.Get());
+                pRT->DrawText(L"\u00D7", 1, pChipFmt, m_rcTestFilterClose, cTxt.Get());
+            }
+        }
+    }
 
     // --- Render Web Server Button (nginx) ---
     D2D1_ROUNDED_RECT rrcServer = D2D1::RoundedRect(m_rcServer, 5.0f, 5.0f);
@@ -1299,17 +1347,37 @@ bool TitleHeader::SetHoveredServer(bool hovered) noexcept {
 
 void TitleHeader::ToggleDatabaseDropdown() noexcept {
     m_showDatabaseDropdown = !m_showDatabaseDropdown;
-    if (m_showDatabaseDropdown) m_showServerDropdown = false;
+    if (m_showDatabaseDropdown) {
+        m_showServerDropdown = false;
+    }
 }
 
 void TitleHeader::ToggleServerDropdown() noexcept {
     m_showServerDropdown = !m_showServerDropdown;
-    if (m_showServerDropdown) m_showDatabaseDropdown = false;
+    if (m_showServerDropdown) {
+        m_showDatabaseDropdown = false;
+    }
 }
 
 void TitleHeader::CloseServerDatabaseDropdowns() noexcept {
     m_showDatabaseDropdown = false;
     m_showServerDropdown = false;
+}
+
+bool TitleHeader::HitTestTestFilterChip(POINT pt) const noexcept {
+    return !m_testFilterLabel.empty() && PtInRectF(pt, m_rcTestFilterChip);
+}
+
+bool TitleHeader::HitTestTestFilterClose(POINT pt) const noexcept {
+    return !m_testFilterLabel.empty() && PtInRectF(pt, m_rcTestFilterClose);
+}
+
+bool TitleHeader::SetHoveredTestFilter(int mode) noexcept {
+    if (m_hoveredTestFilter != mode) {
+        m_hoveredTestFilter = mode;
+        return true;
+    }
+    return false;
 }
 
 bool TitleHeader::HitTestDropdowns(POINT pt) const noexcept {
@@ -1374,6 +1442,7 @@ LRESULT TitleHeader::HitTestNCHitTest(POINT pt, const app::AppConfig& config) {
     if (HitTestExtensions(pt)) return HTCLIENT;
     if (HitTestDatabase(pt)) return HTCLIENT;
     if (HitTestServer(pt)) return HTCLIENT;
+    if (HitTestTestFilterChip(pt)) return HTCLIENT;
     if (HitTestDropdowns(pt)) return HTCLIENT;
     if (PtInRectF(pt, m_rcZoomContainer)) return HTCLIENT;
     if (HitTestCaptionButton(pt) != CaptionButtonType::None) return HTCLIENT;

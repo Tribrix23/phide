@@ -91,6 +91,25 @@ inline std::string EncodeBase64Bytes(const std::vector<BYTE>& bytes) {
     return out;
 }
 
+inline bool ReadPngDimensions(const std::vector<BYTE>& bytes, uint32_t& outW, uint32_t& outH) noexcept {
+    outW = 0;
+    outH = 0;
+    if (bytes.size() < 24u) return false;
+    if (bytes[0] != 0x89 || bytes[1] != 'P' || bytes[2] != 'N' || bytes[3] != 'G' ||
+        bytes[12] != 'I' || bytes[13] != 'H' || bytes[14] != 'D' || bytes[15] != 'R') {
+        return false;
+    }
+    outW = (static_cast<uint32_t>(bytes[16]) << 24) |
+           (static_cast<uint32_t>(bytes[17]) << 16) |
+           (static_cast<uint32_t>(bytes[18]) << 8)  |
+           static_cast<uint32_t>(bytes[19]);
+    outH = (static_cast<uint32_t>(bytes[20]) << 24) |
+           (static_cast<uint32_t>(bytes[21]) << 16) |
+           (static_cast<uint32_t>(bytes[22]) << 8)  |
+           static_cast<uint32_t>(bytes[23]);
+    return outW > 0 && outH > 0;
+}
+
 struct NotebookVariableInfo {
     std::wstring name;
     std::wstring typeName;
@@ -104,6 +123,12 @@ struct CellOutput {
     ULONGLONG elapsedMs = 0;
     std::vector<BYTE> imagePngBytes;
     uint64_t imageId = 0;
+    uint32_t imagePixelW = 0;
+    uint32_t imagePixelH = 0;
+    D2D1_RECT_F renderedImageBounds{};
+    D2D1_RECT_F imgZoomBtnBounds{};
+    D2D1_RECT_F imgCopyBtnBounds{};
+    D2D1_RECT_F imgSaveBtnBounds{};
 };
 
 struct NotebookCell {
@@ -115,7 +140,10 @@ struct NotebookCell {
     std::vector<CellOutput> outputs;
     bool isExecuting = false;
     bool isQueued = false;
+    bool isInputCollapsed = false;
     bool isOutputCollapsed = false;
+    bool isEditingMarkdown = false;
+    float imageZoomScale = 1.0f; // 1.0 = readable standard fit, >1.0 = expanded plot view
     bool hasError = false;
     int errorLine = -1; // 0-based error line in code cell (-1 if none)
     ULONGLONG lastElapsedMs = 0;
@@ -265,13 +293,19 @@ struct NotebookCell {
 
     // Direct2D bounding rectangles updated during layout/render
     D2D1_RECT_F bounds{};
+    D2D1_RECT_F collapseInputBtnBounds{};
     D2D1_RECT_F runBtnBounds{};
     D2D1_RECT_F deleteBtnBounds{};
+    D2D1_RECT_F duplicateBtnBounds{};
     D2D1_RECT_F moveUpBtnBounds{};
     D2D1_RECT_F moveDownBtnBounds{};
     D2D1_RECT_F dragHandleBounds{};
+    D2D1_RECT_F editMarkdownBtnBounds{};
     D2D1_RECT_F codeAreaBounds{};
     D2D1_RECT_F outputAreaBounds{};
+    D2D1_RECT_F outputCopyBtnBounds{};
+    D2D1_RECT_F outputCollapseBtnBounds{};
+    D2D1_RECT_F outputClearBtnBounds{};
 
     // Cell Output Scrollbars (Vertical & Horizontal)
     D2D1_RECT_F outputVScrollTrackBounds{};
@@ -323,6 +357,8 @@ public:
     std::wstring kernelLanguage = L"python";
     std::wstring selectedPythonExe;
     std::vector<std::wstring> discoveredPythonExes;
+    bool userSelectedKernel = false;
+    uint64_t discoveredWorkspaceVersion = 0;
     std::vector<NotebookVariableInfo> inspectorVariables;
     bool showVariableInspector = false;
     std::vector<NotebookCell> cells;
@@ -356,6 +392,9 @@ public:
         newCell.type = type;
         newCell.language = kernelLanguage;
         newCell.inputBuffer = Buffer(L"");
+        if (type == NotebookCellType::Markdown) {
+            newCell.isEditingMarkdown = true;
+        }
 
         if (afterIdx < 0 || afterIdx >= static_cast<int>(cells.size())) {
             cells.push_back(std::move(newCell));
@@ -368,6 +407,20 @@ public:
             isDirty = true;
             return &(*it);
         }
+    }
+
+    NotebookCell* DuplicateCell(int idx) {
+        if (idx < 0 || idx >= static_cast<int>(cells.size())) return nullptr;
+        NotebookCell copyCell;
+        copyCell.id = "cell-" + std::to_string(GetTickCount64()) + "-dup-" + std::to_string(cells.size() + 1);
+        copyCell.type = cells[idx].type;
+        copyCell.language = cells[idx].language;
+        copyCell.inputBuffer = Buffer(cells[idx].inputBuffer.GetText());
+        copyCell.isEditingMarkdown = cells[idx].isEditingMarkdown;
+        auto it = cells.insert(cells.begin() + idx + 1, std::move(copyCell));
+        activeCellIdx = idx + 1;
+        isDirty = true;
+        return &(*it);
     }
 
     void DeleteCell(int idx) {
@@ -858,6 +911,7 @@ public:
                                     CellOutput imgOut;
                                     imgOut.streamName = L"image/png";
                                     if (DecodeBase64PngBounded(b64Ascii, imgOut.imagePngBytes)) {
+                                        ReadPngDimensions(imgOut.imagePngBytes, imgOut.imagePixelW, imgOut.imagePixelH);
                                         imgOut.imageId = NextCellImageId();
                                         cell.outputs.push_back(std::move(imgOut));
                                         if (cell.executionCount <= 0) {

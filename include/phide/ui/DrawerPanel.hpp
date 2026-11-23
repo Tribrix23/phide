@@ -382,6 +382,7 @@ public:
     }
     [[nodiscard]] std::wstring GetGitFileContent(const std::wstring& relPath);
     [[nodiscard]] std::wstring GetGitStagedFileContent(const std::wstring& relPath);
+    [[nodiscard]] wchar_t GetCachedGitChangeStatus(const std::wstring& relPath) const;
     [[nodiscard]] std::wstring GetCommitFileContent(const std::wstring& commitHash, const std::wstring& relPath);
     void ComputeGitDiffLines(const std::wstring& relPath, std::set<size_t>& outAdded, std::set<size_t>& outDeleted);
     void ComputeGitBlame(const std::wstring& relPath, std::unordered_map<size_t, editor::OpenDocument::LineBlameInfo>& outBlame);
@@ -804,6 +805,31 @@ public:
      */
     void OpenFolder(const std::wstring& folderPath, const std::set<std::wstring>* pInitialExpanded = nullptr);
 
+    struct PreparedFolderData {
+        std::wstring canonPath;
+        std::wstring rootName;
+        std::set<std::wstring> expandedDirs;
+        std::vector<DrawerTreeItem> visibleItems;
+        bool hasPythonFiles = false;
+        bool hasPhpFiles = false;
+        bool hasNodeFiles = false;
+    };
+
+    void BeginAsyncOpenFolder(const std::wstring& folderPath);
+    static bool PrepareFolderData(
+        const std::wstring& folderPath,
+        const std::set<std::wstring>* pInitialExpanded,
+        bool hideDotfiles,
+        workspace::IgnoreEngine& ignoreEngine,
+        PreparedFolderData& outData,
+        const std::atomic<bool>* cancelFlag = nullptr);
+    void ApplyPreparedFolderData(PreparedFolderData&& data);
+    [[nodiscard]] bool IsProjectLoading() const noexcept { return m_isProjectLoading; }
+    void UpdateProjectLoadAnim(float deltaDeg = 8.0f) noexcept {
+        m_projectLoadSpinnerAngle += deltaDeg;
+        if (m_projectLoadSpinnerAngle >= 360.0f) m_projectLoadSpinnerAngle -= 360.0f;
+    }
+
     /**
      * @brief Adds an extra workspace root folder for Multi-Root Workspaces (.phide-workspace).
      */
@@ -1006,9 +1032,20 @@ public:
     void HandleSearchChar(wchar_t ch);
 
     /**
-     * @brief Handles special key navigation in the active search/replace box.
+     * @brief Handles special key navigation, selection (Ctrl+A), clipboard, and actions in the active search box.
      */
-    void HandleSearchKeyDown(WPARAM wParam);
+    void HandleSearchKeyDown(WPARAM wParam, HWND hwnd = nullptr, int forceModifiers = -1);
+
+    [[nodiscard]] bool HasSearchSelection() const noexcept {
+        return m_searchSelStart >= 0 && m_searchSelEnd >= 0 && m_searchSelStart != m_searchSelEnd;
+    }
+    [[nodiscard]] std::pair<size_t, size_t> GetSearchSelectionRange() const noexcept {
+        if (!HasSearchSelection()) return { 0, 0 };
+        size_t a = static_cast<size_t>(m_searchSelStart);
+        size_t b = static_cast<size_t>(m_searchSelEnd);
+        return (a < b) ? std::make_pair(a, b) : std::make_pair(b, a);
+    }
+    [[nodiscard]] size_t GetSearchCaretPos() const noexcept { return m_searchCaretPos; }
 
     /**
      * @brief Schedules a throttled workspace search.
@@ -1024,19 +1061,31 @@ public:
     bool PollSearchThrottle(ULONGLONG nowMs);
 
     [[nodiscard]] bool IsSearchFocused() const noexcept { return m_focusedSearchInput > 0; }
-    void SetSearchFocus(int inputId) noexcept { m_focusedSearchInput = inputId; }
+    void SetSearchFocus(int inputId) noexcept {
+        if (m_focusedSearchInput != inputId) {
+            m_focusedSearchInput = inputId;
+            OnSearchInputFocusChanged(inputId);
+        }
+    }
 
     /**
      * @brief Sets search query programmatically and runs search.
      */
     void SetSearchQuery(const std::wstring& q, bool async = true) {
         m_searchQuery = q;
+        if (m_focusedSearchInput == 1) {
+            m_searchCaretPos = m_searchQuery.length();
+            ClearSearchSelection();
+        }
         ExecuteSearch(async);
     }
     [[nodiscard]] const std::wstring& GetSearchQuery() const noexcept { return m_searchQuery; }
     [[nodiscard]] const std::vector<SearchFileGroup>& GetSearchGroups() const noexcept { return m_searchGroups; }
     [[nodiscard]] size_t GetTotalMatches() const noexcept { return m_totalMatches; }
-    void SetReplaceQuery(const std::wstring& rq) { m_replaceQuery = rq; }
+    void SetReplaceQuery(const std::wstring& rq) {
+        m_replaceQuery = rq;
+        if (m_focusedSearchInput == 2) { m_searchCaretPos = m_replaceQuery.length(); ClearSearchSelection(); }
+    }
     [[nodiscard]] const std::wstring& GetReplaceQuery() const noexcept { return m_replaceQuery; }
     void ExecuteReplaceSingleMatch(const std::wstring& filePath, const SearchMatch& match);
     void ExecuteReplaceInFile(const std::wstring& filePath);
@@ -1103,9 +1152,15 @@ public:
     [[nodiscard]] bool GetUseExcludeSettings() const noexcept { return m_useExcludeSettings; }
     void SetUseExcludeSettings(bool useExclude) noexcept { m_useExcludeSettings = useExclude; }
     [[nodiscard]] const std::wstring& GetFilesToInclude() const noexcept { return m_filesToInclude; }
-    void SetFilesToInclude(const std::wstring& inc) { m_filesToInclude = inc; }
+    void SetFilesToInclude(const std::wstring& inc) {
+        m_filesToInclude = inc;
+        if (m_focusedSearchInput == 3) { m_searchCaretPos = m_filesToInclude.length(); ClearSearchSelection(); }
+    }
     [[nodiscard]] const std::wstring& GetFilesToExclude() const noexcept { return m_filesToExclude; }
-    void SetFilesToExclude(const std::wstring& exc) { m_filesToExclude = exc; }
+    void SetFilesToExclude(const std::wstring& exc) {
+        m_filesToExclude = exc;
+        if (m_focusedSearchInput == 4) { m_searchCaretPos = m_filesToExclude.length(); ClearSearchSelection(); }
+    }
     void SetOpenDocPaths(const std::vector<std::wstring>& paths) { m_openDocPaths = paths; }
     [[nodiscard]] const std::vector<std::wstring>& GetOpenDocPaths() const noexcept { return m_openDocPaths; }
     [[nodiscard]] int GetSearchFocus() const noexcept { return m_focusedSearchInput; }
@@ -1255,6 +1310,7 @@ public:
      * @brief Commits inline rename, updating filesystem and returning affected paths.
      */
     bool CommitInlineRename(std::wstring& outOldPath, std::wstring& outNewPath);
+    [[nodiscard]] const std::wstring& GetLastRenameError() const noexcept { return m_lastRenameError; }
 
     /**
      * @brief Inspects proposed inline rename paths without touching the filesystem.
@@ -1646,9 +1702,23 @@ private:
     void DetectProjectLanguages();
     void RebuildVisibleItems();
     void AddDirectoryChildren(const std::wstring& dirPath, int depth);
-    std::wstring GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded) const;
+    static void DetectProjectLanguagesForPath(const std::wstring& rootPath, bool& outPy, bool& outPhp, bool& outNode);
+    static void AddDirectoryChildrenInto(
+        const std::wstring& dirPath, int depth,
+        const std::set<std::wstring>& expandedDirs,
+        bool hasPy, bool hasPhp, bool hasNode, bool hideDotfiles,
+        std::vector<DrawerTreeItem>& outItems);
+    static void PopulateTreeItemsInto(
+        const std::wstring& openFolderPath,
+        const std::vector<workspace::WorkspaceFolderEntry>& extraRoots,
+        const std::set<std::wstring>& expandedDirs,
+        bool hasPy, bool hasPhp, bool hasNode, bool hideDotfiles,
+        std::vector<DrawerTreeItem>& outItems);
+    static std::wstring GetIconForFile(const std::wstring& filename, bool isDir, bool isExpanded);
 
     bool m_hasOpenFolder = false;
+    bool m_isProjectLoading = false;
+    float m_projectLoadSpinnerAngle = 0.0f;
     std::wstring m_openFolderPath;
     std::vector<workspace::WorkspaceFolderEntry> m_extraWorkspaceRoots;
     std::wstring m_activeWorkspaceFilePath;
@@ -1701,6 +1771,7 @@ private:
     int m_renamingItemIdx = -1;
     std::wstring m_renameText;
     std::wstring m_renameOriginalPath;
+    std::wstring m_lastRenameError;
     D2D1_RECT_F m_rcRenameBox{};
     size_t m_renameSelStart = 0;
     size_t m_renameSelEnd = 0;
@@ -1728,7 +1799,43 @@ private:
     bool m_useRegex = false;
     bool m_preserveCase = false;
     bool m_isReplaceOpen = true;
-    int m_focusedSearchInput = 1;       ///< 1 = Search, 2 = Replace, 0 = Unfocused
+    int m_focusedSearchInput = 1;       ///< 1 = Search, 2 = Replace, 3 = Include, 4 = Exclude, 0 = Unfocused
+    size_t m_searchCaretPos = 0;
+    int m_searchSelStart = -1;
+    int m_searchSelEnd = -1;
+
+    std::wstring* GetFocusedSearchField() noexcept {
+        if (m_focusedSearchInput == 1) return &m_searchQuery;
+        if (m_focusedSearchInput == 2) return &m_replaceQuery;
+        if (m_focusedSearchInput == 3) return &m_filesToInclude;
+        if (m_focusedSearchInput == 4) return &m_filesToExclude;
+        return nullptr;
+    }
+    void OnSearchInputFocusChanged(int inputId) noexcept {
+        m_focusedSearchInput = inputId;
+        m_searchSelStart = -1;
+        m_searchSelEnd = -1;
+        auto* fld = GetFocusedSearchField();
+        m_searchCaretPos = fld ? fld->length() : 0;
+    }
+    void ClearSearchSelection() noexcept {
+        m_searchSelStart = -1;
+        m_searchSelEnd = -1;
+    }
+    bool DeleteSearchSelection() noexcept {
+        if (!HasSearchSelection()) return false;
+        auto* fld = GetFocusedSearchField();
+        if (!fld) { ClearSearchSelection(); return false; }
+        auto [selMin, selMax] = GetSearchSelectionRange();
+        selMin = (std::min)(selMin, fld->length());
+        selMax = (std::min)(selMax, fld->length());
+        if (selMax > selMin) {
+            fld->erase(selMin, selMax - selMin);
+        }
+        m_searchCaretPos = selMin;
+        ClearSearchSelection();
+        return true;
+    }
     std::vector<SearchFileGroup> m_searchGroups;
     std::function<void()> m_onRefreshOpenDocs;
     std::function<void(const std::vector<std::wstring>&)> m_onFilesReplaced;

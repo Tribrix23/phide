@@ -12,6 +12,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <stack>
 #include <iostream>
 #include <unordered_map>
@@ -37,18 +38,75 @@ void CollectPythonIdentCounts(
     const Buffer& buffer,
     std::unordered_map<std::wstring, size_t>& outCounts,
     std::unordered_set<std::wstring>& outExportedAll) {
+    auto isFPrefixAt = [](const std::wstring& line, size_t c, size_t& outQuotePos) -> bool {
+        if (c >= line.size()) return false;
+        if (c > 0 && IsIdentCharSv(line[c - 1])) return false;
+        auto isP = [](wchar_t ch) {
+            wchar_t lo = static_cast<wchar_t>(towlower(ch));
+            return lo == L'f' || lo == L'r' || lo == L'b' || lo == L'u';
+        };
+        auto isP2 = [](wchar_t a, wchar_t b) {
+            wchar_t x = static_cast<wchar_t>(towlower(a));
+            wchar_t y = static_cast<wchar_t>(towlower(b));
+            return (x == L'f' && y == L'r') || (x == L'r' && y == L'f') ||
+                   (x == L'b' && y == L'r') || (x == L'r' && y == L'b');
+        };
+        if (c + 2 < line.size() && isP2(line[c], line[c + 1]) && (line[c + 2] == L'"' || line[c + 2] == L'\'')) {
+            outQuotePos = c + 2;
+            return true;
+        }
+        if (c + 1 < line.size() && isP(line[c]) && (line[c + 1] == L'"' || line[c + 1] == L'\'')) {
+            outQuotePos = c + 1;
+            return true;
+        }
+        return false;
+    };
+
     bool inTriple = false;
+    bool tripleIsF = false;
+    int tripleFDepth = 0;
     wchar_t tCh = 0;
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
         bool inSgl = false;
+        bool sglIsF = false;
+        int sglFDepth = 0;
+        bool inFInnerQ = false;
+        wchar_t fInnerQ = 0;
         wchar_t sCh = 0;
         const bool isAllLine = (line.find(L"__all__") != std::wstring::npos);
         for (size_t c = 0; c < line.size();) {
             wchar_t ch = line[c];
             if (inTriple) {
+                if (tripleIsF && tripleFDepth > 0) {
+                    if (inFInnerQ) {
+                        if (ch == L'\\') { c += 2; continue; }
+                        if (ch == fInnerQ) inFInnerQ = false;
+                        ++c;
+                        continue;
+                    }
+                    if (ch == L'"' || ch == L'\'') { inFInnerQ = true; fInnerQ = ch; ++c; continue; }
+                    if (ch == L'{') { ++tripleFDepth; ++c; continue; }
+                    if (ch == L'}') { --tripleFDepth; ++c; continue; }
+                    if (IsIdentStartSv(ch)) {
+                        size_t st = c++;
+                        while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                        outCounts[line.substr(st, c - st)]++;
+                        continue;
+                    }
+                    ++c;
+                    continue;
+                }
+                if (tripleIsF && ch == L'{') {
+                    if (c + 1 < line.size() && line[c + 1] == L'{') { c += 2; continue; }
+                    tripleFDepth = 1;
+                    ++c;
+                    continue;
+                }
                 if (ch == tCh && c + 2 < line.size() && line[c + 1] == tCh && line[c + 2] == tCh) {
                     inTriple = false;
+                    tripleIsF = false;
+                    tripleFDepth = 0;
                     c += 3;
                 } else {
                     ++c;
@@ -56,8 +114,39 @@ void CollectPythonIdentCounts(
                 continue;
             }
             if (inSgl) {
+                if (sglIsF && sglFDepth > 0) {
+                    if (inFInnerQ) {
+                        if (ch == L'\\') { c += 2; continue; }
+                        if (ch == fInnerQ) inFInnerQ = false;
+                        ++c;
+                        continue;
+                    }
+                    if (ch == L'"' || ch == L'\'') { inFInnerQ = true; fInnerQ = ch; ++c; continue; }
+                    if (ch == L'{') { ++sglFDepth; ++c; continue; }
+                    if (ch == L'}') { --sglFDepth; ++c; continue; }
+                    if (IsIdentStartSv(ch)) {
+                        size_t st = c++;
+                        while (c < line.size() && IsIdentCharSv(line[c])) ++c;
+                        outCounts[line.substr(st, c - st)]++;
+                        continue;
+                    }
+                    ++c;
+                    continue;
+                }
                 if (ch == L'\\') { c += 2; continue; }
-                if (ch == sCh) { inSgl = false; ++c; continue; }
+                if (sglIsF && ch == L'{') {
+                    if (c + 1 < line.size() && line[c + 1] == L'{') { c += 2; continue; }
+                    sglFDepth = 1;
+                    ++c;
+                    continue;
+                }
+                if (ch == sCh) {
+                    inSgl = false;
+                    sglIsF = false;
+                    sglFDepth = 0;
+                    ++c;
+                    continue;
+                }
                 if (isAllLine && IsIdentStartSv(ch)) {
                     size_t st = c;
                     while (c < line.size() && IsIdentCharSv(line[c])) ++c;
@@ -67,20 +156,51 @@ void CollectPythonIdentCounts(
                 ++c;
                 continue;
             }
+            bool prefF = false;
+            size_t quotePos = std::wstring::npos;
+            if (isFPrefixAt(line, c, quotePos)) {
+                for (size_t pk = c; pk < quotePos; ++pk) {
+                    if (towlower(line[pk]) == L'f') prefF = true;
+                }
+                c = quotePos;
+                ch = line[c];
+            }
             if ((ch == L'"' || ch == L'\'') && c + 2 < line.size() && line[c + 1] == ch && line[c + 2] == ch) {
                 inTriple = true;
+                tripleIsF = prefF;
+                tripleFDepth = 0;
                 tCh = ch;
                 c += 3;
                 continue;
             }
             if (ch == L'"' || ch == L'\'') {
                 inSgl = true;
+                sglIsF = prefF;
+                sglFDepth = 0;
+                inFInnerQ = false;
                 sCh = ch;
                 ++c;
                 continue;
             }
             if (ch == L'#') break;
-            if (IsIdentStartSv(ch)) {
+            if (iswdigit(ch)) {
+                ++c;
+                if ((c < line.size()) && (ch == L'0') &&
+                    (line[c] == L'x' || line[c] == L'X' || line[c] == L'b' || line[c] == L'B' || line[c] == L'o' || line[c] == L'O')) {
+                    ++c;
+                    while (c < line.size() && (iswxdigit(line[c]) || line[c] == L'_')) ++c;
+                } else {
+                    while (c < line.size() && (iswdigit(line[c]) || line[c] == L'_' || line[c] == L'.')) ++c;
+                    if (c < line.size() && (line[c] == L'e' || line[c] == L'E')) {
+                        ++c;
+                        if (c < line.size() && (line[c] == L'+' || line[c] == L'-')) ++c;
+                        while (c < line.size() && (iswdigit(line[c]) || line[c] == L'_')) ++c;
+                    }
+                    if (c < line.size() && (line[c] == L'j' || line[c] == L'J')) ++c;
+                }
+                continue;
+            }
+            if (IsIdentStartSv(ch) && (c == 0 || !IsIdentCharSv(line[c - 1]))) {
                 size_t st = c++;
                 while (c < line.size() && IsIdentCharSv(line[c])) ++c;
                 outCounts[line.substr(st, c - st)]++;
@@ -1541,11 +1661,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJavaScript(
 
                 // In normal JS code: check if '<' starts a JSX element (Fragment or Tag)
                 if (line[c] == L'<') {
-                    // In JS/TS, a JSX tag CANNOT immediately follow an identifier or closing bracket!
+                    // In JS/TS, a JSX tag CANNOT immediately follow a variable/function identifier or closing bracket,
+                    // EXCEPT when the preceding word is a JS keyword that introduces an expression (e.g. `return <div>`, `await <Comp/>`).
                     int p = static_cast<int>(c) - 1;
                     while (p >= 0 && iswspace(line[p])) p--;
                     wchar_t pch = (p >= 0) ? line[p] : L'\0';
                     bool isPrevIdent = iswalnum(pch) || pch == L'_' || pch == L'$' || pch == L')' || pch == L']';
+                    if (isPrevIdent && (iswalnum(pch) || pch == L'_' || pch == L'$')) {
+                        int ws = p;
+                        while (ws > 0 && (iswalnum(line[ws - 1]) || line[ws - 1] == L'_' || line[ws - 1] == L'$')) ws--;
+                        std::wstring prevWord = line.substr(static_cast<size_t>(ws), static_cast<size_t>(p - ws + 1));
+                        static const std::unordered_set<std::wstring> jsxPrefixKeywords = {
+                            L"return", L"yield", L"await", L"case", L"default", L"else",
+                            L"throw", L"typeof", L"void", L"delete", L"in", L"of", L"do"
+                        };
+                        if (jsxPrefixKeywords.count(prevWord) > 0) {
+                            isPrevIdent = false;
+                        }
+                    }
 
                     if (!isPrevIdent) {
                         if (c + 1 < line.length() && line[c + 1] == L'/') {
@@ -3061,26 +3194,70 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateYamlSchema(const std::wstr
     return diagnostics;
 }
 
-static size_t CalculateLevenshtein(const std::wstring& s1, const std::wstring& s2) {
+static size_t CalculateBoundedDamerauLevenshtein(const std::wstring& s1, const std::wstring& s2, size_t maxDist) noexcept {
     const size_t m = s1.length();
     const size_t n = s2.length();
     if (m == 0) return n;
     if (n == 0) return m;
-    if (std::abs(static_cast<long long>(m) - static_cast<long long>(n)) > 3) return 99;
+    const size_t lenDiff = (m > n) ? (m - n) : (n - m);
+    if (lenDiff > maxDist || m > 63 || n > 63) return 99;
 
-    std::vector<size_t> v0(n + 1);
-    std::vector<size_t> v1(n + 1);
-    for (size_t i = 0; i <= n; ++i) v0[i] = i;
+    // Stack-only DP buffers (0 heap allocations) so diagnostics never lag or spike RAM
+    size_t rowPrev2[64]{};
+    size_t rowPrev[64]{};
+    size_t rowCurr[64]{};
+    for (size_t j = 0; j <= n; ++j) rowPrev[j] = j;
 
     for (size_t i = 0; i < m; ++i) {
-        v1[0] = i + 1;
+        rowCurr[0] = i + 1;
+        size_t rowMin = rowCurr[0];
+        const wchar_t c1 = towlower(s1[i]);
+        const wchar_t c1Prev = (i > 0) ? towlower(s1[i - 1]) : 0;
+
         for (size_t j = 0; j < n; ++j) {
-            size_t cost = (towlower(s1[i]) == towlower(s2[j])) ? 0 : 1;
-            v1[j + 1] = (std::min)({ v1[j] + 1, v0[j + 1] + 1, v0[j] + cost });
+            const wchar_t c2 = towlower(s2[j]);
+            const size_t cost = (c1 == c2) ? 0 : 1;
+            size_t val = (std::min)({ rowCurr[j] + 1, rowPrev[j + 1] + 1, rowPrev[j] + cost });
+            if (i > 0 && j > 0 && c1 == towlower(s2[j - 1]) && c1Prev == c2) {
+                val = (std::min)(val, rowPrev2[j - 1] + 1);
+            }
+            rowCurr[j + 1] = val;
+            if (val < rowMin) rowMin = val;
         }
-        v0 = v1;
+        if (rowMin > maxDist) return 99;
+        for (size_t j = 0; j <= n; ++j) {
+            rowPrev2[j] = rowPrev[j];
+            rowPrev[j] = rowCurr[j];
+        }
     }
-    return v0[n];
+    return rowPrev[n];
+}
+
+static bool IsReasonablePythonSuggestion(const std::wstring& sym, const std::wstring& cand, size_t dist) noexcept {
+    const size_t sLen = sym.length();
+    const size_t cLen = cand.length();
+    if (sLen <= 2 || cLen <= 2) return false; // Never guess on 1-2 char names like 'hi' -> 'id' or 's' -> 'x'
+    const size_t maxLen = (std::max)(sLen, cLen);
+    const size_t minLen = (std::min)(sLen, cLen);
+    if (dist == 1) {
+        if (sLen == 3 && cLen == 3) {
+            // For 3-char identifiers, require shared start char or adjacent transposition to avoid random 1-letter swaps (e.g. foo -> boo)
+            if (towlower(sym[0]) == towlower(cand[0])) return true;
+            int swaps = 0;
+            for (size_t k = 0; k + 1 < 3; ++k) {
+                if (towlower(sym[k]) == towlower(cand[k + 1]) && towlower(sym[k + 1]) == towlower(cand[k])) swaps++;
+            }
+            return swaps > 0;
+        }
+        return true;
+    }
+    if (dist == 2) {
+        // Require longer identifiers and >= 60% shared length so unrelated short words (e.g. 'hello' -> 'help') never trigger noise
+        if (sLen < 6 || minLen < 5) return false;
+        if (dist * 3 > maxLen + 1) return false;
+        return (towlower(sym[0]) == towlower(cand[0]) || towlower(sym.back()) == towlower(cand.back()));
+    }
+    return false;
 }
 
 std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffer) {
@@ -3102,6 +3279,38 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
     bool expectIndent = false;
     size_t colonLine = 0;
     bool inExplicitContinuation = false;
+
+    auto isPyStringPrefixAt = [](const std::wstring& s, size_t pos, size_t& outQuotePos) -> bool {
+        if (pos >= s.length()) return false;
+        if (pos > 0 && (iswalnum(s[pos - 1]) || s[pos - 1] == L'_')) return false;
+        auto isPrefixChar = [](wchar_t ch) {
+            wchar_t lo = static_cast<wchar_t>(towlower(ch));
+            return lo == L'f' || lo == L'r' || lo == L'b' || lo == L'u';
+        };
+        auto isValid2 = [](wchar_t a, wchar_t b) {
+            wchar_t x = static_cast<wchar_t>(towlower(a));
+            wchar_t y = static_cast<wchar_t>(towlower(b));
+            return (x == L'f' && y == L'r') || (x == L'r' && y == L'f') ||
+                   (x == L'b' && y == L'r') || (x == L'r' && y == L'b');
+        };
+        if (pos + 2 < s.length() && isValid2(s[pos], s[pos + 1]) &&
+            (s[pos + 2] == L'"' || s[pos + 2] == L'\'')) {
+            outQuotePos = pos + 2;
+            return true;
+        }
+        if (pos + 1 < s.length() && isPrefixChar(s[pos]) &&
+            (s[pos + 1] == L'"' || s[pos + 1] == L'\'')) {
+            outQuotePos = pos + 1;
+            return true;
+        }
+        return false;
+    };
+
+    bool tripleIsFString = false;
+    bool carryString = false;
+    bool carryStrIsFString = false;
+    int carryStrFBraceDepth = 0;
+    wchar_t carryStrChar = 0;
 
     for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
         const auto& line = buffer.GetLine(l);
@@ -3140,37 +3349,84 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         }
 
         bool startedInTripleString = inTripleString;
+        bool startedInCarryString = carryString;
         bool startedInBracket = !bracketStack.empty();
 
-        bool inString = false;
-        wchar_t strChar = 0;
-        size_t strStart = 0;
+        bool inString = carryString;
+        bool strIsFString = carryStrIsFString;
+        int strFBraceDepth = carryStrFBraceDepth;
+        bool inFInnerStr = false;
+        wchar_t fInnerQuote = 0;
+        wchar_t strChar = carryStrChar;
+        size_t strStart = carryString ? 0 : 0;
         size_t commentCol = std::wstring::npos;
+        carryString = false;
+        carryStrIsFString = false;
+        carryStrFBraceDepth = 0;
+        carryStrChar = 0;
 
-        for (size_t c = indentCol; c < line.length(); ++c) {
+        for (size_t c = (startedInTripleString || startedInCarryString) ? 0 : indentCol; c < line.length(); ++c) {
             wchar_t ch = line[c];
 
             if (inTripleString) {
                 if (ch == tripleChar && c + 2 < line.length() && line[c + 1] == tripleChar && line[c + 2] == tripleChar) {
                     inTripleString = false;
+                    tripleIsFString = false;
                     c += 2;
                 }
                 continue;
             }
 
             if (inString) {
+                if (strIsFString && strFBraceDepth > 0) {
+                    if (inFInnerStr) {
+                        if (ch == L'\\') { c++; continue; }
+                        if (ch == fInnerQuote) inFInnerStr = false;
+                        continue;
+                    }
+                    if (ch == L'"' || ch == L'\'') {
+                        inFInnerStr = true;
+                        fInnerQuote = ch;
+                        continue;
+                    }
+                    if (ch == L'{') { strFBraceDepth++; continue; }
+                    if (ch == L'}') { strFBraceDepth--; continue; }
+                    continue;
+                }
                 if (ch == L'\\') {
+                    c++;
+                    continue;
+                }
+                if (strIsFString && ch == L'{') {
+                    if (c + 1 < line.length() && line[c + 1] == L'{') { c++; continue; }
+                    strFBraceDepth = 1;
+                    continue;
+                }
+                if (strIsFString && ch == L'}' && c + 1 < line.length() && line[c + 1] == L'}') {
                     c++;
                     continue;
                 }
                 if (ch == strChar) {
                     inString = false;
+                    strIsFString = false;
+                    strFBraceDepth = 0;
                 }
                 continue;
             }
 
+            bool prefFStr = false;
+            size_t prefQuotePos = std::wstring::npos;
+            if (isPyStringPrefixAt(line, c, prefQuotePos)) {
+                for (size_t pk = c; pk < prefQuotePos; ++pk) {
+                    if (towlower(line[pk]) == L'f') prefFStr = true;
+                }
+                c = prefQuotePos;
+                ch = line[c];
+            }
+
             if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
                 inTripleString = true;
+                tripleIsFString = prefFStr;
                 tripleChar = ch;
                 c += 2;
                 continue;
@@ -3178,6 +3434,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
 
             if (ch == L'"' || ch == L'\'') {
                 inString = true;
+                strIsFString = prefFStr;
+                strFBraceDepth = 0;
+                inFInnerStr = false;
                 strChar = ch;
                 strStart = c;
                 continue;
@@ -3206,7 +3465,20 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         }
 
         if (inString && !inTripleString) {
-            diagnostics.push_back({ l, strStart, line.length() - strStart, L"Python: EOL while scanning string literal", 1 });
+            size_t trailBs = 0;
+            size_t backIdx = line.length();
+            while (backIdx > strStart && line[backIdx - 1] == L'\\') {
+                trailBs++;
+                backIdx--;
+            }
+            if ((trailBs % 2) == 1) {
+                carryString = true;
+                carryStrIsFString = strIsFString;
+                carryStrFBraceDepth = strFBraceDepth;
+                carryStrChar = strChar;
+            } else {
+                diagnostics.push_back({ l, strStart, line.length() - strStart, L"Python: EOL while scanning string literal", 1 });
+            }
         }
 
         std::wstring codePart = (commentCol != std::wstring::npos) ? line.substr(0, commentCol) : line;
@@ -3220,7 +3492,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         }
 
         // Indentation validation (Python PEP 8 / official Python syntax rules)
-        if (!startedInTripleString && !inExplicitContinuation && !startedInBracket && !trimmed.empty()) {
+        if (!startedInTripleString && !startedInCarryString && !inExplicitContinuation && !startedInBracket && !trimmed.empty()) {
             if (expectIndent) {
                 if (visualIndent <= indentStack.back()) {
                     diagnostics.push_back({ l, 0, (std::max)(line.length(), 1ULL), L"Python: IndentationError: expected an indented block", 1 });
@@ -3244,17 +3516,49 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             }
         }
 
-        if (!inTripleString && bracketStack.empty() && !trimmed.empty()) {
-            static const std::vector<std::wstring> colonKws = {
-                L"def ", L"class ", L"if ", L"elif ", L"else", L"for ", L"while ", L"try", L"except", L"finally", L"with ",
-                L"async def ", L"async for ", L"async with ", L"match ", L"case "
-            };
-            for (const auto& kw : colonKws) {
-                if (trimmed == kw || trimmed.rfind(kw, 0) == 0) {
-                    if (trimmed.back() != L':') {
-                        diagnostics.push_back({ l, indentCol + trimmed.length() - 1, 1, L"Python: SyntaxError: expected ':' at end of statement", 1 });
+        const bool endsWithExplicitCont = (!inTripleString && !carryString && bracketStack.empty() && !trimmed.empty() && trimmed.back() == L'\\');
+        if (!inTripleString && !carryString && bracketStack.empty() && !trimmed.empty() && !endsWithExplicitCont) {
+            if (!startedInBracket && !startedInCarryString) {
+                auto hasTopLevelColon = [&](const std::wstring& s) -> bool {
+                    bool q = false;
+                    wchar_t qc = 0;
+                    int depth = 0;
+                    for (size_t i = 0; i < s.length(); ++i) {
+                        wchar_t c = s[i];
+                        if (q) {
+                            if (c == L'\\') { ++i; continue; }
+                            if (c == qc) q = false;
+                            continue;
+                        }
+                        if (c == L'"' || c == L'\'') { q = true; qc = c; continue; }
+                        if (c == L'(' || c == L'[' || c == L'{') { ++depth; continue; }
+                        if ((c == L')' || c == L']' || c == L'}') && depth > 0) { --depth; continue; }
+                        if (c == L':' && depth == 0) return true;
                     }
-                    break;
+                    return false;
+                };
+                static const std::vector<std::wstring> colonKws = {
+                    L"async def", L"async for", L"async with", L"def", L"class", L"if", L"elif", L"else",
+                    L"for", L"while", L"try", L"except", L"finally", L"with", L"match", L"case"
+                };
+                for (const auto& kw : colonKws) {
+                    if (trimmed.length() >= kw.length() && trimmed.compare(0, kw.length(), kw) == 0 &&
+                        (trimmed.length() == kw.length() || (!iswalnum(trimmed[kw.length()]) && trimmed[kw.length()] != L'_'))) {
+                        if (kw == L"match" || kw == L"case") {
+                            // match and case are Python soft keywords; ignore variables, calls, subscripts, and attributes
+                            size_t k = kw.length();
+                            while (k < trimmed.length() && iswspace(trimmed[k])) ++k;
+                            if (k >= trimmed.length() || trimmed[k] == L'=' || trimmed[k] == L'+' || trimmed[k] == L'-' ||
+                                trimmed[k] == L'*' || trimmed[k] == L'/' || trimmed[k] == L'.' || trimmed[k] == L',' ||
+                                trimmed[k] == L'[' || trimmed[k] == L'(') {
+                                break;
+                            }
+                        }
+                        if (!hasTopLevelColon(trimmed)) {
+                            diagnostics.push_back({ l, indentCol + trimmed.length() - 1, 1, L"Python: SyntaxError: expected ':' at end of statement", 1 });
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -3264,9 +3568,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             }
         }
 
-        if (!inTripleString && bracketStack.empty() && !trimmed.empty() && trimmed.back() == L'\\') {
+        if (endsWithExplicitCont || carryString) {
             inExplicitContinuation = true;
-        } else if (bracketStack.empty()) {
+        } else if (bracketStack.empty() && !inTripleString) {
             inExplicitContinuation = false;
         }
     }
@@ -3298,8 +3602,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         L"type", L"vars", L"zip", L"__import__",
         L"True", L"False", L"None", L"Ellipsis", L"NotImplemented",
         L"__name__", L"__file__", L"__doc__", L"__package__", L"__annotations__", L"__builtins__",
-        L"__debug__", L"__dict__", L"__class__", L"self", L"cls",
-        L"BaseException", L"Exception", L"ArithmeticError", L"BufferError", L"LookupError",
+        L"__debug__", L"__dict__", L"__class__", L"__spec__", L"__loader__", L"__cached__",
+        L"__path__", L"__all__", L"__version__", L"__author__", L"__slots__", L"__weakref__",
+        L"__match_args__", L"__qualname__", L"__module__", L"__kwdefaults__", L"__defaults__",
+        L"__closure__", L"__code__", L"__globals__", L"__mro__", L"__bases__", L"__future__",
+        L"copyright", L"credits", L"license", L"exit", L"quit",
+        L"self", L"cls",
+        L"BaseException", L"BaseExceptionGroup", L"Exception", L"ExceptionGroup",
+        L"ArithmeticError", L"BufferError", L"LookupError",
         L"AssertionError", L"AttributeError", L"EOFError", L"FloatingPointError", L"GeneratorExit",
         L"ImportError", L"ModuleNotFoundError", L"IndexError", L"KeyError", L"KeyboardInterrupt",
         L"MemoryError", L"NameError", L"NotImplementedError", L"OSError", L"OverflowError",
@@ -3323,6 +3633,27 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         L"pass", L"raise", L"return", L"try", L"while", L"with", L"yield"
     };
 
+    struct PyScope {
+        size_t indent = 0;
+        size_t startLine = 0;
+        size_t endLine = SIZE_MAX;
+        size_t parentId = 0;
+        bool isClass = false;
+        std::unordered_set<std::wstring> syms;
+        std::unordered_set<std::wstring> globals;
+    };
+    struct PyExprScope {
+        size_t startLine = 0;
+        size_t endLine = 0;
+        std::unordered_set<std::wstring> syms;
+    };
+
+    std::vector<PyScope> pyScopes(1); // Scope 0 = module global scope
+    pyScopes[0].indent = 0;
+    pyScopes[0].startLine = 0;
+    pyScopes[0].endLine = SIZE_MAX;
+    pyScopes[0].parentId = 0;
+    std::vector<PyExprScope> pyExprScopes;
     std::unordered_set<std::wstring> definedSymbols;
     bool hasStarImport = false;
 
@@ -3333,236 +3664,923 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         return iswalpha(c) || c == L'_';
     };
 
-    // Pass 1: Collect defined symbols across the entire document
-    for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
-        const auto& line = buffer.GetLine(l);
-        std::wstring code = line;
-        bool inStr = false;
-        wchar_t qChar = 0;
-        for (size_t i = 0; i < code.length(); ++i) {
-            wchar_t ch = code[i];
-            if (!inStr && (ch == L'"' || ch == L'\'')) {
-                inStr = true;
-                qChar = ch;
-            } else if (inStr && ch == qChar && (i == 0 || code[i - 1] != L'\\')) {
-                inStr = false;
-            } else if (!inStr && ch == L'#') {
-                code = code.substr(0, i);
-                break;
-            }
-        }
-        size_t start = 0;
-        while (start < code.length() && (code[start] == L' ' || code[start] == L'\t')) start++;
-        std::wstring trimmedCode = code.substr(start);
-        if (trimmedCode.empty()) continue;
+    // Pass 1: Collect defined symbols across the entire document (lexical def/class scopes + expression scopes)
+    {
+        std::vector<size_t> scopeStack = { 0 };
+        size_t curStmtScopeId = 0;
+        size_t curStmtStartLine = 0;
+        size_t curStmtEndLine = 0;
+        size_t curStmtIndent = 0;
 
-        if (trimmedCode.rfind(L"from ", 0) == 0) {
-            size_t impPos = trimmedCode.find(L" import ");
-            if (impPos != std::wstring::npos) {
-                std::wstring fromMod = trimmedCode.substr(5, impPos - 5);
-                size_t fm = 0;
-                while (fm < fromMod.length()) {
-                    while (fm < fromMod.length() && !isIdentStart(fromMod[fm])) fm++;
-                    if (fm >= fromMod.length()) break;
-                    size_t fStart = fm;
-                    while (fm < fromMod.length() && isIdentChar(fromMod[fm])) fm++;
-                    std::wstring mTok = fromMod.substr(fStart, fm - fStart);
-                    if (!mTok.empty() && pyKeywords.find(mTok) == pyKeywords.end()) {
-                        definedSymbols.insert(mTok);
+        auto startsWithKw = [&](const std::wstring& s, const std::wstring& kw) -> bool {
+            if (s.length() < kw.length() || s.compare(0, kw.length(), kw) != 0) return false;
+            return s.length() == kw.length() || !isIdentChar(s[kw.length()]);
+        };
+
+        auto trimCopy = [](const std::wstring& s) -> std::wstring {
+            size_t b = 0;
+            while (b < s.length() && iswspace(s[b])) ++b;
+            size_t e = s.length();
+            while (e > b && iswspace(s[e - 1])) --e;
+            return s.substr(b, e - b);
+        };
+
+        auto addDefinedToScope = [&](size_t scopeId, const std::wstring& sym) {
+            if (sym.empty() || pyKeywords.find(sym) != pyKeywords.end()) return;
+            size_t targetScope = (scopeId < pyScopes.size()) ? scopeId : 0;
+            if (targetScope != 0 && pyScopes[targetScope].globals.count(sym)) {
+                targetScope = 0;
+            }
+            pyScopes[targetScope].syms.insert(sym);
+            definedSymbols.insert(sym);
+        };
+
+        auto addExprDefined = [&](size_t sLine, size_t eLine, const std::wstring& sym) {
+            if (sym.empty() || pyKeywords.find(sym) != pyKeywords.end()) return;
+            if (pyExprScopes.empty() || pyExprScopes.back().startLine != sLine || pyExprScopes.back().endLine != eLine) {
+                pyExprScopes.push_back({ sLine, eLine, {} });
+            }
+            pyExprScopes.back().syms.insert(sym);
+            definedSymbols.insert(sym);
+        };
+
+        auto findMatchingClose = [](const std::wstring& s, size_t openPos, wchar_t openCh, wchar_t closeCh) -> size_t {
+            int depth = 0;
+            for (size_t i = openPos; i < s.length(); ++i) {
+                if (s[i] == openCh) ++depth;
+                else if (s[i] == closeCh) {
+                    --depth;
+                    if (depth == 0) return i;
+                }
+            }
+            return std::wstring::npos;
+        };
+
+        auto findTopLevelChar = [](const std::wstring& s, size_t fromPos, wchar_t targetCh) -> size_t {
+            int depth = 0;
+            for (size_t i = fromPos; i < s.length(); ++i) {
+                wchar_t c = s[i];
+                if (c == L'(' || c == L'[' || c == L'{') ++depth;
+                else if ((c == L')' || c == L']' || c == L'}') && depth > 0) --depth;
+                else if (depth == 0 && c == targetCh) return i;
+            }
+            return std::wstring::npos;
+        };
+
+        auto findKeywordAt = [&](const std::wstring& s, size_t startPos, size_t endPos, const std::wstring& kw, bool requireDepthZero, int baseDepth = 0) -> size_t {
+            int depth = baseDepth;
+            for (size_t i = startPos; i + kw.length() <= endPos;) {
+                wchar_t ch = s[i];
+                if (ch == L'(' || ch == L'[' || ch == L'{') { ++depth; ++i; continue; }
+                if (ch == L')' || ch == L']' || ch == L'}') { if (depth > 0) --depth; ++i; continue; }
+                if (isIdentStart(ch) && (i == 0 || !isIdentChar(s[i - 1]))) {
+                    size_t st = i;
+                    while (i < endPos && isIdentChar(s[i])) ++i;
+                    if ((!requireDepthZero || depth == baseDepth) && (i - st) == kw.length() && s.compare(st, kw.length(), kw) == 0) {
+                        size_t bp = st;
+                        while (bp > 0 && iswspace(s[bp - 1])) --bp;
+                        // Allow relative import dots (e.g. `from . import _version`, `from .. import x`) and hard keywords
+                        bool isRelImportDot = (bp > 0 && s[bp - 1] == L'.' &&
+                            (kw == L"import" || bp == 1 || iswspace(s[bp - 2]) || s[bp - 2] == L'.'));
+                        if (bp == 0 || s[bp - 1] != L'.' || isRelImportDot) {
+                            return st;
+                        }
+                    }
+                    continue;
+                }
+                ++i;
+            }
+            return std::wstring::npos;
+        };
+
+        auto extractParams = [&](size_t targetScopeId, const std::wstring& params) {
+            int depth = 0;
+            size_t chunkStart = 0;
+            for (size_t i = 0; i <= params.length(); ++i) {
+                wchar_t ch = (i < params.length()) ? params[i] : L',';
+                if (i < params.length()) {
+                    if (ch == L'(' || ch == L'[' || ch == L'{') { ++depth; continue; }
+                    if (ch == L')' || ch == L']' || ch == L'}') { if (depth > 0) --depth; continue; }
+                }
+                if (depth == 0 && (ch == L',' || i == params.length())) {
+                    size_t p = chunkStart;
+                    while (p < i && (iswspace(params[p]) || params[p] == L'*' || params[p] == L'/')) ++p;
+                    if (p < i && isIdentStart(params[p])) {
+                        size_t st = p;
+                        while (p < i && isIdentChar(params[p])) ++p;
+                        addDefinedToScope(targetScopeId, params.substr(st, p - st));
+                    }
+                    chunkStart = i + 1;
+                }
+            }
+        };
+
+        auto extractExprParams = [&](size_t sLine, size_t eLine, const std::wstring& params) {
+            int depth = 0;
+            size_t chunkStart = 0;
+            for (size_t i = 0; i <= params.length(); ++i) {
+                wchar_t ch = (i < params.length()) ? params[i] : L',';
+                if (i < params.length()) {
+                    if (ch == L'(' || ch == L'[' || ch == L'{') { ++depth; continue; }
+                    if (ch == L')' || ch == L']' || ch == L'}') { if (depth > 0) --depth; continue; }
+                }
+                if (depth == 0 && (ch == L',' || i == params.length())) {
+                    size_t p = chunkStart;
+                    while (p < i && (iswspace(params[p]) || params[p] == L'*' || params[p] == L'/')) ++p;
+                    if (p < i && isIdentStart(params[p])) {
+                        size_t st = p;
+                        while (p < i && isIdentChar(params[p])) ++p;
+                        addExprDefined(sLine, eLine, params.substr(st, p - st));
+                    }
+                    chunkStart = i + 1;
+                }
+            }
+        };
+
+        auto extractTypeParams = [&](size_t targetScopeId, const std::wstring& tpSlice) {
+            int depth = 0;
+            size_t chunkStart = 0;
+            for (size_t i = 0; i <= tpSlice.length(); ++i) {
+                wchar_t ch = (i < tpSlice.length()) ? tpSlice[i] : L',';
+                if (i < tpSlice.length()) {
+                    if (ch == L'(' || ch == L'[' || ch == L'{') { ++depth; continue; }
+                    if (ch == L')' || ch == L']' || ch == L'}') { if (depth > 0) --depth; continue; }
+                }
+                if (depth == 0 && (ch == L',' || i == tpSlice.length())) {
+                    size_t p = chunkStart;
+                    while (p < i && (iswspace(tpSlice[p]) || tpSlice[p] == L'*')) ++p;
+                    if (p < i && isIdentStart(tpSlice[p])) {
+                        size_t st = p;
+                        while (p < i && isIdentChar(tpSlice[p])) ++p;
+                        addDefinedToScope(targetScopeId, tpSlice.substr(st, p - st));
+                    }
+                    chunkStart = i + 1;
+                }
+            }
+        };
+
+        auto collectTargetIdents = [&](const std::wstring& target, const std::function<void(const std::wstring&)>& emitFn) {
+            size_t i = 0;
+            while (i < target.length()) {
+                wchar_t c = target[i];
+                if (isIdentStart(c) && (i == 0 || !isIdentChar(target[i - 1]))) {
+                    size_t bp = i;
+                    while (bp > 0 && iswspace(target[bp - 1])) --bp;
+                    bool isAttr = (bp > 0 && target[bp - 1] == L'.');
+                    size_t st = i;
+                    while (i < target.length() && isIdentChar(target[i])) ++i;
+                    std::wstring name = target.substr(st, i - st);
+                    size_t fp = i;
+                    while (fp < target.length() && iswspace(target[fp])) ++fp;
+                    if (fp < target.length() && (target[fp] == L'.' || target[fp] == L'[')) {
+                        if (target[fp] == L'[') {
+                            size_t closeB = findMatchingClose(target, fp, L'[', L']');
+                            i = (closeB != std::wstring::npos) ? closeB + 1 : target.length();
+                        }
+                        continue;
+                    }
+                    if (!isAttr) {
+                        emitFn(name);
+                    }
+                    continue;
+                }
+                ++i;
+            }
+        };
+
+        // Always collect comprehension / generator `for ... in`, `lambda ...:`, and `name :=` bindings within the statement's scope
+        auto collectInlineExprBinders = [&](const std::wstring& s, size_t activeScopeId, size_t sLine, size_t eLine) {
+            int bracketDepth = 0;
+            for (size_t i = 0; i < s.length();) {
+                wchar_t c = s[i];
+                if (c == L'(' || c == L'[' || c == L'{') { ++bracketDepth; ++i; continue; }
+                if (c == L')' || c == L']' || c == L'}') { if (bracketDepth > 0) --bracketDepth; ++i; continue; }
+                if (c == L':' && i + 1 < s.length() && s[i + 1] == L'=') {
+                    size_t j = i;
+                    while (j > 0 && iswspace(s[j - 1])) --j;
+                    size_t endId = j;
+                    while (j > 0 && isIdentChar(s[j - 1])) --j;
+                    if (j < endId && isIdentStart(s[j])) {
+                        size_t bp = j;
+                        while (bp > 0 && iswspace(s[bp - 1])) --bp;
+                        if (bp == 0 || s[bp - 1] != L'.') {
+                            addDefinedToScope(activeScopeId, s.substr(j, endId - j));
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                if (isIdentStart(c) && (i == 0 || !isIdentChar(s[i - 1]))) {
+                    size_t bp = i;
+                    while (bp > 0 && iswspace(s[bp - 1])) --bp;
+                    bool isAttr = (bp > 0 && s[bp - 1] == L'.');
+                    size_t st = i;
+                    while (i < s.length() && isIdentChar(s[i])) ++i;
+                    if (!isAttr) {
+                        std::wstring kw = s.substr(st, i - st);
+                        if (kw == L"for") {
+                            const bool isTopLevelLoop = (bracketDepth == 0);
+                            int relDepth = 0;
+                            size_t inPos = std::wstring::npos;
+                            for (size_t k = i; k < s.length();) {
+                                wchar_t kc = s[k];
+                                if (kc == L'(' || kc == L'[' || kc == L'{') { ++relDepth; ++k; continue; }
+                                if (kc == L')' || kc == L']' || kc == L'}') {
+                                    if (relDepth == 0) break;
+                                    --relDepth;
+                                    ++k;
+                                    continue;
+                                }
+                                if (relDepth == 0 && (kc == L':' || kc == L';')) break;
+                                if (isIdentStart(kc) && (k == 0 || !isIdentChar(s[k - 1]))) {
+                                    size_t kbp = k;
+                                    while (kbp > i && iswspace(s[kbp - 1])) --kbp;
+                                    bool kAttr = (kbp > i && s[kbp - 1] == L'.');
+                                    size_t kst = k;
+                                    while (k < s.length() && isIdentChar(s[k])) ++k;
+                                    if (relDepth == 0 && !kAttr && (k - kst) == 2 && s.compare(kst, 2, L"in") == 0) {
+                                        inPos = kst;
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                ++k;
+                            }
+                            if (inPos != std::wstring::npos && inPos > i) {
+                                collectTargetIdents(s.substr(i, inPos - i), [&](const std::wstring& sym) {
+                                    if (isTopLevelLoop) addDefinedToScope(activeScopeId, sym);
+                                    else addExprDefined(sLine, eLine, sym);
+                                });
+                            }
+                        } else if (kw == L"lambda") {
+                            int relDepth = 0;
+                            size_t colPos = std::wstring::npos;
+                            for (size_t k = i; k < s.length(); ++k) {
+                                wchar_t kc = s[k];
+                                if (kc == L'(' || kc == L'[' || kc == L'{') ++relDepth;
+                                else if (kc == L')' || kc == L']' || kc == L'}') {
+                                    if (relDepth == 0) break;
+                                    --relDepth;
+                                } else if (relDepth == 0 && kc == L':' && (k + 1 >= s.length() || s[k + 1] != L'=')) {
+                                    colPos = k;
+                                    break;
+                                }
+                            }
+                            if (colPos != std::wstring::npos && colPos >= i) {
+                                extractExprParams(sLine, eLine, s.substr(i, colPos - i));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                ++i;
+            }
+        };
+
+        std::function<void(const std::wstring&, size_t)> processStmt;
+        processStmt = [&](const std::wstring& rawStmt, size_t activeScopeId) {
+            std::wstring trimmed = trimCopy(rawStmt);
+            if (trimmed.empty()) return;
+
+            {
+                int depth = 0;
+                size_t segStart = 0;
+                bool hasSemi = false;
+                for (size_t i = 0; i < trimmed.length(); ++i) {
+                    wchar_t c = trimmed[i];
+                    if (c == L'(' || c == L'[' || c == L'{') ++depth;
+                    else if ((c == L')' || c == L']' || c == L'}') && depth > 0) --depth;
+                    else if (depth == 0 && c == L';') {
+                        hasSemi = true;
+                        processStmt(trimmed.substr(segStart, i - segStart), activeScopeId);
+                        segStart = i + 1;
                     }
                 }
-                std::wstring impPart = trimmedCode.substr(impPos + 8);
-                if (impPart.find(L'*') != std::wstring::npos) {
-                    hasStarImport = true;
-                } else {
-                    size_t p = 0;
-                    while (p < impPart.length()) {
-                        while (p < impPart.length() && (impPart[p] == L' ' || impPart[p] == L',' || impPart[p] == L'(' || impPart[p] == L')')) p++;
-                        if (p >= impPart.length()) break;
-                        size_t tokenStart = p;
-                        while (p < impPart.length() && isIdentChar(impPart[p])) p++;
-                        if (p == tokenStart) { p++; continue; }
-                        std::wstring sym = impPart.substr(tokenStart, p - tokenStart);
-                        if (!sym.empty() && pyKeywords.find(sym) == pyKeywords.end()) {
-                            definedSymbols.insert(sym);
-                        }
-                        while (p < impPart.length() && impPart[p] == L' ') p++;
-                        if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
-                            p += 3;
-                            while (p < impPart.length() && impPart[p] == L' ') p++;
-                            size_t aliasStart = p;
-                            while (p < impPart.length() && isIdentChar(impPart[p])) p++;
-                            std::wstring aliasSym = impPart.substr(aliasStart, p - aliasStart);
-                            if (!aliasSym.empty() && pyKeywords.find(aliasSym) == pyKeywords.end()) {
-                                definedSymbols.insert(aliasSym);
+                if (hasSemi) {
+                    if (segStart < trimmed.length()) {
+                        processStmt(trimmed.substr(segStart), activeScopeId);
+                    }
+                    return;
+                }
+            }
+
+            if (startsWithKw(trimmed, L"from")) {
+                size_t impPos = findKeywordAt(trimmed, 4, trimmed.length(), L"import", true);
+                if (impPos != std::wstring::npos) {
+                    std::wstring impPart = trimmed.substr(impPos + 6);
+                    if (impPart.find(L'*') != std::wstring::npos) {
+                        hasStarImport = true;
+                    } else {
+                        size_t p = 0;
+                        while (p < impPart.length()) {
+                            while (p < impPart.length() && (iswspace(impPart[p]) || impPart[p] == L',' || impPart[p] == L'(' || impPart[p] == L')')) ++p;
+                            if (p >= impPart.length()) break;
+                            size_t tokenStart = p;
+                            while (p < impPart.length() && isIdentChar(impPart[p])) ++p;
+                            if (p == tokenStart) { ++p; continue; }
+                            std::wstring sym = impPart.substr(tokenStart, p - tokenStart);
+                            size_t sp = p;
+                            while (sp < impPart.length() && iswspace(impPart[sp])) ++sp;
+                            if (sp + 2 <= impPart.length() && impPart.compare(sp, 2, L"as") == 0 &&
+                                (sp + 2 == impPart.length() || !isIdentChar(impPart[sp + 2]))) {
+                                p = sp + 2;
+                                while (p < impPart.length() && iswspace(impPart[p])) ++p;
+                                size_t aliasStart = p;
+                                while (p < impPart.length() && isIdentChar(impPart[p])) ++p;
+                                if (p > aliasStart) {
+                                    addDefinedToScope(activeScopeId, impPart.substr(aliasStart, p - aliasStart));
+                                }
+                            } else {
+                                addDefinedToScope(activeScopeId, sym);
                             }
                         }
                     }
                 }
+                return;
             }
-            continue;
-        }
 
-        if (trimmedCode.rfind(L"import ", 0) == 0) {
-            std::wstring impPart = trimmedCode.substr(7);
-            size_t p = 0;
-            while (p < impPart.length()) {
-                while (p < impPart.length() && (impPart[p] == L' ' || impPart[p] == L',')) p++;
-                if (p >= impPart.length()) break;
-                size_t tokenStart = p;
-                while (p < impPart.length() && (isIdentChar(impPart[p]) || impPart[p] == L'.')) p++;
-                if (p == tokenStart) { p++; continue; }
-                std::wstring mod = impPart.substr(tokenStart, p - tokenStart);
-                size_t dot = mod.find(L'.');
-                std::wstring baseMod = (dot != std::wstring::npos) ? mod.substr(0, dot) : mod;
-                if (!baseMod.empty() && pyKeywords.find(baseMod) == pyKeywords.end()) {
-                    definedSymbols.insert(baseMod);
-                }
+            if (startsWithKw(trimmed, L"import")) {
+                std::wstring impPart = trimmed.substr(6);
+                size_t p = 0;
+                while (p < impPart.length()) {
+                    while (p < impPart.length() && (iswspace(impPart[p]) || impPart[p] == L',' || impPart[p] == L'(' || impPart[p] == L')')) ++p;
+                    if (p >= impPart.length()) break;
+                    size_t tokenStart = p;
+                    while (p < impPart.length() && (isIdentChar(impPart[p]) || impPart[p] == L'.')) ++p;
+                    if (p == tokenStart) { ++p; continue; }
+                    std::wstring mod = impPart.substr(tokenStart, p - tokenStart);
+                    size_t dot = mod.find(L'.');
+                    std::wstring baseMod = (dot != std::wstring::npos) ? mod.substr(0, dot) : mod;
 
-                while (p < impPart.length() && impPart[p] == L' ') p++;
-                if (p + 3 <= impPart.length() && impPart.substr(p, 3) == L"as ") {
-                    p += 3;
-                    while (p < impPart.length() && impPart[p] == L' ') p++;
-                    size_t aliasStart = p;
-                    while (p < impPart.length() && isIdentChar(impPart[p])) p++;
-                    std::wstring aliasMod = impPart.substr(aliasStart, p - aliasStart);
-                    if (!aliasMod.empty() && pyKeywords.find(aliasMod) == pyKeywords.end()) {
-                        definedSymbols.insert(aliasMod);
+                    size_t sp = p;
+                    while (sp < impPart.length() && iswspace(impPart[sp])) ++sp;
+                    if (sp + 2 <= impPart.length() && impPart.compare(sp, 2, L"as") == 0 &&
+                        (sp + 2 == impPart.length() || !isIdentChar(impPart[sp + 2]))) {
+                        p = sp + 2;
+                        while (p < impPart.length() && iswspace(impPart[p])) ++p;
+                        size_t aliasStart = p;
+                        while (p < impPart.length() && isIdentChar(impPart[p])) ++p;
+                        if (p > aliasStart) {
+                            addDefinedToScope(activeScopeId, impPart.substr(aliasStart, p - aliasStart));
+                        }
+                    } else {
+                        addDefinedToScope(activeScopeId, baseMod);
                     }
                 }
+                return;
             }
-            continue;
-        }
 
-        if (trimmedCode.rfind(L"def ", 0) == 0 || trimmedCode.rfind(L"async def ", 0) == 0) {
-            size_t defOffset = (trimmedCode.rfind(L"async def ", 0) == 0) ? 10 : 4;
-            size_t p = defOffset;
-            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
-            size_t fnStart = p;
-            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
-            if (p > fnStart) {
-                definedSymbols.insert(trimmedCode.substr(fnStart, p - fnStart));
-            }
-            size_t openP = trimmedCode.find(L'(', p);
-            size_t closeP = trimmedCode.rfind(L')');
-            if (openP != std::wstring::npos && closeP != std::wstring::npos && closeP > openP) {
-                std::wstring params = trimmedCode.substr(openP + 1, closeP - openP - 1);
-                size_t pp = 0;
-                while (pp < params.length()) {
-                    while (pp < params.length() && (params[pp] == L' ' || params[pp] == L'*' || params[pp] == L'/')) pp++;
-                    if (pp >= params.length()) break;
-                    if (isIdentStart(params[pp])) {
-                        size_t pStart = pp;
-                        while (pp < params.length() && isIdentChar(params[pp])) pp++;
-                        std::wstring paramName = params.substr(pStart, pp - pStart);
-                        if (!paramName.empty() && pyKeywords.find(paramName) == pyKeywords.end()) {
-                            definedSymbols.insert(paramName);
+            collectInlineExprBinders(trimmed, activeScopeId, curStmtStartLine, curStmtEndLine);
+
+            // Check def / async def (opens new lexical function scope)
+            if (startsWithKw(trimmed, L"def") || startsWithKw(trimmed, L"async")) {
+                size_t pos = 0;
+                if (startsWithKw(trimmed, L"async")) {
+                    pos = 5;
+                    while (pos < trimmed.length() && iswspace(trimmed[pos])) ++pos;
+                }
+                if (pos < trimmed.length() && startsWithKw(trimmed.substr(pos), L"def")) {
+                    pos += 3;
+                    while (pos < trimmed.length() && iswspace(trimmed[pos])) ++pos;
+                    size_t fnStart = pos;
+                    while (pos < trimmed.length() && isIdentChar(trimmed[pos])) ++pos;
+                    if (pos > fnStart) {
+                        addDefinedToScope(activeScopeId, trimmed.substr(fnStart, pos - fnStart));
+                    }
+                    // Open new PyScope for this function
+                    PyScope fnScope;
+                    fnScope.indent = curStmtIndent;
+                    fnScope.startLine = curStmtStartLine;
+                    fnScope.endLine = SIZE_MAX;
+                    fnScope.isClass = false;
+                    // Enclosing non-class scope (skip class-body scope in Python LEGB lookup)
+                    size_t enc = activeScopeId;
+                    while (enc > 0 && pyScopes[enc].isClass) enc = pyScopes[enc].parentId;
+                    fnScope.parentId = enc;
+                    size_t newScopeId = pyScopes.size();
+                    pyScopes.push_back(std::move(fnScope));
+
+                    while (pos < trimmed.length() && iswspace(trimmed[pos])) ++pos;
+                    if (pos < trimmed.length() && trimmed[pos] == L'[') {
+                        size_t closeTp = findMatchingClose(trimmed, pos, L'[', L']');
+                        if (closeTp != std::wstring::npos) {
+                            extractTypeParams(newScopeId, trimmed.substr(pos + 1, closeTp - pos - 1));
+                            pos = closeTp + 1;
                         }
                     }
-                    while (pp < params.length() && params[pp] != L',') pp++;
-                    if (pp < params.length() && params[pp] == L',') pp++;
+                    size_t openP = trimmed.find(L'(', pos);
+                    bool hasInlineTail = false;
+                    if (openP != std::wstring::npos) {
+                        size_t closeP = findMatchingClose(trimmed, openP, L'(', L')');
+                        if (closeP != std::wstring::npos && closeP > openP) {
+                            extractParams(newScopeId, trimmed.substr(openP + 1, closeP - openP - 1));
+                            size_t colonPos = findTopLevelChar(trimmed, closeP + 1, L':');
+                            if (colonPos != std::wstring::npos && colonPos + 1 < trimmed.length()) {
+                                hasInlineTail = true;
+                                processStmt(trimmed.substr(colonPos + 1), newScopeId);
+                            }
+                        }
+                    }
+                    if (hasInlineTail) {
+                        pyScopes[newScopeId].endLine = curStmtEndLine;
+                    } else {
+                        scopeStack.push_back(newScopeId);
+                    }
+                    return;
                 }
             }
-            continue;
-        }
 
-        if (trimmedCode.rfind(L"class ", 0) == 0) {
-            size_t p = 6;
-            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
-            size_t clStart = p;
-            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
-            if (p > clStart) {
-                definedSymbols.insert(trimmedCode.substr(clStart, p - clStart));
+            if (startsWithKw(trimmed, L"class")) {
+                size_t p = 5;
+                while (p < trimmed.length() && iswspace(trimmed[p])) ++p;
+                size_t clStart = p;
+                while (p < trimmed.length() && isIdentChar(trimmed[p])) ++p;
+                if (p > clStart) {
+                    addDefinedToScope(activeScopeId, trimmed.substr(clStart, p - clStart));
+                }
+                PyScope clsScope;
+                clsScope.indent = curStmtIndent;
+                clsScope.startLine = curStmtStartLine;
+                clsScope.endLine = SIZE_MAX;
+                clsScope.isClass = true;
+                clsScope.parentId = activeScopeId;
+                size_t newScopeId = pyScopes.size();
+                pyScopes.push_back(std::move(clsScope));
+
+                while (p < trimmed.length() && iswspace(trimmed[p])) ++p;
+                if (p < trimmed.length() && trimmed[p] == L'[') {
+                    size_t closeTp = findMatchingClose(trimmed, p, L'[', L']');
+                    if (closeTp != std::wstring::npos) {
+                        extractTypeParams(newScopeId, trimmed.substr(p + 1, closeTp - p - 1));
+                        p = closeTp + 1;
+                    }
+                }
+                size_t colonPos = findTopLevelChar(trimmed, p, L':');
+                if (colonPos != std::wstring::npos && colonPos + 1 < trimmed.length()) {
+                    processStmt(trimmed.substr(colonPos + 1), newScopeId);
+                    pyScopes[newScopeId].endLine = curStmtEndLine;
+                } else {
+                    scopeStack.push_back(newScopeId);
+                }
+                return;
             }
-            continue;
-        }
 
-        if (trimmedCode.rfind(L"for ", 0) == 0 || trimmedCode.rfind(L"async for ", 0) == 0) {
-            size_t forOffset = (trimmedCode.rfind(L"async for ", 0) == 0) ? 10 : 4;
-            size_t inPos = trimmedCode.find(L" in ", forOffset);
-            if (inPos != std::wstring::npos) {
-                std::wstring varsPart = trimmedCode.substr(forOffset, inPos - forOffset);
-                size_t vp = 0;
-                while (vp < varsPart.length()) {
-                    while (vp < varsPart.length() && !isIdentStart(varsPart[vp])) vp++;
-                    if (vp >= varsPart.length()) break;
-                    size_t vStart = vp;
-                    while (vp < varsPart.length() && isIdentChar(varsPart[vp])) vp++;
-                    std::wstring vName = varsPart.substr(vStart, vp - vStart);
-                    if (!vName.empty() && pyKeywords.find(vName) == pyKeywords.end()) {
-                        definedSymbols.insert(vName);
+            if (startsWithKw(trimmed, L"type")) {
+                size_t p = 4;
+                while (p < trimmed.length() && iswspace(trimmed[p])) ++p;
+                size_t idStart = p;
+                while (p < trimmed.length() && isIdentChar(trimmed[p])) ++p;
+                if (p > idStart) {
+                    size_t afterId = p;
+                    while (afterId < trimmed.length() && iswspace(trimmed[afterId])) ++afterId;
+                    if (afterId < trimmed.length() && (trimmed[afterId] == L'=' || trimmed[afterId] == L'[')) {
+                        addDefinedToScope(activeScopeId, trimmed.substr(idStart, p - idStart));
+                        if (trimmed[afterId] == L'[') {
+                            size_t closeTp = findMatchingClose(trimmed, afterId, L'[', L']');
+                            if (closeTp != std::wstring::npos) {
+                                extractTypeParams(activeScopeId, trimmed.substr(afterId + 1, closeTp - afterId - 1));
+                            }
+                        }
+                        return;
                     }
                 }
             }
-            continue;
-        }
 
-        size_t asPos = trimmedCode.find(L" as ");
-        if (asPos != std::wstring::npos && (trimmedCode.rfind(L"with ", 0) == 0 || trimmedCode.rfind(L"async with ", 0) == 0 || trimmedCode.rfind(L"except ", 0) == 0)) {
-            size_t p = asPos + 4;
-            while (p < trimmedCode.length() && trimmedCode[p] == L' ') p++;
-            size_t varStart = p;
-            while (p < trimmedCode.length() && isIdentChar(trimmedCode[p])) p++;
-            if (p > varStart) {
-                std::wstring asVar = trimmedCode.substr(varStart, p - varStart);
-                if (!asVar.empty() && pyKeywords.find(asVar) == pyKeywords.end()) {
-                    definedSymbols.insert(asVar);
+            // `global x, y` registers module-scope binding inside current function
+            if (startsWithKw(trimmed, L"global") && activeScopeId < pyScopes.size()) {
+                size_t gp = 6;
+                while (gp < trimmed.length()) {
+                    while (gp < trimmed.length() && !isIdentStart(trimmed[gp])) ++gp;
+                    if (gp >= trimmed.length()) break;
+                    size_t gst = gp;
+                    while (gp < trimmed.length() && isIdentChar(trimmed[gp])) ++gp;
+                    std::wstring gSym = trimmed.substr(gst, gp - gst);
+                    if (!gSym.empty() && pyKeywords.find(gSym) == pyKeywords.end()) {
+                        pyScopes[activeScopeId].globals.insert(gSym);
+                        addDefinedToScope(0, gSym);
+                    }
+                }
+                return;
+            }
+
+            // `with` / `async with` / `except`
+            {
+                size_t scanOff = std::wstring::npos;
+                bool isWith = false;
+                if (startsWithKw(trimmed, L"with")) { scanOff = 4; isWith = true; }
+                else if (startsWithKw(trimmed, L"async")) {
+                    size_t p = 5;
+                    while (p < trimmed.length() && iswspace(trimmed[p])) ++p;
+                    if (p < trimmed.length() && startsWithKw(trimmed.substr(p), L"with")) { scanOff = p + 4; isWith = true; }
+                    else if (p < trimmed.length() && startsWithKw(trimmed.substr(p), L"for")) {
+                        size_t colonPos = findTopLevelChar(trimmed, p + 3, L':');
+                        if (colonPos != std::wstring::npos && colonPos + 1 < trimmed.length()) {
+                            processStmt(trimmed.substr(colonPos + 1), activeScopeId);
+                        }
+                        return;
+                    }
+                } else if (startsWithKw(trimmed, L"except")) {
+                    scanOff = 6;
+                }
+                if (scanOff != std::wstring::npos) {
+                    size_t colonPos = findTopLevelChar(trimmed, scanOff, L':');
+                    size_t headerEnd = (colonPos != std::wstring::npos) ? colonPos : trimmed.length();
+                    int depth = 0;
+                    for (size_t i = scanOff; i < headerEnd;) {
+                        wchar_t ch = trimmed[i];
+                        if (ch == L'(' || ch == L'[' || ch == L'{') { ++depth; ++i; continue; }
+                        if (ch == L')' || ch == L']' || ch == L'}') { if (depth > 0) --depth; ++i; continue; }
+                        if (isIdentStart(ch) && (i == 0 || !isIdentChar(trimmed[i - 1]))) {
+                            size_t st = i;
+                            while (i < headerEnd && isIdentChar(trimmed[i])) ++i;
+                            if ((depth == 0 || (isWith && depth == 1)) && (i - st) == 2 && trimmed.compare(st, 2, L"as") == 0) {
+                                int tDepth = depth;
+                                size_t tEnd = i;
+                                while (tEnd < headerEnd) {
+                                    wchar_t tc = trimmed[tEnd];
+                                    if (tc == L'(' || tc == L'[' || tc == L'{') ++tDepth;
+                                    else if (tc == L')' || tc == L']' || tc == L'}') {
+                                        if (tDepth == depth) break;
+                                        --tDepth;
+                                    } else if (tDepth == depth && tc == L',') {
+                                        break;
+                                    }
+                                    ++tEnd;
+                                }
+                                if (tEnd > i) {
+                                    collectTargetIdents(trimmed.substr(i, tEnd - i), [&](const std::wstring& sym) {
+                                        addDefinedToScope(activeScopeId, sym);
+                                    });
+                                }
+                                i = tEnd;
+                            }
+                            continue;
+                        }
+                        ++i;
+                    }
+                    if (colonPos != std::wstring::npos && colonPos + 1 < trimmed.length()) {
+                        processStmt(trimmed.substr(colonPos + 1), activeScopeId);
+                    }
+                    return;
                 }
             }
-        }
 
-        size_t eqPos = std::wstring::npos;
-        int bDepth = 0;
-        for (size_t i = 0; i < code.length(); ++i) {
-            wchar_t c = code[i];
-            if (c == L'(' || c == L'[' || c == L'{') bDepth++;
-            else if (c == L')' || c == L']' || c == L'}') { if (bDepth > 0) bDepth--; }
-            else if (bDepth == 0 && c == L'=') {
-                if (i + 1 < code.length() && code[i + 1] == L'=') { i++; continue; }
-                if (i > 0 && (code[i - 1] == L'!' || code[i - 1] == L'<' || code[i - 1] == L'>')) continue;
-                eqPos = i;
-                break;
-            }
-        }
-        if (eqPos != std::wstring::npos) {
-            std::wstring lhs = code.substr(0, eqPos);
-            while (!lhs.empty() && (lhs.back() == L'+' || lhs.back() == L'-' || lhs.back() == L'*' || lhs.back() == L'/' || lhs.back() == L':' || iswspace(lhs.back()))) {
-                lhs.pop_back();
-            }
-            size_t lp = 0;
-            while (lp < lhs.length()) {
-                while (lp < lhs.length() && !isIdentStart(lhs[lp])) lp++;
-                if (lp >= lhs.length()) break;
-                bool isAttr = (lp > 0 && lhs[lp - 1] == L'.');
-                size_t idStart = lp;
-                while (lp < lhs.length() && isIdentChar(lhs[lp])) lp++;
-                std::wstring idName = lhs.substr(idStart, lp - idStart);
-                if (!isAttr && !idName.empty() && pyKeywords.find(idName) == pyKeywords.end()) {
-                    definedSymbols.insert(idName);
+            if (startsWithKw(trimmed, L"case")) {
+                size_t k = 4;
+                while (k < trimmed.length() && iswspace(trimmed[k])) ++k;
+                if (k < trimmed.length() && trimmed[k] != L'=' && trimmed[k] != L'+' && trimmed[k] != L'-' &&
+                    trimmed[k] != L'.' && trimmed[k] != L'[') {
+                    size_t colonPos = findTopLevelChar(trimmed, k, L':');
+                    if (colonPos != std::wstring::npos) {
+                        size_t ifGuard = findKeywordAt(trimmed, k, colonPos, L"if", true);
+                        size_t patEnd = (ifGuard != std::wstring::npos) ? ifGuard : colonPos;
+                        for (size_t i = k; i < patEnd;) {
+                            if (isIdentStart(trimmed[i]) && (i == k || !isIdentChar(trimmed[i - 1]))) {
+                                size_t bp = i;
+                                while (bp > k && iswspace(trimmed[bp - 1])) --bp;
+                                bool isAttr = (bp > k && trimmed[bp - 1] == L'.');
+                                size_t st = i;
+                                while (i < patEnd && isIdentChar(trimmed[i])) ++i;
+                                std::wstring tok = trimmed.substr(st, i - st);
+                                size_t fp = i;
+                                while (fp < patEnd && iswspace(trimmed[fp])) ++fp;
+                                bool beforePunct = (fp < patEnd && (trimmed[fp] == L'.' || trimmed[fp] == L'(' || trimmed[fp] == L'='));
+                                if (!isAttr && !beforePunct && tok != L"as" && tok != L"_") {
+                                    addDefinedToScope(activeScopeId, tok);
+                                }
+                                continue;
+                            }
+                            ++i;
+                        }
+                        if (colonPos + 1 < trimmed.length()) {
+                            processStmt(trimmed.substr(colonPos + 1), activeScopeId);
+                        }
+                        return;
+                    }
                 }
             }
+
+            if (startsWithKw(trimmed, L"for") || startsWithKw(trimmed, L"if") || startsWithKw(trimmed, L"elif") ||
+                startsWithKw(trimmed, L"else") || startsWithKw(trimmed, L"while") || startsWithKw(trimmed, L"try") ||
+                startsWithKw(trimmed, L"finally") || startsWithKw(trimmed, L"match")) {
+                bool isSoftMatchAssign = false;
+                if (startsWithKw(trimmed, L"match")) {
+                    size_t k = 5;
+                    while (k < trimmed.length() && iswspace(trimmed[k])) ++k;
+                    if (k < trimmed.length() && (trimmed[k] == L'=' || trimmed[k] == L'.' || trimmed[k] == L'[' || trimmed[k] == L'(')) {
+                        isSoftMatchAssign = true;
+                    }
+                }
+                if (!isSoftMatchAssign) {
+                    size_t colonPos = findTopLevelChar(trimmed, 0, L':');
+                    if (colonPos != std::wstring::npos && colonPos + 1 < trimmed.length()) {
+                        processStmt(trimmed.substr(colonPos + 1), activeScopeId);
+                    }
+                    return;
+                }
+            }
+
+            if (startsWithKw(trimmed, L"return") || startsWithKw(trimmed, L"yield") ||
+                startsWithKw(trimmed, L"raise") || startsWithKw(trimmed, L"assert") ||
+                startsWithKw(trimmed, L"del") || startsWithKw(trimmed, L"pass") ||
+                startsWithKw(trimmed, L"break") || startsWithKw(trimmed, L"continue") ||
+                startsWithKw(trimmed, L"nonlocal")) {
+                return;
+            }
+
+            std::vector<size_t> eqPositions;
+            int bDepth = 0;
+            for (size_t i = 0; i < trimmed.length(); ++i) {
+                wchar_t c = trimmed[i];
+                if (c == L'(' || c == L'[' || c == L'{') ++bDepth;
+                else if (c == L')' || c == L']' || c == L'}') { if (bDepth > 0) --bDepth; }
+                else if (bDepth == 0 && c == L'=') {
+                    if (i + 1 < trimmed.length() && trimmed[i + 1] == L'=') { ++i; continue; }
+                    if (i > 0 && (trimmed[i - 1] == L'!' || trimmed[i - 1] == L'<' || trimmed[i - 1] == L'>' || trimmed[i - 1] == L':')) continue;
+                    eqPositions.push_back(i);
+                }
+            }
+            if (!eqPositions.empty()) {
+                size_t segStart = 0;
+                for (size_t eqPos : eqPositions) {
+                    std::wstring lhs = trimmed.substr(segStart, eqPos - segStart);
+                    while (!lhs.empty() && (lhs.back() == L'+' || lhs.back() == L'-' || lhs.back() == L'*' || lhs.back() == L'/' ||
+                                            lhs.back() == L'%' || lhs.back() == L'&' || lhs.back() == L'|' || lhs.back() == L'^' ||
+                                            lhs.back() == L'<' || lhs.back() == L'>' || lhs.back() == L'@' || iswspace(lhs.back()))) {
+                        lhs.pop_back();
+                    }
+                    size_t annotColon = findTopLevelChar(lhs, 0, L':');
+                    if (annotColon != std::wstring::npos) {
+                        lhs = lhs.substr(0, annotColon);
+                    }
+                    collectTargetIdents(lhs, [&](const std::wstring& sym) {
+                        addDefinedToScope(activeScopeId, sym);
+                    });
+                    segStart = eqPos + 1;
+                }
+            } else {
+                size_t p = 0;
+                if (isIdentStart(trimmed[p])) {
+                    while (p < trimmed.length() && isIdentChar(trimmed[p])) ++p;
+                    std::wstring varName = trimmed.substr(0, p);
+                    while (p < trimmed.length() && iswspace(trimmed[p])) ++p;
+                    if (p < trimmed.length() && trimmed[p] == L':' && (p + 1 >= trimmed.length() || trimmed[p + 1] != L'=')) {
+                        size_t rp = p + 1;
+                        while (rp < trimmed.length() && iswspace(trimmed[rp])) ++rp;
+                        if (rp < trimmed.length()) {
+                            addDefinedToScope(activeScopeId, varName);
+                        }
+                    }
+                }
+            }
+        };
+
+        bool p1Triple = false;
+        bool p1TripleF = false;
+        int p1TripleFB = 0;
+        bool p1TripleFInner = false;
+        wchar_t p1TripleFInnerQ = 0;
+        wchar_t p1TripleChar = 0;
+        bool p1CarryStr = false;
+        bool p1CarryFStr = false;
+        int p1CarryFB = 0;
+        wchar_t p1CarryStrChar = 0;
+        int p1BracketDepth = 0;
+        std::wstring curStmt;
+        size_t curStmtLines = 0;
+
+        for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
+            const auto& line = buffer.GetLine(l);
+            size_t lineVisIndent = 0;
+            size_t lineFirstNonWs = 0;
+            while (lineFirstNonWs < line.length() && (line[lineFirstNonWs] == L' ' || line[lineFirstNonWs] == L'\t')) {
+                lineVisIndent = (line[lineFirstNonWs] == L'\t') ? ((lineVisIndent / 8 + 1) * 8) : (lineVisIndent + 1);
+                ++lineFirstNonWs;
+            }
+            const bool isNonEmptyCodeStart = (lineFirstNonWs < line.length() && line[lineFirstNonWs] != L'#');
+            if (curStmt.empty() && !p1Triple && !p1CarryStr && p1BracketDepth == 0 && isNonEmptyCodeStart) {
+                while (scopeStack.size() > 1 && lineVisIndent <= pyScopes[scopeStack.back()].indent) {
+                    size_t popped = scopeStack.back();
+                    pyScopes[popped].endLine = (l > pyScopes[popped].startLine) ? (l - 1) : pyScopes[popped].startLine;
+                    scopeStack.pop_back();
+                }
+                curStmtScopeId = scopeStack.back();
+                curStmtStartLine = l;
+                curStmtIndent = lineVisIndent;
+            }
+
+            std::wstring maskedLine;
+            maskedLine.reserve(line.length());
+            bool inStr = p1CarryStr;
+            bool strIsF = p1CarryFStr;
+            int strFB = p1CarryFB;
+            bool inFInner = false;
+            wchar_t fInnerQ = 0;
+            wchar_t qChar = p1CarryStrChar;
+            p1CarryStr = false;
+            p1CarryFStr = false;
+            p1CarryFB = 0;
+            p1CarryStrChar = 0;
+            bool endsWithBs = false;
+
+            for (size_t i = 0; i < line.length(); ++i) {
+                wchar_t ch = line[i];
+                if (p1Triple) {
+                    if (p1TripleF && p1TripleFB > 0) {
+                        if (p1TripleFInner) {
+                            if (ch == L'\\') { maskedLine.push_back(L' '); if (i + 1 < line.length()) { maskedLine.push_back(L' '); ++i; } continue; }
+                            if (ch == p1TripleFInnerQ) p1TripleFInner = false;
+                            maskedLine.push_back(L' ');
+                            continue;
+                        }
+                        if (ch == L'"' || ch == L'\'') { p1TripleFInner = true; p1TripleFInnerQ = ch; maskedLine.push_back(L' '); continue; }
+                        if (ch == L'{') { ++p1TripleFB; maskedLine.push_back(L' '); continue; }
+                        if (ch == L'}') { --p1TripleFB; maskedLine.push_back(L' '); continue; }
+                        maskedLine.push_back(ch);
+                        if (ch == L'(' || ch == L'[') ++p1BracketDepth;
+                        else if ((ch == L')' || ch == L']') && p1BracketDepth > 0) --p1BracketDepth;
+                        continue;
+                    }
+                    if (p1TripleF && ch == L'{') {
+                        if (i + 1 < line.length() && line[i + 1] == L'{') { maskedLine.append(L"  "); ++i; continue; }
+                        p1TripleFB = 1;
+                        maskedLine.push_back(L' ');
+                        continue;
+                    }
+                    if (ch == p1TripleChar && i + 2 < line.length() && line[i + 1] == p1TripleChar && line[i + 2] == p1TripleChar) {
+                        p1Triple = false;
+                        p1TripleF = false;
+                        p1TripleFB = 0;
+                        maskedLine.append(L"   ");
+                        i += 2;
+                    } else {
+                        maskedLine.push_back(L' ');
+                    }
+                    continue;
+                }
+                if (inStr) {
+                    if (strIsF && strFB > 0) {
+                        if (inFInner) {
+                            if (ch == L'\\') { maskedLine.push_back(L' '); if (i + 1 < line.length()) { maskedLine.push_back(L' '); ++i; } continue; }
+                            if (ch == fInnerQ) inFInner = false;
+                            maskedLine.push_back(L' ');
+                            continue;
+                        }
+                        if (ch == L'"' || ch == L'\'') { inFInner = true; fInnerQ = ch; maskedLine.push_back(L' '); continue; }
+                        if (ch == L'{') { ++strFB; maskedLine.push_back(L' '); continue; }
+                        if (ch == L'}') { --strFB; maskedLine.push_back(L' '); continue; }
+                        maskedLine.push_back(ch);
+                        continue;
+                    }
+                    if (ch == L'\\') {
+                        maskedLine.push_back(L' ');
+                        if (i + 1 < line.length()) { maskedLine.push_back(L' '); ++i; }
+                        else {
+                            p1CarryStr = true;
+                            p1CarryFStr = strIsF;
+                            p1CarryFB = strFB;
+                            p1CarryStrChar = qChar;
+                            endsWithBs = true;
+                        }
+                        continue;
+                    }
+                    if (strIsF && ch == L'{') {
+                        if (i + 1 < line.length() && line[i + 1] == L'{') { maskedLine.append(L"  "); ++i; continue; }
+                        strFB = 1;
+                        maskedLine.push_back(L' ');
+                        continue;
+                    }
+                    if (ch == qChar) {
+                        inStr = false;
+                        strIsF = false;
+                        strFB = 0;
+                    }
+                    maskedLine.push_back(L' ');
+                    continue;
+                }
+                bool prefF = false;
+                size_t prefQ = std::wstring::npos;
+                if (isPyStringPrefixAt(line, i, prefQ)) {
+                    for (size_t pk = i; pk < prefQ; ++pk) {
+                        if (towlower(line[pk]) == L'f') prefF = true;
+                        maskedLine.push_back(L' ');
+                    }
+                    i = prefQ;
+                    ch = line[i];
+                }
+                if ((ch == L'"' || ch == L'\'') && i + 2 < line.length() && line[i + 1] == ch && line[i + 2] == ch) {
+                    p1Triple = true;
+                    p1TripleF = prefF;
+                    p1TripleFB = 0;
+                    p1TripleChar = ch;
+                    maskedLine.append(L"   ");
+                    i += 2;
+                    continue;
+                }
+                if (ch == L'"' || ch == L'\'') {
+                    inStr = true;
+                    strIsF = prefF;
+                    strFB = 0;
+                    inFInner = false;
+                    qChar = ch;
+                    maskedLine.push_back(L' ');
+                    continue;
+                }
+                if (ch == L'#') {
+                    break;
+                }
+                if (ch == L'(' || ch == L'[' || ch == L'{') ++p1BracketDepth;
+                else if ((ch == L')' || ch == L']' || ch == L'}') && p1BracketDepth > 0) --p1BracketDepth;
+                maskedLine.push_back(ch);
+            }
+
+            if (!p1Triple && !p1CarryStr && !endsWithBs) {
+                size_t endTrim = maskedLine.length();
+                while (endTrim > 0 && iswspace(maskedLine[endTrim - 1])) --endTrim;
+                if (endTrim > 0 && maskedLine[endTrim - 1] == L'\\') {
+                    endsWithBs = true;
+                    maskedLine[endTrim - 1] = L' ';
+                }
+            }
+
+            if (!maskedLine.empty()) {
+                if (!curStmt.empty()) curStmt.push_back(L' ');
+                curStmt += maskedLine;
+                curStmtEndLine = l;
+                ++curStmtLines;
+            }
+
+            if ((p1BracketDepth == 0 && !p1Triple && !p1CarryStr && !endsWithBs) || curStmtLines >= 64) {
+                if (!curStmt.empty()) {
+                    processStmt(curStmt, curStmtScopeId);
+                    curStmt.clear();
+                }
+                curStmtLines = 0;
+            }
+        }
+        if (!curStmt.empty()) {
+            processStmt(curStmt, curStmtScopeId);
         }
     }
 
-    // Pass 2: Detect undefined names and typos
+    // Pass 2: Detect undefined names and typos (with numeric literal skipping and lexical scope chain lookup)
     if (!hasStarImport) {
+        auto isDefinedInScopeAt = [&](const std::wstring& sym, size_t lineIdx) -> bool {
+            size_t activeScopeId = 0;
+            for (size_t si = 0; si < pyScopes.size(); ++si) {
+                if (lineIdx >= pyScopes[si].startLine && lineIdx <= pyScopes[si].endLine) {
+                    activeScopeId = si;
+                }
+            }
+            size_t cur = activeScopeId;
+            for (int hop = 0; hop < 64; ++hop) {
+                if (pyScopes[cur].syms.find(sym) != pyScopes[cur].syms.end()) return true;
+                if (cur == 0) break;
+                cur = pyScopes[cur].parentId;
+            }
+            if (pyScopes[0].syms.find(sym) != pyScopes[0].syms.end()) return true;
+            for (const auto& es : pyExprScopes) {
+                if (lineIdx >= es.startLine && lineIdx <= es.endLine && es.syms.find(sym) != es.syms.end()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
         bool inTripleStr = false;
         wchar_t tChar = 0;
+        bool p2CarryStr = false;
+        bool p2CarryFStr = false;
+        int p2CarryFB = 0;
+        wchar_t p2CarryChar = 0;
+        int parenDepth = 0;
+        bool inImportStmt = false;
+
         for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
             const auto& line = buffer.GetLine(l);
-            if (!inTripleStr) {
+            if (!inTripleStr && !p2CarryStr && parenDepth == 0 && !inImportStmt) {
                 size_t ls = 0;
                 while (ls < line.length() && (line[ls] == L' ' || line[ls] == L'\t')) ls++;
                 std::wstring trimmedLine = line.substr(ls);
-                if (trimmedLine.rfind(L"import ", 0) == 0 || trimmedLine == L"import" ||
-                    trimmedLine.rfind(L"from ", 0) == 0 || trimmedLine == L"from") {
-                    continue;
+                if (trimmedLine.rfind(L"import", 0) == 0 && (trimmedLine.length() == 6 || !isIdentChar(trimmedLine[6]))) {
+                    inImportStmt = true;
+                } else if (trimmedLine.rfind(L"from", 0) == 0 && (trimmedLine.length() == 4 || !isIdentChar(trimmedLine[4]))) {
+                    inImportStmt = true;
                 }
             }
-            bool inSingleStr = false;
-            wchar_t sChar = 0;
+
+            bool inSingleStr = p2CarryStr;
+            bool p2FStr = p2CarryFStr;
+            int p2FBraceDepth = p2CarryFB;
+            bool p2FInnerStr = false;
+            wchar_t p2FInnerQ = 0;
+            wchar_t sChar = p2CarryChar;
+            p2CarryStr = false;
+            p2CarryFStr = false;
+            p2CarryFB = 0;
+            p2CarryChar = 0;
+            bool lineEndsWithBs = false;
             size_t c = 0;
-            int parenDepth = 0;
 
             while (c < line.length()) {
                 wchar_t ch = line[c];
@@ -3578,10 +4596,60 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 }
 
                 if (inSingleStr) {
-                    if (ch == L'\\') { c += 2; continue; }
-                    if (ch == sChar) inSingleStr = false;
+                    if (p2FStr && p2FBraceDepth > 0) {
+                        if (p2FInnerStr) {
+                            if (ch == L'\\') {
+                                if (c + 1 >= line.length()) {
+                                    p2CarryStr = true; p2CarryFStr = true; p2CarryFB = p2FBraceDepth; p2CarryChar = sChar; lineEndsWithBs = true;
+                                }
+                                c += 2;
+                                continue;
+                            }
+                            if (ch == p2FInnerQ) p2FInnerStr = false;
+                            c++;
+                            continue;
+                        }
+                        if (ch == L'"' || ch == L'\'') {
+                            p2FInnerStr = true;
+                            p2FInnerQ = ch;
+                            c++;
+                            continue;
+                        }
+                        if (ch == L'{') { p2FBraceDepth++; c++; continue; }
+                        if (ch == L'}') { p2FBraceDepth--; c++; continue; }
+                        c++;
+                        continue;
+                    }
+                    if (ch == L'\\') {
+                        if (c + 1 >= line.length()) {
+                            p2CarryStr = true; p2CarryFStr = p2FStr; p2CarryFB = p2FBraceDepth; p2CarryChar = sChar; lineEndsWithBs = true;
+                        }
+                        c += 2;
+                        continue;
+                    }
+                    if (p2FStr && ch == L'{') {
+                        if (c + 1 < line.length() && line[c + 1] == L'{') { c += 2; continue; }
+                        p2FBraceDepth = 1;
+                        c++;
+                        continue;
+                    }
+                    if (ch == sChar) {
+                        inSingleStr = false;
+                        p2FStr = false;
+                        p2FBraceDepth = 0;
+                    }
                     c++;
                     continue;
+                }
+
+                bool prefF = false;
+                size_t prefQ = std::wstring::npos;
+                if (isPyStringPrefixAt(line, c, prefQ)) {
+                    for (size_t pk = c; pk < prefQ; ++pk) {
+                        if (towlower(line[pk]) == L'f') prefF = true;
+                    }
+                    c = prefQ;
+                    ch = line[c];
                 }
 
                 if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
@@ -3592,6 +4660,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 }
                 if (ch == L'"' || ch == L'\'') {
                     inSingleStr = true;
+                    p2FStr = prefF;
+                    p2FBraceDepth = 0;
+                    p2FInnerStr = false;
                     sChar = ch;
                     c++;
                     continue;
@@ -3604,7 +4675,37 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 if (ch == L'(' || ch == L'[' || ch == L'{') { parenDepth++; c++; continue; }
                 if (ch == L')' || ch == L']' || ch == L'}') { if (parenDepth > 0) parenDepth--; c++; continue; }
 
-                if (isIdentStart(ch)) {
+                if (ch == L'\\' && c + 1 == line.length()) {
+                    lineEndsWithBs = true;
+                    c++;
+                    continue;
+                }
+
+                if (inImportStmt) {
+                    c++;
+                    continue;
+                }
+
+                // Skip complete Python numeric literals (hex 0x..., bin 0b..., oct 0o..., floats 1e-3, complex 1j)
+                if (iswdigit(ch) || (ch == L'.' && c + 1 < line.length() && iswdigit(line[c + 1]))) {
+                    if (ch == L'0' && c + 1 < line.length() &&
+                        (line[c + 1] == L'x' || line[c + 1] == L'X' || line[c + 1] == L'b' || line[c + 1] == L'B' || line[c + 1] == L'o' || line[c + 1] == L'O')) {
+                        c += 2;
+                        while (c < line.length() && (iswxdigit(line[c]) || line[c] == L'_')) c++;
+                    } else {
+                        c++;
+                        while (c < line.length() && (iswdigit(line[c]) || line[c] == L'_' || line[c] == L'.')) c++;
+                        if (c < line.length() && (line[c] == L'e' || line[c] == L'E')) {
+                            c++;
+                            if (c < line.length() && (line[c] == L'+' || line[c] == L'-')) c++;
+                            while (c < line.length() && (iswdigit(line[c]) || line[c] == L'_')) c++;
+                        }
+                        if (c < line.length() && (line[c] == L'j' || line[c] == L'J')) c++;
+                    }
+                    continue;
+                }
+
+                if (isIdentStart(ch) && (c == 0 || !isIdentChar(line[c - 1]))) {
                     bool isAttr = false;
                     size_t backP = c;
                     while (backP > 0 && (line[backP - 1] == L' ' || line[backP - 1] == L'\t')) backP--;
@@ -3641,31 +4742,44 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
 
                     if (pyKeywords.find(sym) != pyKeywords.end() ||
                         pyBuiltins.find(sym) != pyBuiltins.end() ||
-                        definedSymbols.find(sym) != definedSymbols.end()) {
+                        isDefinedInScopeAt(sym, l)) {
                         continue;
                     }
 
-                    std::wstring bestMatch;
-                    size_t bestDist = 3;
-
-                    for (const auto& candidate : pyBuiltins) {
-                        size_t d = CalculateLevenshtein(sym, candidate);
-                        if (d < bestDist) {
-                            bestDist = d;
-                            bestMatch = candidate;
-                        }
-                    }
-                    for (const auto& candidate : definedSymbols) {
-                        size_t d = CalculateLevenshtein(sym, candidate);
-                        if (d < bestDist) {
-                            bestDist = d;
-                            bestMatch = candidate;
-                        }
-                    }
-
                     std::wstring msg = L"Python: NameError: name '" + sym + L"' is not defined";
-                    if (!bestMatch.empty() && bestDist <= 2) {
-                        msg += L". Did you mean: '" + bestMatch + L"'?";
+                    // Lightweight zero-allocation suggestion matching (no LLM/API; bounded per file for 0 lag)
+                    if (sym.length() >= 3 && sym.length() <= 48 && diagnostics.size() < 48) {
+                        std::wstring bestMatch;
+                        const size_t maxAllowedDist = (sym.length() >= 6) ? 2 : 1;
+                        size_t bestScore = 999;
+
+                        // Prefer active-scope symbols over builtins on equal edit distance
+                        for (const auto& candidate : definedSymbols) {
+                            if (candidate.length() < 3 || !isDefinedInScopeAt(candidate, l)) continue;
+                            const size_t d = CalculateBoundedDamerauLevenshtein(sym, candidate, maxAllowedDist);
+                            if (d <= maxAllowedDist && IsReasonablePythonSuggestion(sym, candidate, d)) {
+                                const size_t score = d * 2;
+                                if (score < bestScore) {
+                                    bestScore = score;
+                                    bestMatch = candidate;
+                                }
+                            }
+                        }
+                        for (const auto& candidate : pyBuiltins) {
+                            if (candidate.length() < 3) continue;
+                            const size_t d = CalculateBoundedDamerauLevenshtein(sym, candidate, maxAllowedDist);
+                            if (d <= maxAllowedDist && IsReasonablePythonSuggestion(sym, candidate, d)) {
+                                const size_t score = d * 2 + 1;
+                                if (score < bestScore) {
+                                    bestScore = score;
+                                    bestMatch = candidate;
+                                }
+                            }
+                        }
+
+                        if (!bestMatch.empty()) {
+                            msg += L". Did you mean: '" + bestMatch + L"'?";
+                        }
                     }
 
                     diagnostics.push_back({ l, tokenStart, sym.length(), msg, 1 });
@@ -3673,6 +4787,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 }
 
                 c++;
+            }
+
+            if (inImportStmt && !inTripleStr && !p2CarryStr && parenDepth == 0 && !lineEndsWithBs) {
+                inImportStmt = false;
             }
         }
     }
@@ -4020,16 +5138,19 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
     bool inBacktickAcrossLines = false;
     bool inBlockCommentAcrossLines = false;
 
-    auto sanitizeLine = [&](const std::wstring& rawLine, std::wstring& outCode, std::wstring& outCleanCode) {
+    auto sanitizeLine = [&](const std::wstring& rawLine, std::wstring& outCode, std::wstring& outCleanCode, std::vector<bool>* outCommentMask = nullptr) {
         outCode = rawLine;
         outCleanCode = rawLine;
+        if (outCommentMask) outCommentMask->assign(rawLine.length(), false);
         bool inS = false, inD = false, inB = inBacktickAcrossLines, inBlk = inBlockCommentAcrossLines;
         for (size_t i = 0; i < rawLine.length(); ++i) {
             wchar_t ch = rawLine[i];
             if (inBlk) {
                 outCleanCode[i] = L' ';
+                if (outCommentMask) (*outCommentMask)[i] = true;
                 if (ch == L'*' && i + 1 < rawLine.length() && rawLine[i + 1] == L'/') {
                     outCleanCode[i + 1] = L' ';
+                    if (outCommentMask) (*outCommentMask)[i + 1] = true;
                     inBlk = false;
                     ++i;
                 }
@@ -4070,6 +5191,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     inBlk = true;
                     outCleanCode[i] = L' ';
                     outCleanCode[i + 1] = L' ';
+                    if (outCommentMask) {
+                        (*outCommentMask)[i] = true;
+                        (*outCommentMask)[i + 1] = true;
+                    }
                     ++i;
                     continue;
                 }
@@ -4085,6 +5210,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     if (!(i > 0 && rawLine[i - 1] == L':') && rawLine.find(L"</", i + 2) == std::wstring::npos) {
                         outCode = rawLine.substr(0, i);
                         outCleanCode = outCleanCode.substr(0, i);
+                        if (outCommentMask) outCommentMask->resize(i);
                         break;
                     }
                 }
@@ -4107,13 +5233,17 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         inBlockCommentAcrossLines = inBlk;
     };
 
+    bool awaitingPostRootJsxSep = false;
+    size_t awaitingPostRootExprDepth = 0;
+
     for (size_t l = 0; l < lineCount; ++l) {
         const std::wstring& line = buffer.GetLine(l);
         if (line.empty()) continue;
 
         std::wstring code;
         std::wstring cleanCode;
-        sanitizeLine(line, code, cleanCode);
+        std::vector<bool> commentMask;
+        sanitizeLine(line, code, cleanCode, &commentMask);
 
         auto findControlKeyword = [](const std::wstring& str) -> int {
             auto isWord = [&](size_t idx, const std::wstring& kw) -> bool {
@@ -4148,9 +5278,15 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 }
             } else if ((cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) &&
                        cleanCode.find(L"=>") != std::wstring::npos) {
+                // Only track arrow components that actually open a block body `{ ... }` after `=>`.
+                // Implicit-return arrow components (`const Comp = () => (<div/>)` or `() => <div/>`) already return JSX!
+                size_t arrowPos = cleanCode.find(L"=>");
+                size_t afterArrow = arrowPos + 2;
+                while (afterArrow < cleanCode.length() && iswspace(cleanCode[afterArrow])) afterArrow++;
+                bool hasBlockArrowBody = (afterArrow < cleanCode.length() && cleanCode[afterArrow] == L'{');
                 size_t varPos = cleanCode.find(L"const ");
                 if (varPos == std::wstring::npos) varPos = cleanCode.find(L"let ");
-                if (varPos != std::wstring::npos) {
+                if (hasBlockArrowBody && varPos != std::wstring::npos) {
                     size_t nameStart = varPos + (cleanCode.substr(varPos, 4) == L"let " ? 4 : 6);
                     while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
                     size_t nameEnd = nameStart;
@@ -4222,9 +5358,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             }
         }
 
+        const bool inJsxProseOnLine = (isJsx && !jsxStack.empty() && jsxStack.back().exprCurlyDepth == 0);
+
         // Return Statement Analysis: check for missing return expression in components & missing semicolons
+        // Skip when inside JSX text children so prose like `<p>Click to return</p>` is never misread as a JS return statement.
         size_t retPos = 0;
-        while ((retPos = cleanCode.find(L"return", retPos)) != std::wstring::npos) {
+        while (!inJsxProseOnLine && (retPos = cleanCode.find(L"return", retPos)) != std::wstring::npos) {
             bool validBefore = (retPos == 0 || (!iswalnum(cleanCode[retPos - 1]) && cleanCode[retPos - 1] != L'_' && cleanCode[retPos - 1] != L'$'));
             size_t afterIdx = retPos + 6;
             bool validAfter = (afterIdx >= cleanCode.length() || (!iswalnum(cleanCode[afterIdx]) && cleanCode[afterIdx] != L'_' && cleanCode[afterIdx] != L'$'));
@@ -4236,26 +5375,82 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                 std::wstring afterReturn = cleanCode.substr(afterIdx);
                 size_t s = 0;
-                while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'	')) s++;
+                while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'\t')) s++;
                 afterReturn = afterReturn.substr(s);
+                while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'\t' || afterReturn.back() == L'\r')) afterReturn.pop_back();
 
                 size_t lastNonWs = code.find_last_not_of(L" \t\r\n");
                 bool hasSemi = (lastNonWs != std::wstring::npos && code[lastNonWs] == L';');
                 if (!afterReturn.empty() && afterReturn.back() == L';') {
                     hasSemi = true;
                     afterReturn.pop_back();
-                    while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'	')) afterReturn.pop_back();
+                    while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'\t')) afterReturn.pop_back();
                 }
 
                 bool hasValOnSameLine = !afterReturn.empty();
-                bool multilineContinuation = afterReturn.ends_with(L"(") || afterReturn.ends_with(L"{") || afterReturn.ends_with(L"[");
+                bool multilineContinuation = inBacktickAcrossLines;
+                if (hasValOnSameLine && !multilineContinuation) {
+                    wchar_t lastCh = afterReturn.back();
+                    if (lastCh == L'(' || lastCh == L'{' || lastCh == L'[' || lastCh == L',' ||
+                        lastCh == L'.' || lastCh == L'?' || lastCh == L':' || lastCh == L'+' ||
+                        lastCh == L'-' || lastCh == L'*' || lastCh == L'/' || lastCh == L'%' ||
+                        lastCh == L'&' || lastCh == L'|' || lastCh == L'^' || lastCh == L'=' ||
+                        lastCh == L'!' || lastCh == L'~' || lastCh == L'`') {
+                        multilineContinuation = true;
+                    }
+                    // Unbalanced delimiters on the same line (e.g. `return fn(a, b` or `return <div className={...`)
+                    int pBal = 0, bBal = 0, kBal = 0;
+                    for (wchar_t ch : afterReturn) {
+                        if (ch == L'(') pBal++; else if (ch == L')') pBal--;
+                        else if (ch == L'{') bBal++; else if (ch == L'}') bBal--;
+                        else if (ch == L'[') kBal++; else if (ch == L']') kBal--;
+                    }
+                    if (pBal > 0 || bBal > 0 || kBal > 0) {
+                        multilineContinuation = true;
+                    }
+                    // Multi-line JSX element / fragment returned directly without wrapping parens, e.g.:
+                    //   return <div className="...">
+                    //     <p>Hello</p>
+                    //   </div>;
+                    if (isJsx && afterReturn.front() == L'<') {
+                        bool selfClosed = afterReturn.ends_with(L"/>");
+                        bool hasClosingTagAtEnd = false;
+                        if (afterReturn.size() >= 3 && afterReturn.back() == L'>') {
+                            size_t closePos = afterReturn.rfind(L"</");
+                            if (closePos != std::wstring::npos && closePos > 0) {
+                                hasClosingTagAtEnd = true;
+                            }
+                        }
+                        if (!selfClosed && !hasClosingTagAtEnd) {
+                            multilineContinuation = true;
+                        }
+                    }
+                    // Check if the next non-empty line continues this return expression (chaining, ternary, JSX children/closing)
+                    if (!multilineContinuation) {
+                        for (size_t nl = l + 1; nl < lineCount; ++nl) {
+                            const std::wstring& nLine = buffer.GetLine(nl);
+                            size_t ns = 0;
+                            while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
+                            if (ns >= nLine.length()) continue;
+                            if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
+                            wchar_t nc = nLine[ns];
+                            if (nc == L'.' || nc == L'?' || nc == L':' || nc == L'+' || nc == L'-' ||
+                                nc == L'*' || nc == L'/' || nc == L'&' || nc == L'|' ||
+                                (isJsx && nc == L'<')) {
+                                multilineContinuation = true;
+                            }
+                            break;
+                        }
+                    }
+                }
 
                 bool hasValOnNextLine = false;
+                bool asiJsxAfterNewline = false;
                 if (!hasValOnSameLine) {
                     for (size_t nl = l + 1; nl < lineCount; ++nl) {
                         const std::wstring& nLine = buffer.GetLine(nl);
                         size_t ns = 0;
-                        while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'	')) ns++;
+                        while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
                         if (ns >= nLine.length()) continue;
                         if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
                         if (nLine[ns] == L'}' || nLine[ns] == L')') {
@@ -4263,9 +5458,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                         } else {
                             hasValOnNextLine = true;
                             multilineContinuation = true;
+                            if (isJsx && !hasSemi && !inBacktickAcrossLines &&
+                                nLine[ns] == L'<' && ns + 1 < nLine.length() &&
+                                (nLine[ns + 1] == L'>' || iswalpha(nLine[ns + 1]) || nLine[ns + 1] == L'_' || nLine[ns + 1] == L'$')) {
+                                asiJsxAfterNewline = true;
+                            }
                         }
                         break;
                     }
+                }
+
+                if (asiJsxAfterNewline) {
+                    lsp::Diagnostic diag;
+                    diag.line = l;
+                    diag.col = retPos;
+                    diag.length = 6;
+                    diag.message = L"Newline after 'return' inserts an automatic semicolon (returning undefined). Wrap multi-line JSX in parentheses: return ( <>...</> ). (no-unreachable)";
+                    diag.severity = 1; // Error
+                    diagnostics.push_back(std::move(diag));
                 }
 
                 if (hasValOnSameLine || hasValOnNextLine) {
@@ -4282,26 +5492,6 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                         diag.severity = 1; // Error
                         diagnostics.push_back(std::move(diag));
                     }
-
-                    if (!hasSemi) {
-                        lsp::Diagnostic semiDiag;
-                        semiDiag.line = l;
-                        semiDiag.col = retPos + 6;
-                        semiDiag.length = 1;
-                        semiDiag.message = L"Missing semicolon. (semi)";
-                        semiDiag.severity = 2; // Warning
-                        diagnostics.push_back(std::move(semiDiag));
-                    }
-                }
-
-                if (hasValOnSameLine && !hasSemi && !multilineContinuation) {
-                    lsp::Diagnostic semiDiag;
-                    semiDiag.line = l;
-                    semiDiag.col = cleanCode.length();
-                    semiDiag.length = 1;
-                    semiDiag.message = L"Missing semicolon. (semi)";
-                    semiDiag.severity = 2; // Warning
-                    diagnostics.push_back(std::move(semiDiag));
                 }
             }
             retPos += 6;
@@ -4309,14 +5499,20 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
         // 1. React Hook Rules: Cannot call hooks conditionally or inside loops
         for (const auto& hook : reactHooks) {
+            if (inJsxProseOnLine) break;
             size_t pos = 0;
-            while ((pos = code.find(hook, pos)) != std::wstring::npos) {
-                bool validBefore = (pos == 0 || (!iswalnum(code[pos - 1]) && code[pos - 1] != L'_' && code[pos - 1] != L'$'));
+            while ((pos = cleanCode.find(hook, pos)) != std::wstring::npos) {
+                bool validBefore = (pos == 0 || (!iswalnum(cleanCode[pos - 1]) && cleanCode[pos - 1] != L'_' && cleanCode[pos - 1] != L'$'));
                 size_t afterIdx = pos + hook.length();
-                bool validAfter = (afterIdx >= code.length() || (!iswalnum(code[afterIdx]) && code[afterIdx] != L'_' && code[afterIdx] != L'$'));
+                bool validAfter = (afterIdx >= cleanCode.length() || (!iswalnum(cleanCode[afterIdx]) && cleanCode[afterIdx] != L'_' && cleanCode[afterIdx] != L'$'));
 
-                if (validBefore && validAfter) {
-                    bool precededByDot = (pos > 0 && code[pos - 1] == L'.');
+                // Only treat as a hook invocation if followed by '(' or '<' (generic call like useState<string>())
+                size_t callScan = afterIdx;
+                while (callScan < cleanCode.length() && iswspace(cleanCode[callScan])) callScan++;
+                bool isHookCall = (callScan < cleanCode.length() && (cleanCode[callScan] == L'(' || cleanCode[callScan] == L'<'));
+
+                if (validBefore && validAfter && isHookCall) {
+                    bool precededByDot = (pos > 0 && cleanCode[pos - 1] == L'.');
                     if (!precededByDot) {
                         // Bare hook call e.g. useEffect(...) -> verify it is imported!
                         if (importedSymbols.find(hook) == importedSymbols.end() &&
@@ -4329,7 +5525,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             diag.severity = 1; // 1 = Error
                             diagnostics.push_back(std::move(diag));
                         }
-                    } else if (pos >= 6 && code.substr(pos - 6, 6) == L"React.") {
+                    } else if (pos >= 6 && cleanCode.substr(pos - 6, 6) == L"React.") {
                         if (importedSymbols.find(L"React") == importedSymbols.end() &&
                             definedSymbols.find(L"React") == definedSymbols.end()) {
                             lsp::Diagnostic diag;
@@ -4353,61 +5549,59 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     }
 
                     if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
-                        size_t callParen = code.find(L'(', afterIdx);
+                        size_t callParen = cleanCode.find(L'(', afterIdx);
                         if (callParen != std::wstring::npos) {
-                            if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
-                                // Multi-line scanner tracking parenDepth from callParen
-                                int parenDepth = 1;
-                                int curBraceDepth = 0;
-                                bool hasCommaAtTopLevel = false;
-                                bool inQ = false;
-                                wchar_t qC = 0;
+                            // Multi-line scanner tracking parenDepth from callParen
+                            int parenDepth = 1;
+                            int curBraceDepth = 0;
+                            bool hasCommaAtTopLevel = false;
+                            bool inQ = false;
+                            wchar_t qC = 0;
 
-                                size_t scanL = l;
-                                size_t scanC = callParen + 1;
-                                while (scanL < buffer.GetLineCount() && scanL - l <= 60) {
-                                    const std::wstring& sLine = buffer.GetLine(scanL);
-                                    for (; scanC < sLine.length(); ++scanC) {
-                                        wchar_t sc = sLine[scanC];
-                                        if (inQ) {
-                                            if (sc == L'\\' && scanC + 1 < sLine.length()) {
-                                                scanC++;
-                                            } else if (sc == qC) {
-                                                inQ = false;
-                                            }
-                                        } else {
-                                            if (sc == L'"' || sc == L'\'' || sc == L'`') {
-                                                inQ = true;
-                                                qC = sc;
-                                            } else if (sc == L'(') {
-                                                parenDepth++;
-                                            } else if (sc == L')') {
-                                                parenDepth--;
-                                                if (parenDepth == 0) break;
-                                            } else if (sc == L'{') {
-                                                curBraceDepth++;
-                                            } else if (sc == L'}') {
-                                                if (curBraceDepth > 0) curBraceDepth--;
-                                            } else if (sc == L',' && parenDepth == 1 && curBraceDepth == 0) {
-                                                hasCommaAtTopLevel = true;
-                                                break;
-                                            }
+                            size_t scanL = l;
+                            size_t scanC = callParen + 1;
+                            while (scanL < buffer.GetLineCount() && scanL - l <= 60) {
+                                const std::wstring& sLine = buffer.GetLine(scanL);
+                                for (; scanC < sLine.length(); ++scanC) {
+                                    wchar_t sc = sLine[scanC];
+                                    if (inQ) {
+                                        if (sc == L'\\' && scanC + 1 < sLine.length()) {
+                                            scanC++;
+                                        } else if (sc == qC) {
+                                            inQ = false;
+                                        }
+                                    } else {
+                                        if (sc == L'"' || sc == L'\'' || sc == L'`') {
+                                            inQ = true;
+                                            qC = sc;
+                                        } else if (sc == L'(') {
+                                            parenDepth++;
+                                        } else if (sc == L')') {
+                                            parenDepth--;
+                                            if (parenDepth == 0) break;
+                                        } else if (sc == L'{') {
+                                            curBraceDepth++;
+                                        } else if (sc == L'}') {
+                                            if (curBraceDepth > 0) curBraceDepth--;
+                                        } else if (sc == L',' && parenDepth == 1 && curBraceDepth == 0) {
+                                            hasCommaAtTopLevel = true;
+                                            break;
                                         }
                                     }
-                                    if (hasCommaAtTopLevel || parenDepth == 0) break;
-                                    scanL++;
-                                    scanC = 0;
                                 }
+                                if (hasCommaAtTopLevel || parenDepth == 0) break;
+                                scanL++;
+                                scanC = 0;
+                            }
 
-                                if (parenDepth == 0 && !hasCommaAtTopLevel) {
-                                    lsp::Diagnostic diag;
-                                    diag.line = l;
-                                    diag.col = pos;
-                                    diag.length = hook.length();
-                                    diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
-                                    diag.severity = 3; // Information
-                                    diagnostics.push_back(std::move(diag));
-                                }
+                            if (parenDepth == 0 && !hasCommaAtTopLevel) {
+                                lsp::Diagnostic diag;
+                                diag.line = l;
+                                diag.col = pos;
+                                diag.length = hook.length();
+                                diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
+                                diag.severity = 3; // Information
+                                diagnostics.push_back(std::move(diag));
                             }
                         }
                     }
@@ -4416,18 +5610,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
             }
         }
 
-        // 2. Direct State Mutation: this.state.x = ...
-        size_t statePos = code.find(L"this.state.");
+        // 2. Direct State Mutation: this.state.x = ... (ignore comparisons ==, !=, <=, >=, =>)
+        size_t statePos = inJsxProseOnLine ? std::wstring::npos : cleanCode.find(L"this.state.");
         if (statePos != std::wstring::npos) {
-            size_t eqPos = code.find(L'=', statePos + 11);
-            if (eqPos != std::wstring::npos && (eqPos + 1 >= code.length() || code[eqPos + 1] != L'=')) {
-                lsp::Diagnostic diag;
-                diag.line = l;
-                diag.col = statePos;
-                diag.length = (eqPos - statePos + 1);
-                diag.message = L"Do not mutate state directly. Use setState(). (react/no-direct-mutation-state)";
-                diag.severity = 1; // Error
-                diagnostics.push_back(std::move(diag));
+            size_t eqPos = cleanCode.find(L'=', statePos + 11);
+            if (eqPos != std::wstring::npos) {
+                wchar_t prevCh = (eqPos > 0) ? cleanCode[eqPos - 1] : L'\0';
+                wchar_t nextCh = (eqPos + 1 < cleanCode.length()) ? cleanCode[eqPos + 1] : L'\0';
+                bool isComparisonOrArrow = (prevCh == L'=' || prevCh == L'!' || prevCh == L'<' || prevCh == L'>' ||
+                                            nextCh == L'=' || nextCh == L'>');
+                if (!isComparisonOrArrow) {
+                    lsp::Diagnostic diag;
+                    diag.line = l;
+                    diag.col = statePos;
+                    diag.length = (eqPos - statePos + 1);
+                    diag.message = L"Do not mutate state directly. Use setState(). (react/no-direct-mutation-state)";
+                    diag.severity = 1; // Error
+                    diagnostics.push_back(std::move(diag));
+                }
             }
         }
 
@@ -4447,21 +5647,27 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 const bool inJsxExpr = (!jsxStack.empty() && jsxStack.back().exprCurlyDepth > 0);
                 if (jsxStack.empty() || inJsxExpr) {
                     if (p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
+                        if (p >= commentMask.size() || !commentMask[p]) {
+                            awaitingPostRootJsxSep = false;
+                        }
                         p++;
                         continue;
                     }
                     if (!jsxStack.empty() && code[p] == L'{') {
+                        awaitingPostRootJsxSep = false;
                         jsxStack.back().exprCurlyDepth++;
                         p++;
                         continue;
                     }
                     if (!jsxStack.empty() && code[p] == L'}') {
+                        awaitingPostRootJsxSep = false;
                         if (jsxStack.back().exprCurlyDepth > 0) jsxStack.back().exprCurlyDepth--;
                         p++;
                         continue;
                     }
                     if (code[p] == L'/') {
                         if (IsJsRegexStart(code, p)) {
+                            awaitingPostRootJsxSep = false;
                             size_t r = ScanJsRegexEnd(code, p);
                             if (r != std::wstring::npos) {
                                 p = r + 1;
@@ -4470,6 +5676,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                         }
                     }
                     if (code[p] == L'"' || code[p] == L'\'' || code[p] == L'`') {
+                        awaitingPostRootJsxSep = false;
                         wchar_t q = code[p++];
                         while (p < code.length()) {
                             if (code[p] == L'\\' && p + 1 < code.length()) {
@@ -4483,8 +5690,12 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                         }
                         continue;
                     }
+                    if (!iswspace(code[p]) && code[p] != L'<') {
+                        awaitingPostRootJsxSep = false;
+                    }
                 } else {
                     if (code[p] == L'{') {
+                        awaitingPostRootJsxSep = false;
                         jsxStack.back().exprCurlyDepth = 1;
                         p++;
                         continue;
@@ -4495,6 +5706,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     // Double check: if outside JSX prose (or inside JSX expression) and cleanCode masked this position (quote/regex/comment), skip!
                     if ((jsxStack.empty() || (!jsxStack.empty() && jsxStack.back().exprCurlyDepth > 0)) &&
                         p < cleanCode.length() && cleanCode[p] == L' ' && code[p] != L' ') {
+                        awaitingPostRootJsxSep = false;
                         p++;
                         continue;
                     }
@@ -4502,6 +5714,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     // e.g. `useRef<...>`, `ReturnType<...>`, `LayoutProps<...>`, `KeyboardEvent<...>` are generics!
                     // But inside JSX children, text can precede a tag (e.g. `<span>Cleave<span className=...>DB</span></span>`).
                     if (jsxStack.empty() && p + 1 < code.length() && code[p + 1] != L'/' && p > 0 && (iswalnum(code[p - 1]) || code[p - 1] == L'_' || code[p - 1] == L'$')) {
+                        awaitingPostRootJsxSep = false;
                         p++;
                         continue;
                     }
@@ -4604,7 +5817,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             auto advanceToTagEndLine = [&]() {
                                 if (tagEndLine > l) {
                                     for (size_t adv = l + 1; adv <= tagEndLine; ++adv) {
-                                        sanitizeLine(buffer.GetLine(adv), code, cleanCode);
+                                        sanitizeLine(buffer.GetLine(adv), code, cleanCode, &commentMask);
                                     }
                                     l = tagEndLine;
                                 }
@@ -4621,6 +5834,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                              tagStr.find(L"keyof ") != std::wstring::npos ||
                                                              tagStr.find(L" extends ") != std::wstring::npos ||
                                                              tagStr.find(L" as ") != std::wstring::npos)) {
+                                awaitingPostRootJsxSep = false;
                                 advanceToTagEndLine();
                                 p = tagEnd + 1;
                                 continue;
@@ -4637,6 +5851,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             // Skip TypeScript primitive types (e.g. useRef<any>(null), useState<number>)
                             if (canBeTsGeneric && !isClose && !hasJsxAttrs && tsTypeKeywords.count(tagName) > 0) {
+                                awaitingPostRootJsxSep = false;
                                 advanceToTagEndLine();
                                 p = tagEnd + 1;
                                 continue;
@@ -4651,14 +5866,35 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                                     targetLine[nextCharIdx] == L';' || targetLine[nextCharIdx] == L',' ||
                                                                     targetLine[nextCharIdx] == L'=' || targetLine[nextCharIdx] == L'.' ||
                                                                     targetLine[nextCharIdx] == L':')) {
+                                    awaitingPostRootJsxSep = false;
                                     advanceToTagEndLine();
                                     p = tagEnd + 1;
                                     continue;
                                 }
                             }
 
-                            if (!isClose && !isSelfClose && voidTags.count(tagName) == 0 && !tagName.empty()) {
-                                jsxStack.push_back({ tagName, l, p, 0 });
+                            const size_t openTagDiagLen = (tagEndLine == l && tagEnd >= p)
+                                ? (tagEnd - p + 1)
+                                : (std::min<size_t>)(tagName.length() + 1, code.length() - p);
+
+                            if (!isClose && !tagName.empty()) {
+                                const size_t curExprDepth = jsxStack.empty() ? 0 : jsxStack.back().exprCurlyDepth;
+                                const bool inJsxExprRoot = (jsxStack.empty() || curExprDepth > 0);
+                                if (inJsxExprRoot && awaitingPostRootJsxSep && curExprDepth == awaitingPostRootExprDepth) {
+                                    lsp::Diagnostic diag;
+                                    diag.line = l;
+                                    diag.col = p;
+                                    diag.length = (tagName == L"<>") ? 2 : (std::min<size_t>)(tagName.length() + 1, code.length() - p);
+                                    std::wstring disp = (tagName == L"<>") ? L"<>" : (L"<" + tagName + L">");
+                                    diag.message = L"JSX expressions must have one parent element. Wrap adjacent JSX elements (" + disp + L") in an enclosing tag or fragment (<>...</>). (react/jsx-adjacent-elements)";
+                                    diag.severity = 1; // Error
+                                    diagnostics.push_back(std::move(diag));
+                                }
+                                awaitingPostRootJsxSep = false;
+
+                                if (!isSelfClose && voidTags.count(tagName) == 0) {
+                                    jsxStack.push_back({ tagName, l, p, 0 });
+                                }
 
                                 std::unordered_set<std::wstring> propNames;
                                 size_t aIdx = nEnd;
@@ -4712,6 +5948,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                     else aIdx++;
                                                 }
                                             } else if (tagStr[aIdx] == L'{') {
+                                                size_t exprStart = aIdx + 1;
                                                 int depth = 1;
                                                 aIdx++;
                                                 bool inQ = false;
@@ -4728,6 +5965,24 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                                     }
                                                     aIdx++;
                                                 }
+                                                if (depth == 0 && !propName.empty()) {
+                                                    bool onlyWs = true;
+                                                    for (size_t k = exprStart; k + 1 < aIdx; ++k) {
+                                                        if (!iswspace(tagStr[k])) {
+                                                            onlyWs = false;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if (onlyWs) {
+                                                        lsp::Diagnostic diag;
+                                                        diag.line = l;
+                                                        diag.col = p;
+                                                        diag.length = openTagDiagLen;
+                                                        diag.message = L"JSX attributes must only be assigned a non-empty expression: \"" + propName + L"={}\"";
+                                                        diag.severity = 1; // Error
+                                                        diagnostics.push_back(std::move(diag));
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -4737,7 +5992,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                             lsp::Diagnostic diag;
                                             diag.line = l;
                                             diag.col = p;
-                                            diag.length = tagEnd - p + 1;
+                                            diag.length = openTagDiagLen;
                                             diag.message = L"No duplicate props allowed: \"" + propName + L"\" (react/jsx-no-duplicate-props)";
                                             diag.severity = 2; // Warning
                                             diagnostics.push_back(std::move(diag));
@@ -4746,10 +6001,23 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                         }
                                     }
                                 }
+
+                                if (isSelfClose || voidTags.count(tagName) > 0) {
+                                    if (jsxStack.empty() || jsxStack.back().exprCurlyDepth > 0) {
+                                        awaitingPostRootJsxSep = true;
+                                        awaitingPostRootExprDepth = jsxStack.empty() ? 0 : jsxStack.back().exprCurlyDepth;
+                                    }
+                                }
                             } else if (isClose && !tagName.empty()) {
                                 if (!jsxStack.empty()) {
                                     if (jsxStack.back().name == tagName || _wcsicmp(jsxStack.back().name.c_str(), tagName.c_str()) == 0) {
                                         jsxStack.pop_back();
+                                        if (jsxStack.empty() || jsxStack.back().exprCurlyDepth > 0) {
+                                            awaitingPostRootJsxSep = true;
+                                            awaitingPostRootExprDepth = jsxStack.empty() ? 0 : jsxStack.back().exprCurlyDepth;
+                                        } else {
+                                            awaitingPostRootJsxSep = false;
+                                        }
                                     } else {
                                         // Look backward down jsxStack for a matching ancestor
                                         auto matchIt = jsxStack.end();
@@ -4774,12 +6042,19 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                             }
                                             // Pop all items from matchIt through the end
                                             jsxStack.erase(matchIt, jsxStack.end());
+                                            if (jsxStack.empty() || jsxStack.back().exprCurlyDepth > 0) {
+                                                awaitingPostRootJsxSep = true;
+                                                awaitingPostRootExprDepth = jsxStack.empty() ? 0 : jsxStack.back().exprCurlyDepth;
+                                            } else {
+                                                awaitingPostRootJsxSep = false;
+                                            }
                                         } else {
                                             // No matching opening tag exists anywhere in the stack; report unexpected closing tag without corrupting stack
+                                            awaitingPostRootJsxSep = false;
                                             lsp::Diagnostic diag;
                                             diag.line = l;
                                             diag.col = p;
-                                            diag.length = tagEnd - p + 1;
+                                            diag.length = openTagDiagLen;
                                             std::wstring disp = (tagName == L"<>" ? L"</>" : (L"</" + tagName + L">"));
                                             diag.message = L"JSX: Unexpected closing tag '" + disp + L"', no matching opening tag found";
                                             diag.severity = 1; // Error
@@ -4787,10 +6062,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                                         }
                                     }
                                 } else {
+                                    awaitingPostRootJsxSep = false;
                                     lsp::Diagnostic diag;
                                     diag.line = l;
                                     diag.col = p;
-                                    diag.length = tagEnd - p + 1;
+                                    diag.length = openTagDiagLen;
                                     std::wstring disp = (tagName == L"<>" ? L"</>" : (L"</" + tagName + L">"));
                                     diag.message = L"JSX: Unexpected closing tag '" + disp + L"', no matching opening tag found";
                                     diag.severity = 1; // Error
@@ -4802,6 +6078,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                             continue;
                         }
                     }
+                }
+                if ((jsxStack.empty() || (!jsxStack.empty() && jsxStack.back().exprCurlyDepth > 0)) && !iswspace(code[p])) {
+                    awaitingPostRootJsxSep = false;
                 }
                 p++;
             }

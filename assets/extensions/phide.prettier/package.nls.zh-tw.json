@@ -6,7 +6,7 @@
   "ext.config.configPath": "Prettier 組態檔的路徑。",
   "ext.config.disableLanguages": "針對這個套件要在某些語言停用的的 ID 清單。",
   "ext.config.disableLanguagesDeprecation": "這個功能已不再支援。請改用 phide 的 [default formatters](https://github.com/prettier/phide.prettier#default-formatter) 或用 `.prettierignore`。",
-  "ext.config.documentSelectors": "用於註冊 Prettier 排版器的 [glob patterns](https://code.visualstudio.com/api/references/phide-api#GlobPattern) 清單。",
+  "ext.config.documentSelectors": "用於註冊 Prettier 排版器的 [glob patterns](https://phide.dev/docs/api#GlobPattern) 清單。",
   "ext.config.endOfLine": "指定 Prettier 使用的結尾符號。",
   "ext.config.htmlWhitespaceSensitivity": "指定全域 HTML 檔案的[留白敏感度](https://prettier.io/blog/2018/11/07/1.15.0.html#whitespace-sensitive-formatting)。\n 可用的選項：\n- `css` - 遵照 CSS `display` 屬性的設定。\n- `strict` - 留白敏感。\n- `ignore` - 留白不敏感。",
   "ext.config.ignorePath": "`.prettierignore` 檔案的路徑。",

@@ -11,8 +11,64 @@
 #include <algorithm>
 #include <cwctype>
 #include <fstream>
+#include <wincodec.h>
 
 namespace phide::ui {
+
+ID2D1Bitmap* QuickOpenModal::GetAssetBitmap(ID2D1RenderTarget* pRT, const std::wstring& filename) {
+    if (!pRT || filename.empty()) return nullptr;
+    if (m_cachedAssetRT != pRT) {
+        m_assetBitmaps.clear();
+        m_cachedAssetRT = pRT;
+    }
+    auto it = m_assetBitmaps.find(filename);
+    if (it != m_assetBitmaps.end() && it->second) {
+        return it->second.Get();
+    }
+
+    std::vector<std::wstring> candidates = {
+        L"assets/" + filename,
+        L"bin/assets/" + filename,
+        L"../assets/" + filename,
+        filename
+    };
+    wchar_t modPath[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH)) {
+        std::filesystem::path exeDir = std::filesystem::path(modPath).parent_path();
+        candidates.push_back((exeDir / L"assets" / filename).wstring());
+        candidates.push_back((exeDir / L".." / L"assets" / filename).wstring());
+    }
+    std::wstring foundPath;
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(c, ec)) {
+            foundPath = c;
+            break;
+        }
+    }
+    if (foundPath.empty()) return nullptr;
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
+        if (SUCCEEDED(pWicFactory->CreateDecoderFromFilename(foundPath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &pDecoder))) {
+            Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> pFrame;
+            if (SUCCEEDED(pDecoder->GetFrame(0, &pFrame))) {
+                Microsoft::WRL::ComPtr<IWICFormatConverter> pConverter;
+                if (SUCCEEDED(pWicFactory->CreateFormatConverter(&pConverter))) {
+                    if (SUCCEEDED(pConverter->Initialize(pFrame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom))) {
+                        Microsoft::WRL::ComPtr<ID2D1Bitmap> pBmp;
+                        if (SUCCEEDED(pRT->CreateBitmapFromWicBitmap(pConverter.Get(), nullptr, &pBmp))) {
+                            m_assetBitmaps[filename] = pBmp;
+                            return pBmp.Get();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return nullptr;
+}
 
 QuickOpenModal::QuickOpenModal() = default;
 
@@ -117,7 +173,10 @@ void QuickOpenModal::Open(const std::vector<std::wstring>& recentPaths,
             item.description = p.parent_path().wstring();
         }
 
-        item.iconType = LucideIcons::GetIconTypeForPath(item.title, false, false);
+        std::error_code ec;
+        item.isDirectory = std::filesystem::is_directory(p, ec);
+        item.iconFileName = item.title;
+        item.iconType = LucideIcons::GetIconTypeForPath(item.title, item.isDirectory, false);
         m_allItems.push_back(std::move(item));
     }
 
@@ -161,6 +220,8 @@ void QuickOpenModal::Open(const std::vector<std::wstring>& recentPaths,
                     item.description = entry.path().parent_path().wstring();
                 }
 
+                item.isDirectory = false;
+                item.iconFileName = item.title;
                 item.iconType = LucideIcons::GetIconTypeForPath(item.title, false, false);
                 m_allItems.push_back(std::move(item));
                 count++;
@@ -269,6 +330,7 @@ void QuickOpenModal::FilterItems() {
                         matchItem.description = p.filename().wstring() + L":" + std::to_wstring(lineNum);
                         matchItem.fullPath = filePath;
                         matchItem.targetLine = lineNum;
+                        matchItem.iconFileName = p.filename().wstring();
                         matchItem.iconType = LucideIcons::GetIconTypeForPath(filePath, false, false);
                         m_filteredItems.push_back(std::move(matchItem));
                         totalMatches++;
@@ -375,6 +437,8 @@ void QuickOpenModal::FilterItems() {
             { L"View: Toggle SVG Live Split Preview", L"", L"cmd_toggle_svg_preview" },
             { L"View: Git & Activity Heatmap", L"", L"cmd_heatmap" },
             { L"View: Toggle Sticky Scroll", L"", L"cmd_toggle_sticky_scroll" },
+            { L"View: Toggle Inline Error Lens Badges", L"", L"cmd_toggle_error_lens" },
+            { L"View: Toggle Gutter Git Blame Column", L"", L"cmd_toggle_gutter_blame" },
             { L"View: Toggle Zen Mode", L"Ctrl+K Z", L"cmd_toggle_zen_mode" },
             { L"View: Toggle Centered Layout", L"", L"cmd_toggle_centered_layout" },
             { L"View: Pin / Unpin Active Tab", L"", L"cmd_tab_toggle_pin" },
@@ -498,6 +562,7 @@ void QuickOpenModal::FilterItems() {
             symItem.targetLine = static_cast<int>(sym.line + 1);
             symItem.targetCol = static_cast<int>(sym.col + 1);
             symItem.score = score + ((!m_activeFilePath.empty() && _wcsicmp(path.c_str(), m_activeFilePath.c_str()) == 0) ? 40 : 0);
+            symItem.iconFileName = path.empty() ? L"" : fname;
             symItem.iconType = path.empty() ? FileIconType::DefaultFile : LucideIcons::GetIconTypeForPath(path, false, false);
             symResults.push_back(std::move(symItem));
         };
@@ -574,6 +639,7 @@ void QuickOpenModal::FilterItems() {
                 item.fullPath = s.filePath;
                 item.targetLine = static_cast<int>(s.line + 1);
                 item.targetCol = static_cast<int>(s.col + 1);
+                item.iconFileName = std::filesystem::path(s.filePath).filename().wstring();
                 item.iconType = LucideIcons::GetIconTypeForPath(s.filePath, false, false);
                 m_filteredItems.push_back(std::move(item));
             }
@@ -851,13 +917,52 @@ void QuickOpenModal::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::App
                 pRT->FillRoundedRectangle(&rrcItem, theme.brushItemHover.Get());
             }
 
-            // Draw File / Action Icon
+            // Draw File / Action Icon (files match Explorer Seti/asset icons identically)
             float iconSize = config.ScaleF(16.0f);
             float iconX = item.bounds.left + config.ScaleF(10.0f);
             float iconY = curY + (itemH - iconSize) / 2.0f;
             D2D1_RECT_F rcIcon = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
 
-            m_icons.DrawFileIcon(pRT, theme, rcIcon, item.iconType);
+            if (item.type == QuickOpenItem::Type::File && !item.iconFileName.empty()) {
+                const bool isIpynb = (!item.isDirectory && item.iconFileName.size() >= 6 &&
+                    _wcsicmp(item.iconFileName.c_str() + (item.iconFileName.size() - 6), L".ipynb") == 0);
+                const bool isPy = (!item.isDirectory &&
+                    (item.iconFileName.ends_with(L".py") || item.iconFileName.ends_with(L".pyw")));
+
+                if (isIpynb) {
+                    D2D1_RECT_F rcNb = D2D1::RectF(iconX - config.ScaleF(1.0f), iconY - config.ScaleF(1.0f),
+                                                    iconX + iconSize + config.ScaleF(1.0f), iconY + iconSize + config.ScaleF(1.0f));
+                    m_icons.DrawTerminalNotebook(pRT, rcNb,
+                        theme.brushBrandAccent ? theme.brushBrandAccent.Get() : theme.brushTextWhite.Get(), 1.2f);
+                } else if (isPy) {
+                    ID2D1Bitmap* pPyBmp = GetAssetBitmap(pRT, L"python.png");
+                    if (pPyBmp) {
+                        D2D1_RECT_F rcPy = D2D1::RectF(iconX - config.ScaleF(1.0f), iconY - config.ScaleF(1.0f),
+                                                       iconX + iconSize + config.ScaleF(1.0f), iconY + iconSize + config.ScaleF(1.0f));
+                        pRT->DrawBitmap(pPyBmp, rcPy, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    } else {
+                        auto setiInfo = theme.GetSetiIcon(item.iconFileName, false, false);
+                        if (theme.fontSeti && setiInfo.pBrush) {
+                            D2D1_RECT_F rcSeti = D2D1::RectF(iconX - config.ScaleF(2.0f), iconY - config.ScaleF(2.0f),
+                                                             iconX + iconSize + config.ScaleF(2.0f), iconY + iconSize + config.ScaleF(2.0f));
+                            pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcSeti, setiInfo.pBrush);
+                        } else {
+                            m_icons.DrawFileIcon(pRT, theme, rcIcon, item.iconType);
+                        }
+                    }
+                } else {
+                    auto setiInfo = theme.GetSetiIcon(item.iconFileName, item.isDirectory, false);
+                    if (theme.fontSeti && setiInfo.pBrush) {
+                        D2D1_RECT_F rcSeti = D2D1::RectF(iconX - config.ScaleF(2.0f), iconY - config.ScaleF(2.0f),
+                                                         iconX + iconSize + config.ScaleF(2.0f), iconY + iconSize + config.ScaleF(2.0f));
+                        pRT->DrawText(&setiInfo.glyph, 1, theme.fontSeti.Get(), rcSeti, setiInfo.pBrush);
+                    } else {
+                        m_icons.DrawFileIcon(pRT, theme, rcIcon, item.iconType);
+                    }
+                }
+            } else {
+                m_icons.DrawFileIcon(pRT, theme, rcIcon, item.iconType);
+            }
 
             // Title (File Name or Action Name)
             float textX = iconX + iconSize + config.ScaleF(8.0f);
