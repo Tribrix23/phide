@@ -44,21 +44,100 @@ static std::wstring ToUpperW(std::wstring s) {
     return s;
 }
 
+/** @brief Splits optional schema qualifier (`db.table`) and strips identifier quotes (``, `""`, `[]`). */
+static void SplitQualifiedIdent(std::wstring s, std::wstring& outSchema, std::wstring& outName) {
+    outSchema.clear();
+    outName.clear();
+    s = TrimW(s);
+    auto stripOne = [](std::wstring p) {
+        p = TrimW(p);
+        if (p.size() >= 2) {
+            wchar_t a = p.front();
+            wchar_t b = p.back();
+            if ((a == L'`' && b == L'`') || (a == L'"' && b == L'"') || (a == L'[' && b == L']')) {
+                p = p.substr(1, p.size() - 2);
+            }
+        }
+        return p;
+    };
+    int depth = 0;
+    wchar_t q = 0;
+    size_t lastDot = std::wstring::npos;
+    for (size_t i = 0; i < s.size(); ++i) {
+        wchar_t c = s[i];
+        if (q != 0) {
+            wchar_t endQ = (q == L'[') ? L']' : q;
+            if (c == endQ) q = 0;
+            continue;
+        }
+        if (c == L'`' || c == L'"' || c == L'[') q = c;
+        else if (c == L'(') ++depth;
+        else if (c == L')' && depth > 0) --depth;
+        else if (c == L'.' && depth == 0) lastDot = i;
+    }
+    if (lastDot != std::wstring::npos) {
+        std::wstring left = s.substr(0, lastDot);
+        size_t prevDot = left.rfind(L'.');
+        if (prevDot != std::wstring::npos) left = left.substr(prevDot + 1);
+        outSchema = stripOne(left);
+        outName = stripOne(s.substr(lastDot + 1));
+    } else {
+        outName = stripOne(s);
+    }
+}
+
 /** @brief Strips optional schema qualifier (`db.table`) and identifier quotes (``, `""`, `[]`). */
 static std::wstring UnquoteIdent(std::wstring s) {
-    s = TrimW(s);
-    auto dot = s.rfind(L'.');
-    if (dot != std::wstring::npos) {
-        s = TrimW(s.substr(dot + 1));
-    }
-    if (s.size() >= 2) {
-        wchar_t a = s.front();
-        wchar_t b = s.back();
-        if ((a == L'`' && b == L'`') || (a == L'"' && b == L'"') || (a == L'[' && b == L']')) {
-            s = s.substr(1, s.size() - 2);
+    std::wstring schema, name;
+    SplitQualifiedIdent(std::move(s), schema, name);
+    return name;
+}
+
+/** @brief Masks single-quoted SQL string literal interiors with spaces (preserving string length/indices). */
+static std::wstring MaskSqlSingleQuotedLiterals(const std::wstring& sql) {
+    std::wstring out = sql;
+    bool inStr = false;
+    for (size_t i = 0; i < out.size(); ++i) {
+        wchar_t c = out[i];
+        if (!inStr) {
+            if (c == L'\'') {
+                inStr = true;
+                out[i] = L' ';
+            }
+        } else {
+            if (c == L'\\' && i + 1 < out.size()) {
+                out[i] = L' ';
+                out[++i] = L' ';
+                continue;
+            }
+            if (c == L'\'' && i + 1 < out.size() && out[i + 1] == L'\'') {
+                out[i] = L' ';
+                out[++i] = L' ';
+                continue;
+            }
+            out[i] = L' ';
+            if (c == L'\'') inStr = false;
         }
     }
-    return s;
+    return out;
+}
+
+static void AddUniqueFkToTable(SqlTableInfo& tbl,
+                               const std::wstring& col,
+                               const std::wstring& refTable,
+                               const std::wstring& refCol,
+                               const std::wstring& refSchema = L"") {
+    if (col.empty() || refTable.empty()) return;
+    std::wstring cL = ToLowerW(col), rtL = ToLowerW(refTable), rcL = ToLowerW(refCol), rsL = ToLowerW(refSchema);
+    for (const auto& existing : tbl.foreignKeys) {
+        if (ToLowerW(existing.column) == cL &&
+            ToLowerW(existing.refTable) == rtL &&
+            ToLowerW(existing.refColumn) == rcL &&
+            ToLowerW(existing.refSchema) == rsL) {
+            return;
+        }
+    }
+    tbl.foreignKeys.push_back({ col, refTable, refCol, refSchema });
 }
 
 /** @brief Quotes an identifier using dialect-appropriate delimiters (backticks for MySQL, double-quotes elsewhere). */
@@ -92,7 +171,7 @@ static std::string EscapeXml(const std::wstring& w) {
     return out;
 }
 
-/// Removes line (`-- ...`) and block SQL comments while preserving string/identifier literals.
+/// Removes line (`-- ...`, `# ...`) and block SQL comments while preserving string/identifier literals.
 static std::wstring StripSqlComments(const std::wstring& sql) {
     std::wstring out;
     out.reserve(sql.size());
@@ -115,7 +194,7 @@ static std::wstring StripSqlComments(const std::wstring& sql) {
             out.push_back(c);
             continue;
         }
-        if (c == L'-' && i + 1 < sql.size() && sql[i + 1] == L'-') {
+        if ((c == L'-' && i + 1 < sql.size() && sql[i + 1] == L'-') || c == L'#') {
             while (i < sql.size() && sql[i] != L'\n') ++i;
             out.push_back(L'\n');
             continue;
@@ -219,13 +298,81 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
     if (ddlSql.empty()) return tables;
 
     std::wstring clean = StripSqlComments(ddlSql);
-    std::wstring upper = ToUpperW(clean);
+    std::wstring masked = MaskSqlSingleQuotedLiterals(clean);
+    std::wstring upper = ToUpperW(masked);
+
+    auto parseFkReferenceClause = [&](const std::wstring& clause,
+                                      const std::wstring& clauseUp,
+                                      size_t refPos,
+                                      std::vector<std::wstring> fkCols,
+                                      SqlTableInfo& dstTable) {
+        if (refPos == std::wstring::npos || fkCols.empty()) return;
+        size_t nameStart = refPos + 10;
+        while (nameStart < clause.size() && iswspace(clause[nameStart])) ++nameStart;
+        size_t lp = clause.find(L'(', nameStart);
+        size_t rp = (lp != std::wstring::npos) ? clause.find(L')', lp + 1) : std::wstring::npos;
+
+        // Check whether '(' belongs to REFERENCES target(cols) or a later clause (e.g. ON DELETE ...).
+        size_t endIdent = nameStart;
+        bool inQ = false;
+        wchar_t qc = 0;
+        while (endIdent < clause.size()) {
+            wchar_t ch = clause[endIdent];
+            if (inQ) {
+                wchar_t endQc = (qc == L'[') ? L']' : qc;
+                if (ch == endQc) inQ = false;
+                ++endIdent;
+                continue;
+            }
+            if (ch == L'`' || ch == L'"' || ch == L'[') { inQ = true; qc = ch; ++endIdent; continue; }
+            if (ch == L'(' || ch == L',' || ch == L';' || iswspace(ch)) {
+                // Allow spaces only around '.' in qualified name; stop at keywords or '('
+                if (ch == L'(' || ch == L',' || ch == L';') break;
+                size_t probe = endIdent;
+                while (probe < clause.size() && iswspace(clause[probe])) ++probe;
+                if (probe >= clause.size() || clause[probe] != L'.') {
+                    // Check if previous non-space char was '.'
+                    size_t prev = endIdent;
+                    while (prev > nameStart && iswspace(clause[prev - 1])) --prev;
+                    if (prev == nameStart || clause[prev - 1] != L'.') break;
+                }
+            }
+            ++endIdent;
+        }
+        std::wstring rawTarget = TrimW(clause.substr(nameStart, endIdent - nameStart));
+        std::wstring refSchema, refTable;
+        SplitQualifiedIdent(rawTarget, refSchema, refTable);
+        if (refTable.empty()) return;
+
+        std::vector<std::wstring> refCols;
+        size_t afterIdent = endIdent;
+        while (afterIdent < clause.size() && iswspace(clause[afterIdent])) ++afterIdent;
+        if (afterIdent < clause.size() && clause[afterIdent] == L'(' && rp != std::wstring::npos && rp > afterIdent) {
+            for (const auto& rc : SplitTopLevelCommaItems(clause.substr(afterIdent + 1, rp - afterIdent - 1))) {
+                std::wstring u = UnquoteIdent(rc);
+                if (!u.empty()) refCols.push_back(std::move(u));
+            }
+        }
+        (void)clauseUp;
+        for (size_t i = 0; i < fkCols.size(); ++i) {
+            std::wstring rc = (i < refCols.size()) ? refCols[i] : (refCols.size() == 1 ? refCols[0] : L"");
+            AddUniqueFkToTable(dstTable, fkCols[i], refTable, rc, refSchema);
+        }
+    };
 
     size_t pos = 0;
     while ((pos = upper.find(L"CREATE", pos)) != std::wstring::npos) {
-        if (pos > 0 && iswalnum(upper[pos - 1])) { pos += 6; continue; }
+        if (pos > 0 && (iswalnum(upper[pos - 1]) || upper[pos - 1] == L'_')) { pos += 6; continue; }
         size_t p = pos + 6;
         while (p < upper.size() && iswspace(upper[p])) ++p;
+        if (upper.compare(p, 2, L"OR") == 0) {
+            size_t rpPos = p + 2;
+            while (rpPos < upper.size() && iswspace(upper[rpPos])) ++rpPos;
+            if (upper.compare(rpPos, 7, L"REPLACE") == 0) {
+                p = rpPos + 7;
+                while (p < upper.size() && iswspace(upper[p])) ++p;
+            }
+        }
         if (upper.compare(p, 9, L"TEMPORARY") == 0) {
             p += 9;
             while (p < upper.size() && iswspace(upper[p])) ++p;
@@ -240,12 +387,20 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 while (p < upper.size() && iswspace(upper[p])) ++p;
             }
         }
+        if (upper.compare(p, 4, L"ONLY") == 0 && p + 4 < upper.size() && iswspace(upper[p + 4])) {
+            p += 4;
+            while (p < upper.size() && iswspace(upper[p])) ++p;
+        }
 
         size_t openParen = clean.find(L'(', p);
-        if (openParen == std::wstring::npos) break;
+        size_t semi = clean.find(L';', p);
+        if (openParen == std::wstring::npos || (semi != std::wstring::npos && semi < openParen)) {
+            pos = p;
+            continue;
+        }
 
         SqlTableInfo tbl;
-        tbl.name = UnquoteIdent(clean.substr(p, openParen - p));
+        SplitQualifiedIdent(clean.substr(p, openParen - p), tbl.schemaName, tbl.name);
 
         // Find matching ')'
         int depth = 1;
@@ -272,7 +427,8 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
         std::unordered_set<std::wstring> tableUniqueCols; // Single-column UNIQUE constraints only
 
         for (const auto& item : items) {
-            std::wstring up = ToUpperW(item);
+            std::wstring itemMasked = MaskSqlSingleQuotedLiterals(item);
+            std::wstring up = ToUpperW(itemMasked);
             if (up.rfind(L"PRIMARY", 0) == 0 && up.find(L"KEY") != std::wstring::npos) {
                 size_t lp = item.find(L'(');
                 size_t rp = item.rfind(L')');
@@ -289,22 +445,26 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 if (fkPos != std::wstring::npos && refPos != std::wstring::npos && refPos > fkPos) {
                     size_t lp1 = item.find(L'(', fkPos);
                     size_t rp1 = item.find(L')', lp1 != std::wstring::npos ? lp1 : fkPos);
-                    size_t lp2 = item.find(L'(', refPos);
-                    size_t rp2 = item.find(L')', lp2 != std::wstring::npos ? lp2 : refPos);
-                    if (lp1 != std::wstring::npos && rp1 != std::wstring::npos &&
-                        lp2 != std::wstring::npos && rp2 != std::wstring::npos) {
-                        SqlForeignKeyInfo fk;
-                        fk.column = UnquoteIdent(item.substr(lp1 + 1, rp1 - lp1 - 1));
-                        fk.refTable = UnquoteIdent(item.substr(refPos + 10, lp2 - (refPos + 10)));
-                        fk.refColumn = UnquoteIdent(item.substr(lp2 + 1, rp2 - lp2 - 1));
-                        if (!fk.column.empty() && !fk.refTable.empty()) {
-                            tbl.foreignKeys.push_back(std::move(fk));
+                    if (lp1 != std::wstring::npos && rp1 != std::wstring::npos && rp1 > lp1) {
+                        std::vector<std::wstring> fkCols;
+                        for (const auto& fc : SplitTopLevelCommaItems(item.substr(lp1 + 1, rp1 - lp1 - 1))) {
+                            std::wstring u = UnquoteIdent(fc);
+                            if (!u.empty()) fkCols.push_back(std::move(u));
                         }
+                        parseFkReferenceClause(item, up, refPos, std::move(fkCols), tbl);
                     }
                 } else {
-                    // Check named `CONSTRAINT uq_foo UNIQUE (col)` — single-column unique only
+                    size_t pkPos = up.find(L"PRIMARY");
                     size_t uqPos = up.find(L"UNIQUE");
-                    if (uqPos != std::wstring::npos) {
+                    if (pkPos != std::wstring::npos && up.find(L"KEY", pkPos) != std::wstring::npos) {
+                        size_t lp = item.find(L'(', pkPos);
+                        size_t rp = item.find(L')', lp != std::wstring::npos ? lp : pkPos);
+                        if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
+                            for (const auto& pkPart : SplitTopLevelCommaItems(item.substr(lp + 1, rp - lp - 1))) {
+                                tablePks.insert(ToLowerW(UnquoteIdent(pkPart)));
+                            }
+                        }
+                    } else if (uqPos != std::wstring::npos) {
                         size_t lp = item.find(L'(', uqPos);
                         size_t rp = item.find(L')', lp != std::wstring::npos ? lp : uqPos);
                         if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
@@ -318,7 +478,6 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 continue;
             }
             if (up.rfind(L"UNIQUE", 0) == 0) {
-                // Table-level `UNIQUE [KEY|INDEX] [name] (col)` — record if single-column
                 size_t lp = item.find(L'(');
                 size_t rp = item.rfind(L')');
                 if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
@@ -329,9 +488,10 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 }
                 continue;
             }
-            if (up.rfind(L"KEY ", 0) == 0 ||
-                up.rfind(L"INDEX ", 0) == 0 || up.rfind(L"CHECK", 0) == 0 ||
-                up.rfind(L"FULLTEXT", 0) == 0) {
+            if (up.rfind(L"KEY ", 0) == 0 || up.rfind(L"KEY(", 0) == 0 ||
+                up.rfind(L"INDEX ", 0) == 0 || up.rfind(L"INDEX(", 0) == 0 ||
+                up.rfind(L"CHECK", 0) == 0 || up.rfind(L"FULLTEXT", 0) == 0 ||
+                up.rfind(L"SPATIAL", 0) == 0 || up.rfind(L"EXCLUDE", 0) == 0) {
                 continue;
             }
 
@@ -349,7 +509,8 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
             SqlColumnInfo col;
             col.name = UnquoteIdent(item.substr(0, colEnd));
             std::wstring rest = TrimW(item.substr(colEnd));
-            std::wstring restUp = ToUpperW(rest);
+            std::wstring restMasked = MaskSqlSingleQuotedLiterals(rest);
+            std::wstring restUp = ToUpperW(restMasked);
 
             // Extract type token (including optional `(len, dec)`)
             size_t tEnd = 0;
@@ -359,14 +520,14 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
                 if (tc == L'(') ++tDepth;
                 else if (tc == L')' && tDepth > 0) --tDepth;
                 else if (iswspace(tc) && tDepth == 0) {
-                    // Stop at column constraints while keeping multi-word types (e.g. INT UNSIGNED)
-                    std::wstring nextRest = TrimW(ToUpperW(rest.substr(tEnd)));
+                    std::wstring nextRest = TrimW(restUp.substr(tEnd));
                     if (nextRest.rfind(L"NOT ", 0) == 0 || nextRest.rfind(L"NULL", 0) == 0 ||
                         nextRest.rfind(L"PRIMARY", 0) == 0 || nextRest.rfind(L"DEFAULT", 0) == 0 ||
                         nextRest.rfind(L"AUTO_INCREMENT", 0) == 0 || nextRest.rfind(L"AUTOINCREMENT", 0) == 0 ||
                         nextRest.rfind(L"UNIQUE", 0) == 0 || nextRest.rfind(L"REFERENCES", 0) == 0 ||
                         nextRest.rfind(L"COMMENT", 0) == 0 || nextRest.rfind(L"ON ", 0) == 0 ||
-                        nextRest.rfind(L"CHECK", 0) == 0) {
+                        nextRest.rfind(L"CHECK", 0) == 0 || nextRest.rfind(L"GENERATED", 0) == 0 ||
+                        nextRest.rfind(L"CONSTRAINT", 0) == 0 || nextRest.rfind(L"COLLATE", 0) == 0) {
                         break;
                     }
                 }
@@ -374,21 +535,12 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
             }
             col.type = TrimW(rest.substr(0, tEnd));
             col.isPrimaryKey = (restUp.find(L"PRIMARY KEY") != std::wstring::npos);
-            // In SQL, PRIMARY KEY columns are always NOT NULL even when omitted inline
             col.notNull = (restUp.find(L"NOT NULL") != std::wstring::npos) || col.isPrimaryKey;
             col.isUnique = (restUp.find(L"UNIQUE") != std::wstring::npos);
 
             size_t refPos = restUp.find(L"REFERENCES");
             if (refPos != std::wstring::npos) {
-                size_t lp = rest.find(L'(', refPos);
-                size_t rp = rest.find(L')', lp != std::wstring::npos ? lp : refPos);
-                if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
-                    SqlForeignKeyInfo fk;
-                    fk.column = col.name;
-                    fk.refTable = UnquoteIdent(rest.substr(refPos + 10, lp - (refPos + 10)));
-                    fk.refColumn = UnquoteIdent(rest.substr(lp + 1, rp - lp - 1));
-                    if (!fk.refTable.empty()) tbl.foreignKeys.push_back(std::move(fk));
-                }
+                parseFkReferenceClause(rest, restUp, refPos, { col.name }, tbl);
             }
             if (!col.name.empty()) tbl.columns.push_back(std::move(col));
         }
@@ -408,10 +560,123 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
         pos = cur;
     }
 
-    // Also parse standalone `CREATE UNIQUE INDEX ... ON table_name (single_col)` statements
+    auto findTargetTableForAlter = [&](const std::wstring& schemaQ, const std::wstring& tblName) -> SqlTableInfo* {
+        std::wstring sL = ToLowerW(schemaQ), tL = ToLowerW(tblName);
+        if (!sL.empty()) {
+            for (auto& t : tables) {
+                if (ToLowerW(t.schemaName) == sL && ToLowerW(t.name) == tL) return &t;
+            }
+        }
+        for (auto& t : tables) {
+            if (ToLowerW(t.name) == tL) return &t;
+        }
+        return nullptr;
+    };
+
+    // Parse standalone `ALTER TABLE ... ADD [CONSTRAINT ...] FOREIGN KEY / PRIMARY KEY / UNIQUE` statements
+    size_t altPos = 0;
+    while ((altPos = upper.find(L"ALTER", altPos)) != std::wstring::npos) {
+        if (altPos > 0 && (iswalnum(upper[altPos - 1]) || upper[altPos - 1] == L'_')) { altPos += 5; continue; }
+        size_t p = altPos + 5;
+        while (p < upper.size() && iswspace(upper[p])) ++p;
+        if (upper.compare(p, 5, L"TABLE") != 0 || (p + 5 < upper.size() && iswalnum(upper[p + 5]))) {
+            altPos = p;
+            continue;
+        }
+        p += 5;
+        while (p < upper.size() && iswspace(upper[p])) ++p;
+        if (upper.compare(p, 2, L"IF") == 0) {
+            size_t existsPos = upper.find(L"EXISTS", p);
+            if (existsPos != std::wstring::npos && existsPos - p < 16) {
+                p = existsPos + 6;
+                while (p < upper.size() && iswspace(upper[p])) ++p;
+            }
+        }
+        if (upper.compare(p, 4, L"ONLY") == 0 && p + 4 < upper.size() && iswspace(upper[p + 4])) {
+            p += 4;
+            while (p < upper.size() && iswspace(upper[p])) ++p;
+        }
+
+        // Scan up to statement semicolon respecting quotes
+        size_t stmtEnd = p;
+        bool inStr = false;
+        wchar_t q = 0;
+        while (stmtEnd < clean.size()) {
+            wchar_t ch = clean[stmtEnd];
+            if (inStr) {
+                if (ch == L'\\' && stmtEnd + 1 < clean.size()) { stmtEnd += 2; continue; }
+                if (ch == q) inStr = false;
+            } else {
+                if (ch == L'\'' || ch == L'"' || ch == L'`') { inStr = true; q = ch; }
+                else if (ch == L';') break;
+            }
+            ++stmtEnd;
+        }
+
+        size_t addPos = upper.find(L"ADD", p);
+        if (addPos != std::wstring::npos && addPos < stmtEnd) {
+            std::wstring rawTbl = TrimW(clean.substr(p, addPos - p));
+            std::wstring tSchema, tName;
+            SplitQualifiedIdent(rawTbl, tSchema, tName);
+            if (SqlTableInfo* pTbl = findTargetTableForAlter(tSchema, tName)) {
+                std::wstring alterTail = clean.substr(addPos, stmtEnd - addPos);
+                for (const auto& clause : SplitTopLevelCommaItems(alterTail)) {
+                    std::wstring cMasked = MaskSqlSingleQuotedLiterals(clause);
+                    std::wstring cUp = ToUpperW(cMasked);
+                    size_t fkPos = cUp.find(L"FOREIGN");
+                    size_t refPos = cUp.find(L"REFERENCES");
+                    if (fkPos != std::wstring::npos && refPos != std::wstring::npos && refPos > fkPos) {
+                        size_t lp1 = clause.find(L'(', fkPos);
+                        size_t rp1 = clause.find(L')', lp1 != std::wstring::npos ? lp1 : fkPos);
+                        if (lp1 != std::wstring::npos && rp1 != std::wstring::npos && rp1 > lp1) {
+                            std::vector<std::wstring> fkCols;
+                            for (const auto& fc : SplitTopLevelCommaItems(clause.substr(lp1 + 1, rp1 - lp1 - 1))) {
+                                std::wstring u = UnquoteIdent(fc);
+                                if (!u.empty()) fkCols.push_back(std::move(u));
+                            }
+                            parseFkReferenceClause(clause, cUp, refPos, std::move(fkCols), *pTbl);
+                        }
+                    } else {
+                        size_t pkPos = cUp.find(L"PRIMARY");
+                        size_t uqPos = cUp.find(L"UNIQUE");
+                        if (pkPos != std::wstring::npos && cUp.find(L"KEY", pkPos) != std::wstring::npos) {
+                            size_t lp = clause.find(L'(', pkPos);
+                            size_t rp = clause.find(L')', lp != std::wstring::npos ? lp : pkPos);
+                            if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
+                                for (const auto& pkPart : SplitTopLevelCommaItems(clause.substr(lp + 1, rp - lp - 1))) {
+                                    std::wstring pkLow = ToLowerW(UnquoteIdent(pkPart));
+                                    for (auto& col : pTbl->columns) {
+                                        if (ToLowerW(col.name) == pkLow) {
+                                            col.isPrimaryKey = true;
+                                            col.notNull = true;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (uqPos != std::wstring::npos) {
+                            size_t lp = clause.find(L'(', uqPos);
+                            size_t rp = clause.find(L')', lp != std::wstring::npos ? lp : uqPos);
+                            if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp) {
+                                auto uqParts = SplitTopLevelCommaItems(clause.substr(lp + 1, rp - lp - 1));
+                                if (uqParts.size() == 1) {
+                                    std::wstring uqLow = ToLowerW(UnquoteIdent(uqParts[0]));
+                                    for (auto& col : pTbl->columns) {
+                                        if (ToLowerW(col.name) == uqLow) col.isUnique = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        altPos = (stmtEnd < clean.size()) ? (stmtEnd + 1) : stmtEnd;
+    }
+
+    // Also parse standalone `CREATE UNIQUE INDEX ... ON [schema.]table_name (single_col)` statements
     size_t idxPos = 0;
     while ((idxPos = upper.find(L"CREATE", idxPos)) != std::wstring::npos) {
-        if (idxPos > 0 && iswalnum(upper[idxPos - 1])) { idxPos += 6; continue; }
+        if (idxPos > 0 && (iswalnum(upper[idxPos - 1]) || upper[idxPos - 1] == L'_')) { idxPos += 6; continue; }
         size_t p = idxPos + 6;
         while (p < upper.size() && iswspace(upper[p])) ++p;
         if (upper.compare(p, 6, L"UNIQUE") != 0) { idxPos = p; continue; }
@@ -423,19 +688,38 @@ std::vector<SqlTableInfo> ErdAndMigrationEngine::ParseSqlDdlSchema(const std::ws
         size_t lp = clean.find(L'(', onPos + 4);
         size_t rp = (lp != std::wstring::npos) ? clean.find(L')', lp + 1) : std::wstring::npos;
         if (lp == std::wstring::npos || rp == std::wstring::npos || rp <= lp) { idxPos = onPos + 4; continue; }
-        std::wstring targetTbl = ToLowerW(UnquoteIdent(clean.substr(onPos + 4, lp - (onPos + 4))));
+        std::wstring tSchema, tName;
+        SplitQualifiedIdent(clean.substr(onPos + 4, lp - (onPos + 4)), tSchema, tName);
         auto idxCols = SplitTopLevelCommaItems(clean.substr(lp + 1, rp - lp - 1));
         if (idxCols.size() == 1) {
             std::wstring targetCol = ToLowerW(UnquoteIdent(idxCols[0]));
-            for (auto& t : tables) {
-                if (ToLowerW(t.name) == targetTbl) {
-                    for (auto& c : t.columns) {
-                        if (ToLowerW(c.name) == targetCol) c.isUnique = true;
-                    }
+            if (SqlTableInfo* pTbl = findTargetTableForAlter(tSchema, tName)) {
+                for (auto& c : pTbl->columns) {
+                    if (ToLowerW(c.name) == targetCol) c.isUnique = true;
                 }
             }
         }
         idxPos = rp + 1;
+    }
+
+    // Resolve omitted referenced columns (`REFERENCES parent_table`) to target table's single PK column
+    for (auto& tbl : tables) {
+        for (auto& fk : tbl.foreignKeys) {
+            if (!fk.refColumn.empty() || fk.refTable.empty()) continue;
+            const SqlTableInfo* target = findTargetTableForAlter(fk.refSchema, fk.refTable);
+            if (!target) continue;
+            std::wstring singlePk;
+            int pkCount = 0;
+            for (const auto& c : target->columns) {
+                if (c.isPrimaryKey) {
+                    singlePk = c.name;
+                    ++pkCount;
+                }
+            }
+            if (pkCount == 1) {
+                fk.refColumn = singlePk;
+            }
+        }
     }
     return tables;
 }
@@ -645,7 +929,7 @@ static float EstimateColumnRowCenterY(const ErdNodeLayout& node, const SqlTableI
     if (colIdx < 0 || tbl.columns.empty()) {
         return (minY + maxY) * 0.5f;
     }
-    const size_t clampedIdx = (std::min)(static_cast<size_t>(colIdx), size_t(13));
+    const size_t clampedIdx = (std::min)(static_cast<size_t>(colIdx), size_t(14));
     const float rawY = node.y + hdrH + 6.0f + static_cast<float>(clampedIdx) * 20.0f + 9.5f;
     return std::clamp(rawY, minY, maxY);
 }
@@ -655,9 +939,76 @@ static std::wstring DeriveConciseRelationLabel(const std::wstring& fkCol, bool i
     std::wstring s = ToLowerW(fkCol);
     if (s.size() > 3 && s.rfind(L"_id") == s.size() - 3) {
         s = s.substr(0, s.size() - 3);
+    } else if (fkCol.size() > 2 && fkCol.rfind(L"Id") == fkCol.size() - 2 && iswlower(fkCol[fkCol.size() - 3])) {
+        s = ToLowerW(fkCol.substr(0, fkCol.size() - 2));
     }
     if (s.empty() || s.size() > 9) return inferred ? L"~ref" : L"has";
     return inferred ? (L"~" + s) : s;
+}
+
+static std::vector<std::wstring> BuildTableNameCandidates(const std::wstring& rawStem) {
+    std::vector<std::wstring> out;
+    auto pushUnique = [&](const std::wstring& v) {
+        if (v.empty()) return;
+        for (const auto& e : out) if (e == v) return;
+        out.push_back(v);
+    };
+    std::wstring s = ToLowerW(rawStem);
+    pushUnique(s);
+    pushUnique(s + L"s");
+    if (s.size() >= 2 && (s.back() == L's' || s.back() == L'x' || s.back() == L'z' ||
+        (s.size() >= 2 && (s.substr(s.size() - 2) == L"ch" || s.substr(s.size() - 2) == L"sh")))) {
+        pushUnique(s + L"es");
+    }
+    if (s.size() >= 2 && s.back() == L'y') {
+        wchar_t prev = s[s.size() - 2];
+        if (prev != L'a' && prev != L'e' && prev != L'i' && prev != L'o' && prev != L'u') {
+            pushUnique(s.substr(0, s.size() - 1) + L"ies");
+        }
+    }
+    if (s == L"person") pushUnique(L"people");
+    else if (s == L"child") pushUnique(L"children");
+    else if (s == L"man") pushUnique(L"men");
+    else if (s == L"woman") pushUnique(L"women");
+    else if (s == L"mouse") pushUnique(L"mice");
+    else if (s == L"index") pushUnique(L"indices");
+    else if (s == L"datum") pushUnique(L"data");
+    if (s.size() > 2 && s.back() == L's') pushUnique(s.substr(0, s.size() - 1));
+    return out;
+}
+
+static std::wstring ExtractImplicitFkStem(const std::wstring& colName, bool& outCamelCase) {
+    outCamelCase = false;
+    std::wstring low = ToLowerW(colName);
+    if (low.size() > 3 && low.rfind(L"_id") == low.size() - 3) {
+        return low.substr(0, low.size() - 3);
+    }
+    if (colName.size() > 2 && colName.compare(colName.size() - 2, 2, L"Id") == 0) {
+        wchar_t prev = colName[colName.size() - 3];
+        if (iswlower(prev) || iswdigit(prev)) {
+            outCamelCase = true;
+            std::wstring base = colName.substr(0, colName.size() - 2);
+            std::wstring snake;
+            for (size_t i = 0; i < base.size(); ++i) {
+                wchar_t c = base[i];
+                if (i > 0 && iswupper(c) && (iswlower(base[i - 1]) || iswdigit(base[i - 1]))) {
+                    snake.push_back(L'_');
+                }
+                snake.push_back(static_cast<wchar_t>(towlower(c)));
+            }
+            return snake;
+        }
+    }
+    return L"";
+}
+
+static std::wstring ExtractTablePrefixToken(const std::wstring& tableName) {
+    std::wstring low = ToLowerW(tableName);
+    size_t us = low.find(L'_');
+    if (us != std::wstring::npos && us > 0 && us + 1 < low.size()) {
+        return low.substr(0, us + 1);
+    }
+    return L"";
 }
 
 static std::wstring FormatCompactSvgType(std::wstring t) {
@@ -699,15 +1050,45 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
         }
     }
 
-    auto resolveTargetTable = [&](const SqlTableInfo& childTbl, const std::wstring& refTable) -> size_t {
+    auto resolveTargetTable = [&](const SqlTableInfo& childTbl, const std::wstring& refTable, const std::wstring& refSchema) -> size_t {
         std::wstring refLow = ToLowerW(refTable);
-        // Prefer same-schema table first when multiple schemas are loaded simultaneously
+        if (!refSchema.empty()) {
+            auto rqIt = qualifiedToIdx.find(ToLowerW(refSchema) + L"." + refLow);
+            if (rqIt != qualifiedToIdx.end()) return rqIt->second;
+        }
+        // Prefer same-schema table next when multiple schemas are loaded simultaneously
         if (!childTbl.schemaName.empty()) {
             auto qIt = qualifiedToIdx.find(ToLowerW(childTbl.schemaName) + L"." + refLow);
             if (qIt != qualifiedToIdx.end()) return qIt->second;
         }
         auto nIt = nameToIdx.find(refLow);
         return (nIt != nameToIdx.end()) ? nIt->second : SIZE_MAX;
+    };
+
+    auto findSinglePkColName = [](const SqlTableInfo& tbl, int& outColIdx) -> std::wstring {
+        outColIdx = -1;
+        int pkCnt = 0;
+        int firstPk = -1;
+        for (size_t k = 0; k < tbl.columns.size(); ++k) {
+            if (tbl.columns[k].isPrimaryKey) {
+                ++pkCnt;
+                if (firstPk < 0) firstPk = static_cast<int>(k);
+            }
+        }
+        if (pkCnt == 1 && firstPk >= 0) {
+            outColIdx = firstPk;
+            return tbl.columns[static_cast<size_t>(firstPk)].name;
+        }
+        int idIdx = FindColumnIndex(tbl, L"id");
+        if (idIdx >= 0) {
+            outColIdx = idIdx;
+            return tbl.columns[static_cast<size_t>(idIdx)].name;
+        }
+        if (firstPk >= 0) {
+            outColIdx = firstPk;
+            return tbl.columns[static_cast<size_t>(firstPk)].name;
+        }
+        return L"id";
     };
 
     auto buildCardinalityReason = [](const SqlColumnInfo& col, int pkCount, bool inferred) -> std::wstring {
@@ -728,8 +1109,9 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
         return inferred ? L"Nullable (1:N optional, inferred *_id)" : L"Nullable FK (1:N optional)";
     };
 
-    // Track explicit FK columns on each child table to avoid duplicate inferred edges
+    // Track explicit FK columns and deduplicate identical relationships
     std::vector<std::unordered_set<std::wstring>> explicitFkCols(n);
+    std::unordered_set<std::wstring> seenRelationKeys;
 
     for (size_t ci = 0; ci < n; ++ci) {
         const auto& childTbl = tables[ci];
@@ -738,7 +1120,7 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
             if (c.isPrimaryKey) ++pkCount;
         }
         for (const auto& fk : childTbl.foreignKeys) {
-            const size_t pi = resolveTargetTable(childTbl, fk.refTable);
+            const size_t pi = resolveTargetTable(childTbl, fk.refTable, fk.refSchema);
             if (pi >= n) continue;
             explicitFkCols[ci].insert(ToLowerW(fk.column));
 
@@ -746,17 +1128,25 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
             rel.parentTableIdx = pi;
             rel.childTableIdx = ci;
             rel.fkColumn = fk.column;
-            rel.refColumn = fk.refColumn.empty() ? L"id" : fk.refColumn;
-            rel.childColIdx = FindColumnIndex(childTbl, fk.column);
-            rel.parentColIdx = FindColumnIndex(tables[pi], rel.refColumn);
-            if (rel.parentColIdx < 0) {
-                for (size_t k = 0; k < tables[pi].columns.size(); ++k) {
-                    if (tables[pi].columns[k].isPrimaryKey) {
-                        rel.parentColIdx = static_cast<int>(k);
-                        break;
+            if (fk.refColumn.empty()) {
+                rel.refColumn = findSinglePkColName(tables[pi], rel.parentColIdx);
+            } else {
+                rel.refColumn = fk.refColumn;
+                rel.parentColIdx = FindColumnIndex(tables[pi], rel.refColumn);
+                if (rel.parentColIdx < 0) {
+                    for (size_t k = 0; k < tables[pi].columns.size(); ++k) {
+                        if (tables[pi].columns[k].isPrimaryKey) {
+                            rel.parentColIdx = static_cast<int>(k);
+                            break;
+                        }
                     }
                 }
             }
+            const std::wstring dedupKey = std::to_wstring(pi) + L"|" + std::to_wstring(ci) +
+                                          L"|" + ToLowerW(rel.fkColumn) + L"|" + ToLowerW(rel.refColumn);
+            if (!seenRelationKeys.insert(dedupKey).second) continue;
+
+            rel.childColIdx = FindColumnIndex(childTbl, fk.column);
             if (rel.childColIdx >= 0 && static_cast<size_t>(rel.childColIdx) < childTbl.columns.size()) {
                 const auto& ccol = childTbl.columns[static_cast<size_t>(rel.childColIdx)];
                 rel.childOptional = !ccol.notNull;
@@ -779,10 +1169,11 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
         }
     }
 
-    // Optional heuristic *_id FK inference (for schema tables missing explicit FOREIGN KEY DDL)
+    // Optional heuristic *_id / *Id FK inference (for schema tables missing explicit FOREIGN KEY DDL)
     if (inferImplicitFks) {
         for (size_t ci = 0; ci < n; ++ci) {
             const auto& childTbl = tables[ci];
+            const std::wstring childPrefix = ExtractTablePrefixToken(childTbl.name);
             int pkCount = 0;
             for (const auto& c : childTbl.columns) {
                 if (c.isPrimaryKey) ++pkCount;
@@ -791,52 +1182,117 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
                 const auto& col = childTbl.columns[cIdx];
                 const std::wstring colLow = ToLowerW(col.name);
                 if (explicitFkCols[ci].count(colLow)) continue;
-                if (colLow.size() <= 3 || colLow.rfind(L"_id") != colLow.size() - 3) continue;
 
-                const std::wstring stem = colLow.substr(0, colLow.size() - 3);
-                const std::wstring stemPlural = stem + L"s";
-                size_t matchIdx = SIZE_MAX;
-                size_t matchCount = 0;
+                bool isCamel = false;
+                const std::wstring stem = ExtractImplicitFkStem(col.name, isCamel);
+                if (stem.empty()) continue;
+
+                std::vector<std::wstring> cands = BuildTableNameCandidates(stem);
+                if (isCamel) {
+                    std::wstring compact = ToLowerW(col.name.substr(0, col.name.size() - 2));
+                    for (const auto& cc : BuildTableNameCandidates(compact)) {
+                        cands.push_back(cc);
+                    }
+                }
+
+                size_t bestIdx = SIZE_MAX;
+                int bestScore = 0;
+                int tieCount = 0;
+
                 for (size_t pi = 0; pi < n; ++pi) {
-                    if (pi == ci) continue;
                     // When both tables carry schema names, avoid matching across unrelated databases
                     if (!childTbl.schemaName.empty() && !tables[pi].schemaName.empty() &&
                         _wcsicmp(childTbl.schemaName.c_str(), tables[pi].schemaName.c_str()) != 0) {
                         continue;
                     }
-                    const std::wstring tLow = ToLowerW(tables[pi].name);
-                    if (tLow == stem || tLow == stemPlural ||
-                        (tLow.size() > stem.size() + 1 && tLow.rfind(L"_" + stem) == tLow.size() - stem.size() - 1) ||
-                        (tLow.size() > stemPlural.size() + 1 && tLow.rfind(L"_" + stemPlural) == tLow.size() - stemPlural.size() - 1)) {
-                        matchIdx = pi;
-                        ++matchCount;
+                    const auto& pTbl = tables[pi];
+                    int pKeyIdx = -1;
+                    bool hasTargetKey = (FindColumnIndex(pTbl, L"id") >= 0) ||
+                                        (FindColumnIndex(pTbl, stem + L"_id") >= 0);
+                    if (!hasTargetKey) {
+                        for (const auto& pc : pTbl.columns) {
+                            if (pc.isPrimaryKey) { hasTargetKey = true; break; }
+                        }
+                    }
+                    if (!hasTargetKey) continue;
+                    (void)pKeyIdx;
+
+                    const std::wstring tLow = ToLowerW(pTbl.name);
+                    int matchScore = 0;
+                    if (pi == ci) {
+                        // Self-reference allowed for `parent_id` or `<self_stem>_id`
+                        if (stem == L"parent") {
+                            matchScore = 40;
+                        } else {
+                            for (const auto& v : cands) {
+                                if (tLow == v) { matchScore = 55; break; }
+                            }
+                        }
+                    } else {
+                        for (const auto& v : cands) {
+                            if (tLow == v) {
+                                matchScore = (std::max)(matchScore, 100);
+                            } else if (tLow.size() > v.size() + 1 &&
+                                       tLow.rfind(L"_" + v) == tLow.size() - v.size() - 1) {
+                                matchScore = (std::max)(matchScore, 60);
+                            }
+                        }
+                        if (matchScore > 0 && !childPrefix.empty()) {
+                            std::wstring pPrefix = ExtractTablePrefixToken(pTbl.name);
+                            if (!pPrefix.empty() && pPrefix == childPrefix) {
+                                matchScore += 45;
+                            }
+                        }
+                    }
+                    if (matchScore <= 0) continue;
+
+                    if (!childTbl.schemaName.empty() && !pTbl.schemaName.empty() &&
+                        _wcsicmp(childTbl.schemaName.c_str(), pTbl.schemaName.c_str()) == 0) {
+                        matchScore += 80;
+                    }
+                    if (FindColumnIndex(pTbl, L"id") >= 0) matchScore += 15;
+
+                    if (matchScore > bestScore) {
+                        bestScore = matchScore;
+                        bestIdx = pi;
+                        tieCount = 1;
+                    } else if (matchScore == bestScore) {
+                        ++tieCount;
                     }
                 }
-                if (matchCount == 1 && matchIdx < n) {
+
+                if (bestIdx < n && tieCount == 1) {
+                    int parentColIdx = -1;
+                    std::wstring refColName = findSinglePkColName(tables[bestIdx], parentColIdx);
+                    const std::wstring dedupKey = std::to_wstring(bestIdx) + L"|" + std::to_wstring(ci) +
+                                                  L"|" + colLow + L"|" + ToLowerW(refColName);
+                    if (!seenRelationKeys.insert(dedupKey).second) continue;
+
                     ErdInterpretedRelation rel;
-                    rel.parentTableIdx = matchIdx;
+                    rel.parentTableIdx = bestIdx;
                     rel.childTableIdx = ci;
                     rel.fkColumn = col.name;
-                    rel.refColumn = L"id";
+                    rel.refColumn = refColName;
                     rel.childColIdx = static_cast<int>(cIdx);
-                    rel.parentColIdx = FindColumnIndex(tables[matchIdx], L"id");
-                    if (rel.parentColIdx < 0 && !tables[matchIdx].columns.empty()) rel.parentColIdx = 0;
+                    rel.parentColIdx = parentColIdx;
                     rel.childOptional = !col.notNull;
                     rel.isIdentifying = col.isPrimaryKey;
                     rel.isOneToOne = (col.isPrimaryKey && pkCount == 1) || col.isUnique;
                     rel.cardinalityReason = buildCardinalityReason(col, pkCount, true);
-                    rel.isSelfRef = false;
+                    rel.isSelfRef = (bestIdx == ci);
                     rel.isInferred = true;
                     rel.relationLabel = DeriveConciseRelationLabel(rel.fkColumn, true);
                     out.relations.push_back(std::move(rel));
-                    ++out.entities[matchIdx].inboundFkCount;
-                    ++out.entities[ci].outboundFkCount;
+                    if (bestIdx != ci) {
+                        ++out.entities[bestIdx].inboundFkCount;
+                        ++out.entities[ci].outboundFkCount;
+                    }
                 }
             }
         }
     }
 
-    // Classify entity roles (Strong, M:N Junction, WeakIdentifying, Standalone) & compute DAG layers
+    // Classify entity roles (Strong, M:N Junction, WeakIdentifying, Standalone) & compute cycle-safe DAG layers
     for (size_t i = 0; i < n; ++i) {
         const auto& tbl = tables[i];
         auto& ent = out.entities[i];
@@ -878,10 +1334,46 @@ ErdSchemaInterpretation ErdAndMigrationEngine::InterpretSchema(
         }
     }
 
-    // Topological longest-path layer assignment on connected component (edge: parent -> child)
+    // Break any cyclic FK back-edges via 3-color DFS before DAG longest-path layer assignment
+    std::vector<std::vector<std::pair<size_t, size_t>>> adjOut(n);
+    for (size_t ri = 0; ri < out.relations.size(); ++ri) {
+        const auto& r = out.relations[ri];
+        if (!r.isSelfRef) {
+            adjOut[r.parentTableIdx].push_back({ r.childTableIdx, ri });
+        }
+    }
+    std::vector<int> dfsState(n, 0); // 0=unvisited, 1=visiting, 2=done
+    std::vector<bool> isCycleBackEdge(out.relations.size(), false);
+    auto dfsVisit = [&](auto&& self, size_t u) -> void {
+        dfsState[u] = 1;
+        for (const auto& [v, ri] : adjOut[u]) {
+            if (dfsState[v] == 1) {
+                isCycleBackEdge[ri] = true;
+            } else if (dfsState[v] == 0) {
+                self(self, v);
+            }
+        }
+        dfsState[u] = 2;
+    };
+    std::vector<size_t> dfsOrder(n);
+    for (size_t i = 0; i < n; ++i) dfsOrder[i] = i;
+    std::sort(dfsOrder.begin(), dfsOrder.end(), [&](size_t a, size_t b) {
+        if (out.entities[a].outboundFkCount != out.entities[b].outboundFkCount)
+            return out.entities[a].outboundFkCount < out.entities[b].outboundFkCount;
+        return out.entities[a].inboundFkCount > out.entities[b].inboundFkCount;
+    });
+    for (size_t u : dfsOrder) {
+        if (!out.entities[u].isStandalone && dfsState[u] == 0) {
+            dfsVisit(dfsVisit, u);
+        }
+    }
+
+    // Topological longest-path layer assignment on acyclic backbone (edge: parent -> child)
     for (size_t pass = 0; pass < n; ++pass) {
         bool changed = false;
-        for (const auto& r : out.relations) {
+        for (size_t ri = 0; ri < out.relations.size(); ++ri) {
+            if (isCycleBackEdge[ri]) continue;
+            const auto& r = out.relations[ri];
             if (r.isSelfRef) continue;
             const int targetLayer = out.entities[r.parentTableIdx].layer + 1;
             if (out.entities[r.childTableIdx].layer < targetLayer) {
@@ -909,105 +1401,212 @@ std::vector<ErdNodeLayout> ErdAndMigrationEngine::ComputeSmartLayout(
     if (tables.empty()) return result;
 
     const ErdSchemaInterpretation interp = InterpretSchema(tables, inferImplicitFks);
+    const size_t n = tables.size();
 
-    int maxRelLayer = 0;
     std::vector<size_t> standaloneIdxs;
-    for (size_t i = 0; i < tables.size(); ++i) {
+    std::vector<std::vector<size_t>> undirAdj(n);
+    for (const auto& r : interp.relations) {
+        if (!r.isSelfRef) {
+            undirAdj[r.parentTableIdx].push_back(r.childTableIdx);
+            undirAdj[r.childTableIdx].push_back(r.parentTableIdx);
+        }
+    }
+
+    std::vector<bool> visited(n, false);
+    std::vector<std::vector<size_t>> components;
+    for (size_t i = 0; i < n; ++i) {
         if (interp.entities[i].isStandalone) {
             standaloneIdxs.push_back(i);
-        } else {
-            maxRelLayer = (std::max)(maxRelLayer, interp.entities[i].layer);
+            visited[i] = true;
+            continue;
         }
-    }
-
-    std::vector<std::vector<size_t>> layerCols(static_cast<size_t>(maxRelLayer + 1));
-    bool hasAnyConnected = false;
-    for (size_t i = 0; i < tables.size(); ++i) {
-        if (!interp.entities[i].isStandalone) {
-            hasAnyConnected = true;
-            layerCols[static_cast<size_t>(interp.entities[i].layer)].push_back(i);
-        }
-    }
-
-    // Initial vertical sort inside each layer by degree (hubs first) & name
-    for (auto& vec : layerCols) {
-        std::sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
-            size_t degA = interp.entities[a].inboundFkCount + interp.entities[a].outboundFkCount;
-            size_t degB = interp.entities[b].inboundFkCount + interp.entities[b].outboundFkCount;
-            if (degA != degB) return degA > degB;
-            return tables[a].name < tables[b].name;
-        });
-    }
-
-    // 4-sweep Barycenter ordering to minimize crossing wires between adjacent hierarchical layers
-    std::vector<float> orderRank(tables.size(), 0.0f);
-    for (size_t l = 0; l < layerCols.size(); ++l) {
-        for (size_t pos = 0; pos < layerCols[l].size(); ++pos) {
-            orderRank[layerCols[l][pos]] = static_cast<float>(pos);
-        }
-    }
-    for (int sweep = 0; sweep < 4; ++sweep) {
-        for (size_t l = 1; l < layerCols.size(); ++l) {
-            auto& vec = layerCols[l];
-            std::unordered_map<size_t, float> bary;
-            for (size_t idx : vec) {
-                float sum = 0.0f;
-                int cnt = 0;
-                for (const auto& r : interp.relations) {
-                    if (!r.isSelfRef && r.childTableIdx == idx && !interp.entities[r.parentTableIdx].isStandalone) {
-                        sum += orderRank[r.parentTableIdx];
-                        ++cnt;
-                    }
+        if (visited[i]) continue;
+        std::vector<size_t> comp;
+        std::queue<size_t> q;
+        q.push(i);
+        visited[i] = true;
+        while (!q.empty()) {
+            size_t u = q.front();
+            q.pop();
+            comp.push_back(u);
+            for (size_t v : undirAdj[u]) {
+                if (!visited[v] && !interp.entities[v].isStandalone) {
+                    visited[v] = true;
+                    q.push(v);
                 }
-                bary[idx] = (cnt > 0) ? (sum / static_cast<float>(cnt)) : orderRank[idx];
             }
-            std::stable_sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
-                return bary[a] < bary[b];
-            });
-            for (size_t pos = 0; pos < vec.size(); ++pos) orderRank[vec[pos]] = static_cast<float>(pos);
         }
-        for (int l = static_cast<int>(layerCols.size()) - 2; l >= 0; --l) {
-            auto& vec = layerCols[static_cast<size_t>(l)];
-            std::unordered_map<size_t, float> bary;
-            for (size_t idx : vec) {
-                float sum = 0.0f;
-                int cnt = 0;
-                for (const auto& r : interp.relations) {
-                    if (!r.isSelfRef && r.parentTableIdx == idx && !interp.entities[r.childTableIdx].isStandalone) {
-                        sum += orderRank[r.childTableIdx];
-                        ++cnt;
-                    }
-                }
-                bary[idx] = (cnt > 0) ? (sum / static_cast<float>(cnt)) : orderRank[idx];
-            }
-            std::stable_sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
-                return bary[a] < bary[b];
-            });
-            for (size_t pos = 0; pos < vec.size(); ++pos) orderRank[vec[pos]] = static_cast<float>(pos);
-        }
+        components.push_back(std::move(comp));
     }
 
-    // Generous corridor spacing for routing channels (extra breathing room for Chen diamonds & attribute ovals)
-    const float gapX = (notation == ErdNotation::Chen) ? 228.0f : 136.0f;
-    const float gapY = (notation == ErdNotation::Chen) ? 148.0f : 64.0f;
+    // Place larger domain subgraphs first; keep deterministic alphabetical tie-breaking
+    std::sort(components.begin(), components.end(), [&](const std::vector<size_t>& a, const std::vector<size_t>& b) {
+        if (a.size() != b.size()) return a.size() > b.size();
+        return tables[a.front()].name < tables[b.front()].name;
+    });
 
-    float curColX = 0.0f;
-    float connectedMaxBottom = 0.0f;
-    if (hasAnyConnected) {
-        for (size_t l = 0; l < layerCols.size(); ++l) {
-            if (layerCols[l].empty()) continue;
+    const float baseGapX = (notation == ErdNotation::Chen) ? 236.0f : 156.0f;
+    const float gapY     = (notation == ErdNotation::Chen) ? 150.0f : 70.0f;
+    const float compGapY = (notation == ErdNotation::Chen) ? 120.0f : 78.0f;
+    float compStartY = 0.0f;
+    bool hasAnyConnected = !components.empty();
+
+    for (const auto& comp : components) {
+        std::unordered_set<size_t> compSet(comp.begin(), comp.end());
+        int minLayer = INT_MAX;
+        int maxLayer = 0;
+        for (size_t idx : comp) {
+            minLayer = (std::min)(minLayer, interp.entities[idx].layer);
+            maxLayer = (std::max)(maxLayer, interp.entities[idx].layer);
+        }
+        const int numLayers = (maxLayer >= minLayer) ? (maxLayer - minLayer + 1) : 1;
+
+        // Sugiyama layout graph with virtual dummy nodes for multi-layer skip edges
+        struct LaySlot {
+            bool isDummy = false;
+            size_t tableIdx = SIZE_MAX;
+            int layer = 0;
+            std::vector<size_t> prevSlots;
+            std::vector<size_t> nextSlots;
+        };
+        std::vector<LaySlot> slots;
+        std::unordered_map<size_t, size_t> tableToSlot;
+        for (size_t idx : comp) {
+            size_t sid = slots.size();
+            slots.push_back({ false, idx, interp.entities[idx].layer - minLayer, {}, {} });
+            tableToSlot[idx] = sid;
+        }
+
+        std::vector<size_t> corridorCrossings(static_cast<size_t>((std::max)(1, numLayers)), 0);
+        for (const auto& r : interp.relations) {
+            if (r.isSelfRef || !compSet.count(r.parentTableIdx) || !compSet.count(r.childTableIdx)) continue;
+            size_t pSlot = tableToSlot[r.parentTableIdx];
+            size_t cSlot = tableToSlot[r.childTableIdx];
+            int lp = slots[pSlot].layer;
+            int lc = slots[cSlot].layer;
+
+            if (lc > lp + 1) {
+                size_t prevS = pSlot;
+                for (int l = lp + 1; l < lc; ++l) {
+                    size_t dumId = slots.size();
+                    slots.push_back({ true, SIZE_MAX, l, {}, {} });
+                    slots[prevS].nextSlots.push_back(dumId);
+                    slots[dumId].prevSlots.push_back(prevS);
+                    corridorCrossings[static_cast<size_t>(l - 1)]++;
+                    prevS = dumId;
+                }
+                slots[prevS].nextSlots.push_back(cSlot);
+                slots[cSlot].prevSlots.push_back(prevS);
+                corridorCrossings[static_cast<size_t>(lc - 1)]++;
+            } else {
+                slots[pSlot].nextSlots.push_back(cSlot);
+                slots[cSlot].prevSlots.push_back(pSlot);
+                const int loL = (std::min)(lp, lc);
+                const int hiL = (std::max)(lp, lc);
+                for (int l = loL; l < hiL; ++l) {
+                    corridorCrossings[static_cast<size_t>(l)]++;
+                }
+            }
+        }
+
+        std::vector<std::vector<size_t>> layerSlots(static_cast<size_t>(numLayers));
+        for (size_t sid = 0; sid < slots.size(); ++sid) {
+            layerSlots[static_cast<size_t>(slots[sid].layer)].push_back(sid);
+        }
+
+        for (auto& vec : layerSlots) {
+            std::sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
+                if (slots[a].isDummy != slots[b].isDummy) return !slots[a].isDummy;
+                if (slots[a].isDummy) return a < b;
+                size_t ta = slots[a].tableIdx, tb = slots[b].tableIdx;
+                size_t degA = interp.entities[ta].inboundFkCount + interp.entities[ta].outboundFkCount;
+                size_t degB = interp.entities[tb].inboundFkCount + interp.entities[tb].outboundFkCount;
+                if (degA != degB) return degA > degB;
+                return tables[ta].name < tables[tb].name;
+            });
+        }
+
+        // 6-sweep weighted barycenter ordering including virtual skip-edge dummy nodes
+        std::vector<float> orderRank(slots.size(), 0.0f);
+        for (size_t l = 0; l < layerSlots.size(); ++l) {
+            for (size_t p = 0; p < layerSlots[l].size(); ++p) {
+                orderRank[layerSlots[l][p]] = static_cast<float>(p);
+            }
+        }
+        for (int sweep = 0; sweep < 6; ++sweep) {
+            for (size_t l = 1; l < layerSlots.size(); ++l) {
+                auto& vec = layerSlots[l];
+                std::unordered_map<size_t, float> bary;
+                for (size_t sid : vec) {
+                    float sum = 0.0f;
+                    int cnt = 0;
+                    for (size_t prevS : slots[sid].prevSlots) {
+                        if (slots[prevS].layer < slots[sid].layer) {
+                            sum += orderRank[prevS];
+                            ++cnt;
+                        }
+                    }
+                    bary[sid] = (cnt > 0) ? (sum / static_cast<float>(cnt)) : orderRank[sid];
+                }
+                std::stable_sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
+                    if (std::abs(bary[a] - bary[b]) > 0.01f) return bary[a] < bary[b];
+                    return a < b;
+                });
+                for (size_t p = 0; p < vec.size(); ++p) orderRank[vec[p]] = static_cast<float>(p);
+            }
+            for (int l = static_cast<int>(layerSlots.size()) - 2; l >= 0; --l) {
+                auto& vec = layerSlots[static_cast<size_t>(l)];
+                std::unordered_map<size_t, float> bary;
+                for (size_t sid : vec) {
+                    float sum = 0.0f;
+                    int cnt = 0;
+                    for (size_t nextS : slots[sid].nextSlots) {
+                        if (slots[nextS].layer > slots[sid].layer) {
+                            sum += orderRank[nextS];
+                            ++cnt;
+                        }
+                    }
+                    bary[sid] = (cnt > 0) ? (sum / static_cast<float>(cnt)) : orderRank[sid];
+                }
+                std::stable_sort(vec.begin(), vec.end(), [&](size_t a, size_t b) {
+                    if (std::abs(bary[a] - bary[b]) > 0.01f) return bary[a] < bary[b];
+                    return a < b;
+                });
+                for (size_t p = 0; p < vec.size(); ++p) orderRank[vec[p]] = static_cast<float>(p);
+            }
+        }
+
+        float curColX = 0.0f;
+        float compMaxBottom = compStartY;
+        const float dummySlotH = (notation == ErdNotation::Chen) ? 60.0f : 40.0f;
+        for (size_t l = 0; l < layerSlots.size(); ++l) {
+            if (layerSlots[l].empty()) continue;
             float colW = 256.0f;
-            for (size_t idx : layerCols[l]) colW = (std::max)(colW, result[idx].width);
-
-            float curY = 0.0f;
-            for (size_t idx : layerCols[l]) {
-                result[idx].x = curColX;
-                result[idx].y = curY;
-                curY += result[idx].height + gapY;
+            bool hasRealNode = false;
+            for (size_t sid : layerSlots[l]) {
+                if (!slots[sid].isDummy) {
+                    hasRealNode = true;
+                    colW = (std::max)(colW, result[slots[sid].tableIdx].width);
+                }
             }
-            connectedMaxBottom = (std::max)(connectedMaxBottom, curY);
-            curColX += colW + gapX;
+            if (!hasRealNode) continue;
+
+            float curY = compStartY;
+            for (size_t sid : layerSlots[l]) {
+                if (slots[sid].isDummy) {
+                    curY += dummySlotH;
+                } else {
+                    size_t idx = slots[sid].tableIdx;
+                    result[idx].x = curColX;
+                    result[idx].y = curY;
+                    curY += result[idx].height + gapY;
+                }
+            }
+            compMaxBottom = (std::max)(compMaxBottom, curY - gapY);
+            const float dynamicGapX = (std::max)(baseGapX, 92.0f + static_cast<float>(corridorCrossings[l]) * 18.0f);
+            curColX += colW + dynamicGapX;
         }
+        compStartY = compMaxBottom + compGapY;
     }
 
     // Place disconnected standalone tables neatly in an isolated grid row below connected graph (never amid FK wires)
@@ -1015,14 +1614,14 @@ std::vector<ErdNodeLayout> ErdAndMigrationEngine::ComputeSmartLayout(
         std::sort(standaloneIdxs.begin(), standaloneIdxs.end(), [&](size_t a, size_t b) {
             return tables[a].name < tables[b].name;
         });
-        const float startY = hasAnyConnected ? (connectedMaxBottom + (notation == ErdNotation::Chen ? 56.0f : 28.0f)) : 0.0f;
+        const float startY = hasAnyConnected ? compStartY : 0.0f;
         const size_t sCols = (std::max)(size_t(1), (std::min)(size_t(4), standaloneIdxs.size()));
         std::vector<float> sColMaxW(sCols, 256.0f);
         for (size_t k = 0; k < standaloneIdxs.size(); ++k) {
             sColMaxW[k % sCols] = (std::max)(sColMaxW[k % sCols], result[standaloneIdxs[k]].width);
         }
         std::vector<float> sColX(sCols, 0.0f);
-        const float sGapX = (notation == ErdNotation::Chen) ? 92.0f : 72.0f;
+        const float sGapX = (notation == ErdNotation::Chen) ? 96.0f : 72.0f;
         const float sGapY = (notation == ErdNotation::Chen) ? 92.0f : 48.0f;
         for (size_t c = 1; c < sCols; ++c) {
             sColX[c] = sColX[c - 1] + sColMaxW[c - 1] + sGapX;
@@ -1122,16 +1721,10 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
         re.dir1 = (pSide == PortSide::Right) ? 1.0f : -1.0f;
         re.dir2 = (cSide == PortSide::Right) ? 1.0f : -1.0f;
 
-        PortEndpoint epP{
-            ri, true, pSide,
-            EstimateColumnRowCenterY(pn, tables[rel.parentTableIdx], rel.parentColIdx, notation),
-            cn.y + cn.height * 0.5f
-        };
-        PortEndpoint epC{
-            ri, false, cSide,
-            EstimateColumnRowCenterY(cn, tables[rel.childTableIdx], rel.childColIdx, notation),
-            pn.y + pn.height * 0.5f
-        };
+        const float pIdealY = EstimateColumnRowCenterY(pn, tables[rel.parentTableIdx], rel.parentColIdx, notation);
+        const float cIdealY = EstimateColumnRowCenterY(cn, tables[rel.childTableIdx], rel.childColIdx, notation);
+        PortEndpoint epP{ ri, true, pSide, pIdealY, cIdealY };
+        PortEndpoint epC{ ri, false, cSide, cIdealY, pIdealY };
         if (pSide == PortSide::Right) rightPorts[rel.parentTableIdx].push_back(epP);
         else leftPorts[rel.parentTableIdx].push_back(epP);
 
@@ -1191,22 +1784,22 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
 
     // 3. Build obstacle rectangles around ALL table cards (extra vertical cushion in Chen for attribute ovals)
     std::vector<RectObstacle> tightObs(nodes.size()), padObs(nodes.size());
-    const float clearX = (notation == ErdNotation::Chen) ? 28.0f : 24.0f;
-    const float clearY = (notation == ErdNotation::Chen) ? 46.0f : 22.0f;
+    const float clearX = (notation == ErdNotation::Chen) ? 26.0f : 17.0f;
+    const float clearY = (notation == ErdNotation::Chen) ? 46.0f : 20.0f;
     for (size_t i = 0; i < nodes.size(); ++i) {
         tightObs[i] = { nodes[i].x, nodes[i].y, nodes[i].x + nodes[i].width, nodes[i].y + nodes[i].height };
         padObs[i] = { nodes[i].x - clearX, nodes[i].y - clearY,
                       nodes[i].x + nodes[i].width + clearX, nodes[i].y + nodes[i].height + clearY };
     }
 
-    // 4. Build deduplicated orthogonal Hanan + staggered corridor tracks so routes stay separated cleanly
+    // 4. Build deduplicated orthogonal Hanan + multi-lane corridor tracks
+    //    Keep port stub X (20px) strictly separate from corridor vertical lanes (>=30px), and NEVER drop any port Y.
     std::vector<float> rawXs, rawYs;
-    rawXs.reserve(nodes.size() * 6 + routed.size() * 4);
-    rawYs.reserve(nodes.size() * 6 + routed.size() * 4);
+    rawXs.reserve(nodes.size() * 8 + routed.size() * 4);
+    rawYs.reserve(nodes.size() * 8 + routed.size() * 4);
 
-    // Keep exact stub coordinates pinned so A* start/goal never snap off-axis onto nearby margin tracks
     std::vector<float> pinnedX, pinnedY;
-    constexpr float kStubLen = 30.0f;
+    constexpr float kStubLen = 20.0f;
     for (const auto& re : routed) {
         if (re.isSelfRef) continue;
         pinnedX.push_back(re.x1 + re.dir1 * kStubLen);
@@ -1215,9 +1808,9 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
         pinnedY.push_back(re.y2);
     }
 
-    auto addIfClearOfPinned = [](std::vector<float>& dst, const std::vector<float>& pinned, float val) {
-        for (float p : pinned) {
-            if (std::abs(val - p) < 5.5f) return;
+    auto addIfClearOf = [](std::vector<float>& dst, const std::vector<float>& refs, float val, float minSep) {
+        for (float p : refs) {
+            if (std::abs(val - p) < minSep) return;
         }
         dst.push_back(val);
     };
@@ -1226,48 +1819,67 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
 
     std::vector<std::pair<float, float>> xSpans, ySpans;
     for (const auto& nd : nodes) {
-        addIfClearOfPinned(rawXs, pinnedX, nd.x - 26.0f);
-        addIfClearOfPinned(rawXs, pinnedX, nd.x - 42.0f);
-        addIfClearOfPinned(rawXs, pinnedX, nd.x + nd.width + 26.0f);
-        addIfClearOfPinned(rawXs, pinnedX, nd.x + nd.width + 42.0f);
-        addIfClearOfPinned(rawYs, pinnedY, nd.y - clearY);
-        addIfClearOfPinned(rawYs, pinnedY, nd.y - clearY - 14.0f);
-        addIfClearOfPinned(rawYs, pinnedY, nd.y + nd.height + clearY);
-        addIfClearOfPinned(rawYs, pinnedY, nd.y + nd.height + clearY + 14.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x - 32.0f, 10.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x - 46.0f, 10.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x - 60.0f, 10.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x + nd.width + 32.0f, 10.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x + nd.width + 46.0f, 10.0f);
+        addIfClearOf(rawXs, pinnedX, nd.x + nd.width + 60.0f, 10.0f);
+
+        addIfClearOf(rawYs, pinnedY, nd.y - clearY, 7.5f);
+        addIfClearOf(rawYs, pinnedY, nd.y - clearY - 14.0f, 7.5f);
+        addIfClearOf(rawYs, pinnedY, nd.y - clearY - 28.0f, 7.5f);
+        addIfClearOf(rawYs, pinnedY, nd.y + nd.height + clearY, 7.5f);
+        addIfClearOf(rawYs, pinnedY, nd.y + nd.height + clearY + 14.0f, 7.5f);
+        addIfClearOf(rawYs, pinnedY, nd.y + nd.height + clearY + 28.0f, 7.5f);
         xSpans.push_back({ nd.x, nd.x + nd.width });
         ySpans.push_back({ nd.y, nd.y + nd.height });
     }
     std::sort(xSpans.begin(), xSpans.end());
     for (size_t i = 0; i + 1 < xSpans.size(); ++i) {
         float gap = xSpans[i + 1].first - xSpans[i].second;
-        if (gap >= 44.0f) {
-            float mid = (xSpans[i].second + xSpans[i + 1].first) * 0.5f;
-            addIfClearOfPinned(rawXs, pinnedX, mid);
-            addIfClearOfPinned(rawXs, pinnedX, mid - 14.0f);
-            addIfClearOfPinned(rawXs, pinnedX, mid + 14.0f);
-            if (gap >= 90.0f) {
-                addIfClearOfPinned(rawXs, pinnedX, mid - 28.0f);
-                addIfClearOfPinned(rawXs, pinnedX, mid + 28.0f);
+        if (gap >= 56.0f) {
+            float lo = xSpans[i].second + 30.0f;
+            float hi = xSpans[i + 1].first - 30.0f;
+            for (float lx = lo; lx <= hi + 0.5f; lx += 14.0f) {
+                addIfClearOf(rawXs, pinnedX, lx, 9.5f);
             }
+        } else if (gap >= 28.0f) {
+            addIfClearOf(rawXs, pinnedX, (xSpans[i].second + xSpans[i + 1].first) * 0.5f, 4.0f);
         }
     }
     std::sort(ySpans.begin(), ySpans.end());
     for (size_t i = 0; i + 1 < ySpans.size(); ++i) {
         float gap = ySpans[i + 1].first - ySpans[i].second;
-        if (gap >= 38.0f) {
-            float mid = (ySpans[i].second + ySpans[i + 1].first) * 0.5f;
-            addIfClearOfPinned(rawYs, pinnedY, mid);
-            addIfClearOfPinned(rawYs, pinnedY, mid - 13.0f);
-            addIfClearOfPinned(rawYs, pinnedY, mid + 13.0f);
+        if (gap >= 36.0f) {
+            float lo = ySpans[i].second + clearY;
+            float hi = ySpans[i + 1].first - clearY;
+            if (hi >= lo) {
+                for (float ly = lo; ly <= hi + 0.5f; ly += 12.0f) {
+                    addIfClearOf(rawYs, pinnedY, ly, 7.5f);
+                }
+            } else {
+                addIfClearOf(rawYs, pinnedY, (ySpans[i].second + ySpans[i + 1].first) * 0.5f, 7.5f);
+            }
         }
     }
 
-    auto buildUniqueTracks = [](std::vector<float>& vals, size_t maxTracks) -> std::vector<float> {
+    auto buildUniqueTracks = [](std::vector<float>& vals, const std::vector<float>& mustKeep, size_t maxTracks) -> std::vector<float> {
         std::sort(vals.begin(), vals.end());
         std::vector<float> out;
         out.reserve(vals.size());
+        auto isPinned = [&](float v) {
+            for (float p : mustKeep) if (std::abs(v - p) < 0.1f) return true;
+            return false;
+        };
         for (float v : vals) {
-            if (out.empty() || std::abs(v - out.back()) >= 1.5f) {
+            if (out.empty()) {
+                out.push_back(v);
+            } else if (isPinned(v)) {
+                if (std::abs(v - out.back()) >= 0.08f) out.push_back(v);
+            } else if (!isPinned(out.back()) && std::abs(v - out.back()) < 2.5f) {
+                continue;
+            } else if (std::abs(v - out.back()) >= 0.5f) {
                 out.push_back(v);
             }
         }
@@ -1275,15 +1887,16 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
             std::vector<float> thinned;
             thinned.reserve(out.size());
             for (size_t i = 0; i < out.size(); ++i) {
-                if ((i & 1u) == 0 || i + 1 == out.size()) thinned.push_back(out[i]);
+                if (isPinned(out[i]) || (i & 1u) == 0 || i + 1 == out.size()) thinned.push_back(out[i]);
             }
+            if (thinned.size() == out.size()) break;
             out = std::move(thinned);
         }
         return out;
     };
 
-    const std::vector<float> gridX = buildUniqueTracks(rawXs, 130);
-    const std::vector<float> gridY = buildUniqueTracks(rawYs, 130);
+    const std::vector<float> gridX = buildUniqueTracks(rawXs, pinnedX, 240);
+    const std::vector<float> gridY = buildUniqueTracks(rawYs, pinnedY, 240);
 
     auto findNearestTrack = [](const std::vector<float>& grid, float target) -> size_t {
         if (grid.empty()) return 0;
@@ -1300,10 +1913,11 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
     std::vector<UsedH> usedH;
     std::vector<UsedV> usedV;
 
-    // Order short-span edges first so tight connections claim direct lanes before long highways route around
+    // Order self-references first, then shortest-span edges first so tight connections claim direct lanes
     std::vector<size_t> routeOrder(routed.size());
     for (size_t i = 0; i < routed.size(); ++i) routeOrder[i] = i;
     std::sort(routeOrder.begin(), routeOrder.end(), [&](size_t a, size_t b) {
+        if (routed[a].isSelfRef != routed[b].isSelfRef) return routed[a].isSelfRef;
         float da = std::abs(routed[a].x1 - routed[a].x2) + std::abs(routed[a].y1 - routed[a].y2);
         float db = std::abs(routed[b].x1 - routed[b].x2) + std::abs(routed[b].y1 - routed[b].y2);
         return da < db;
@@ -1332,6 +1946,9 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
             re.points = {
                 { re.x1, re.y1 }, { loopX, re.y1 }, { loopX, re.y2 }, { re.x2, re.y2 }
             };
+            usedH.push_back({ re.y1, re.x1, loopX });
+            usedV.push_back({ loopX, (std::min)(re.y1, re.y2), (std::max)(re.y1, re.y2) });
+            usedH.push_back({ re.y2, re.x2, loopX });
             continue;
         }
 
@@ -1368,17 +1985,33 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
             int bestGoalState = -1;
             float bestGoalCost = 1e30f;
             size_t pops = 0;
-            constexpr size_t kMaxAStarPops = 18000;
+            constexpr size_t kMaxAStarPops = 60000;
+
+            auto isOnPinnedStubX = [&](float xVal) -> bool {
+                for (float px : pinnedX) {
+                    if (std::abs(xVal - px) < 4.0f) return true;
+                }
+                return false;
+            };
 
             auto evalSegCost = [&](float ax, float ay, float bx, float by, int newDir, int prevDir) -> float {
-                float base = std::abs(bx - ax) + std::abs(by - ay);
-                if (newDir != prevDir) base += 60.0f; // strong preference for clean straight/Z bends
+                const float len = std::abs(bx - ax) + std::abs(by - ay);
+                float base = len;
+                if (newDir != prevDir) base += 65.0f; // prefer clean straight/Z bends
+                if (len < 7.0f && newDir != prevDir) base += 260.0f; // avoid tiny stair-step jogs
+
+                const bool nearOwnStart = (std::abs(ay - sy1) < 1.0f &&
+                                           ((re.dir1 > 0 && ax >= re.x1 - 1.0f && bx <= re.x1 + 26.0f) ||
+                                            (re.dir1 < 0 && bx <= re.x1 + 1.0f && ax >= re.x1 - 26.0f)));
+                const bool nearOwnGoal = (std::abs(ay - sy2) < 1.0f &&
+                                          ((re.dir2 > 0 && ax >= re.x2 - 1.0f && bx <= re.x2 + 26.0f) ||
+                                           (re.dir2 < 0 && bx <= re.x2 + 1.0f && ax >= re.x2 - 26.0f)));
 
                 for (size_t k = 0; k < tightObs.size(); ++k) {
                     if (SegIntersectsRect(ax, ay, bx, by, tightObs[k])) {
-                        base += 500000.0f; // never route under ANY table card
-                    } else if (SegIntersectsRect(ax, ay, bx, by, padObs[k])) {
-                        base += 32000.0f;  // keep 16px clear margin around tables
+                        base += 2000000.0f; // strictly forbidden to route under ANY table card
+                    } else if (!(nearOwnStart || nearOwnGoal) && SegIntersectsRect(ax, ay, bx, by, padObs[k])) {
+                        base += 40000.0f;   // keep clear breathing margin around cards
                     }
                 }
 
@@ -1386,28 +2019,31 @@ std::vector<ErdRoutedEdge> ErdAndMigrationEngine::RouteErdEdges(
                     const float segMinX = (std::min)(ax, bx);
                     const float segMaxX = (std::max)(ax, bx);
                     for (const auto& u : usedH) {
-                        if (std::abs(ay - u.y) < 7.5f && segMaxX > u.xMin - 4.0f && segMinX < u.xMax + 4.0f) {
-                            base += 9000.0f; // force separate parallel horizontal track
+                        if (std::abs(ay - u.y) < 9.0f && segMaxX > u.xMin - 5.0f && segMinX < u.xMax + 5.0f) {
+                            base += 250000.0f; // strictly separate parallel horizontal tracks
                         }
                     }
                     for (const auto& uv : usedV) {
                         if (uv.x > segMinX + 2.0f && uv.x < segMaxX - 2.0f &&
                             ay > uv.yMin + 2.0f && ay < uv.yMax - 2.0f) {
-                            base += 180.0f; // prefer avoiding crossings when cheap
+                            base += 220.0f; // prefer avoiding crossings when cheap
                         }
                     }
                 } else {
+                    if (isOnPinnedStubX(ax)) {
+                        base += 180000.0f; // never travel vertically on top of port-stub X boundaries
+                    }
                     const float segMinY = (std::min)(ay, by);
                     const float segMaxY = (std::max)(ay, by);
                     for (const auto& uv : usedV) {
-                        if (std::abs(ax - uv.x) < 7.5f && segMaxY > uv.yMin - 4.0f && segMinY < uv.yMax + 4.0f) {
-                            base += 9000.0f; // force separate parallel vertical track (zero T-junctions)
+                        if (std::abs(ax - uv.x) < 10.0f && segMaxY > uv.yMin - 5.0f && segMinY < uv.yMax + 5.0f) {
+                            base += 250000.0f; // strictly separate parallel vertical tracks (zero T-junctions)
                         }
                     }
                     for (const auto& u : usedH) {
                         if (u.y > segMinY + 2.0f && u.y < segMaxY - 2.0f &&
                             ax > u.xMin + 2.0f && ax < u.xMax - 2.0f) {
-                            base += 180.0f;
+                            base += 220.0f;
                         }
                     }
                 }
@@ -1760,8 +2396,8 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
             svg << "/>\n";
         };
 
-        if (notation == ErdNotation::Barker && edge.childOptional && !edge.isInferred) {
-            // In Barker notation, optionality splits at the midpoint: solid parent half, dashed child half
+        if (notation == ErdNotation::Barker && !edge.isInferred) {
+            // In Barker notation: parent half is dashed if childOptional, child half is always dashed (0..* / 0..1).
             float totalLen = 0.0f;
             for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
                 totalLen += std::abs(edge.points[s + 1].x - edge.points[s].x) +
@@ -1769,19 +2405,21 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
             }
             const float halfLen = totalLen * 0.5f;
             float accLen = 0.0f;
+            const bool parentDashed = edge.childOptional;
+            const bool childDashed = true;
             for (size_t s = 0; s + 1 < edge.points.size(); ++s) {
                 const auto& a = edge.points[s];
                 const auto& b = edge.points[s + 1];
                 const float segLen = std::abs(b.x - a.x) + std::abs(b.y - a.y);
                 if (accLen + segLen <= halfLen) {
-                    emitSvgPathSeg(a, b, s, false);
+                    emitSvgPathSeg(a, b, s, parentDashed);
                 } else if (accLen >= halfLen) {
-                    emitSvgPathSeg(a, b, s, true);
+                    emitSvgPathSeg(a, b, s, childDashed);
                 } else if (segLen > 0.5f) {
                     const float t = (halfLen - accLen) / segLen;
                     const ErdPointF midPt{ a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
-                    emitSvgPathSeg(a, midPt, s, false);
-                    emitSvgPathSeg(midPt, b, s, true);
+                    emitSvgPathSeg(a, midPt, s, parentDashed);
+                    emitSvgPathSeg(midPt, b, s, childDashed);
                 }
                 accLen += segLen;
             }
@@ -1848,7 +2486,7 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
                 << (edge.childOptional ? "0..1" : "1") << "</text>\n";
             svg << "  <text x=\"" << (sx2 + edge.dir2 * 18.0f) << "\" y=\"" << (sy2 - 7.0f)
                 << "\" text-anchor=\"middle\" fill=\"#E2E8F0\" font-family=\"Segoe UI\" font-size=\"11\">"
-                << (edge.isOneToOne ? "0..1" : (edge.childOptional ? "0..*" : "1..*")) << "</text>\n";
+                << (edge.isOneToOne ? "0..1" : "0..*") << "</text>\n";
         } else {
             // Crow's Foot / Barker endpoints (circles, double bars, forks)
             auto drawSvgMarker = [&](float px, float py, float dir, bool isMany, bool isOpt) {
@@ -1882,7 +2520,7 @@ std::string ErdAndMigrationEngine::ExportErdToSvg(
                 }
             } else {
                 drawSvgMarker(sx1, sy1, edge.dir1, false, edge.childOptional);
-                drawSvgMarker(sx2, sy2, edge.dir2, !edge.isOneToOne, edge.isOneToOne ? true : edge.childOptional);
+                drawSvgMarker(sx2, sy2, edge.dir2, !edge.isOneToOne, true);
             }
         }
     }

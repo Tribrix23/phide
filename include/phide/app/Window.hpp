@@ -1123,6 +1123,8 @@ private:
     HANDLE m_hPmaProcess = nullptr;
     HANDLE m_hMysqlProcess = nullptr;
     int m_mysqlPort = 3306;
+    int m_sqlConsoleStartedMysqlPort = 0;
+    ULONGLONG m_lastSqlPortPollTick = 0;
     bool m_isPmaRunning = false;
     void UpdateDatabaseModalRuntimeStatus();
     void RunManualGarbageCollection(bool aggressive = true);

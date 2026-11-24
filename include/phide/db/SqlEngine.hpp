@@ -57,6 +57,7 @@ struct SqlForeignKeyInfo {
     std::wstring column;
     std::wstring refTable;
     std::wstring refColumn;
+    std::wstring refSchema; ///< Optional referenced schema/database qualifier
 };
 
 /**
@@ -109,6 +110,16 @@ public:
      * @brief Resolves the active dynamic MySQL/MariaDB port (env PHIDE_MYSQL_PORT, mysql_port.txt, .env, or live scan).
      */
     static int ResolveDynamicMysqlPort(int preferredPort = 3306, const std::wstring& workspaceRoot = L"");
+
+    /**
+     * @brief Returns all local TCP ports currently listened on by live `mysqld.exe` / `mariadbd.exe` processes.
+     */
+    static std::vector<int> GetListeningMysqlPorts();
+
+    /**
+     * @brief Returns true if a local `mysqld.exe` / `mariadbd.exe` process is listening on `port`.
+     */
+    static bool IsLocalMysqlListeningOnPort(int port);
 
     /**
      * @brief Starts the local database server for the given profile (MySQL, PostgreSQL, or SQL Server).

@@ -83,7 +83,7 @@ public:
      */
     void OpenSchemaDiffMode(bool open);
 
-    void DiscardDeviceResources() noexcept {}
+    void DiscardDeviceResources() noexcept { m_erdStrokeStyle.Reset(); }
 
     void Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                 float canvasLeft, float canvasWidth, float topY, float clientHeight);
@@ -119,12 +119,15 @@ public:
     [[nodiscard]] bool GetShowManyToManyBadges() const noexcept { return m_showManyToManyBadges; }
     [[nodiscard]] const D2D1_RECT_F& GetManyToManyButtonBounds() const noexcept { return m_rcBtnShowM2N; }
     [[nodiscard]] const D2D1_RECT_F& GetLegendButtonBounds() const noexcept { return m_rcBtnLegend; }
+    [[nodiscard]] const D2D1_RECT_F& GetSearchBoxBounds() const noexcept { return m_rcSearchBox; }
 
 private:
     void EnsureRoutesUpToDate();
     void AutoArrangeNodes(bool animate = false);
+    void ApplyZoomToFit(bool animate, float maxZoom = 1.0f);
     void RecalculateNodeHeights();
     void RecomputeDiff();
+    void EnsureCardTextFormats();
     D2D1_POINT_2F ScreenToWorld(POINT pt) const noexcept;
     void SetToast(const std::wstring& msg);
 
@@ -145,6 +148,7 @@ private:
     bool m_showManyToManyBadges = false;
     bool m_showLegend = false;
     bool m_userMovedNodes = false;
+    bool m_needsInitialZoomFit = true;
 
     phide::db::ErdNotation m_notation = phide::db::ErdNotation::CrowsFoot;
     bool m_showChenAttributes = true;
@@ -164,6 +168,7 @@ private:
     bool m_isAnimatingZoomPan = false;
     bool m_isAnimatingNodes = false;
     bool m_isAnimatingDiffScroll = false;
+    float m_loadingSpinnerDeg = 0.0f;
     D2D1_RECT_F m_rcCanvasViewport{};
     D2D1_RECT_F m_rcDiffViewport{};
 
@@ -189,6 +194,15 @@ private:
     std::vector<ErdHitRect> m_dbHits;
     std::vector<ErdHitRect> m_diffDbHits;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwFactory;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_cardTitleFmt;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_cardMonoFmt;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_cardSmallFmt;
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> m_erdStrokeStyle;
+
+    bool m_serverMenuOpen = false;
+    bool m_dbMenuOpen = false;
+    int m_hoveredServerMenuIdx = -1;
+    int m_hoveredDbMenuIdx = -1;
 
     int m_hoveredBtnId = -1;
     int m_hoveredProfileIdx = -1;
@@ -197,6 +211,7 @@ private:
     int m_hoveredNodeIdx = -1;
     int m_hoveredEdgeIdx = -1;
     bool m_hoveredSearchBox = false;
+    bool m_hoveredSearchClear = false;
     std::wstring m_toastMsg;
     ULONGLONG m_toastExpire = 0;
 
@@ -209,6 +224,12 @@ private:
     D2D1_RECT_F m_rcBtnAutoLayout{};
     D2D1_RECT_F m_rcBtnZoomFit{};
     D2D1_RECT_F m_rcBtnRefresh{};
+    D2D1_RECT_F m_rcBtnQuickRefresh{};
+    D2D1_RECT_F m_rcBtnServerPicker{};
+    D2D1_RECT_F m_rcBtnDbPicker{};
+    D2D1_RECT_F m_rcServerMenuPopup{};
+    D2D1_RECT_F m_rcDbMenuPopup{};
+    D2D1_RECT_F m_rcServerDetectMenuItem{};
     D2D1_RECT_F m_rcBtnDetect{};
     D2D1_RECT_F m_rcBtnEmptyRefresh{};
     D2D1_RECT_F m_rcBtnLoadSql{};
@@ -220,6 +241,7 @@ private:
     D2D1_RECT_F m_rcBtnOpenMigConsole{};
     D2D1_RECT_F m_rcBtnCopyMigration{};
     D2D1_RECT_F m_rcSearchBox{};
+    D2D1_RECT_F m_rcSearchClear{};
 };
 
 } // namespace phide::ui

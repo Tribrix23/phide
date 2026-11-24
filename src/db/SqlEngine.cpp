@@ -316,13 +316,14 @@ std::wstring FindMysqlToolExe(const wchar_t* exeName) {
     return FindToolExe(
         exeName,
         {
-            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql\\bin") / exeName).wstring(),
-            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql") / exeName).wstring(),
             (exeDir / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
             (exeDir / L"runtimes" / L"mysql" / exeName).wstring(),
             (exeDir.parent_path() / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
             (exeDir / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
             (exeDir.parent_path() / L"installer" / L"payload" / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (exeDir.parent_path() / L"installer" / L"test_install" / L"runtimes" / L"mysql" / L"bin" / exeName).wstring(),
+            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql\\bin") / exeName).wstring(),
+            (fs::path(L"C:\\Program Files\\phide\\runtimes\\mysql") / exeName).wstring(),
             (fs::path(L"C:\\xampp\\mysql\\bin") / exeName).wstring()
         },
         {
@@ -871,6 +872,58 @@ bool SqlEngine::IsPortAvailableForBind(int port) {
     return true;
 }
 
+std::vector<int> SqlEngine::GetListeningMysqlPorts() {
+    std::vector<int> ports;
+    auto collectFamily = [&](ULONG family) {
+        DWORD sz = 0;
+        DWORD rc = GetExtendedTcpTable(nullptr, &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        for (int r = 0; r < 3 && (rc == ERROR_INSUFFICIENT_BUFFER || rc == NO_ERROR) && sz > 0; ++r) {
+            std::vector<BYTE> buf(sz);
+            rc = GetExtendedTcpTable(buf.data(), &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+            if (rc != NO_ERROR) continue;
+            auto checkEntry = [&](DWORD rawPort, DWORD pid) {
+                if (pid <= 4) return;
+                int p = static_cast<int>(((rawPort & 0xFF) << 8) | ((rawPort >> 8) & 0xFF));
+                if (p <= 0 || p >= 65536) return;
+                if (std::find(ports.begin(), ports.end(), p) != ports.end()) return;
+                HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                if (!hp) return;
+                wchar_t img[MAX_PATH] = {};
+                DWORD len = MAX_PATH;
+                bool isSql = false;
+                if (QueryFullProcessImageNameW(hp, 0, img, &len) && len > 0) {
+                    std::wstring fn = ToLowerW(fs::path(img).filename().wstring());
+                    isSql = (fn == L"mysqld.exe" || fn == L"mariadbd.exe");
+                }
+                CloseHandle(hp);
+                if (isSql) ports.push_back(p);
+            };
+            if (family == AF_INET) {
+                const auto* t = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buf.data());
+                for (DWORD i = 0; i < t->dwNumEntries; ++i) {
+                    checkEntry(t->table[i].dwLocalPort, t->table[i].dwOwningPid);
+                }
+            } else {
+                const auto* t6 = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buf.data());
+                for (DWORD i = 0; i < t6->dwNumEntries; ++i) {
+                    checkEntry(t6->table[i].dwLocalPort, t6->table[i].dwOwningPid);
+                }
+            }
+            return;
+        }
+    };
+    collectFamily(AF_INET);
+    collectFamily(AF_INET6);
+    std::sort(ports.begin(), ports.end());
+    return ports;
+}
+
+bool SqlEngine::IsLocalMysqlListeningOnPort(int port) {
+    if (port <= 0 || port >= 65536) return false;
+    auto live = GetListeningMysqlPorts();
+    return std::find(live.begin(), live.end(), port) != live.end();
+}
+
 int SqlEngine::ResolveDynamicMysqlPort(int preferredPort, const std::wstring& workspaceRoot) {
     std::vector<int> candidates;
     auto pushCand = [&](int p) {
@@ -902,13 +955,23 @@ int SqlEngine::ResolveDynamicMysqlPort(int preferredPort, const std::wstring& wo
     pushCand(3309);
     pushCand(33060);
 
+    // Prefer an actual live mysqld/mariadbd listener over generic sockets
+    for (int p : candidates) {
+        if (IsLocalMysqlListeningOnPort(p)) {
+            return p;
+        }
+    }
+    auto anyLive = GetListeningMysqlPorts();
+    if (!anyLive.empty()) {
+        return anyLive.front();
+    }
+    // Compatibility fallback if MySQL runs inside container/WSL on standard ports
     for (int p : candidates) {
         if (IsTcpPortOpen(L"127.0.0.1", p, 35)) {
             return p;
         }
     }
 
-    if (pmaFilePort > 0) return pmaFilePort;
     if (envPort > 0) return envPort;
     if (dotEnvPort > 0) return dotEnvPort;
     return (preferredPort > 0 && preferredPort < 65536) ? preferredPort : 3306;
@@ -982,24 +1045,34 @@ std::vector<SqlConnectionProfile> SqlEngine::DiscoverWorkspaceDatabases(
     std::wstring effMysqlPass = (!mysqlPass.empty() ? mysqlPass : envHints.password);
     std::wstring effMysqlDb   = (!mysqlDb.empty() ? mysqlDb : ((envHints.connection.empty() || envHints.connection == L"mysql" || envHints.connection == L"mariadb") ? envHints.database : L""));
 
-    // 2. Dynamically detect live MySQL / MariaDB instances on local ports
-    int primaryMysqlPort = ResolveDynamicMysqlPort(mysqlPort, workspaceRoot);
-    std::vector<int> mysqlPortsToProbe;
-    auto pushMysqlPort = [&](int p) {
-        if (p > 0 && p < 65536 && std::find(mysqlPortsToProbe.begin(), mysqlPortsToProbe.end(), p) == mysqlPortsToProbe.end()) {
-            mysqlPortsToProbe.push_back(p);
+    // 2. Dynamically detect live MySQL / MariaDB instances cleanly:
+    //    - >= 1 running -> show only active instances with their port
+    //    - 0 running -> show one offline "MySQL" entry (no stale phantom port suffix)
+    std::vector<int> liveMysqlPorts;
+    auto pushLiveMysqlPort = [&](int p) {
+        if (p > 0 && p < 65536 && std::find(liveMysqlPorts.begin(), liveMysqlPorts.end(), p) == liveMysqlPorts.end()) {
+            liveMysqlPorts.push_back(p);
         }
     };
-    pushMysqlPort(primaryMysqlPort);
-    if (mysqlPort > 0) pushMysqlPort(mysqlPort);
-    pushMysqlPort(3306);
-    pushMysqlPort(3307);
-    pushMysqlPort(3308);
-    pushMysqlPort(3309);
+    if (IsLocalHostAddress(effMysqlHost)) {
+        for (int p : GetListeningMysqlPorts()) {
+            pushLiveMysqlPort(p);
+        }
+        // Fallback probe for containerized/WSL MySQL instances if no native mysqld.exe PID was matched
+        if (liveMysqlPorts.empty()) {
+            for (int p : { ResolveDynamicMysqlPort(mysqlPort, workspaceRoot), 3306, 3307, 3308 }) {
+                if (p > 0 && IsTcpPortOpen(effMysqlHost, p, 35)) {
+                    pushLiveMysqlPort(p);
+                }
+            }
+        }
+    } else if (mysqlPort > 0 && IsTcpPortOpen(effMysqlHost, mysqlPort, 35)) {
+        pushLiveMysqlPort(mysqlPort);
+    }
 
-    bool addedLiveMysql = false;
-    for (int p : mysqlPortsToProbe) {
-        if (IsTcpPortOpen(effMysqlHost, p, 35)) {
+    if (!liveMysqlPorts.empty()) {
+        std::sort(liveMysqlPorts.begin(), liveMysqlPorts.end());
+        for (int p : liveMysqlPorts) {
             SqlConnectionProfile mysqlProf;
             mysqlProf.dialect = SqlDialect::MySQL;
             mysqlProf.host = effMysqlHost;
@@ -1010,18 +1083,16 @@ std::vector<SqlConnectionProfile> SqlEngine::DiscoverWorkspaceDatabases(
             mysqlProf.name = L"MySQL (" + effMysqlHost + L":" + std::to_wstring(p) + L")";
             mysqlProf.isConnected = true;
             profiles.push_back(std::move(mysqlProf));
-            addedLiveMysql = true;
         }
-    }
-    if (!addedLiveMysql) {
+    } else {
         SqlConnectionProfile mysqlProf;
         mysqlProf.dialect = SqlDialect::MySQL;
         mysqlProf.host = effMysqlHost;
-        mysqlProf.port = primaryMysqlPort;
+        mysqlProf.port = 0; // Unbound offline placeholder; StartDatabaseServer resolves phpMyAdmin/default port
         mysqlProf.user = effMysqlUser;
         mysqlProf.password = effMysqlPass;
         mysqlProf.database = effMysqlDb;
-        mysqlProf.name = L"MySQL (" + effMysqlHost + L":" + std::to_wstring(primaryMysqlPort) + L")";
+        mysqlProf.name = L"MySQL";
         mysqlProf.isConnected = false;
         profiles.push_back(std::move(mysqlProf));
     }
@@ -1169,54 +1240,24 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
     }
 
     if (profile.dialect == SqlDialect::MySQL) {
-        auto isListenerMysqlExe = [](int port) -> bool {
-            auto scanFamily = [&](ULONG family) -> DWORD {
-                DWORD sz = 0;
-                DWORD rc = GetExtendedTcpTable(nullptr, &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
-                for (int r = 0; r < 3 && (rc == ERROR_INSUFFICIENT_BUFFER || rc == NO_ERROR) && sz > 0; ++r) {
-                    std::vector<BYTE> buf(sz);
-                    rc = GetExtendedTcpTable(buf.data(), &sz, FALSE, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
-                    if (rc != NO_ERROR) continue;
-                    if (family == AF_INET) {
-                        const auto* t = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buf.data());
-                        for (DWORD i = 0; i < t->dwNumEntries; ++i) {
-                            DWORD p = t->table[i].dwLocalPort;
-                            if (static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF)) == port && t->table[i].dwOwningPid > 4) {
-                                return t->table[i].dwOwningPid;
-                            }
-                        }
-                    } else {
-                        const auto* t6 = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buf.data());
-                        for (DWORD i = 0; i < t6->dwNumEntries; ++i) {
-                            DWORD p = t6->table[i].dwLocalPort;
-                            if (static_cast<int>(((p & 0xFF) << 8) | ((p >> 8) & 0xFF)) == port && t6->table[i].dwOwningPid > 4) {
-                                return t6->table[i].dwOwningPid;
-                            }
-                        }
-                    }
-                    return 0;
-                }
-                return 0;
-            };
-            DWORD pid = scanFamily(AF_INET);
-            if (pid == 0) pid = scanFamily(AF_INET6);
-            if (pid <= 4) return false;
-            HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (!hp) return false;
-            wchar_t img[MAX_PATH] = {};
-            DWORD len = MAX_PATH;
-            bool isSql = false;
-            if (QueryFullProcessImageNameW(hp, 0, img, &len) && len > 0) {
-                std::wstring fn = ToLowerW(fs::path(img).filename().wstring());
-                isSql = (fn == L"mysqld.exe" || fn == L"mariadbd.exe");
-            }
-            CloseHandle(hp);
-            return isSql;
-        };
-
         int effPort = (profile.port > 0 && profile.port < 65536) ? profile.port : ResolveDynamicMysqlPort(3306);
         const bool isLocalTarget = (connectHost == L"127.0.0.1" || connectHost == L"::1" || ToLowerW(connectHost) == L"localhost");
-        if (IsTcpPortOpen(connectHost, effPort, 35) && (!isLocalTarget || isListenerMysqlExe(effPort))) {
+        // Reuse phpMyAdmin's or an already-active local MySQL server instead of spawning a second instance
+        if (profile.port <= 0 && isLocalTarget) {
+            auto activeMysql = GetListeningMysqlPorts();
+            if (!activeMysql.empty()) {
+                int reusePort = activeMysql.front();
+                int pmaPort = ReadMysqlPortFromPmaConfig();
+                if (pmaPort > 0 && std::find(activeMysql.begin(), activeMysql.end(), pmaPort) != activeMysql.end()) {
+                    reusePort = pmaPort;
+                }
+                PersistMysqlPort(reusePort);
+                if (outResolvedPort) *outResolvedPort = reusePort;
+                outMessage = L"Connected to running MySQL (" + profile.host + L":" + std::to_wstring(reusePort) + L")";
+                return true;
+            }
+        }
+        if (IsTcpPortOpen(connectHost, effPort, 35) && (!isLocalTarget || IsLocalMysqlListeningOnPort(effPort))) {
             PersistMysqlPort(effPort);
             if (outResolvedPort) *outResolvedPort = effPort;
             outMessage = L"MySQL is already running (" + profile.host + L":" + std::to_wstring(effPort) + L")";
@@ -1234,7 +1275,7 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
             ULONGLONG svcDeadline = GetTickCount64() + 3000;
             while (GetTickCount64() < svcDeadline) {
                 for (int p : probePorts) {
-                    if (IsTcpPortOpen(connectHost, p, 35) && isListenerMysqlExe(p)) {
+                    if (IsTcpPortOpen(connectHost, p, 35) && IsLocalMysqlListeningOnPort(p)) {
                         PersistMysqlPort(p);
                         if (outResolvedPort) *outResolvedPort = p;
                         outMessage = L"Started MySQL (" + profile.host + L":" + std::to_wstring(p) + L")";
@@ -1245,7 +1286,7 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
             }
         }
 
-        // 2. Spawn bundled or local mysqld.exe on next bindable port (skipping any occupied 3306/3307/etc.)
+        // 2. Spawn the shared phpMyAdmin/bundled mysqld.exe on next bindable port
         std::wstring mysqldExe = FindMysqldExe();
         if (mysqldExe.empty()) {
             outMessage = !svcErr.empty()
@@ -1285,10 +1326,12 @@ bool SqlEngine::StartDatabaseServer(const SqlConnectionProfile& profile, std::ws
         fs::path dataDir = mysqlDir / L"data";
         if ((!fs::exists(dataDir, ec) || !isDirWritable(dataDir)) && !appDataPhide.empty()) {
             fs::path localData = appDataPhide / L"mysql_data";
-            if (!fs::exists(localData, ec)) {
+            if (!fs::exists(localData / L"mysql", ec)) {
                 fs::create_directories(localData, ec);
                 if (fs::exists(mysqlDir / L"initial_data", ec)) {
                     fs::copy(mysqlDir / L"initial_data", localData, fs::copy_options::recursive, ec);
+                } else if (fs::exists(mysqlDir / L"backup", ec)) {
+                    fs::copy(mysqlDir / L"backup", localData, fs::copy_options::recursive, ec);
                 } else if (fs::exists(dataDir, ec)) {
                     fs::copy(dataDir, localData, fs::copy_options::recursive, ec);
                 }
@@ -2016,6 +2059,24 @@ static void MarkColumnPrimaryKey(SqlTableInfo& tbl, const std::wstring& colName)
     }
 }
 
+// Appends a foreign key only if an equivalent (column -> refSchema.refTable.refColumn) does not already exist.
+static void AddUniqueForeignKey(SqlTableInfo& tbl,
+                                const std::wstring& col,
+                                const std::wstring& refTable,
+                                const std::wstring& refCol,
+                                const std::wstring& refSchema = L"") {
+    if (col.empty() || refTable.empty()) return;
+    for (const auto& existing : tbl.foreignKeys) {
+        if (_wcsicmp(existing.column.c_str(), col.c_str()) == 0 &&
+            _wcsicmp(existing.refTable.c_str(), refTable.c_str()) == 0 &&
+            _wcsicmp(existing.refColumn.c_str(), refCol.c_str()) == 0 &&
+            _wcsicmp(existing.refSchema.c_str(), refSchema.c_str()) == 0) {
+            return;
+        }
+    }
+    tbl.foreignKeys.push_back({ col, refTable, refCol, refSchema });
+}
+
 } // namespace
 
 std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& profile, std::wstring& outError) {
@@ -2041,8 +2102,8 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                         SqlColumnInfo ci;
                         ci.name = cr[1];
                         ci.type = cr[2];
-                        ci.notNull = (cr[3] == L"1");
                         ci.isPrimaryKey = (cr[5] != L"0");
+                        ci.notNull = (cr[3] == L"1") || ci.isPrimaryKey;
                         t.columns.push_back(std::move(ci));
                     }
                 }
@@ -2063,11 +2124,7 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
             if (fkRes.success) {
                 for (const auto& fkr : fkRes.rows) {
                     if (fkr.size() >= 5) {
-                        SqlForeignKeyInfo fk;
-                        fk.refTable = fkr[2];
-                        fk.column = fkr[3];
-                        fk.refColumn = fkr[4];
-                        t.foreignKeys.push_back(std::move(fk));
+                        AddUniqueForeignKey(t, fkr[3], fkr[2], fkr[4]);
                     }
                 }
             }
@@ -2200,20 +2257,21 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
         // Foreign Keys for MySQL
         {
             std::wostringstream fkSql;
-            fkSql << L"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
+            fkSql << L"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, IFNULL(REFERENCED_TABLE_SCHEMA, '') "
                   << L"FROM information_schema.KEY_COLUMN_USAGE "
                   << L"WHERE REFERENCED_TABLE_NAME IS NOT NULL ";
             if (!profile.database.empty()) {
                 fkSql << L"AND TABLE_SCHEMA = '" << EscapeSqlLiteral(profile.database) << L"' ";
             }
-            fkSql << L"LIMIT 2000;";
+            fkSql << L"ORDER BY TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION LIMIT 4000;";
             SqlQueryResult fkRes = ExecuteQuery(serverProf, fkSql.str());
             if (fkRes.success) {
                 for (const auto& fkr : fkRes.rows) {
                     if (fkr.size() < 5) continue;
                     auto it = tableIndexMap.find({ fkr[0], fkr[1] });
                     if (it != tableIndexMap.end()) {
-                        tables[it->second].foreignKeys.push_back({ fkr[2], fkr[3], fkr[4] });
+                        std::wstring refSch = (fkr.size() >= 6) ? fkr[5] : L"";
+                        AddUniqueForeignKey(tables[it->second], fkr[2], fkr[3], fkr[4], refSch);
                     }
                 }
             }
@@ -2284,6 +2342,29 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 tables[it->second].columns.push_back(std::move(ci));
             }
         }
+        // Primary Keys from pg_constraint (works reliably even when user lacks ownership in information_schema)
+        if (!tables.empty()) {
+            const std::wstring pkSql =
+                L"SELECT n.nspname, cls.relname, a.attname "
+                L"FROM pg_constraint c "
+                L"JOIN pg_class cls ON cls.oid = c.conrelid "
+                L"JOIN pg_namespace n ON n.oid = cls.relnamespace "
+                L"JOIN LATERAL unnest(c.conkey) AS cols(attnum) ON true "
+                L"JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = cols.attnum AND NOT a.attisdropped "
+                L"WHERE c.contype = 'p' "
+                L"  AND n.nspname NOT IN ('pg_catalog','information_schema') "
+                L"ORDER BY n.nspname, cls.relname, cols.attnum LIMIT 4000;";
+            SqlQueryResult pkRes = ExecuteQuery(profile, pkSql);
+            if (pkRes.success) {
+                for (const auto& pr : pkRes.rows) {
+                    if (pr.size() < 3) continue;
+                    auto it = tableIndexMap.find({ pr[0], pr[1] });
+                    if (it != tableIndexMap.end()) {
+                        MarkColumnPrimaryKey(tables[it->second], pr[2]);
+                    }
+                }
+            }
+        }
         // Single-column UNIQUE indexes/constraints for PostgreSQL (for accurate 1:1 detection)
         if (!tables.empty()) {
             const std::wstring uqSql =
@@ -2291,7 +2372,7 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 L"FROM pg_index ix "
                 L"JOIN pg_class cls ON cls.oid = ix.indrelid "
                 L"JOIN pg_namespace n ON n.oid = cls.relnamespace "
-                L"JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attnum = ix.indkey[0] "
+                L"JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attnum = ix.indkey[0] AND NOT a.attisdropped "
                 L"WHERE ix.indisunique AND NOT ix.indisprimary AND ix.indnatts = 1 "
                 L"  AND n.nspname NOT IN ('pg_catalog','information_schema') LIMIT 4000;";
             SqlQueryResult uqRes = ExecuteQuery(profile, uqSql);
@@ -2305,21 +2386,29 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
                 }
             }
         }
-        // Foreign Keys for PostgreSQL
+        // Foreign Keys for PostgreSQL via pg_constraint (exact column pairing + cross-schema support)
         {
             const std::wstring fkSql =
-                L"SELECT tc.table_schema, tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name "
-                L"FROM information_schema.table_constraints tc "
-                L"JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema "
-                L"JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema "
-                L"WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema NOT IN ('pg_catalog','information_schema') LIMIT 2000;";
+                L"SELECT n.nspname, cls.relname, a.attname, rcls.relname, ra.attname, rn.nspname "
+                L"FROM pg_constraint c "
+                L"JOIN pg_class cls ON cls.oid = c.conrelid "
+                L"JOIN pg_namespace n ON n.oid = cls.relnamespace "
+                L"JOIN pg_class rcls ON rcls.oid = c.confrelid "
+                L"JOIN pg_namespace rn ON rn.oid = rcls.relnamespace "
+                L"JOIN LATERAL unnest(c.conkey, c.confkey) WITH ORDINALITY AS cols(col_attnum, ref_attnum, ord) ON true "
+                L"JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = cols.col_attnum AND NOT a.attisdropped "
+                L"JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = cols.ref_attnum AND NOT ra.attisdropped "
+                L"WHERE c.contype = 'f' "
+                L"  AND n.nspname NOT IN ('pg_catalog','information_schema') "
+                L"ORDER BY n.nspname, cls.relname, c.conname, cols.ord LIMIT 4000;";
             SqlQueryResult fkRes = ExecuteQuery(profile, fkSql);
             if (fkRes.success) {
                 for (const auto& fkr : fkRes.rows) {
                     if (fkr.size() < 5) continue;
                     auto it = tableIndexMap.find({ fkr[0], fkr[1] });
                     if (it != tableIndexMap.end()) {
-                        tables[it->second].foreignKeys.push_back({ fkr[2], fkr[3], fkr[4] });
+                        std::wstring refSch = (fkr.size() >= 6) ? fkr[5] : L"";
+                        AddUniqueForeignKey(tables[it->second], fkr[2], fkr[3], fkr[4], refSch);
                     }
                 }
             }
@@ -2393,19 +2482,21 @@ std::vector<SqlTableInfo> SqlEngine::InspectSchema(const SqlConnectionProfile& p
             SqlQueryResult fkRes = ExecuteQuery(
                 profile,
                 L"SET NOCOUNT ON; "
-                L"SELECT fk_kcu.TABLE_SCHEMA, fk_kcu.TABLE_NAME, fk_kcu.COLUMN_NAME, pk_kcu.TABLE_NAME, pk_kcu.COLUMN_NAME "
+                L"SELECT fk_kcu.TABLE_SCHEMA, fk_kcu.TABLE_NAME, fk_kcu.COLUMN_NAME, pk_kcu.TABLE_NAME, pk_kcu.COLUMN_NAME, pk_kcu.TABLE_SCHEMA "
                 L"FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc "
                 L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE fk_kcu "
                 L"  ON rc.CONSTRAINT_NAME = fk_kcu.CONSTRAINT_NAME AND rc.CONSTRAINT_SCHEMA = fk_kcu.CONSTRAINT_SCHEMA "
                 L"JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE pk_kcu "
                 L"  ON rc.UNIQUE_CONSTRAINT_NAME = pk_kcu.CONSTRAINT_NAME AND rc.UNIQUE_CONSTRAINT_SCHEMA = pk_kcu.CONSTRAINT_SCHEMA "
-                L"  AND fk_kcu.ORDINAL_POSITION = pk_kcu.ORDINAL_POSITION;");
+                L"  AND fk_kcu.ORDINAL_POSITION = pk_kcu.ORDINAL_POSITION "
+                L"ORDER BY fk_kcu.TABLE_SCHEMA, fk_kcu.TABLE_NAME, fk_kcu.CONSTRAINT_NAME, fk_kcu.ORDINAL_POSITION;");
             if (fkRes.success) {
                 for (const auto& fr : fkRes.rows) {
                     if (fr.size() < 5) continue;
                     auto it = tableIndexMap.find({ fr[0], fr[1] });
                     if (it != tableIndexMap.end()) {
-                        tables[it->second].foreignKeys.push_back({ fr[2], fr[3], fr[4] });
+                        std::wstring refSch = (fr.size() >= 6) ? fr[5] : L"";
+                        AddUniqueForeignKey(tables[it->second], fr[2], fr[3], fr[4], refSch);
                     }
                 }
             }

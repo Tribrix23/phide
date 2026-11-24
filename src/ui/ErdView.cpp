@@ -237,20 +237,184 @@ static void DrawSmallText(ID2D1RenderTarget* pRT, IDWriteTextFormat* pFmt, const
     pRT->PopAxisAlignedClip();
 }
 
+enum class ErdIconKind {
+    None = 0,
+    Database,
+    AutoLayout,
+    ZoomFit,
+    Refresh,
+    SchemaDiff,
+    Code,
+    Layers,
+    Info,
+    ImportSql,
+    ExportSvg,
+    Search,
+    ChevronDown,
+    CloseSmall
+};
+
+/** @brief Renders crisp flat 16x16-grid Direct2D vector icons with zero bitmap blur or gloss. */
+static void DrawErdVectorIcon(ID2D1RenderTarget* pRT, ErdIconKind kind, const D2D1_RECT_F& rc,
+                              ID2D1Brush* br, ID2D1StrokeStyle* strokeStyle = nullptr, float strokeW = 1.35f) {
+    if (!pRT || !br || kind == ErdIconKind::None) return;
+    const float w = rc.right - rc.left;
+    const float h = rc.bottom - rc.top;
+    if (w <= 2.0f || h <= 2.0f) return;
+    const float s = (std::min)(w, h) / 16.0f;
+    const float ox = rc.left + (w - 16.0f * s) * 0.5f;
+    const float oy = rc.top  + (h - 16.0f * s) * 0.5f;
+    auto pt = [&](float gx, float gy) -> D2D1_POINT_2F {
+        return D2D1::Point2F(ox + gx * s, oy + gy * s);
+    };
+    auto ln = [&](float x1, float y1, float x2, float y2, float swMul = 1.0f) {
+        pRT->DrawLine(pt(x1, y1), pt(x2, y2), br, strokeW * swMul, strokeStyle);
+    };
+
+    switch (kind) {
+    case ErdIconKind::Database: {
+        D2D1_ELLIPSE topEl = D2D1::Ellipse(pt(8.0f, 4.0f), 5.2f * s, 1.9f * s);
+        pRT->DrawEllipse(topEl, br, strokeW);
+        ln(2.8f, 4.0f, 2.8f, 12.0f);
+        ln(13.2f, 4.0f, 13.2f, 12.0f);
+        ComPtr<ID2D1Factory> fac;
+        pRT->GetFactory(&fac);
+        auto drawArcBand = [&](float by) {
+            if (!fac) { ln(2.8f, by, 13.2f, by); return; }
+            ComPtr<ID2D1PathGeometry> geo;
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(fac->CreatePathGeometry(&geo)) && SUCCEEDED(geo->Open(&sink))) {
+                sink->BeginFigure(pt(2.8f, by), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddArc(D2D1::ArcSegment(pt(13.2f, by), D2D1::SizeF(5.2f * s, 1.9f * s),
+                                              0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(geo.Get(), br, strokeW, strokeStyle);
+            }
+        };
+        drawArcBand(8.0f);
+        drawArcBand(12.0f);
+        break;
+    }
+    case ErdIconKind::AutoLayout: {
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ox + 2.0f * s, oy + 2.5f * s, ox + 7.2f * s, oy + 6.5f * s), 1.2f * s, 1.2f * s), br, strokeW);
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ox + 9.2f * s, oy + 2.5f * s, ox + 14.0f * s, oy + 6.5f * s), 1.2f * s, 1.2f * s), br, strokeW);
+        pRT->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(ox + 5.2f * s, oy + 9.5f * s, ox + 10.8f * s, oy + 13.5f * s), 1.2f * s, 1.2f * s), br, strokeW);
+        ln(7.2f, 4.5f, 9.2f, 4.5f);
+        ln(8.0f, 6.5f, 8.0f, 9.5f);
+        break;
+    }
+    case ErdIconKind::ZoomFit: {
+        ln(2.5f, 5.5f, 2.5f, 2.5f); ln(2.5f, 2.5f, 5.5f, 2.5f);
+        ln(10.5f, 2.5f, 13.5f, 2.5f); ln(13.5f, 2.5f, 13.5f, 5.5f);
+        ln(2.5f, 10.5f, 2.5f, 13.5f); ln(2.5f, 13.5f, 5.5f, 13.5f);
+        ln(13.5f, 10.5f, 13.5f, 13.5f); ln(13.5f, 13.5f, 10.5f, 13.5f);
+        break;
+    }
+    case ErdIconKind::Refresh: {
+        ComPtr<ID2D1Factory> fac;
+        pRT->GetFactory(&fac);
+        if (fac) {
+            ComPtr<ID2D1PathGeometry> geo;
+            ComPtr<ID2D1GeometrySink> sink;
+            if (SUCCEEDED(fac->CreatePathGeometry(&geo)) && SUCCEEDED(geo->Open(&sink))) {
+                sink->BeginFigure(pt(12.8f, 5.4f), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddArc(D2D1::ArcSegment(pt(13.1f, 9.8f), D2D1::SizeF(5.2f * s, 5.2f * s),
+                                              0.0f, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                pRT->DrawGeometry(geo.Get(), br, strokeW, strokeStyle);
+            }
+        }
+        ln(13.0f, 2.8f, 13.0f, 5.8f);
+        ln(10.0f, 5.8f, 13.0f, 5.8f);
+        break;
+    }
+    case ErdIconKind::SchemaDiff: {
+        pRT->DrawEllipse(D2D1::Ellipse(pt(4.2f, 4.0f), 1.6f * s, 1.6f * s), br, strokeW);
+        pRT->DrawEllipse(D2D1::Ellipse(pt(4.2f, 12.0f), 1.6f * s, 1.6f * s), br, strokeW);
+        pRT->DrawEllipse(D2D1::Ellipse(pt(11.8f, 8.0f), 1.6f * s, 1.6f * s), br, strokeW);
+        ln(4.2f, 5.6f, 4.2f, 10.4f);
+        ln(5.8f, 4.5f, 10.4f, 7.2f);
+        break;
+    }
+    case ErdIconKind::Code: {
+        ln(5.2f, 4.5f, 2.2f, 8.0f); ln(2.2f, 8.0f, 5.2f, 11.5f);
+        ln(10.8f, 4.5f, 13.8f, 8.0f); ln(13.8f, 8.0f, 10.8f, 11.5f);
+        ln(9.2f, 3.5f, 6.8f, 12.5f);
+        break;
+    }
+    case ErdIconKind::Layers: {
+        ln(8.0f, 2.4f, 13.6f, 5.2f); ln(13.6f, 5.2f, 8.0f, 8.0f);
+        ln(8.0f, 8.0f, 2.4f, 5.2f); ln(2.4f, 5.2f, 8.0f, 2.4f);
+        ln(2.4f, 8.2f, 8.0f, 11.0f); ln(8.0f, 11.0f, 13.6f, 8.2f);
+        ln(2.4f, 11.0f, 8.0f, 13.8f); ln(8.0f, 13.8f, 13.6f, 11.0f);
+        break;
+    }
+    case ErdIconKind::Info: {
+        pRT->DrawEllipse(D2D1::Ellipse(pt(8.0f, 8.0f), 5.6f * s, 5.6f * s), br, strokeW);
+        ln(8.0f, 7.5f, 8.0f, 11.2f);
+        pRT->FillEllipse(D2D1::Ellipse(pt(8.0f, 5.1f), 0.9f * s, 0.9f * s), br);
+        break;
+    }
+    case ErdIconKind::ImportSql: {
+        ln(8.0f, 2.4f, 8.0f, 9.8f);
+        ln(5.3f, 7.3f, 8.0f, 10.1f); ln(10.7f, 7.3f, 8.0f, 10.1f);
+        ln(2.8f, 10.5f, 2.8f, 13.2f); ln(2.8f, 13.2f, 13.2f, 13.2f); ln(13.2f, 13.2f, 13.2f, 10.5f);
+        break;
+    }
+    case ErdIconKind::ExportSvg: {
+        ln(8.0f, 9.8f, 8.0f, 2.4f);
+        ln(5.3f, 5.1f, 8.0f, 2.4f); ln(10.7f, 5.1f, 8.0f, 2.4f);
+        ln(2.8f, 10.5f, 2.8f, 13.2f); ln(2.8f, 13.2f, 13.2f, 13.2f); ln(13.2f, 13.2f, 13.2f, 10.5f);
+        break;
+    }
+    case ErdIconKind::Search: {
+        pRT->DrawEllipse(D2D1::Ellipse(pt(6.8f, 6.8f), 4.2f * s, 4.2f * s), br, strokeW);
+        ln(10.0f, 10.0f, 13.5f, 13.5f);
+        break;
+    }
+    case ErdIconKind::ChevronDown: {
+        ln(4.2f, 6.0f, 8.0f, 10.0f);
+        ln(8.0f, 10.0f, 11.8f, 6.0f);
+        break;
+    }
+    case ErdIconKind::CloseSmall: {
+        ln(4.5f, 4.5f, 11.5f, 11.5f);
+        ln(11.5f, 4.5f, 4.5f, 11.5f);
+        break;
+    }
+    default: break;
+    }
+}
+
 static void DrawBtn(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                     const D2D1_RECT_F& rc, const wchar_t* lbl, bool active, bool hovered,
                     ID2D1Brush* brNormal, ID2D1Brush* brHover, ID2D1Brush* brBorder,
-                    IDWriteFactory* dwf = nullptr) {
+                    IDWriteFactory* dwf = nullptr, ErdIconKind icon = ErdIconKind::None,
+                    ID2D1StrokeStyle* iconStroke = nullptr) {
     if (rc.right <= rc.left + 2.0f) return;
-    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, config.ScaleF(5.0f), config.ScaleF(5.0f));
+    D2D1_ROUNDED_RECT rrc = D2D1::RoundedRect(rc, config.ScaleF(4.0f), config.ScaleF(4.0f));
     ID2D1Brush* fill = active ? theme.brushBrandAccent.Get() : (hovered ? brHover : brNormal);
     if (fill) pRT->FillRoundedRectangle(rrc, fill);
-    if (brBorder) pRT->DrawRoundedRectangle(rrc, active ? theme.brushBrandAccent.Get() : brBorder, hovered ? 1.35f : 1.0f);
+    if (brBorder) pRT->DrawRoundedRectangle(rrc, active ? theme.brushBrandAccent.Get() : brBorder, 1.0f);
     IDWriteTextFormat* pFmt = ResolveErdBtnFormat(theme);
     ID2D1Brush* txt = active
         ? (theme.brushTextWhite ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get())
         : theme.brushTextPrimary.Get();
-    if (pFmt && txt && lbl) {
+    if (icon != ErdIconKind::None && txt) {
+        const float iconSz = config.ScaleF(13.0f);
+        const float padL = config.ScaleF(8.0f);
+        const float cy = (rc.top + rc.bottom) * 0.5f;
+        D2D1_RECT_F rcIco = D2D1::RectF(rc.left + padL, cy - iconSz * 0.5f,
+                                        rc.left + padL + iconSz, cy + iconSz * 0.5f);
+        DrawErdVectorIcon(pRT, icon, rcIco, txt, iconStroke, 1.3f);
+        if (pFmt && lbl) {
+            D2D1_RECT_F rcTxt = D2D1::RectF(rcIco.right + config.ScaleF(4.0f), rc.top,
+                                            rc.right - config.ScaleF(6.0f), rc.bottom);
+            DrawSmallText(pRT, pFmt, lbl, rcTxt, txt, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+        }
+    } else if (pFmt && txt && lbl) {
         DrawSmallText(pRT, pFmt, lbl, rc, txt, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
     }
 }
@@ -413,6 +577,7 @@ void ErdView::SetSchemaTables(const std::vector<SqlTableInfo>& tables, SqlDialec
     if (!schemaLabel.empty()) m_schemaLabel = schemaLabel;
     if (structureChanged || m_nodes.size() != m_tables.size()) {
         AutoArrangeNodes();
+        m_needsInitialZoomFit = true;
     } else {
         RecalculateNodeHeights();
     }
@@ -457,27 +622,61 @@ void ErdView::RecomputeDiff() {
         m_baselineTables, m_tables, m_dialect, m_baselineLabel, m_schemaLabel);
 }
 
+void ErdView::EnsureCardTextFormats() {
+    IDWriteFactory* dwf = EnsureErdDWriteFactory(m_dwFactory);
+    if (!dwf) return;
+    if (!m_cardTitleFmt) {
+        dwf->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                              12.5f, L"en-us", &m_cardTitleFmt);
+        if (m_cardTitleFmt) {
+            m_cardTitleFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
+    if (!m_cardMonoFmt) {
+        dwf->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                              11.5f, L"en-us", &m_cardMonoFmt);
+        if (m_cardMonoFmt) {
+            m_cardMonoFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
+    if (!m_cardSmallFmt) {
+        dwf->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                              10.5f, L"en-us", &m_cardSmallFmt);
+        if (m_cardSmallFmt) {
+            m_cardSmallFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+    }
+}
+
 void ErdView::RecalculateNodeHeights() {
+    EnsureCardTextFormats();
+    IDWriteFactory* dwf = m_dwFactory.Get();
     const auto interp = ErdAndMigrationEngine::InterpretSchema(m_tables, m_inferImplicitFks);
     for (size_t i = 0; i < m_nodes.size() && i < m_tables.size(); ++i) {
         const auto& tbl = m_tables[i];
         const size_t visCols = (std::min)(tbl.columns.size(), size_t(14));
         const float headerH = (m_notation == ErdNotation::Uml) ? 42.0f : 32.0f;
 
-        size_t maxNameLen = 8;
-        size_t maxTypeLen = 6;
+        float maxNameW = 86.0f;
+        float maxTypeW = 56.0f;
         for (size_t ci = 0; ci < visCols; ++ci) {
-            maxNameLen = (std::max)(maxNameLen, tbl.columns[ci].name.size());
-            maxTypeLen = (std::max)(maxTypeLen, FormatCompactSqlType(tbl.columns[ci].type).size());
+            const auto& col = tbl.columns[ci];
+            maxNameW = (std::max)(maxNameW, MeasureErdTextWidth(dwf, m_cardMonoFmt.Get(), col.name, 6.8f) + 6.0f);
+            std::wstring compactT = FormatCompactSqlType(col.type);
+            if (col.isUnique && !col.isPrimaryKey && IsFkCol(tbl, col.name)) compactT += L" UQ";
+            maxTypeW = (std::max)(maxTypeW, MeasureErdTextWidth(dwf, m_cardMonoFmt.Get(), compactT, 6.8f) + 6.0f);
         }
-        const float estNameW = std::clamp(static_cast<float>(maxNameLen) * 7.4f, 92.0f, 164.0f);
-        const float estTypeW = std::clamp(static_cast<float>(maxTypeLen) * 7.3f, 62.0f, 106.0f);
+        const float clampedNameW = std::clamp(maxNameW, 88.0f, 196.0f);
+        const float clampedTypeW = std::clamp(maxTypeW, 56.0f, 128.0f);
         const bool showRoleBadge = (i < interp.entities.size() && !interp.entities[i].badgeLabel.empty() &&
                                     (m_showManyToManyBadges || interp.entities[i].role != phide::db::ErdEntityRole::Junction));
-        const float badgeSpace = showRoleBadge ? 44.0f : 0.0f;
-        const float estTitleW = static_cast<float>(tbl.name.size()) * 6.5f + 22.0f + badgeSpace;
-        m_nodes[i].width = std::clamp((std::max)(36.0f + estNameW + 12.0f + estTypeW + 10.0f, estTitleW),
-                                      256.0f, 316.0f);
+        const float badgeSpace = showRoleBadge ? 48.0f : 0.0f;
+        const float measuredTitleW = MeasureErdTextWidth(dwf, m_cardTitleFmt.Get(), tbl.name, 7.0f) + 26.0f + badgeSpace;
+        m_nodes[i].width = std::clamp((std::max)(36.0f + clampedNameW + 16.0f + clampedTypeW + 12.0f, measuredTitleW),
+                                      252.0f, 386.0f);
 
         // Ensure card body is tall enough to give every attached relationship a distinct >=19px port
         const size_t totalRels = (i < interp.entities.size())
@@ -531,14 +730,47 @@ void ErdView::AutoArrangeNodes(bool animate) {
     m_routesDirty = true;
 }
 
+void ErdView::ApplyZoomToFit(bool animate, float maxZoom) {
+    const auto& fitNodes = (m_isAnimatingNodes && m_targetNodes.size() == m_nodes.size()) ? m_targetNodes : m_nodes;
+    if (fitNodes.empty()) return;
+    float minX = fitNodes[0].x, minY = fitNodes[0].y;
+    float maxX = fitNodes[0].x + fitNodes[0].width, maxY = fitNodes[0].y + fitNodes[0].height;
+    for (const auto& n : fitNodes) {
+        minX = (std::min)(minX, n.x);
+        minY = (std::min)(minY, n.y);
+        maxX = (std::max)(maxX, n.x + n.width);
+        maxY = (std::max)(maxY, n.y + n.height);
+    }
+    const float vw = (std::max)(100.0f, m_rcCanvasViewport.right - m_rcCanvasViewport.left - 56.0f);
+    const float vh = (std::max)(100.0f, m_rcCanvasViewport.bottom - m_rcCanvasViewport.top - 52.0f);
+    const float bw = (std::max)(1.0f, maxX - minX);
+    const float bh = (std::max)(1.0f, maxY - minY);
+    m_targetZoom = std::clamp((std::min)(vw / bw, vh / bh), 0.25f, maxZoom);
+    m_targetPanX = 28.0f + (std::max)(0.0f, (vw - bw * m_targetZoom) * 0.5f) - minX * m_targetZoom;
+    m_targetPanY = 24.0f + (std::max)(0.0f, (vh - bh * m_targetZoom) * 0.5f) - minY * m_targetZoom;
+    if (animate) {
+        m_isAnimatingZoomPan = true;
+    } else {
+        m_zoom = m_targetZoom;
+        m_panX = m_targetPanX;
+        m_panY = m_targetPanY;
+        m_isAnimatingZoomPan = false;
+    }
+}
+
 bool ErdView::IsAnimating() const noexcept {
-    return m_isAnimatingZoomPan || m_isAnimatingNodes || m_isAnimatingDiffScroll;
+    return m_isAnimatingZoomPan || m_isAnimatingNodes || m_isAnimatingDiffScroll || m_isConnectionBusy;
 }
 
 bool ErdView::UpdateAnimation() noexcept {
     bool active = false;
     constexpr float kPanZoomSpeed = 0.24f;
     constexpr float kNodeSpeed = 0.22f;
+
+    if (m_isConnectionBusy) {
+        m_loadingSpinnerDeg = std::fmod(m_loadingSpinnerDeg + 11.0f, 360.0f);
+        active = true;
+    }
 
     if (m_isAnimatingZoomPan) {
         const float dz = m_targetZoom - m_zoom;
@@ -599,17 +831,23 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                      float canvasLeft, float canvasWidth, float topY, float clientHeight) {
     if (!pRT || canvasWidth <= 20.0f || clientHeight <= topY + 20.0f) return;
 
+    EnsureCardTextFormats();
     const bool dark = theme.IsDarkMode();
-    ComPtr<ID2D1SolidColorBrush> brBg, brGrid, brCard, brCardHdr, brBorder, brAccent, brBtnBg, brBtnHover,
+    ComPtr<ID2D1SolidColorBrush> brBg, brGrid, brToolbarBg, brRowSep, brSegBg, brCard, brCardHdr,
+                                  brBorder, brAccent, brBtnBg, brBtnHover, brMenuBg,
                                   brPk, brFk, brRel, brAdd, brMod, brDel, brDim;
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x0F1218) : D2D1::ColorF(0xF3F5F9), &brBg);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x181D27) : D2D1::ColorF(0xE2E6EE), &brGrid);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x141821) : D2D1::ColorF(0xF4F6FA), &brToolbarBg);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x232A38) : D2D1::ColorF(0xDCE3EE), &brRowSep);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1B212E) : D2D1::ColorF(0xE8EEF6), &brSegBg);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x181C24) : D2D1::ColorF(0xFFFFFF), &brCard);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x212836) : D2D1::ColorF(0xE6ECF5), &brCardHdr);
-    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x313A4B) : D2D1::ColorF(0xBCC4D4), &brBorder);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x2E3748) : D2D1::ColorF(0xBCC4D4), &brBorder);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x38BDF8) : D2D1::ColorF(0x0284C7), &brRel);
-    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x232936) : D2D1::ColorF(0xFFFFFF), &brBtnBg);
-    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x2F3748) : D2D1::ColorF(0xDCE3EE), &brBtnHover);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1D2330) : D2D1::ColorF(0xFFFFFF), &brBtnBg);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x283042) : D2D1::ColorF(0xE2E8F0), &brBtnHover);
+    pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1A202C) : D2D1::ColorF(0xFFFFFF), &brMenuBg);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0xFBBF24) : D2D1::ColorF(0xB45309), &brPk);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x38BDF8) : D2D1::ColorF(0x0369A1), &brFk);
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x22C55E) : D2D1::ColorF(0x15803D), &brAdd);
@@ -618,44 +856,69 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1E293B, 0.9f) : D2D1::ColorF(0xEFF6FF, 0.95f), &brDim);
     brAccent = theme.brushBrandAccent;
 
+    ComPtr<ID2D1Factory> pRtFactory;
+    pRT->GetFactory(&pRtFactory);
+    if (!m_erdStrokeStyle && pRtFactory) {
+        D2D1_STROKE_STYLE_PROPERTIES sp = D2D1::StrokeStyleProperties(
+            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+            D2D1_LINE_JOIN_ROUND);
+        pRtFactory->CreateStrokeStyle(sp, nullptr, 0, &m_erdStrokeStyle);
+    }
+
     IDWriteFactory* dwf = EnsureErdDWriteFactory(m_dwFactory);
     IDWriteTextFormat* pBtnFmt = ResolveErdBtnFormat(theme);
     IDWriteTextFormat* pUiFmt = ResolveErdUiFormat(theme);
-    IDWriteTextFormat* pTitleFmt = theme.fontTitle ? theme.fontTitle.Get() : pUiFmt;
-    IDWriteTextFormat* pCodeFmt = theme.fontCode ? theme.fontCode.Get() : pUiFmt;
+    IDWriteTextFormat* pTitleFmt = m_cardTitleFmt ? m_cardTitleFmt.Get() : (theme.fontTitle ? theme.fontTitle.Get() : pUiFmt);
+    IDWriteTextFormat* pCardMonoFmt = m_cardMonoFmt ? m_cardMonoFmt.Get() : (theme.fontCode ? theme.fontCode.Get() : pUiFmt);
+    IDWriteTextFormat* pCardSmallFmt = m_cardSmallFmt ? m_cardSmallFmt.Get() : pUiFmt;
+    IDWriteTextFormat* pCodeFmt = theme.fontCode ? theme.fontCode.Get() : pCardMonoFmt;
     ID2D1Brush* txtPri = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
     ID2D1Brush* txtSec = theme.brushTextSecondary ? theme.brushTextSecondary.Get() : txtPri;
+    ID2D1Brush* txtMuted = theme.brushTextMuted ? theme.brushTextMuted.Get() : txtSec;
     ID2D1Brush* txtWhite = theme.brushTextWhite ? theme.brushTextWhite.Get() : txtPri;
 
-    // 1. Pre-compute responsive toolbar layout (zero fixed widths, zero clipped buttons)
+    // 1. Flat 2-Row Toolbar Layout (Row 1: Title + Segmented Notations + Server/DB; Row 2: Flat Action Buttons + Search)
     const float pad = config.ScaleF(12.0f);
-    const float btnH = config.ScaleF(29.0f);
+    const float btnH = config.ScaleF(28.0f);
     const float pillH = config.ScaleF(26.0f);
-    const float rowGap = config.ScaleF(7.0f);
-    const float itemGap = config.ScaleF(6.0f);
+    const float rowPadY = config.ScaleF(7.0f);
+    const float itemGap = config.ScaleF(5.0f);
     const float maxR = canvasLeft + canvasWidth - pad;
 
     m_profileHits.clear();
     m_dbHits.clear();
     m_diffDbHits.clear();
     m_rcBtnCrowsFoot = m_rcBtnUml = m_rcBtnChen = m_rcBtnBarker = m_rcBtnChenAttrs = {};
-    m_rcBtnAutoLayout = m_rcBtnZoomFit = m_rcBtnRefresh = {};
+    m_rcBtnAutoLayout = m_rcBtnZoomFit = m_rcBtnRefresh = m_rcBtnQuickRefresh = {};
+    m_rcBtnServerPicker = m_rcBtnDbPicker = {};
+    m_rcServerMenuPopup = m_rcDbMenuPopup = m_rcServerDetectMenuItem = {};
     m_rcBtnDetect = m_rcBtnEmptyRefresh = {};
     m_rcBtnToggleDiff = m_rcBtnLoadSql = m_rcBtnExportSvg = m_rcBtnInferFks = m_rcBtnShowM2N = m_rcBtnLegend = {};
-    m_rcSearchBox = {};
+    m_rcSearchBox = m_rcSearchClear = {};
 
-    auto measureBtnW = [&](const wchar_t* lbl) -> float {
-        return (std::max)(config.ScaleF(58.0f), MeasureErdTextWidth(dwf, pBtnFmt, lbl ? lbl : L"") + config.ScaleF(24.0f));
+    auto measureIconBtnW = [&](const wchar_t* lbl, bool hasIcon = true) -> float {
+        float textW = MeasureErdTextWidth(dwf, pBtnFmt, lbl ? lbl : L"");
+        float extra = hasIcon ? config.ScaleF(34.0f) : config.ScaleF(20.0f);
+        return (std::max)(config.ScaleF(56.0f), textW + extra);
+    };
+    auto measureSegW = [&](const wchar_t* lbl) -> float {
+        return (std::max)(config.ScaleF(50.0f), MeasureErdTextWidth(dwf, pBtnFmt, lbl ? lbl : L"") + config.ScaleF(20.0f));
     };
 
-    float curY = topY + config.ScaleF(9.0f);
+    // --- Row 1 Geometry ---
+    float row1Y = topY + rowPadY;
     float x1 = canvasLeft + pad;
-    std::wstring hdr = L"ER Diagram (" + std::to_wstring(m_tables.size()) + L" tables)";
-    const float hdrW = (std::min)(maxR - x1, MeasureErdTextWidth(dwf, pTitleFmt, hdr) + config.ScaleF(14.0f));
-    D2D1_RECT_F rcHdrTitle = D2D1::RectF(x1, curY, x1 + hdrW, curY + btnH);
-    x1 += hdrW + config.ScaleF(10.0f);
+    const float dbIconSz = config.ScaleF(16.0f);
+    D2D1_RECT_F rcTitleIcon = D2D1::RectF(x1, row1Y + (btnH - dbIconSz) * 0.5f,
+                                          x1 + dbIconSz, row1Y + (btnH + dbIconSz) * 0.5f);
+    x1 += dbIconSz + config.ScaleF(7.0f);
 
-    struct PlannedBtn {
+    std::wstring hdr = L"ER Diagram (" + std::to_wstring(m_tables.size()) + L" tables)";
+    const float hdrW = (std::min)(maxR - x1, MeasureErdTextWidth(dwf, pTitleFmt, hdr) + config.ScaleF(6.0f));
+    D2D1_RECT_F rcHdrTitle = D2D1::RectF(x1, row1Y, x1 + hdrW, row1Y + btnH);
+    x1 += hdrW + config.ScaleF(12.0f);
+
+    struct SegItem {
         D2D1_RECT_F* outRc;
         const wchar_t* label;
         int id;
@@ -663,206 +926,265 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
         float w;
         D2D1_RECT_F placed{};
     };
-    auto layoutRow = [&](float& startX, float& yPos, std::vector<PlannedBtn>& btns, float reserveRightW) {
-        const float rowLimit = maxR - reserveRightW;
-        for (auto& b : btns) {
-            if (startX + b.w > rowLimit && startX > canvasLeft + pad) {
-                startX = canvasLeft + pad;
-                yPos += btnH + rowGap;
-            }
-            if (startX + b.w <= maxR) {
-                b.placed = D2D1::RectF(startX, yPos, startX + b.w, yPos + btnH);
-                *b.outRc = b.placed;
-                startX += b.w + itemGap;
-            }
+    std::vector<SegItem> segItems = {
+        { &m_rcBtnCrowsFoot, L"Crow's Foot", 1, m_notation == ErdNotation::CrowsFoot, measureSegW(L"Crow's Foot") },
+        { &m_rcBtnUml,       L"UML",         2, m_notation == ErdNotation::Uml,       measureSegW(L"UML") },
+        { &m_rcBtnChen,      L"Chen",        3, m_notation == ErdNotation::Chen,      measureSegW(L"Chen") },
+        { &m_rcBtnBarker,    L"Barker",      4, m_notation == ErdNotation::Barker,    measureSegW(L"Barker") },
+    };
+    float totalSegW = 0.0f;
+    for (const auto& s : segItems) totalSegW += s.w;
+    D2D1_RECT_F rcSegGroup{};
+    if (x1 + totalSegW <= maxR) {
+        rcSegGroup = D2D1::RectF(x1, row1Y, x1 + totalSegW, row1Y + btnH);
+        float sx = x1;
+        for (auto& s : segItems) {
+            s.placed = D2D1::RectF(sx, row1Y, sx + s.w, row1Y + btnH);
+            *s.outRc = s.placed;
+            sx += s.w;
         }
-    };
-
-    std::vector<PlannedBtn> row1Btns = {
-        { &m_rcBtnCrowsFoot, L"Crow's Foot", 1, m_notation == ErdNotation::CrowsFoot, measureBtnW(L"Crow's Foot") },
-        { &m_rcBtnUml,       L"UML",         2, m_notation == ErdNotation::Uml,       measureBtnW(L"UML") },
-        { &m_rcBtnChen,      L"Chen",        3, m_notation == ErdNotation::Chen,      measureBtnW(L"Chen") },
-        { &m_rcBtnBarker,    L"Barker",      4, m_notation == ErdNotation::Barker,    measureBtnW(L"Barker") },
-    };
+        x1 += totalSegW + config.ScaleF(6.0f);
+    }
     if (m_notation == ErdNotation::Chen) {
-        row1Btns.push_back({ &m_rcBtnChenAttrs, L"Attrs", 5, m_showChenAttributes, measureBtnW(L"Attrs") });
-    }
-    layoutRow(x1, curY, row1Btns, 0.0f);
-
-    // Search box placed on right of Row 1 if plenty of space, else right of Row 2
-    const float desiredSearchW = config.ScaleF(190.0f);
-    bool searchOnRow1 = (x1 + config.ScaleF(130.0f) <= maxR);
-    if (searchOnRow1) {
-        const float sw = (std::min)(desiredSearchW, maxR - x1 - config.ScaleF(8.0f));
-        m_rcSearchBox = D2D1::RectF(maxR - sw, curY, maxR, curY + btnH);
+        float attrsW = measureIconBtnW(L"Attrs", false);
+        if (x1 + attrsW <= maxR) {
+            m_rcBtnChenAttrs = D2D1::RectF(x1, row1Y, x1 + attrsW, row1Y + btnH);
+            x1 += attrsW + config.ScaleF(8.0f);
+        }
     }
 
-    curY += btnH + rowGap;
+    // Right side of Row 1: Server Picker + Database Picker + Quick Refresh Icon Button
+    std::wstring activeSrvLabel = L"No Server";
+    bool activeSrvConnected = false;
+    std::wstring activeDbLabel;
+    if (m_selectedProfileIdx < m_profiles.size()) {
+        activeSrvLabel = m_profiles[m_selectedProfileIdx].name;
+        activeSrvConnected = m_profiles[m_selectedProfileIdx].isConnected;
+        activeDbLabel = m_profiles[m_selectedProfileIdx].database;
+    } else if (!m_profiles.empty()) {
+        activeSrvLabel = m_profiles[0].name;
+        activeSrvConnected = m_profiles[0].isConnected;
+        activeDbLabel = m_profiles[0].database;
+    }
+    if (m_isConnectionBusy && m_profiles.empty()) activeSrvLabel = L"Detecting servers...";
+
+    const float quickRefW = btnH;
+    const float srvDropW = (std::max)(config.ScaleF(118.0f),
+        MeasureErdTextWidth(dwf, pUiFmt, activeSrvLabel) + config.ScaleF(46.0f));
+    const bool hasDbDropdown = (m_selectedProfileIdx < m_profiles.size() &&
+                                (!m_profiles[m_selectedProfileIdx].availableDatabases.empty() || !activeDbLabel.empty()));
+    const std::wstring dbDisp = activeDbLabel.empty() ? L"(default)" : activeDbLabel;
+    const float dbDropW = hasDbDropdown
+        ? (std::max)(config.ScaleF(74.0f), MeasureErdTextWidth(dwf, pUiFmt, dbDisp) + config.ScaleF(36.0f))
+        : 0.0f;
+    const float rightConnGap = config.ScaleF(6.0f);
+    const float totalConnW = srvDropW + (hasDbDropdown ? (rightConnGap + dbDropW + config.ScaleF(6.0f)) : 0.0f) + rightConnGap + quickRefW;
+
+    float connY = row1Y;
+    float connRightX = maxR;
+    if (x1 + config.ScaleF(10.0f) + totalConnW > maxR) {
+        connY = row1Y + btnH + config.ScaleF(6.0f);
+        connRightX = (std::min)(maxR, canvasLeft + pad + totalConnW);
+    }
+    m_rcBtnQuickRefresh = D2D1::RectF(connRightX - quickRefW, connY, connRightX, connY + btnH);
+    float rx = m_rcBtnQuickRefresh.left - rightConnGap;
+    if (hasDbDropdown) {
+        m_rcBtnDbPicker = D2D1::RectF(rx - dbDropW, connY, rx, connY + btnH);
+        rx = m_rcBtnDbPicker.left - config.ScaleF(10.0f);
+    }
+    m_rcBtnServerPicker = D2D1::RectF((std::max)(canvasLeft + pad, rx - srvDropW), connY, rx, connY + btnH);
+
+    // --- Row 2 Geometry: Flat Action Buttons + Vertical Divider + Filter Search Box ---
+    const float sepY = connY + btnH + rowPadY;
+    float row2Y = sepY + rowPadY;
     float x2 = canvasLeft + pad;
-    std::vector<PlannedBtn> row2Btns = {
-        { &m_rcBtnAutoLayout, L"Auto Layout", 6, false,                   measureBtnW(L"Auto Layout") },
-        { &m_rcBtnZoomFit,    L"Zoom Fit",    7, false,                   measureBtnW(L"Zoom Fit") },
-        { &m_rcBtnRefresh,    L"Refresh",     8, false,                   measureBtnW(L"Refresh") },
-        { &m_rcBtnToggleDiff, L"Schema Diff", 9, m_showDiffPanel,         measureBtnW(L"Schema Diff") },
-        { &m_rcBtnInferFks,   L"Infer *_id",  16, m_inferImplicitFks,     measureBtnW(L"Infer *_id") },
-        { &m_rcBtnShowM2N,    L"M:N Badges",  17, m_showManyToManyBadges, measureBtnW(L"M:N Badges") },
-        { &m_rcBtnLegend,     L"Legend",      18, m_showLegend,           measureBtnW(L"Legend") },
-        { &m_rcBtnLoadSql,    L"Load .sql",   10, false,                  measureBtnW(L"Load .sql") },
-        { &m_rcBtnExportSvg,  L"Export SVG",  11, false,                  measureBtnW(L"Export SVG") },
+
+    struct ActionBtnPlan {
+        D2D1_RECT_F* outRc;
+        const wchar_t* label;
+        int id;
+        bool active;
+        ErdIconKind icon;
+        float w;
+        D2D1_RECT_F placed{};
     };
-    layoutRow(x2, curY, row2Btns, searchOnRow1 ? 0.0f : config.ScaleF(168.0f));
-    if (!searchOnRow1) {
-        if (x2 + config.ScaleF(100.0f) > maxR) {
-            curY += btnH + rowGap;
-            m_rcSearchBox = D2D1::RectF(canvasLeft + pad, curY, (std::min)(maxR, canvasLeft + pad + config.ScaleF(240.0f)), curY + btnH);
-        } else {
-            const float sw = (std::min)(desiredSearchW, maxR - x2 - config.ScaleF(8.0f));
-            m_rcSearchBox = D2D1::RectF(maxR - sw, curY, maxR, curY + btnH);
+    std::vector<ActionBtnPlan> row2Btns = {
+        { &m_rcBtnAutoLayout, L"Auto Layout", 6,  true,                    ErdIconKind::AutoLayout, measureIconBtnW(L"Auto Layout") },
+        { &m_rcBtnZoomFit,    L"Zoom Fit",    7,  false,                   ErdIconKind::ZoomFit,    measureIconBtnW(L"Zoom Fit") },
+        { &m_rcBtnRefresh,    L"Refresh",     8,  false,                   ErdIconKind::Refresh,    measureIconBtnW(L"Refresh") },
+        { &m_rcBtnToggleDiff, L"Schema Diff", 9,  m_showDiffPanel,         ErdIconKind::SchemaDiff, measureIconBtnW(L"Schema Diff") },
+        { &m_rcBtnInferFks,   L"Infer *_id",  16, m_inferImplicitFks,      ErdIconKind::Code,       measureIconBtnW(L"Infer *_id") },
+        { &m_rcBtnShowM2N,    L"M:N Badges",  17, m_showManyToManyBadges,  ErdIconKind::Layers,     measureIconBtnW(L"M:N Badges") },
+        { &m_rcBtnLegend,     L"Legend",      18, m_showLegend,            ErdIconKind::Info,       measureIconBtnW(L"Legend") },
+        { &m_rcBtnLoadSql,    L"Load .sql",   10, false,                   ErdIconKind::ImportSql,  measureIconBtnW(L"Load .sql") },
+        { &m_rcBtnExportSvg,  L"Export SVG",  11, false,                   ErdIconKind::ExportSvg,  measureIconBtnW(L"Export SVG") },
+    };
+
+    const float desiredSearchW = config.ScaleF(186.0f);
+    const float minSearchReserve = config.ScaleF(164.0f);
+    for (auto& b : row2Btns) {
+        if (x2 + b.w > maxR && x2 > canvasLeft + pad) {
+            x2 = canvasLeft + pad;
+            row2Y += btnH + config.ScaleF(6.0f);
+        }
+        if (x2 + b.w <= maxR) {
+            b.placed = D2D1::RectF(x2, row2Y, x2 + b.w, row2Y + btnH);
+            *b.outRc = b.placed;
+            x2 += b.w + itemGap;
         }
     }
 
-    // Row 3: Live Server Connections & Database Switcher
-    curY += btnH + rowGap;
-    float sx = canvasLeft + pad;
-    const float srvLblW = MeasureErdTextWidth(dwf, pUiFmt, L"Server:") + config.ScaleF(8.0f);
-    D2D1_RECT_F rcSrvLbl = D2D1::RectF(sx, curY, sx + srvLblW, curY + pillH);
-    sx += srvLblW + config.ScaleF(4.0f);
-
-    for (size_t i = 0; i < m_profiles.size(); ++i) {
-        const float pw = (std::max)(config.ScaleF(96.0f),
-                                    MeasureErdTextWidth(dwf, pUiFmt, m_profiles[i].name) + config.ScaleF(30.0f));
-        if (sx + pw > maxR && sx > canvasLeft + pad) {
-            sx = canvasLeft + pad;
-            curY += pillH + config.ScaleF(5.0f);
-        }
-        D2D1_RECT_F rcP = D2D1::RectF(sx, curY, (std::min)(maxR, sx + pw), curY + pillH);
-        m_profileHits.push_back({ rcP, i, m_profiles[i].database });
-        sx += pw + itemGap;
-    }
-
-    const wchar_t* detectLbl = m_isConnectionBusy ? L"Detecting..." : L"Detect Servers";
-    const float detectW = (std::max)(config.ScaleF(110.0f), MeasureErdTextWidth(dwf, pBtnFmt, detectLbl) + config.ScaleF(24.0f));
-    if (sx + detectW > maxR && sx > canvasLeft + pad) {
-        sx = canvasLeft + pad;
-        curY += pillH + config.ScaleF(5.0f);
-    }
-    if (sx + detectW <= maxR) {
-        m_rcBtnDetect = D2D1::RectF(sx, curY, sx + detectW, curY + pillH);
-    }
-
-    // Row 4: Active Server's Databases Switcher (MySQL / PostgreSQL schemas/databases)
-    D2D1_RECT_F rcDbLbl{};
-    bool showDbRow = false;
-    if (m_selectedProfileIdx < m_profiles.size() && !m_profiles[m_selectedProfileIdx].availableDatabases.empty()) {
-        showDbRow = true;
-        curY += pillH + config.ScaleF(6.0f);
-        float dx = canvasLeft + pad;
-        const float dbLblW = MeasureErdTextWidth(dwf, pUiFmt, L"Database:") + config.ScaleF(8.0f);
-        rcDbLbl = D2D1::RectF(dx, curY, dx + dbLblW, curY + pillH);
-        dx += dbLblW + config.ScaleF(4.0f);
-
-        const auto& dbs = m_profiles[m_selectedProfileIdx].availableDatabases;
-        for (size_t di = 0; di < dbs.size(); ++di) {
-            const float dw = (std::max)(config.ScaleF(56.0f), MeasureErdTextWidth(dwf, pUiFmt, dbs[di]) + config.ScaleF(22.0f));
-            if (dx + dw > maxR && dx > canvasLeft + pad) {
-                dx = canvasLeft + pad;
-                curY += pillH + config.ScaleF(5.0f);
-            }
-            D2D1_RECT_F rcD = D2D1::RectF(dx, curY, (std::min)(maxR, dx + dw), curY + pillH);
-            m_dbHits.push_back({ rcD, m_selectedProfileIdx, dbs[di] });
-            dx += dw + itemGap;
-        }
-        curY += pillH + config.ScaleF(9.0f);
+    float searchDividerX = -1.0f;
+    if (x2 + minSearchReserve <= maxR) {
+        const float sw = (std::min)(desiredSearchW, maxR - x2 - config.ScaleF(14.0f));
+        m_rcSearchBox = D2D1::RectF(maxR - sw, row2Y, maxR, row2Y + btnH);
+        searchDividerX = m_rcSearchBox.left - config.ScaleF(8.0f);
     } else {
-        curY += pillH + config.ScaleF(9.0f);
+        row2Y += btnH + config.ScaleF(6.0f);
+        m_rcSearchBox = D2D1::RectF(canvasLeft + pad, row2Y,
+                                    (std::min)(maxR, canvasLeft + pad + config.ScaleF(240.0f)),
+                                    row2Y + btnH);
     }
 
-    // Fill Toolbar Panel Background once now that exact height is known
-    D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, curY);
-    if (brCardHdr) pRT->FillRectangle(rcBar, brCardHdr.Get());
+    const float barBottom = row2Y + btnH + rowPadY;
+
+    // --- Paint Flat Toolbar Background & Dividers ---
+    D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, barBottom);
+    if (brToolbarBg) pRT->FillRectangle(rcBar, brToolbarBg.Get());
+    pRT->DrawLine(D2D1::Point2F(canvasLeft, sepY), D2D1::Point2F(canvasLeft + canvasWidth, sepY),
+                  brRowSep.Get(), 1.0f);
     pRT->DrawLine(D2D1::Point2F(canvasLeft, rcBar.bottom), D2D1::Point2F(canvasLeft + canvasWidth, rcBar.bottom),
                   brBorder.Get(), 1.0f);
 
+    // Draw Row 1 Title + Segmented Notations
+    DrawErdVectorIcon(pRT, ErdIconKind::Database, rcTitleIcon, txtSec, m_erdStrokeStyle.Get(), 1.4f);
     if (pTitleFmt && txtPri) {
         DrawSmallText(pRT, pTitleFmt, hdr, rcHdrTitle, txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
     }
-    for (const auto& b : row1Btns) {
-        if (b.placed.right > b.placed.left) {
-            DrawBtn(pRT, theme, config, b.placed, b.label, b.active, m_hoveredBtnId == b.id,
-                    brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf);
+    if (rcSegGroup.right > rcSegGroup.left) {
+        D2D1_ROUNDED_RECT rrcSeg = D2D1::RoundedRect(rcSegGroup, config.ScaleF(5.0f), config.ScaleF(5.0f));
+        if (brSegBg) pRT->FillRoundedRectangle(rrcSeg, brSegBg.Get());
+        pRT->PushAxisAlignedClip(rcSegGroup, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        for (size_t si = 0; si < segItems.size(); ++si) {
+            const auto& seg = segItems[si];
+            if (seg.placed.right <= seg.placed.left) continue;
+            const bool hov = (m_hoveredBtnId == seg.id);
+            if (seg.active && brAccent) {
+                pRT->FillRectangle(seg.placed, brAccent.Get());
+            } else if (hov && brBtnHover) {
+                pRT->FillRectangle(seg.placed, brBtnHover.Get());
+            }
+            if (si > 0 && brBorder) {
+                pRT->DrawLine(D2D1::Point2F(seg.placed.left, seg.placed.top + 3.0f),
+                              D2D1::Point2F(seg.placed.left, seg.placed.bottom - 3.0f), brBorder.Get(), 1.0f);
+            }
+            if (pBtnFmt) {
+                DrawSmallText(pRT, pBtnFmt, seg.label, seg.placed, seg.active ? txtWhite : txtPri,
+                              DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+            }
         }
+        pRT->PopAxisAlignedClip();
+        if (brBorder) pRT->DrawRoundedRectangle(rrcSeg, brBorder.Get(), 1.0f);
     }
-    for (const auto& b : row2Btns) {
-        if (b.placed.right > b.placed.left) {
-            DrawBtn(pRT, theme, config, b.placed, b.label, b.active, m_hoveredBtnId == b.id,
-                    brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf);
-        }
-    }
-    if (m_rcSearchBox.right > m_rcSearchBox.left) {
-        D2D1_ROUNDED_RECT rrcS = D2D1::RoundedRect(m_rcSearchBox, config.ScaleF(5.0f), config.ScaleF(5.0f));
-        if (brBtnBg) pRT->FillRoundedRectangle(rrcS, brBtnBg.Get());
-        pRT->DrawRoundedRectangle(rrcS, m_searchFocused ? brAccent.Get() : brBorder.Get(), m_searchFocused ? 1.4f : 1.0f);
-        std::wstring sDisp = m_searchFilter.empty() ? L"Filter tables..." : m_searchFilter;
-        DrawSmallText(pRT, pUiFmt, sDisp,
-                      D2D1::RectF(m_rcSearchBox.left + config.ScaleF(10.0f), m_rcSearchBox.top,
-                                  m_rcSearchBox.right - config.ScaleF(8.0f), m_rcSearchBox.bottom),
-                      m_searchFilter.empty() ? theme.brushTextMuted.Get() : txtPri,
-                      DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-    }
-
-    // Draw Server Profile Pills
-    if (pUiFmt && txtSec) {
-        DrawSmallText(pRT, pUiFmt, L"Server:", rcSrvLbl, txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-    }
-    if (m_profiles.empty()) {
-        DrawSmallText(pRT, pUiFmt, L"None detected",
-                      D2D1::RectF(rcSrvLbl.right + config.ScaleF(6.0f), rcSrvLbl.top, maxR - detectW - config.ScaleF(10.0f), rcSrvLbl.bottom),
-                      txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-    } else {
-        for (size_t i = 0; i < m_profileHits.size() && i < m_profiles.size(); ++i) {
-            const auto& hit = m_profileHits[i];
-            const auto& prof = m_profiles[i];
-            const bool sel = (i == m_selectedProfileIdx);
-            const bool hov = (m_hoveredProfileIdx == static_cast<int>(i));
-            D2D1_ROUNDED_RECT rp = D2D1::RoundedRect(hit.bounds, config.ScaleF(5.0f), config.ScaleF(5.0f));
-            ID2D1Brush* fill = sel ? brAccent.Get() : (hov ? brBtnHover.Get() : brBtnBg.Get());
-            if (fill) pRT->FillRoundedRectangle(rp, fill);
-            pRT->DrawRoundedRectangle(rp, sel ? brAccent.Get() : brBorder.Get(), hov ? 1.35f : 1.0f);
-
-            const float dotX = hit.bounds.left + config.ScaleF(11.0f);
-            const float dotY = (hit.bounds.top + hit.bounds.bottom) * 0.5f;
-            const float dotR = config.ScaleF(3.8f);
-            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR),
-                             prof.isConnected ? brAdd.Get() : brDel.Get());
-
-            DrawSmallText(pRT, pUiFmt, prof.name,
-                          D2D1::RectF(hit.bounds.left + config.ScaleF(19.0f), hit.bounds.top,
-                                      hit.bounds.right - config.ScaleF(8.0f), hit.bounds.bottom),
-                          sel ? txtWhite : txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-        }
-    }
-    if (m_rcBtnDetect.right > m_rcBtnDetect.left) {
-        DrawBtn(pRT, theme, config, m_rcBtnDetect, detectLbl, false, m_hoveredBtnId == 14,
+    if (m_rcBtnChenAttrs.right > m_rcBtnChenAttrs.left) {
+        DrawBtn(pRT, theme, config, m_rcBtnChenAttrs, L"Attrs", m_showChenAttributes, m_hoveredBtnId == 5,
                 brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf);
     }
 
-    // Draw Database Switcher Pills
-    if (showDbRow && m_selectedProfileIdx < m_profiles.size()) {
-        DrawSmallText(pRT, pUiFmt, L"Database:", rcDbLbl, txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-        const std::wstring& activeDb = m_profiles[m_selectedProfileIdx].database;
-        for (size_t di = 0; di < m_dbHits.size(); ++di) {
-            const auto& hit = m_dbHits[di];
-            const bool sel = (hit.dbName == activeDb);
-            const bool hov = (m_hoveredDbIdx == static_cast<int>(di));
-            D2D1_ROUNDED_RECT rd = D2D1::RoundedRect(hit.bounds, config.ScaleF(4.5f), config.ScaleF(4.5f));
-            ID2D1Brush* fill = sel ? brAccent.Get() : (hov ? brBtnHover.Get() : brBtnBg.Get());
-            if (fill) pRT->FillRoundedRectangle(rd, fill);
-            pRT->DrawRoundedRectangle(rd, sel ? brAccent.Get() : brBorder.Get(), hov ? 1.35f : 1.0f);
-            DrawSmallText(pRT, pUiFmt, hit.dbName,
-                          D2D1::RectF(hit.bounds.left + config.ScaleF(8.0f), hit.bounds.top,
-                                      hit.bounds.right - config.ScaleF(8.0f), hit.bounds.bottom),
-                          sel ? txtWhite : txtPri, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+    // Draw Row 1 Right Connection Controls (Server Picker + DB Picker + Quick Refresh)
+    {
+        const bool srvHov = (m_hoveredBtnId == 19);
+        D2D1_ROUNDED_RECT rp = D2D1::RoundedRect(m_rcBtnServerPicker, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        pRT->FillRoundedRectangle(rp, (m_serverMenuOpen || srvHov) ? brBtnHover.Get() : brBtnBg.Get());
+        pRT->DrawRoundedRectangle(rp, m_serverMenuOpen ? brAccent.Get() : brBorder.Get(), 1.0f);
+
+        const float dotX = m_rcBtnServerPicker.left + config.ScaleF(10.0f);
+        const float dotY = (m_rcBtnServerPicker.top + m_rcBtnServerPicker.bottom) * 0.5f;
+        const float dotR = config.ScaleF(3.6f);
+        ID2D1Brush* dotBr = m_isConnectionBusy ? brMod.Get()
+                          : (m_profiles.empty() ? txtMuted : (activeSrvConnected ? brAdd.Get() : brDel.Get()));
+        pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), dotBr);
+
+        const float chevSz = config.ScaleF(10.0f);
+        D2D1_RECT_F rcSrvChev = D2D1::RectF(m_rcBtnServerPicker.right - config.ScaleF(16.0f), dotY - chevSz * 0.5f,
+                                            m_rcBtnServerPicker.right - config.ScaleF(6.0f), dotY + chevSz * 0.5f);
+        DrawErdVectorIcon(pRT, ErdIconKind::ChevronDown, rcSrvChev, txtSec, m_erdStrokeStyle.Get(), 1.25f);
+        DrawSmallText(pRT, pUiFmt, activeSrvLabel,
+                      D2D1::RectF(m_rcBtnServerPicker.left + config.ScaleF(18.0f), m_rcBtnServerPicker.top,
+                                  rcSrvChev.left - config.ScaleF(2.0f), m_rcBtnServerPicker.bottom),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+    }
+    if (hasDbDropdown && m_rcBtnDbPicker.right > m_rcBtnDbPicker.left) {
+        const float divX = m_rcBtnServerPicker.right + config.ScaleF(5.0f);
+        pRT->DrawLine(D2D1::Point2F(divX, connY + config.ScaleF(5.0f)),
+                      D2D1::Point2F(divX, connY + btnH - config.ScaleF(5.0f)), brBorder.Get(), 1.0f);
+
+        const bool dbHov = (m_hoveredBtnId == 20);
+        D2D1_ROUNDED_RECT rd = D2D1::RoundedRect(m_rcBtnDbPicker, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        pRT->FillRoundedRectangle(rd, (m_dbMenuOpen || dbHov) ? brBtnHover.Get() : brBtnBg.Get());
+        pRT->DrawRoundedRectangle(rd, m_dbMenuOpen ? brAccent.Get() : brBorder.Get(), 1.0f);
+
+        const float cy = (m_rcBtnDbPicker.top + m_rcBtnDbPicker.bottom) * 0.5f;
+        const float chevSz = config.ScaleF(10.0f);
+        D2D1_RECT_F rcDbChev = D2D1::RectF(m_rcBtnDbPicker.right - config.ScaleF(15.0f), cy - chevSz * 0.5f,
+                                           m_rcBtnDbPicker.right - config.ScaleF(5.0f), cy + chevSz * 0.5f);
+        DrawErdVectorIcon(pRT, ErdIconKind::ChevronDown, rcDbChev, txtSec, m_erdStrokeStyle.Get(), 1.25f);
+        DrawSmallText(pRT, pUiFmt, dbDisp,
+                      D2D1::RectF(m_rcBtnDbPicker.left + config.ScaleF(8.0f), m_rcBtnDbPicker.top,
+                                  rcDbChev.left - config.ScaleF(2.0f), m_rcBtnDbPicker.bottom),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+    }
+    {
+        const bool qHov = (m_hoveredBtnId == 21);
+        D2D1_ROUNDED_RECT rq = D2D1::RoundedRect(m_rcBtnQuickRefresh, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        pRT->FillRoundedRectangle(rq, qHov ? brBtnHover.Get() : brBtnBg.Get());
+        pRT->DrawRoundedRectangle(rq, brBorder.Get(), 1.0f);
+        const float icoSz = config.ScaleF(14.0f);
+        const float cx = (m_rcBtnQuickRefresh.left + m_rcBtnQuickRefresh.right) * 0.5f;
+        const float cy = (m_rcBtnQuickRefresh.top + m_rcBtnQuickRefresh.bottom) * 0.5f;
+        DrawErdVectorIcon(pRT, ErdIconKind::Refresh,
+                          D2D1::RectF(cx - icoSz * 0.5f, cy - icoSz * 0.5f, cx + icoSz * 0.5f, cy + icoSz * 0.5f),
+                          txtPri, m_erdStrokeStyle.Get(), 1.35f);
+    }
+
+    // Draw Row 2 Action Buttons + Search Box
+    for (const auto& b : row2Btns) {
+        if (b.placed.right > b.placed.left) {
+            DrawBtn(pRT, theme, config, b.placed, b.label, b.active, m_hoveredBtnId == b.id,
+                    brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf, b.icon, m_erdStrokeStyle.Get());
         }
+    }
+    if (searchDividerX > 0.0f && brBorder) {
+        pRT->DrawLine(D2D1::Point2F(searchDividerX, row2Y + config.ScaleF(4.0f)),
+                      D2D1::Point2F(searchDividerX, row2Y + btnH - config.ScaleF(4.0f)), brBorder.Get(), 1.0f);
+    }
+    if (m_rcSearchBox.right > m_rcSearchBox.left) {
+        D2D1_ROUNDED_RECT rrcS = D2D1::RoundedRect(m_rcSearchBox, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (brBtnBg) pRT->FillRoundedRectangle(rrcS, brBtnBg.Get());
+        pRT->DrawRoundedRectangle(rrcS, m_searchFocused ? brAccent.Get() : brBorder.Get(), m_searchFocused ? 1.3f : 1.0f);
+
+        const float sIcoSz = config.ScaleF(13.0f);
+        const float sCy = (m_rcSearchBox.top + m_rcSearchBox.bottom) * 0.5f;
+        D2D1_RECT_F rcSIco = D2D1::RectF(m_rcSearchBox.left + config.ScaleF(8.0f), sCy - sIcoSz * 0.5f,
+                                         m_rcSearchBox.left + config.ScaleF(8.0f) + sIcoSz, sCy + sIcoSz * 0.5f);
+        DrawErdVectorIcon(pRT, ErdIconKind::Search, rcSIco, txtMuted, m_erdStrokeStyle.Get(), 1.3f);
+
+        float textRightPad = config.ScaleF(8.0f);
+        if (!m_searchFilter.empty()) {
+            const float clrSz = config.ScaleF(14.0f);
+            m_rcSearchClear = D2D1::RectF(m_rcSearchBox.right - clrSz - config.ScaleF(6.0f), sCy - clrSz * 0.5f,
+                                          m_rcSearchBox.right - config.ScaleF(6.0f), sCy + clrSz * 0.5f);
+            DrawErdVectorIcon(pRT, ErdIconKind::CloseSmall, m_rcSearchClear,
+                              m_hoveredSearchClear ? txtPri : txtMuted, m_erdStrokeStyle.Get(), 1.3f);
+            textRightPad = clrSz + config.ScaleF(10.0f);
+        }
+
+        std::wstring sDisp = m_searchFilter.empty() ? L"Filter tables..." : m_searchFilter;
+        DrawSmallText(pRT, pUiFmt, sDisp,
+                      D2D1::RectF(rcSIco.right + config.ScaleF(6.0f), m_rcSearchBox.top,
+                                  m_rcSearchBox.right - textRightPad, m_rcSearchBox.bottom),
+                      m_searchFilter.empty() ? txtMuted : txtPri,
+                      DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
     }
 
     // 2. Main Split Area (ERD Canvas on left, optional Schema Diff & Migration drawer on right)
@@ -873,6 +1195,10 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     m_rcDiffViewport   = m_showDiffPanel
         ? D2D1::RectF(m_rcCanvasViewport.right, rcBar.bottom, canvasLeft + canvasWidth, bodyBot)
         : D2D1_RECT_F{};
+    if (m_needsInitialZoomFit && !m_nodes.empty() && !m_userMovedNodes) {
+        ApplyZoomToFit(false, 1.0f);
+        m_needsInitialZoomFit = false;
+    }
 
     // Draw ERD Canvas
     if (brBg) pRT->FillRectangle(m_rcCanvasViewport, brBg.Get());
@@ -896,28 +1222,32 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     }
 
     if (m_tables.empty()) {
-        std::wstring emptyMsg = !m_connectionError.empty()
-            ? m_connectionError
-            : L"No tables found in active schema.\nSelect a connected Server and Database above, or click 'Load .sql' to visualize a DDL file.";
-        if (pUiFmt && txtSec) {
-            const float cx = (m_rcCanvasViewport.left + m_rcCanvasViewport.right) * 0.5f;
-            const float cy = (m_rcCanvasViewport.top + m_rcCanvasViewport.bottom) * 0.5f;
-            D2D1_RECT_F rcEmptyTxt = D2D1::RectF(m_rcCanvasViewport.left + config.ScaleF(28.0f), cy - config.ScaleF(70.0f),
-                                                 m_rcCanvasViewport.right - config.ScaleF(28.0f), cy + config.ScaleF(10.0f));
-            DWRITE_TEXT_ALIGNMENT oldA = pUiFmt->GetTextAlignment();
-            DWRITE_PARAGRAPH_ALIGNMENT oldP = pUiFmt->GetParagraphAlignment();
-            pUiFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            pUiFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            pRT->DrawText(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.size()), pUiFmt, rcEmptyTxt, txtSec);
-            pUiFmt->SetTextAlignment(oldA);
-            pUiFmt->SetParagraphAlignment(oldP);
+        if (m_isConnectionBusy) {
+            // Skip static empty-state CTA while async schema loading card draws cleanly in pass 2d
+        } else {
+            std::wstring emptyMsg = !m_connectionError.empty()
+                ? m_connectionError
+                : L"No tables found in active schema.\nSelect a connected Server and Database above, or click 'Load .sql' to visualize a DDL file.";
+            if (pUiFmt && txtSec) {
+                const float cx = (m_rcCanvasViewport.left + m_rcCanvasViewport.right) * 0.5f;
+                const float cy = (m_rcCanvasViewport.top + m_rcCanvasViewport.bottom) * 0.5f;
+                D2D1_RECT_F rcEmptyTxt = D2D1::RectF(m_rcCanvasViewport.left + config.ScaleF(28.0f), cy - config.ScaleF(70.0f),
+                                                     m_rcCanvasViewport.right - config.ScaleF(28.0f), cy + config.ScaleF(10.0f));
+                DWRITE_TEXT_ALIGNMENT oldA = pUiFmt->GetTextAlignment();
+                DWRITE_PARAGRAPH_ALIGNMENT oldP = pUiFmt->GetParagraphAlignment();
+                pUiFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                pUiFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pRT->DrawText(emptyMsg.c_str(), static_cast<UINT32>(emptyMsg.size()), pUiFmt, rcEmptyTxt, txtSec);
+                pUiFmt->SetTextAlignment(oldA);
+                pUiFmt->SetParagraphAlignment(oldP);
 
-            const wchar_t* ctaLbl = m_isConnectionBusy ? L"Refreshing Schema..." : L"Detect Servers & Refresh";
-            const float ctaW = (std::max)(config.ScaleF(180.0f), MeasureErdTextWidth(dwf, pBtnFmt, ctaLbl) + config.ScaleF(30.0f));
-            m_rcBtnEmptyRefresh = D2D1::RectF(cx - ctaW * 0.5f, cy + config.ScaleF(18.0f),
-                                              cx + ctaW * 0.5f, cy + config.ScaleF(18.0f) + config.ScaleF(32.0f));
-            DrawBtn(pRT, theme, config, m_rcBtnEmptyRefresh, ctaLbl, true, m_hoveredBtnId == 15,
-                    brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf);
+                const wchar_t* ctaLbl = L"Detect Servers & Refresh";
+                const float ctaW = (std::max)(config.ScaleF(180.0f), MeasureErdTextWidth(dwf, pBtnFmt, ctaLbl) + config.ScaleF(30.0f));
+                m_rcBtnEmptyRefresh = D2D1::RectF(cx - ctaW * 0.5f, cy + config.ScaleF(18.0f),
+                                                  cx + ctaW * 0.5f, cy + config.ScaleF(18.0f) + config.ScaleF(32.0f));
+                DrawBtn(pRT, theme, config, m_rcBtnEmptyRefresh, ctaLbl, true, m_hoveredBtnId == 15,
+                        brBtnBg.Get(), brBtnHover.Get(), brBorder.Get(), dwf);
+            }
         }
     } else {
         // Apply pan + zoom transform strictly inside m_rcCanvasViewport
@@ -945,8 +1275,8 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
         pRT->GetFactory(&pFactory);
         if (pFactory) {
             D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties();
-            props.dashStyle = D2D1_DASH_STYLE_DASH;
-            float dashes[] = { 5.0f, 3.5f };
+            props.dashStyle = D2D1_DASH_STYLE_CUSTOM;
+            float dashes[] = { 4.0f, 3.0f };
             pFactory->CreateStrokeStyle(props, dashes, 2, &dashedStyle);
         }
 
@@ -977,10 +1307,9 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 
                 if (m_notation == ErdNotation::CrowsFoot) {
                     // Parent end: mandatory one (||) when FK is NOT NULL, optional zero-or-one (O|) when nullable.
-                    // Child end: 0..1 (O|) for 1:1 relationships, 1..* (|<) for NOT NULL FK, 0..* (O<) for nullable FK.
+                    // Child end: always optional (0..1 O| for 1:1, 0..* O< for 1:N) since a parent may have 0 children.
                     DrawCrowsFootGlyph(pRT, x1, y1, dir1, false, edge.childOptional, lineBr, brBg.Get(), lineW);
-                    DrawCrowsFootGlyph(pRT, x2, y2, dir2, !edge.isOneToOne,
-                                       edge.isOneToOne ? true : edge.childOptional, lineBr, brBg.Get(), lineW);
+                    DrawCrowsFootGlyph(pRT, x2, y2, dir2, !edge.isOneToOne, true, lineBr, brBg.Get(), lineW);
                 } else if (m_notation == ErdNotation::Barker) {
                     if (!edge.isOneToOne) {
                         const float forkBaseX = x2 + dir2 * 10.0f;
@@ -989,11 +1318,11 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                     }
                 } else if (m_notation == ErdNotation::Uml) {
                     std::wstring pMult = edge.childOptional ? L"0..1" : L"1";
-                    std::wstring cMult = edge.isOneToOne ? L"0..1" : (edge.childOptional ? L"0..*" : L"1..*");
-                    DrawSmallText(pRT, pUiFmt, pMult,
+                    std::wstring cMult = edge.isOneToOne ? L"0..1" : L"0..*";
+                    DrawSmallText(pRT, pCardSmallFmt, pMult,
                                   D2D1::RectF(x1 + (dir1 > 0 ? 12.0f : -42.0f), y1 - 21.0f, x1 + (dir1 > 0 ? 44.0f : -10.0f), y1 - 3.0f),
                                   txtPri, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
-                    DrawSmallText(pRT, pUiFmt, cMult,
+                    DrawSmallText(pRT, pCardSmallFmt, cMult,
                                   D2D1::RectF(x2 + (dir2 > 0 ? 6.0f : -38.0f), y2 - 21.0f, x2 + (dir2 > 0 ? 38.0f : -6.0f), y2 - 3.0f),
                                   txtPri, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
                     ComPtr<ID2D1PathGeometry> pDia;
@@ -1118,20 +1447,23 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
                 }
             }
 
-            // Compute non-overlapping name/type column split using measured compact type widths
+            // Compute non-overlapping name/type column split using crisp non-italic card monospace widths
             const size_t maxVis = (std::min)(tbl.columns.size(), size_t(14));
-            float maxTypeW = 54.0f;
+            float maxTypeW = 52.0f;
             for (size_t ci = 0; ci < maxVis; ++ci) {
-                const std::wstring compactT = FormatCompactSqlType(tbl.columns[ci].type);
-                maxTypeW = (std::max)(maxTypeW, MeasureErdTextWidth(dwf, pCodeFmt, compactT, 7.6f) + 6.0f);
+                std::wstring compactT = FormatCompactSqlType(tbl.columns[ci].type);
+                if (tbl.columns[ci].isUnique && !tbl.columns[ci].isPrimaryKey && IsFkCol(tbl, tbl.columns[ci].name)) {
+                    compactT += L" UQ";
+                }
+                maxTypeW = (std::max)(maxTypeW, MeasureErdTextWidth(dwf, pCardMonoFmt, compactT, 6.8f) + 8.0f);
             }
-            const float typeSlotW = std::clamp(maxTypeW, 58.0f, nd.width * 0.40f);
+            const float typeSlotW = std::clamp(maxTypeW, 56.0f, nd.width * 0.42f);
             const float badgeLeft = rcNode.left + 9.0f;
-            const float badgeRight = rcNode.left + 31.0f;
-            const float nameLeft = rcNode.left + 35.0f;
+            const float badgeRight = rcNode.left + 30.0f;
+            const float nameLeft = rcNode.left + 34.0f;
             const float typeRight = rcNode.right - 10.0f;
-            const float typeLeft = (std::max)(nameLeft + 68.0f, typeRight - typeSlotW);
-            const float nameRight = typeLeft - 10.0f;
+            const float typeLeft = (std::max)(nameLeft + 74.0f, typeRight - typeSlotW);
+            const float nameRight = typeLeft - 12.0f;
 
             // Column rows inside entity box (strictly non-overlapping + ellipsis-trimmed)
             float cy = rcHdr.bottom + 6.0f;
@@ -1157,23 +1489,23 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 
                 ID2D1Brush* colBr = col.isPrimaryKey ? brPk.Get() : (isFk ? brFk.Get() : (col.isUnique ? brAdd.Get() : txtPri));
                 if (!badge.empty()) {
-                    DrawSmallText(pRT, pCodeFmt, badge,
+                    DrawSmallText(pRT, pCardMonoFmt, badge,
                                   D2D1::RectF(badgeLeft, cy, badgeRight, cy + 19.0f),
                                   colBr, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
                 }
-                DrawSmallText(pRT, pCodeFmt, col.name,
+                DrawSmallText(pRT, pCardMonoFmt, col.name,
                               D2D1::RectF(nameLeft, cy, nameRight, cy + 19.0f),
                               txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
                 std::wstring dispType = FormatCompactSqlType(col.type);
                 if (col.isUnique && !col.isPrimaryKey && isFk) dispType += L" UQ";
-                DrawSmallText(pRT, pCodeFmt, dispType,
+                DrawSmallText(pRT, pCardMonoFmt, dispType,
                               D2D1::RectF(typeLeft, cy, typeRight, cy + 19.0f),
                               txtSec, DWRITE_TEXT_ALIGNMENT_TRAILING, dwf, true);
                 cy += 20.0f;
             }
             if (tbl.columns.size() > maxVis) {
                 std::wstring more = L"... +" + std::to_wstring(tbl.columns.size() - maxVis) + L" more";
-                DrawSmallText(pRT, pUiFmt, more,
+                DrawSmallText(pRT, pCardSmallFmt, more,
                               D2D1::RectF(rcNode.left + 12.0f, cy, rcNode.right - 10.0f, cy + 18.0f),
                               txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
             }
@@ -1191,7 +1523,7 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
             const std::wstring& pName = m_tables[edge.parentTableIdx].name;
             const std::wstring& cName = m_tables[edge.childTableIdx].name;
             const std::wstring pCard = edge.childOptional ? L"0..1" : L"1";
-            const std::wstring cCard = edge.isOneToOne ? L"0..1" : (edge.childOptional ? L"0..*" : L"1..*");
+            const std::wstring cCard = edge.isOneToOne ? L"0..1" : L"0..*";
             const std::wstring line1 = pName + L" (" + pCard + L")  \u2192  (" + cCard + L") " + cName;
             const std::wstring line2 = cName + L"." + rel.fkColumn + L" \u2192 " + pName + L"." + rel.refColumn +
                                        (edge.cardinalityReason.empty() ? L"" : (L"  \u2022  " + edge.cardinalityReason));
@@ -1217,70 +1549,292 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
         }
     }
 
-    // 2c. Optional Compact Cardinality Notation Legend Overlay (bottom-right of canvas)
-    if (m_showLegend && (m_rcCanvasViewport.right - m_rcCanvasViewport.left) > config.ScaleF(280.0f) &&
-        (m_rcCanvasViewport.bottom - m_rcCanvasViewport.top) > config.ScaleF(190.0f)) {
-        const float lw = config.ScaleF(292.0f);
-        const float lh = config.ScaleF(138.0f);
-        const float lx = m_rcCanvasViewport.right - lw - config.ScaleF(14.0f);
-        const float ly = m_rcCanvasViewport.bottom - lh - config.ScaleF(14.0f);
-        D2D1_RECT_F rcLeg = D2D1::RectF(lx, ly, lx + lw, ly + lh);
-        D2D1_ROUNDED_RECT rrcLeg = D2D1::RoundedRect(rcLeg, config.ScaleF(7.0f), config.ScaleF(7.0f));
-        if (brCardHdr) pRT->FillRoundedRectangle(rrcLeg, brCardHdr.Get());
-        if (brBorder)  pRT->DrawRoundedRectangle(rrcLeg, brBorder.Get(), 1.1f);
+    // 2c. Optional Cardinality Notation Legend Overlay (bottom-right of canvas, vector glyphs)
+    if (m_showLegend && (m_rcCanvasViewport.right - m_rcCanvasViewport.left) > config.ScaleF(300.0f) &&
+        (m_rcCanvasViewport.bottom - m_rcCanvasViewport.top) > config.ScaleF(200.0f)) {
+        ComPtr<ID2D1Factory> pLegFactory;
+        pRT->GetFactory(&pLegFactory);
+        ComPtr<ID2D1StrokeStyle> legDashStyle;
+        if (pLegFactory) {
+            D2D1_STROKE_STYLE_PROPERTIES dp = D2D1::StrokeStyleProperties();
+            dp.dashStyle = D2D1_DASH_STYLE_CUSTOM;
+            float dashes[] = { 4.0f, 3.0f };
+            pLegFactory->CreateStrokeStyle(dp, dashes, 2, &legDashStyle);
+        }
 
         const wchar_t* legTitle =
             (m_notation == ErdNotation::Uml) ? L"UML Multiplicity Guide"
           : (m_notation == ErdNotation::Chen) ? L"Peter Chen Notation Guide"
           : (m_notation == ErdNotation::Barker) ? L"Oracle Barker Notation Guide"
           : L"Crow's Foot Cardinality Guide";
-        DrawSmallText(pRT, pTitleFmt, legTitle,
-                      D2D1::RectF(lx + 12.0f, ly + 6.0f, lx + lw - 12.0f, ly + 25.0f),
-                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-        pRT->DrawLine(D2D1::Point2F(lx + 10.0f, ly + 28.0f), D2D1::Point2F(lx + lw - 10.0f, ly + 28.0f), brBorder.Get(), 0.9f);
 
-        std::vector<std::pair<std::wstring, std::wstring>> rows;
+        struct LegEntry {
+            int kind; // notation-specific visual row id
+            std::wstring desc;
+        };
+        std::vector<LegEntry> rows;
         if (m_notation == ErdNotation::Uml) {
             rows = {
-                { L"1 \u25c6\u2500 0..1", L"1:1 (PK+FK or UNIQUE FK, NOT NULL)" },
-                { L"1 \u25c6\u2500 1..*", L"1:N Mandatory (NOT NULL FK)" },
-                { L"0..1 \u25c7\u2500 0..*", L"1:N Optional (Nullable FK)" },
-                { L"+ / # / -", L"PK / Foreign Key / Attribute" },
-                { L"Dashed line", L"Inferred *_id relationship" }
+                { 0, L"1 : 0..1 Composition (NOT NULL Unique FK)" },
+                { 1, L"1 : 0..* Mandatory Foreign Key (NOT NULL)" },
+                { 2, L"0..1 : 0..* Optional Foreign Key (Nullable)" },
+                { 3, L"Public (+) / Foreign Key (#) / Attribute (-)" },
+                { 4, L"Inferred *_id relationship (dashed)" }
             };
         } else if (m_notation == ErdNotation::Chen) {
             rows = {
-                { L"1 \u2500\u25c7\u2500 1", L"1:1 (PK+FK or UNIQUE FK)" },
-                { L"1 \u2500\u25c7\u2500 N", L"1:N Relationship" },
-                { L"Double box", L"Weak entity (FK inside PK)" },
-                { L"PK / FK / UQ", L"Primary / Foreign / Unique Key" },
-                { L"Dashed line", L"Inferred *_id relationship" }
+                { 0, L"1 : 1 Relationship between entities" },
+                { 1, L"1 : N One-to-Many relationship" },
+                { 2, L"Weak Entity (FK inside Primary Key)" },
+                { 3, L"Attribute Oval (Amber border = PK)" },
+                { 4, L"Inferred *_id relationship (dashed)" }
             };
         } else if (m_notation == ErdNotation::Barker) {
             rows = {
-                { L"Solid half", L"Mandatory side (NOT NULL)" },
-                { L"Dashed half", L"Optional side (Nullable FK)" },
-                { L"Crow's foot <", L"Many end (omit for 1:1)" },
-                { L"# / * / o", L"Primary Key / NOT NULL / Nullable" },
-                { L"Dashed full", L"Inferred *_id relationship" }
+                { 0, L"Solid = Mandatory half, Dashed = Optional" },
+                { 1, L"Many end (<) on optional child side" },
+                { 2, L"1 : 1 Single relationship (no fork)" },
+                { 3, L"# Primary Key   * NOT NULL   o Nullable" },
+                { 4, L"Inferred *_id relationship (dashed)" }
             };
         } else {
             rows = {
-                { L"|| \u2500\u2500 O|", L"1:1 (PK+FK or UNIQUE FK)" },
-                { L"|| \u2500\u2500 |<", L"1:N Mandatory (NOT NULL FK)" },
-                { L"O| \u2500\u2500 O<", L"1:N Optional (Nullable FK)" },
-                { L"PK / FK / UQ", L"Primary / Foreign / Unique Key" },
-                { L"Dashed line", L"Inferred *_id relationship" }
+                { 0, L"1 : 1 (PK+FK or UNIQUE NOT NULL FK)" },
+                { 1, L"1 : N Mandatory FK (NOT NULL)" },
+                { 2, L"1 : N Optional FK (Nullable)" },
+                { 3, L"Primary / Foreign / Unique Key badge" },
+                { 4, L"Inferred *_id relationship (dashed)" },
+                { 5, L"Bridge jump arc over crossing wire" }
             };
         }
-        float rowY = ly + 33.0f;
-        for (const auto& [sym, desc] : rows) {
-            DrawSmallText(pRT, pCodeFmt, sym, D2D1::RectF(lx + 12.0f, rowY, lx + 106.0f, rowY + 18.0f),
-                          brFk.Get(), DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-            DrawSmallText(pRT, pUiFmt, desc, D2D1::RectF(lx + 110.0f, rowY, lx + lw - 10.0f, rowY + 18.0f),
-                          txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
-            rowY += 19.5f;
+
+        const float symColW = config.ScaleF(96.0f);
+        const float rowH = config.ScaleF(23.0f);
+        float maxDescW = MeasureErdTextWidth(dwf, pTitleFmt, legTitle) + config.ScaleF(24.0f);
+        for (const auto& r : rows) {
+            maxDescW = (std::max)(maxDescW, symColW + MeasureErdTextWidth(dwf, pUiFmt, r.desc) + config.ScaleF(26.0f));
         }
+        const float lw = (std::min)(m_rcCanvasViewport.right - m_rcCanvasViewport.left - config.ScaleF(24.0f),
+                                    (std::max)(config.ScaleF(330.0f), maxDescW));
+        const float lh = config.ScaleF(40.0f) + static_cast<float>(rows.size()) * rowH + config.ScaleF(8.0f);
+        const float lx = m_rcCanvasViewport.right - lw - config.ScaleF(14.0f);
+        const float ly = m_rcCanvasViewport.bottom - lh - config.ScaleF(14.0f);
+
+        D2D1_RECT_F rcLeg = D2D1::RectF(lx, ly, lx + lw, ly + lh);
+        D2D1_ROUNDED_RECT rrcLeg = D2D1::RoundedRect(rcLeg, config.ScaleF(6.0f), config.ScaleF(6.0f));
+        if (brCardHdr) pRT->FillRoundedRectangle(rrcLeg, brCardHdr.Get());
+        if (brBorder)  pRT->DrawRoundedRectangle(rrcLeg, brBorder.Get(), 1.0f);
+
+        DrawSmallText(pRT, pTitleFmt, legTitle,
+                      D2D1::RectF(lx + config.ScaleF(12.0f), ly + config.ScaleF(6.0f), lx + lw - config.ScaleF(12.0f), ly + config.ScaleF(26.0f)),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+        pRT->DrawLine(D2D1::Point2F(lx + config.ScaleF(10.0f), ly + config.ScaleF(29.0f)),
+                      D2D1::Point2F(lx + lw - config.ScaleF(10.0f), ly + config.ScaleF(29.0f)), brBorder.Get(), 1.0f);
+
+        const float gLeft = lx + config.ScaleF(14.0f);
+        const float gRight = lx + symColW - config.ScaleF(10.0f);
+        const float gMid = (gLeft + gRight) * 0.5f;
+        float rowY = ly + config.ScaleF(35.0f);
+
+        for (const auto& entry : rows) {
+            const float midY = rowY + rowH * 0.5f;
+            if (m_notation == ErdNotation::CrowsFoot) {
+                if (entry.kind == 0) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f);
+                    DrawCrowsFootGlyph(pRT, gLeft, midY, +1.0f, false, false, brRel.Get(), brCardHdr.Get(), 1.4f);
+                    DrawCrowsFootGlyph(pRT, gRight, midY, -1.0f, false, true, brRel.Get(), brCardHdr.Get(), 1.4f);
+                } else if (entry.kind == 1) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f);
+                    DrawCrowsFootGlyph(pRT, gLeft, midY, +1.0f, false, false, brRel.Get(), brCardHdr.Get(), 1.4f);
+                    DrawCrowsFootGlyph(pRT, gRight, midY, -1.0f, true, true, brRel.Get(), brCardHdr.Get(), 1.4f);
+                } else if (entry.kind == 2) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f);
+                    DrawCrowsFootGlyph(pRT, gLeft, midY, +1.0f, false, true, brRel.Get(), brCardHdr.Get(), 1.4f);
+                    DrawCrowsFootGlyph(pRT, gRight, midY, -1.0f, true, true, brRel.Get(), brCardHdr.Get(), 1.4f);
+                } else if (entry.kind == 3) {
+                    const float bw = config.ScaleF(20.0f);
+                    const float bh = config.ScaleF(15.0f);
+                    auto drawKeyTag = [&](float tx, const wchar_t* tag, ID2D1Brush* br) {
+                        D2D1_RECT_F rcT = D2D1::RectF(tx, midY - bh * 0.5f, tx + bw, midY + bh * 0.5f);
+                        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcT, 3.0f, 3.0f), brCard.Get());
+                        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcT, 3.0f, 3.0f), brBorder.Get(), 0.9f);
+                        DrawSmallText(pRT, pCardSmallFmt, tag, rcT, br, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                    };
+                    drawKeyTag(gLeft, L"PK", brPk.Get());
+                    drawKeyTag(gLeft + bw + config.ScaleF(4.0f), L"FK", brFk.Get());
+                    drawKeyTag(gLeft + (bw + config.ScaleF(4.0f)) * 2.0f, L"UQ", brAdd.Get());
+                } else if (entry.kind == 4) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), txtSec, 1.4f, legDashStyle.Get());
+                } else if (entry.kind == 5) {
+                    const float jr = config.ScaleF(4.5f);
+                    pRT->DrawLine(D2D1::Point2F(gMid, midY - config.ScaleF(8.0f)),
+                                  D2D1::Point2F(gMid, midY + config.ScaleF(8.0f)), txtSec, 1.1f);
+                    if (pLegFactory) {
+                        ComPtr<ID2D1PathGeometry> pg;
+                        if (SUCCEEDED(pLegFactory->CreatePathGeometry(&pg)) && pg) {
+                            ComPtr<ID2D1GeometrySink> snk;
+                            if (SUCCEEDED(pg->Open(&snk)) && snk) {
+                                snk->BeginFigure(D2D1::Point2F(gLeft, midY), D2D1_FIGURE_BEGIN_HOLLOW);
+                                snk->AddLine(D2D1::Point2F(gMid - jr, midY));
+                                snk->AddArc(D2D1::ArcSegment(D2D1::Point2F(gMid + jr, midY), D2D1::SizeF(jr, jr),
+                                                             0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                                snk->AddLine(D2D1::Point2F(gRight, midY));
+                                snk->EndFigure(D2D1_FIGURE_END_OPEN);
+                                snk->Close();
+                                pRT->DrawGeometry(pg.Get(), brRel.Get(), 1.5f);
+                            }
+                        }
+                    }
+                }
+            } else if (m_notation == ErdNotation::Uml) {
+                auto drawUmlDiamond = [&](bool filled) {
+                    if (!pLegFactory) return;
+                    ComPtr<ID2D1PathGeometry> pg;
+                    if (SUCCEEDED(pLegFactory->CreatePathGeometry(&pg)) && pg) {
+                        ComPtr<ID2D1GeometrySink> snk;
+                        if (SUCCEEDED(pg->Open(&snk)) && snk) {
+                            snk->BeginFigure(D2D1::Point2F(gLeft, midY), D2D1_FIGURE_BEGIN_FILLED);
+                            snk->AddLine(D2D1::Point2F(gLeft + 6.0f, midY - 4.0f));
+                            snk->AddLine(D2D1::Point2F(gLeft + 12.0f, midY));
+                            snk->AddLine(D2D1::Point2F(gLeft + 6.0f, midY + 4.0f));
+                            snk->EndFigure(D2D1_FIGURE_END_CLOSED);
+                            snk->Close();
+                            if (filled) pRT->FillGeometry(pg.Get(), brRel.Get());
+                            else        pRT->FillGeometry(pg.Get(), brCardHdr.Get());
+                            pRT->DrawGeometry(pg.Get(), brRel.Get(), 1.3f);
+                        }
+                    }
+                };
+                if (entry.kind == 0 || entry.kind == 1 || entry.kind == 2) {
+                    const bool optional = (entry.kind == 2);
+                    pRT->DrawLine(D2D1::Point2F(gLeft + 12.0f, midY), D2D1::Point2F(gRight - 14.0f, midY), brRel.Get(), 1.4f);
+                    drawUmlDiamond(!optional);
+                    DrawSmallText(pRT, pCardSmallFmt, optional ? L"0..1" : L"1",
+                                  D2D1::RectF(gLeft + 12.0f, midY - 12.0f, gLeft + 34.0f, midY),
+                                  txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+                    DrawSmallText(pRT, pCardSmallFmt, entry.kind == 0 ? L"0..1" : L"0..*",
+                                  D2D1::RectF(gRight - 28.0f, midY - 12.0f, gRight, midY),
+                                  txtPri, DWRITE_TEXT_ALIGNMENT_TRAILING, dwf, true);
+                } else if (entry.kind == 3) {
+                    DrawSmallText(pRT, pCardMonoFmt, L"+", D2D1::RectF(gLeft, rowY, gLeft + 16.0f, rowY + rowH), brPk.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                    DrawSmallText(pRT, pCardMonoFmt, L"#", D2D1::RectF(gLeft + 22.0f, rowY, gLeft + 38.0f, rowY + rowH), brFk.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                    DrawSmallText(pRT, pCardMonoFmt, L"-", D2D1::RectF(gLeft + 44.0f, rowY, gLeft + 60.0f, rowY + rowH), txtSec, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), txtSec, 1.4f, legDashStyle.Get());
+                }
+            } else if (m_notation == ErdNotation::Chen) {
+                auto drawMiniDiamond = [&](ID2D1Brush* lineBr, ID2D1StrokeStyle* st) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft + 12.0f, midY), D2D1::Point2F(gMid - 10.0f, midY), lineBr, 1.2f, st);
+                    pRT->DrawLine(D2D1::Point2F(gMid + 10.0f, midY), D2D1::Point2F(gRight - 12.0f, midY), lineBr, 1.2f, st);
+                    if (!pLegFactory) return;
+                    ComPtr<ID2D1PathGeometry> pg;
+                    if (SUCCEEDED(pLegFactory->CreatePathGeometry(&pg)) && pg) {
+                        ComPtr<ID2D1GeometrySink> snk;
+                        if (SUCCEEDED(pg->Open(&snk)) && snk) {
+                            snk->BeginFigure(D2D1::Point2F(gMid, midY - 6.0f), D2D1_FIGURE_BEGIN_FILLED);
+                            snk->AddLine(D2D1::Point2F(gMid + 10.0f, midY));
+                            snk->AddLine(D2D1::Point2F(gMid, midY + 6.0f));
+                            snk->AddLine(D2D1::Point2F(gMid - 10.0f, midY));
+                            snk->EndFigure(D2D1_FIGURE_END_CLOSED);
+                            snk->Close();
+                            if (brDim) pRT->FillGeometry(pg.Get(), brDim.Get());
+                            pRT->DrawGeometry(pg.Get(), lineBr, 1.2f);
+                        }
+                    }
+                };
+                if (entry.kind == 0 || entry.kind == 1) {
+                    pRT->DrawRectangle(D2D1::RectF(gLeft, midY - 6.0f, gLeft + 12.0f, midY + 6.0f), brBorder.Get(), 1.1f);
+                    pRT->DrawRectangle(D2D1::RectF(gRight - 12.0f, midY - 6.0f, gRight, midY + 6.0f), brBorder.Get(), 1.1f);
+                    drawMiniDiamond(brRel.Get(), nullptr);
+                    DrawSmallText(pRT, pCardSmallFmt, L"1", D2D1::RectF(gLeft + 13.0f, midY - 12.0f, gLeft + 24.0f, midY), txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+                    DrawSmallText(pRT, pCardSmallFmt, entry.kind == 0 ? L"1" : L"N", D2D1::RectF(gRight - 25.0f, midY - 12.0f, gRight - 13.0f, midY), txtPri, DWRITE_TEXT_ALIGNMENT_TRAILING, dwf, true);
+                } else if (entry.kind == 2) {
+                    pRT->DrawRectangle(D2D1::RectF(gMid - 16.0f, midY - 8.0f, gMid + 16.0f, midY + 8.0f), brBorder.Get(), 1.1f);
+                    pRT->DrawRectangle(D2D1::RectF(gMid - 13.0f, midY - 5.0f, gMid + 13.0f, midY + 5.0f), brBorder.Get(), 1.0f);
+                } else if (entry.kind == 3) {
+                    D2D1_ELLIPSE el = D2D1::Ellipse(D2D1::Point2F(gMid, midY), 18.0f, 8.0f);
+                    if (brCard) pRT->FillEllipse(el, brCard.Get());
+                    pRT->DrawEllipse(el, brPk.Get(), 1.2f);
+                    DrawSmallText(pRT, pCardSmallFmt, L"PK", D2D1::RectF(gMid - 16.0f, midY - 8.0f, gMid + 16.0f, midY + 8.0f), brPk.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                } else {
+                    drawMiniDiamond(txtSec, legDashStyle.Get());
+                }
+            } else { // Barker
+                if (entry.kind == 0) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gMid, midY), brRel.Get(), 1.6f);
+                    pRT->DrawLine(D2D1::Point2F(gMid, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f, legDashStyle.Get());
+                } else if (entry.kind == 1) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f);
+                    pRT->DrawLine(D2D1::Point2F(gRight - 8.0f, midY), D2D1::Point2F(gRight, midY - 5.5f), brRel.Get(), 1.5f);
+                    pRT->DrawLine(D2D1::Point2F(gRight - 8.0f, midY), D2D1::Point2F(gRight, midY + 5.5f), brRel.Get(), 1.5f);
+                } else if (entry.kind == 2) {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), brRel.Get(), 1.5f);
+                } else if (entry.kind == 3) {
+                    DrawSmallText(pRT, pCardMonoFmt, L"#", D2D1::RectF(gLeft, rowY, gLeft + 16.0f, rowY + rowH), brPk.Get(), DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                    DrawSmallText(pRT, pCardMonoFmt, L"*", D2D1::RectF(gLeft + 22.0f, rowY, gLeft + 38.0f, rowY + rowH), txtPri, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                    DrawSmallText(pRT, pCardMonoFmt, L"o", D2D1::RectF(gLeft + 44.0f, rowY, gLeft + 60.0f, rowY + rowH), txtSec, DWRITE_TEXT_ALIGNMENT_CENTER, dwf, true);
+                } else {
+                    pRT->DrawLine(D2D1::Point2F(gLeft, midY), D2D1::Point2F(gRight, midY), txtSec, 1.4f, legDashStyle.Get());
+                }
+            }
+
+            DrawSmallText(pRT, pUiFmt, entry.desc,
+                          D2D1::RectF(lx + symColW, rowY, lx + lw - config.ScaleF(10.0f), rowY + rowH),
+                          txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            rowY += rowH;
+        }
+    }
+
+    // 2d. Flat Animated Loading Overlay during Server / Database Switch or Refresh
+    if (m_isConnectionBusy) {
+        if (!m_tables.empty()) {
+            ComPtr<ID2D1SolidColorBrush> brScrim;
+            pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x0F1218, 0.58f) : D2D1::ColorF(0xF3F5F9, 0.62f), &brScrim);
+            if (brScrim) pRT->FillRectangle(m_rcCanvasViewport, brScrim.Get());
+        }
+        std::wstring loadText = m_profiles.empty()
+            ? L"Detecting database servers..."
+            : (hasDbDropdown && !activeDbLabel.empty()
+                ? (L"Loading schema for " + activeDbLabel + L"...")
+                : (L"Loading schema from " + activeSrvLabel + L"..."));
+        const float spinR = config.ScaleF(9.0f);
+        const float boxW = (std::min)(m_rcCanvasViewport.right - m_rcCanvasViewport.left - config.ScaleF(32.0f),
+                                      (std::max)(config.ScaleF(230.0f),
+                                                 MeasureErdTextWidth(dwf, pUiFmt, loadText) + config.ScaleF(64.0f)));
+        const float boxH = config.ScaleF(46.0f);
+        const float cx = (m_rcCanvasViewport.left + m_rcCanvasViewport.right) * 0.5f;
+        const float cy = (m_rcCanvasViewport.top + m_rcCanvasViewport.bottom) * 0.5f;
+        D2D1_RECT_F rcLoad = D2D1::RectF(cx - boxW * 0.5f, cy - boxH * 0.5f, cx + boxW * 0.5f, cy + boxH * 0.5f);
+        D2D1_ROUNDED_RECT rrcLoad = D2D1::RoundedRect(rcLoad, config.ScaleF(6.0f), config.ScaleF(6.0f));
+        if (brCardHdr) pRT->FillRoundedRectangle(rrcLoad, brCardHdr.Get());
+        if (brBorder)  pRT->DrawRoundedRectangle(rrcLoad, brBorder.Get(), 1.0f);
+
+        const float sx = rcLoad.left + config.ScaleF(24.0f);
+        const float sy = cy;
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), spinR, spinR), brBorder.Get(), 2.0f);
+        ComPtr<ID2D1Factory> pSpinFactory;
+        pRT->GetFactory(&pSpinFactory);
+        if (pSpinFactory) {
+            constexpr float kPi = 3.14159265f;
+            const float a0 = m_loadingSpinnerDeg * kPi / 180.0f;
+            const float a1 = a0 + 1.85f;
+            ComPtr<ID2D1PathGeometry> pg;
+            if (SUCCEEDED(pSpinFactory->CreatePathGeometry(&pg)) && pg) {
+                ComPtr<ID2D1GeometrySink> snk;
+                if (SUCCEEDED(pg->Open(&snk)) && snk) {
+                    snk->BeginFigure(D2D1::Point2F(sx + std::cos(a0) * spinR, sy + std::sin(a0) * spinR), D2D1_FIGURE_BEGIN_HOLLOW);
+                    snk->AddArc(D2D1::ArcSegment(
+                        D2D1::Point2F(sx + std::cos(a1) * spinR, sy + std::sin(a1) * spinR),
+                        D2D1::SizeF(spinR, spinR), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                    snk->EndFigure(D2D1_FIGURE_END_OPEN);
+                    snk->Close();
+                    pRT->DrawGeometry(pg.Get(), brAccent ? brAccent.Get() : brRel.Get(), 2.2f, m_erdStrokeStyle.Get());
+                }
+            }
+        }
+        DrawSmallText(pRT, pUiFmt, loadText,
+                      D2D1::RectF(sx + spinR + config.ScaleF(12.0f), rcLoad.top, rcLoad.right - config.ScaleF(12.0f), rcLoad.bottom),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
     }
     pRT->PopAxisAlignedClip();
 
@@ -1412,7 +1966,7 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 
     // 4. Bottom Status Strip (12px crisp UI font, never fontBadge)
     D2D1_RECT_F rcStatus = D2D1::RectF(canvasLeft, bodyBot, canvasLeft + canvasWidth, clientHeight);
-    if (brCardHdr) pRT->FillRectangle(rcStatus, brCardHdr.Get());
+    if (brToolbarBg) pRT->FillRectangle(rcStatus, brToolbarBg.Get());
     pRT->DrawLine(D2D1::Point2F(canvasLeft, bodyBot), D2D1::Point2F(canvasLeft + canvasWidth, bodyBot), brBorder.Get(), 1.0f);
 
     std::wstring status = m_schemaLabel + L"  |  Zoom: " + std::to_wstring(static_cast<int>(m_zoom * 100.0f)) +
@@ -1421,34 +1975,187 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     DrawSmallText(pRT, pUiFmt, status,
                   D2D1::RectF(canvasLeft + pad, bodyBot + config.ScaleF(2.0f), canvasLeft + canvasWidth - pad, clientHeight - config.ScaleF(2.0f)),
                   txtSec, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+
+    // 5. Flat Dropdown Popups for Server & Database Selection (rendered above canvas)
+    if (m_serverMenuOpen && m_rcBtnServerPicker.right > m_rcBtnServerPicker.left) {
+        const float itemH = config.ScaleF(28.0f);
+        const float menuPad = config.ScaleF(4.0f);
+        float maxW = (std::max)(config.ScaleF(220.0f), m_rcBtnServerPicker.right - m_rcBtnServerPicker.left);
+        for (const auto& prof : m_profiles) {
+            maxW = (std::max)(maxW, MeasureErdTextWidth(dwf, pUiFmt, prof.name) + config.ScaleF(44.0f));
+        }
+        const wchar_t* detectMenuLbl = m_isConnectionBusy ? L"Detecting Servers..." : L"Detect Servers";
+        maxW = (std::min)(canvasWidth - config.ScaleF(24.0f),
+                          (std::max)(maxW, MeasureErdTextWidth(dwf, pUiFmt, detectMenuLbl) + config.ScaleF(44.0f)));
+        const float sepH = config.ScaleF(7.0f);
+        const size_t nProfs = m_profiles.size();
+        const float menuH = menuPad * 2.0f + static_cast<float>(nProfs + 1) * itemH + (nProfs > 0 ? sepH : 0.0f);
+        const float mxRight = (std::min)(canvasLeft + canvasWidth - config.ScaleF(10.0f), m_rcBtnServerPicker.right);
+        const float mxLeft = (std::max)(canvasLeft + config.ScaleF(10.0f), mxRight - maxW);
+        const float myTop = m_rcBtnServerPicker.bottom + config.ScaleF(4.0f);
+        m_rcServerMenuPopup = D2D1::RectF(mxLeft, myTop, mxRight, myTop + menuH);
+
+        D2D1_ROUNDED_RECT rrm = D2D1::RoundedRect(m_rcServerMenuPopup, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (brMenuBg) pRT->FillRoundedRectangle(rrm, brMenuBg.Get());
+        if (brBorder) pRT->DrawRoundedRectangle(rrm, brBorder.Get(), 1.0f);
+
+        float iy = myTop + menuPad;
+        for (size_t i = 0; i < m_profiles.size(); ++i) {
+            D2D1_RECT_F rcItem = D2D1::RectF(mxLeft + menuPad, iy, mxRight - menuPad, iy + itemH);
+            m_profileHits.push_back({ rcItem, i, m_profiles[i].database });
+            const bool isSel = (i == m_selectedProfileIdx);
+            const bool isHov = (m_hoveredServerMenuIdx == static_cast<int>(i));
+            if (isSel && brAccent) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, config.ScaleF(3.0f), config.ScaleF(3.0f)), brAccent.Get());
+            } else if (isHov && brBtnHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, config.ScaleF(3.0f), config.ScaleF(3.0f)), brBtnHover.Get());
+            }
+            const float dotX = rcItem.left + config.ScaleF(11.0f);
+            const float dotY = (rcItem.top + rcItem.bottom) * 0.5f;
+            const float dotR = config.ScaleF(3.5f);
+            pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR),
+                             m_profiles[i].isConnected ? brAdd.Get() : brDel.Get());
+            DrawSmallText(pRT, pUiFmt, m_profiles[i].name,
+                          D2D1::RectF(rcItem.left + config.ScaleF(20.0f), rcItem.top, rcItem.right - config.ScaleF(8.0f), rcItem.bottom),
+                          isSel ? txtWhite : txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            iy += itemH;
+        }
+        if (nProfs > 0) {
+            pRT->DrawLine(D2D1::Point2F(mxLeft + config.ScaleF(6.0f), iy + sepH * 0.5f),
+                          D2D1::Point2F(mxRight - config.ScaleF(6.0f), iy + sepH * 0.5f), brRowSep.Get(), 1.0f);
+            iy += sepH;
+        }
+        m_rcServerDetectMenuItem = D2D1::RectF(mxLeft + menuPad, iy, mxRight - menuPad, iy + itemH);
+        m_rcBtnDetect = m_rcServerDetectMenuItem;
+        if (m_hoveredBtnId == 14 && brBtnHover) {
+            pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcServerDetectMenuItem, config.ScaleF(3.0f), config.ScaleF(3.0f)), brBtnHover.Get());
+        }
+        const float icoSz = config.ScaleF(13.0f);
+        const float dy = (m_rcServerDetectMenuItem.top + m_rcServerDetectMenuItem.bottom) * 0.5f;
+        DrawErdVectorIcon(pRT, ErdIconKind::Refresh,
+                          D2D1::RectF(m_rcServerDetectMenuItem.left + config.ScaleF(6.0f), dy - icoSz * 0.5f,
+                                      m_rcServerDetectMenuItem.left + config.ScaleF(6.0f) + icoSz, dy + icoSz * 0.5f),
+                          brRel.Get(), m_erdStrokeStyle.Get(), 1.3f);
+        DrawSmallText(pRT, pUiFmt, detectMenuLbl,
+                      D2D1::RectF(m_rcServerDetectMenuItem.left + config.ScaleF(24.0f), m_rcServerDetectMenuItem.top,
+                                  m_rcServerDetectMenuItem.right - config.ScaleF(8.0f), m_rcServerDetectMenuItem.bottom),
+                      txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+    }
+
+    if (m_dbMenuOpen && hasDbDropdown && m_selectedProfileIdx < m_profiles.size() && m_rcBtnDbPicker.right > m_rcBtnDbPicker.left) {
+        const auto& dbs = m_profiles[m_selectedProfileIdx].availableDatabases;
+        const std::wstring& activeDb = m_profiles[m_selectedProfileIdx].database;
+        const float itemH = config.ScaleF(27.0f);
+        const float menuPad = config.ScaleF(4.0f);
+        float maxW = (std::max)(config.ScaleF(150.0f), m_rcBtnDbPicker.right - m_rcBtnDbPicker.left);
+        for (const auto& d : dbs) {
+            maxW = (std::max)(maxW, MeasureErdTextWidth(dwf, pUiFmt, d) + config.ScaleF(34.0f));
+        }
+        maxW = (std::min)(canvasWidth - config.ScaleF(24.0f), maxW);
+        const size_t visCount = (std::min<size_t>)(dbs.size(), 16);
+        const float menuH = menuPad * 2.0f + static_cast<float>((std::max<size_t>)(1, visCount)) * itemH;
+        const float mxRight = (std::min)(canvasLeft + canvasWidth - config.ScaleF(10.0f), m_rcBtnDbPicker.right);
+        const float mxLeft = (std::max)(canvasLeft + config.ScaleF(10.0f), mxRight - maxW);
+        const float myTop = m_rcBtnDbPicker.bottom + config.ScaleF(4.0f);
+        m_rcDbMenuPopup = D2D1::RectF(mxLeft, myTop, mxRight, myTop + menuH);
+
+        D2D1_ROUNDED_RECT rrm = D2D1::RoundedRect(m_rcDbMenuPopup, config.ScaleF(4.0f), config.ScaleF(4.0f));
+        if (brMenuBg) pRT->FillRoundedRectangle(rrm, brMenuBg.Get());
+        if (brBorder) pRT->DrawRoundedRectangle(rrm, brBorder.Get(), 1.0f);
+
+        float iy = myTop + menuPad;
+        for (size_t di = 0; di < visCount; ++di) {
+            D2D1_RECT_F rcItem = D2D1::RectF(mxLeft + menuPad, iy, mxRight - menuPad, iy + itemH);
+            m_dbHits.push_back({ rcItem, m_selectedProfileIdx, dbs[di] });
+            const bool isSel = (dbs[di] == activeDb);
+            const bool isHov = (m_hoveredDbMenuIdx == static_cast<int>(di));
+            if (isSel && brAccent) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, config.ScaleF(3.0f), config.ScaleF(3.0f)), brAccent.Get());
+            } else if (isHov && brBtnHover) {
+                pRT->FillRoundedRectangle(D2D1::RoundedRect(rcItem, config.ScaleF(3.0f), config.ScaleF(3.0f)), brBtnHover.Get());
+            }
+            DrawSmallText(pRT, pUiFmt, dbs[di],
+                          D2D1::RectF(rcItem.left + config.ScaleF(10.0f), rcItem.top, rcItem.right - config.ScaleF(10.0f), rcItem.bottom),
+                          isSel ? txtWhite : txtPri, DWRITE_TEXT_ALIGNMENT_LEADING, dwf, true);
+            iy += itemH;
+        }
+    }
 }
 
 bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig& /*config*/) {
+    // 1. Handle open Server/Database dropdown popups first
+    if (m_serverMenuOpen) {
+        if (PtInRectF(clientPt, m_rcServerDetectMenuItem)) {
+            m_serverMenuOpen = false;
+            if (m_callbacks.onDetectServers) m_callbacks.onDetectServers();
+            else if (m_callbacks.onRefreshLiveSchema) m_callbacks.onRefreshLiveSchema();
+            SetToast(L"Detecting database servers and refreshing schema...");
+            return true;
+        }
+        for (const auto& hit : m_profileHits) {
+            if (PtInRectF(clientPt, hit.bounds)) {
+                m_serverMenuOpen = false;
+                m_selectedProfileIdx = hit.profileIdx;
+                if (m_callbacks.onSelectProfile) m_callbacks.onSelectProfile(hit.profileIdx);
+                SetToast(L"Switched active database server");
+                return true;
+            }
+        }
+        m_serverMenuOpen = false;
+        if (PtInRectF(clientPt, m_rcBtnServerPicker) || PtInRectF(clientPt, m_rcServerMenuPopup)) {
+            return true;
+        }
+    }
+    if (m_dbMenuOpen) {
+        for (const auto& hit : m_dbHits) {
+            if (PtInRectF(clientPt, hit.bounds)) {
+                m_dbMenuOpen = false;
+                if (m_callbacks.onSelectDatabase) m_callbacks.onSelectDatabase(hit.dbName);
+                SetToast(L"Loading schema for database: " + hit.dbName);
+                return true;
+            }
+        }
+        m_dbMenuOpen = false;
+        if (PtInRectF(clientPt, m_rcBtnDbPicker) || PtInRectF(clientPt, m_rcDbMenuPopup)) {
+            return true;
+        }
+    }
+
+    if (!m_searchFilter.empty() && PtInRectF(clientPt, m_rcSearchClear)) {
+        m_searchFilter.clear();
+        m_searchFocused = true;
+        return true;
+    }
+
     m_searchFocused = PtInRectF(clientPt, m_rcSearchBox);
     if (m_searchFocused) return true;
+
+    if (PtInRectF(clientPt, m_rcBtnServerPicker)) {
+        m_serverMenuOpen = !m_serverMenuOpen;
+        m_dbMenuOpen = false;
+        return true;
+    }
+    if (PtInRectF(clientPt, m_rcBtnDbPicker)) {
+        m_dbMenuOpen = !m_dbMenuOpen;
+        m_serverMenuOpen = false;
+        return true;
+    }
+    if (PtInRectF(clientPt, m_rcBtnQuickRefresh)) {
+        if (m_profiles.empty() && m_callbacks.onDetectServers) {
+            m_callbacks.onDetectServers();
+            SetToast(L"Detecting database servers and refreshing schema...");
+        } else if (m_callbacks.onRefreshLiveSchema) {
+            m_callbacks.onRefreshLiveSchema();
+            SetToast(L"Refreshing schema from active connection...");
+        }
+        return true;
+    }
 
     if (PtInRectF(clientPt, m_rcBtnDetect) || PtInRectF(clientPt, m_rcBtnEmptyRefresh)) {
         if (m_callbacks.onDetectServers) m_callbacks.onDetectServers();
         else if (m_callbacks.onRefreshLiveSchema) m_callbacks.onRefreshLiveSchema();
         SetToast(L"Detecting database servers and refreshing schema...");
         return true;
-    }
-
-    for (const auto& hit : m_profileHits) {
-        if (PtInRectF(clientPt, hit.bounds)) {
-            m_selectedProfileIdx = hit.profileIdx;
-            if (m_callbacks.onSelectProfile) m_callbacks.onSelectProfile(hit.profileIdx);
-            SetToast(L"Switched active database server");
-            return true;
-        }
-    }
-
-    for (const auto& hit : m_dbHits) {
-        if (PtInRectF(clientPt, hit.bounds)) {
-            if (m_callbacks.onSelectDatabase) m_callbacks.onSelectDatabase(hit.dbName);
-            SetToast(L"Loading schema for database: " + hit.dbName);
-            return true;
-        }
     }
 
     for (const auto& hit : m_diffDbHits) {
@@ -1483,10 +2190,7 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
     if (PtInRectF(clientPt, m_rcBtnAutoLayout)) {
         m_userMovedNodes = false;
         AutoArrangeNodes(true);
-        m_targetPanX = 40.0f;
-        m_targetPanY = 40.0f;
-        m_targetZoom = 1.0f;
-        m_isAnimatingZoomPan = true;
+        ApplyZoomToFit(true, 1.0f);
         return true;
     }
     if (PtInRectF(clientPt, m_rcBtnInferFks)) {
@@ -1507,23 +2211,7 @@ bool ErdView::HandleLButtonDown(POINT clientPt, HWND hwnd, const app::AppConfig&
     }
 
     if (PtInRectF(clientPt, m_rcBtnZoomFit)) {
-        const auto& fitNodes = (m_isAnimatingNodes && m_targetNodes.size() == m_nodes.size()) ? m_targetNodes : m_nodes;
-        if (!fitNodes.empty()) {
-            float minX = fitNodes[0].x, minY = fitNodes[0].y;
-            float maxX = fitNodes[0].x + fitNodes[0].width, maxY = fitNodes[0].y + fitNodes[0].height;
-            for (const auto& n : fitNodes) {
-                minX = (std::min)(minX, n.x); minY = (std::min)(minY, n.y);
-                maxX = (std::max)(maxX, n.x + n.width); maxY = (std::max)(maxY, n.y + n.height);
-            }
-            float vw = (std::max)(100.0f, m_rcCanvasViewport.right - m_rcCanvasViewport.left - 60.0f);
-            float vh = (std::max)(100.0f, m_rcCanvasViewport.bottom - m_rcCanvasViewport.top - 60.0f);
-            float bw = (std::max)(1.0f, maxX - minX);
-            float bh = (std::max)(1.0f, maxY - minY);
-            m_targetZoom = std::clamp((std::min)(vw / bw, vh / bh), 0.25f, 1.5f);
-            m_targetPanX = 30.0f - minX * m_targetZoom;
-            m_targetPanY = 30.0f - minY * m_targetZoom;
-            m_isAnimatingZoomPan = true;
-        }
+        ApplyZoomToFit(true, 1.25f);
         return true;
     }
 
@@ -1646,41 +2334,55 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
     }
 
     int h = -1;
-    if (PtInRectF(clientPt, m_rcBtnCrowsFoot)) h = 1;
-    else if (PtInRectF(clientPt, m_rcBtnUml)) h = 2;
-    else if (PtInRectF(clientPt, m_rcBtnChen)) h = 3;
-    else if (PtInRectF(clientPt, m_rcBtnBarker)) h = 4;
-    else if (PtInRectF(clientPt, m_rcBtnChenAttrs)) h = 5;
-    else if (PtInRectF(clientPt, m_rcBtnAutoLayout)) h = 6;
-    else if (PtInRectF(clientPt, m_rcBtnZoomFit)) h = 7;
-    else if (PtInRectF(clientPt, m_rcBtnRefresh)) h = 8;
-    else if (PtInRectF(clientPt, m_rcBtnToggleDiff)) h = 9;
-    else if (PtInRectF(clientPt, m_rcBtnLoadSql)) h = 10;
-    else if (PtInRectF(clientPt, m_rcBtnExportSvg)) h = 11;
-    else if (PtInRectF(clientPt, m_rcBtnOpenMigConsole)) h = 12;
-    else if (PtInRectF(clientPt, m_rcBtnCopyMigration)) h = 13;
-    else if (PtInRectF(clientPt, m_rcBtnDetect)) h = 14;
-    else if (PtInRectF(clientPt, m_rcBtnEmptyRefresh)) h = 15;
-    else if (PtInRectF(clientPt, m_rcBtnInferFks)) h = 16;
-    else if (PtInRectF(clientPt, m_rcBtnShowM2N)) h = 17;
-    else if (PtInRectF(clientPt, m_rcBtnLegend)) h = 18;
+    int hsMenu = -1;
+    int hdbMenu = -1;
+    if (m_serverMenuOpen) {
+        if (PtInRectF(clientPt, m_rcServerDetectMenuItem)) h = 14;
+        for (size_t i = 0; i < m_profileHits.size(); ++i) {
+            if (PtInRectF(clientPt, m_profileHits[i].bounds)) { hsMenu = static_cast<int>(i); break; }
+        }
+    } else if (m_dbMenuOpen) {
+        for (size_t i = 0; i < m_dbHits.size(); ++i) {
+            if (PtInRectF(clientPt, m_dbHits[i].bounds)) { hdbMenu = static_cast<int>(i); break; }
+        }
+    }
 
-    int hp = -1;
-    for (size_t i = 0; i < m_profileHits.size(); ++i) {
-        if (PtInRectF(clientPt, m_profileHits[i].bounds)) { hp = static_cast<int>(i); break; }
+    if (h < 0 && hsMenu < 0 && hdbMenu < 0) {
+        if (PtInRectF(clientPt, m_rcBtnCrowsFoot)) h = 1;
+        else if (PtInRectF(clientPt, m_rcBtnUml)) h = 2;
+        else if (PtInRectF(clientPt, m_rcBtnChen)) h = 3;
+        else if (PtInRectF(clientPt, m_rcBtnBarker)) h = 4;
+        else if (PtInRectF(clientPt, m_rcBtnChenAttrs)) h = 5;
+        else if (PtInRectF(clientPt, m_rcBtnAutoLayout)) h = 6;
+        else if (PtInRectF(clientPt, m_rcBtnZoomFit)) h = 7;
+        else if (PtInRectF(clientPt, m_rcBtnRefresh)) h = 8;
+        else if (PtInRectF(clientPt, m_rcBtnToggleDiff)) h = 9;
+        else if (PtInRectF(clientPt, m_rcBtnLoadSql)) h = 10;
+        else if (PtInRectF(clientPt, m_rcBtnExportSvg)) h = 11;
+        else if (PtInRectF(clientPt, m_rcBtnOpenMigConsole)) h = 12;
+        else if (PtInRectF(clientPt, m_rcBtnCopyMigration)) h = 13;
+        else if (PtInRectF(clientPt, m_rcBtnDetect)) h = 14;
+        else if (PtInRectF(clientPt, m_rcBtnEmptyRefresh)) h = 15;
+        else if (PtInRectF(clientPt, m_rcBtnInferFks)) h = 16;
+        else if (PtInRectF(clientPt, m_rcBtnShowM2N)) h = 17;
+        else if (PtInRectF(clientPt, m_rcBtnLegend)) h = 18;
+        else if (PtInRectF(clientPt, m_rcBtnServerPicker)) h = 19;
+        else if (PtInRectF(clientPt, m_rcBtnDbPicker)) h = 20;
+        else if (PtInRectF(clientPt, m_rcBtnQuickRefresh)) h = 21;
     }
-    int hdb = -1;
-    for (size_t i = 0; i < m_dbHits.size(); ++i) {
-        if (PtInRectF(clientPt, m_dbHits[i].bounds)) { hdb = static_cast<int>(i); break; }
-    }
+
     int hddb = -1;
     for (size_t i = 0; i < m_diffDbHits.size(); ++i) {
         if (PtInRectF(clientPt, m_diffDbHits[i].bounds)) { hddb = static_cast<int>(i); break; }
     }
-    bool hSearch = PtInRectF(clientPt, m_rcSearchBox);
+    bool hSearchClear = (!m_searchFilter.empty() && PtInRectF(clientPt, m_rcSearchClear));
+    bool hSearch = !hSearchClear && PtInRectF(clientPt, m_rcSearchBox);
     int hNode = -1;
     int hEdge = -1;
-    if (h < 0 && hp < 0 && hdb < 0 && hddb < 0 && !hSearch && PtInRectF(clientPt, m_rcCanvasViewport)) {
+    const bool overOpenPopup = (m_serverMenuOpen && PtInRectF(clientPt, m_rcServerMenuPopup)) ||
+                               (m_dbMenuOpen && PtInRectF(clientPt, m_rcDbMenuPopup));
+    if (h < 0 && hsMenu < 0 && hdbMenu < 0 && hddb < 0 && !hSearch && !hSearchClear &&
+        !overOpenPopup && PtInRectF(clientPt, m_rcCanvasViewport)) {
         D2D1_POINT_2F wp = ScreenToWorld(clientPt);
         for (int i = static_cast<int>(m_nodes.size()) - 1; i >= 0; --i) {
             const auto& n = m_nodes[static_cast<size_t>(i)];
@@ -1708,15 +2410,18 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
         }
     }
 
-    const bool changed = (h != m_hoveredBtnId || hp != m_hoveredProfileIdx ||
-                          hdb != m_hoveredDbIdx || hddb != m_hoveredDiffDbIdx ||
-                          hSearch != m_hoveredSearchBox || hNode != m_hoveredNodeIdx ||
-                          hEdge != m_hoveredEdgeIdx || hEdge >= 0);
+    const bool changed = (h != m_hoveredBtnId || hsMenu != m_hoveredServerMenuIdx ||
+                          hdbMenu != m_hoveredDbMenuIdx || hddb != m_hoveredDiffDbIdx ||
+                          hSearch != m_hoveredSearchBox || hSearchClear != m_hoveredSearchClear ||
+                          hNode != m_hoveredNodeIdx || hEdge != m_hoveredEdgeIdx || hEdge >= 0);
     m_hoveredBtnId = h;
-    m_hoveredProfileIdx = hp;
-    m_hoveredDbIdx = hdb;
+    m_hoveredServerMenuIdx = hsMenu;
+    m_hoveredDbMenuIdx = hdbMenu;
+    m_hoveredProfileIdx = hsMenu;
+    m_hoveredDbIdx = hdbMenu;
     m_hoveredDiffDbIdx = hddb;
     m_hoveredSearchBox = hSearch;
+    m_hoveredSearchClear = hSearchClear;
     m_hoveredNodeIdx = hNode;
     m_hoveredEdgeIdx = hEdge;
     return changed;
@@ -1724,23 +2429,22 @@ bool ErdView::HandleMouseMove(POINT clientPt, const app::AppConfig& /*config*/) 
 
 LPCWSTR ErdView::GetCursorForPoint(POINT clientPt) const noexcept {
     if (m_draggingNodeIdx >= 0 || m_isPanningCanvas) return IDC_SIZEALL;
+    if (!m_searchFilter.empty() && PtInRectF(clientPt, m_rcSearchClear)) return IDC_HAND;
     if (PtInRectF(clientPt, m_rcSearchBox)) return IDC_IBEAM;
+    if (m_serverMenuOpen && PtInRectF(clientPt, m_rcServerMenuPopup)) return IDC_HAND;
+    if (m_dbMenuOpen && PtInRectF(clientPt, m_rcDbMenuPopup)) return IDC_HAND;
     if (PtInRectF(clientPt, m_rcBtnCrowsFoot) || PtInRectF(clientPt, m_rcBtnUml) ||
         PtInRectF(clientPt, m_rcBtnChen) || PtInRectF(clientPt, m_rcBtnBarker) ||
         PtInRectF(clientPt, m_rcBtnChenAttrs) || PtInRectF(clientPt, m_rcBtnAutoLayout) ||
         PtInRectF(clientPt, m_rcBtnZoomFit) || PtInRectF(clientPt, m_rcBtnRefresh) ||
-        PtInRectF(clientPt, m_rcBtnDetect) || PtInRectF(clientPt, m_rcBtnEmptyRefresh) ||
-        PtInRectF(clientPt, m_rcBtnToggleDiff) || PtInRectF(clientPt, m_rcBtnLoadSql) ||
-        PtInRectF(clientPt, m_rcBtnExportSvg) || PtInRectF(clientPt, m_rcBtnInferFks) ||
-        PtInRectF(clientPt, m_rcBtnShowM2N) || PtInRectF(clientPt, m_rcBtnLegend) ||
-        PtInRectF(clientPt, m_rcBtnOpenMigConsole) || PtInRectF(clientPt, m_rcBtnCopyMigration)) {
+        PtInRectF(clientPt, m_rcBtnQuickRefresh) || PtInRectF(clientPt, m_rcBtnServerPicker) ||
+        PtInRectF(clientPt, m_rcBtnDbPicker) || PtInRectF(clientPt, m_rcBtnDetect) ||
+        PtInRectF(clientPt, m_rcBtnEmptyRefresh) || PtInRectF(clientPt, m_rcBtnToggleDiff) ||
+        PtInRectF(clientPt, m_rcBtnLoadSql) || PtInRectF(clientPt, m_rcBtnExportSvg) ||
+        PtInRectF(clientPt, m_rcBtnInferFks) || PtInRectF(clientPt, m_rcBtnShowM2N) ||
+        PtInRectF(clientPt, m_rcBtnLegend) || PtInRectF(clientPt, m_rcBtnOpenMigConsole) ||
+        PtInRectF(clientPt, m_rcBtnCopyMigration)) {
         return IDC_HAND;
-    }
-    for (const auto& hit : m_profileHits) {
-        if (PtInRectF(clientPt, hit.bounds)) return IDC_HAND;
-    }
-    for (const auto& hit : m_dbHits) {
-        if (PtInRectF(clientPt, hit.bounds)) return IDC_HAND;
     }
     for (const auto& hit : m_diffDbHits) {
         if (PtInRectF(clientPt, hit.bounds)) return IDC_HAND;
@@ -1792,6 +2496,11 @@ bool ErdView::HandleChar(wchar_t ch) {
 }
 
 bool ErdView::HandleKeyDown(WPARAM vk) {
+    if (vk == VK_ESCAPE && (m_serverMenuOpen || m_dbMenuOpen)) {
+        m_serverMenuOpen = false;
+        m_dbMenuOpen = false;
+        return true;
+    }
     if (!m_searchFocused) return false;
     if (vk == VK_BACK && !m_searchFilter.empty()) {
         m_searchFilter.pop_back();

@@ -949,9 +949,19 @@ std::wstring EditorCanvas::ExtractCodeLensSymbolFromLine(const std::wstring& lin
 
 static Microsoft::WRL::ComPtr<ID2D1Bitmap> CanvasLoadPngBitmap(ID2D1RenderTarget* pRT, const std::wstring& path) {
     if (!pRT || path.empty()) return nullptr;
-    std::wstring tryPaths[] = { path, L"bin\\" + path, L"..\\" + path };
+    std::vector<std::wstring> tryPaths;
+    wchar_t modPath[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH) > 0) {
+        std::filesystem::path exeDir = std::filesystem::path(modPath).parent_path();
+        tryPaths.push_back((exeDir / path).wstring());
+        tryPaths.push_back((exeDir.parent_path() / path).wstring());
+    }
+    tryPaths.push_back(path);
+    tryPaths.push_back(L"bin\\" + path);
+    tryPaths.push_back(L"..\\" + path);
+    std::error_code ec;
     for (const auto& p : tryPaths) {
-        if (!std::filesystem::exists(p)) continue;
+        if (!std::filesystem::exists(p, ec)) continue;
         Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
         if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) continue;
         Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
@@ -11702,7 +11712,14 @@ void EditorCanvas::RenderExtensionDetail(ID2D1RenderTarget* pRT, Theme& theme, c
         std::wstring mdPath = L"assets\\extensions\\" + meta.id + L"\\" + mdFilename;
         std::wstring mdContent;
         editor::Buffer tempBuf;
-        if (tempBuf.LoadFromFile(mdPath) || tempBuf.LoadFromFile(L"bin\\" + mdPath)) {
+        wchar_t modPath[MAX_PATH]{};
+        std::filesystem::path exeDir;
+        if (GetModuleFileNameW(nullptr, modPath, MAX_PATH) > 0) {
+            exeDir = std::filesystem::path(modPath).parent_path();
+        }
+        if ((!exeDir.empty() && (tempBuf.LoadFromFile((exeDir / mdPath).wstring()) ||
+                                  tempBuf.LoadFromFile((exeDir.parent_path() / mdPath).wstring()))) ||
+            tempBuf.LoadFromFile(mdPath) || tempBuf.LoadFromFile(L"bin\\" + mdPath)) {
             mdContent = tempBuf.GetText();
         }
 
@@ -17278,16 +17295,15 @@ void EditorCanvas::SetSqlQueryText(const std::wstring& sql) {
 void EditorCanvas::UpdateMysqlProfilesPort(int newPort) {
     if (newPort <= 0 || newPort >= 65536) return;
     m_sqlMysqlPort = newPort;
-    bool changed = false;
-    for (auto& prof : m_sqlProfiles) {
-        if (prof.dialect == phide::db::SqlDialect::MySQL && prof.port != newPort) {
-            prof.port = newPort;
-            prof.name = L"MySQL (" + prof.host + L":" + std::to_wstring(newPort) + L")";
-            changed = true;
+    if (m_sqlNotifyHwnd != nullptr) {
+        if (!m_sqlIsBusy) {
+            StartDiscoverSqlServersAsync();
         }
-    }
-    if (m_sqlNotifyHwnd != nullptr && (changed || m_sqlProfiles.empty())) {
-        StartDiscoverSqlServersAsync();
+    } else {
+        m_sqlProfiles = phide::db::SqlEngine::DiscoverWorkspaceDatabases(
+            m_workspaceRoot, m_sqlMysqlHost, m_sqlMysqlPort, m_sqlMysqlUser, m_sqlMysqlPass, m_sqlMysqlDb);
+        if (m_sqlSelectedProfileIdx >= m_sqlProfiles.size()) m_sqlSelectedProfileIdx = 0;
+        RefreshActiveSqlSchema();
     }
 }
 
@@ -17692,6 +17708,21 @@ void EditorCanvas::StartDiscoverSqlServersAsync() {
             }
         }
         if (!matchedPrev) {
+            // If previously selected profile was offline MySQL placeholder (port 0) and MySQL just came online, select it
+            const std::wstring mysqlPrefix = std::to_wstring(static_cast<int>(phide::db::SqlDialect::MySQL)) + L":";
+            const bool prevWasMysql = (prevKey.rfind(mysqlPrefix, 0) == 0);
+            if (prevWasMysql) {
+                for (size_t i = 0; i < discovered.size(); ++i) {
+                    if (discovered[i].dialect == phide::db::SqlDialect::MySQL && discovered[i].isConnected) {
+                        bestIdx = i;
+                        if (!prevDb.empty()) discovered[i].database = prevDb;
+                        matchedPrev = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!matchedPrev) {
             for (size_t i = 0; i < discovered.size(); ++i) {
                 if (discovered[i].isConnected) {
                     bestIdx = i;
@@ -17750,9 +17781,10 @@ void EditorCanvas::SelectSqlProfile(size_t idx) {
     m_sqlExpandedTableIdx = -1;
     m_sqlSidebarScrollY = 0.0f;
     m_sqlTables.clear();
+    m_sqlSchemaError.clear();
     m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
-    SyncErdViewConnections();
     StartRefreshActiveSqlSchemaAsync();
+    SyncErdViewConnections();
 }
 
 void EditorCanvas::SelectSqlDatabase(const std::wstring& dbName) {
@@ -17760,8 +17792,11 @@ void EditorCanvas::SelectSqlDatabase(const std::wstring& dbName) {
     m_sqlProfiles[m_sqlSelectedProfileIdx].database = dbName;
     m_sqlExpandedTableIdx = -1;
     m_sqlSidebarScrollY = 0.0f;
-    SyncErdViewConnections();
+    m_sqlTables.clear();
+    m_sqlSchemaError.clear();
+    m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
     StartRefreshActiveSqlSchemaAsync();
+    SyncErdViewConnections();
 }
 
 void EditorCanvas::StartCompareSqlDatabaseAsync(size_t profileIdx, const std::wstring& dbName) {
@@ -17831,6 +17866,7 @@ void EditorCanvas::StartRefreshActiveSqlSchemaAsync() {
     m_sqlSchemaError.clear();
     m_sqlExpandedTableIdx = -1;
     m_sqlStatusBanner = L"Loading schema (" + profCopy.name + L")...";
+    SyncErdViewConnections();
 
     std::thread([profCopy, allProfsCopy, rootCopy, profIdx, schGen, inbox, notifyHwnd]() {
         if (!inbox->alive.load()) return;
@@ -17932,6 +17968,98 @@ void EditorCanvas::StartExecuteActiveSqlQueryAsync() {
     }).detach();
 }
 
+static size_t NormalizeMysqlProfilesAfterToggle(
+    std::vector<phide::db::SqlConnectionProfile>& profiles,
+    size_t prevSelectedIdx,
+    const phide::db::SqlConnectionProfile& proto,
+    int resolvedPort,
+    bool nowConnected,
+    const std::vector<int>& detectedLivePorts) {
+
+    std::wstring selPrevKey;
+    if (prevSelectedIdx < profiles.size() && profiles[prevSelectedIdx].dialect != phide::db::SqlDialect::MySQL) {
+        selPrevKey = std::to_wstring(static_cast<int>(profiles[prevSelectedIdx].dialect)) + L":" +
+                     profiles[prevSelectedIdx].host + L":" +
+                     std::to_wstring(profiles[prevSelectedIdx].port) + L":" +
+                     profiles[prevSelectedIdx].sqlitePath;
+    }
+
+    std::vector<phide::db::SqlConnectionProfile> oldMysqls;
+    std::vector<phide::db::SqlConnectionProfile> rebuilt;
+    rebuilt.reserve(profiles.size() + 2);
+    size_t insertPos = profiles.size();
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        if (profiles[i].dialect == phide::db::SqlDialect::MySQL) {
+            insertPos = (std::min)(insertPos, rebuilt.size());
+            oldMysqls.push_back(std::move(profiles[i]));
+        } else {
+            rebuilt.push_back(std::move(profiles[i]));
+        }
+    }
+
+    std::vector<int> livePorts = detectedLivePorts;
+    if (nowConnected && resolvedPort > 0 && resolvedPort < 65536 &&
+        std::find(livePorts.begin(), livePorts.end(), resolvedPort) == livePorts.end()) {
+        livePorts.push_back(resolvedPort);
+    }
+    if (!nowConnected && resolvedPort > 0) {
+        livePorts.erase(std::remove(livePorts.begin(), livePorts.end(), resolvedPort), livePorts.end());
+    }
+    std::sort(livePorts.begin(), livePorts.end());
+    livePorts.erase(std::unique(livePorts.begin(), livePorts.end()), livePorts.end());
+
+    std::vector<phide::db::SqlConnectionProfile> newMysqls;
+    const std::wstring baseHost = proto.host.empty() ? L"localhost" : proto.host;
+    if (!livePorts.empty()) {
+        for (int p : livePorts) {
+            phide::db::SqlConnectionProfile mp = proto;
+            for (const auto& prev : oldMysqls) {
+                if (prev.port == p) {
+                    mp = prev;
+                    break;
+                }
+            }
+            mp.dialect = phide::db::SqlDialect::MySQL;
+            if (mp.host.empty()) mp.host = baseHost;
+            mp.port = p;
+            mp.name = L"MySQL (" + mp.host + L":" + std::to_wstring(p) + L")";
+            mp.isConnected = true;
+            newMysqls.push_back(std::move(mp));
+        }
+    } else {
+        phide::db::SqlConnectionProfile offline = proto;
+        offline.dialect = phide::db::SqlDialect::MySQL;
+        offline.host = baseHost;
+        offline.port = 0;
+        offline.name = L"MySQL";
+        offline.isConnected = false;
+        offline.availableDatabases.clear();
+        newMysqls.push_back(std::move(offline));
+    }
+
+    const size_t mysqlBase = (std::min)(insertPos, rebuilt.size());
+    rebuilt.insert(rebuilt.begin() + static_cast<ptrdiff_t>(mysqlBase), newMysqls.begin(), newMysqls.end());
+    profiles = std::move(rebuilt);
+
+    if (!selPrevKey.empty()) {
+        for (size_t i = 0; i < profiles.size(); ++i) {
+            std::wstring k = std::to_wstring(static_cast<int>(profiles[i].dialect)) + L":" +
+                             profiles[i].host + L":" + std::to_wstring(profiles[i].port) + L":" +
+                             profiles[i].sqlitePath;
+            if (k == selPrevKey) return i;
+        }
+    }
+    if (nowConnected && resolvedPort > 0) {
+        for (size_t i = 0; i < profiles.size(); ++i) {
+            if (profiles[i].dialect == phide::db::SqlDialect::MySQL && profiles[i].port == resolvedPort) return i;
+        }
+    }
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        if (profiles[i].dialect == phide::db::SqlDialect::MySQL) return i;
+    }
+    return 0;
+}
+
 void EditorCanvas::StartToggleActiveSqlServerAsync() {
     if (m_sqlSelectedProfileIdx >= m_sqlProfiles.size()) {
         m_sqlStatusBanner = L"Select a database server profile first.";
@@ -17952,23 +18080,34 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
         bool opOk = wantStop
             ? phide::db::SqlEngine::StopDatabaseServer(profCopy, msg)
             : phide::db::SqlEngine::StartDatabaseServer(profCopy, msg, &resolvedPort);
+        if (resolvedPort <= 0 && profCopy.dialect == phide::db::SqlDialect::MySQL) {
+            resolvedPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(3306, m_workspaceRoot);
+        }
         bool nowConnected = phide::db::SqlEngine::IsTcpPortOpen(profCopy.host, resolvedPort, 35);
-        m_sqlProfiles[profIdx].isConnected = nowConnected;
-        if (resolvedPort > 0 && resolvedPort != m_sqlProfiles[profIdx].port) {
-            m_sqlProfiles[profIdx].port = resolvedPort;
-            m_sqlProfiles[profIdx].name = eng + L" (" + m_sqlProfiles[profIdx].host + L":" + std::to_wstring(resolvedPort) + L")";
+        size_t newIdx = profIdx;
+        if (profCopy.dialect == phide::db::SqlDialect::MySQL) {
+            auto livePorts = phide::db::SqlEngine::GetListeningMysqlPorts();
+            newIdx = NormalizeMysqlProfilesAfterToggle(m_sqlProfiles, profIdx, profCopy, resolvedPort, nowConnected, livePorts);
+            m_sqlSelectedProfileIdx = newIdx;
+        } else {
+            m_sqlProfiles[profIdx].isConnected = nowConnected;
+            if (resolvedPort > 0 && resolvedPort != m_sqlProfiles[profIdx].port) {
+                m_sqlProfiles[profIdx].port = resolvedPort;
+                m_sqlProfiles[profIdx].name = eng + L" (" + m_sqlProfiles[profIdx].host + L":" + std::to_wstring(resolvedPort) + L")";
+            }
         }
         m_sqlExpandedTableIdx = -1;
         m_sqlSidebarScrollY = 0.0f;
-        if (nowConnected) {
+        if (nowConnected || (newIdx < m_sqlProfiles.size() && m_sqlProfiles[newIdx].isConnected)) {
             RefreshActiveSqlSchema();
             m_sqlStatusBanner = msg.empty() ? m_sqlStatusBanner : msg;
         } else {
-            m_sqlProfiles[profIdx].availableDatabases.clear();
+            if (newIdx < m_sqlProfiles.size()) m_sqlProfiles[newIdx].availableDatabases.clear();
             m_sqlTables.clear();
-            m_sqlSchemaError = L"Stopped " + eng + L" (" + profCopy.host + L":" + std::to_wstring(resolvedPort) +
-                               L"). Click 'Start " + eng + L"' above to start it.";
+            m_sqlSchemaError = L"Stopped " + eng + L". Click 'Start " + eng + L"' above to start it.";
             m_sqlStatusBanner = msg.empty() ? m_sqlSchemaError : msg;
+            m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
+            SyncErdViewConnections();
         }
         if (profCopy.dialect == phide::db::SqlDialect::MySQL && onMysqlServerStateChanged) {
             onMysqlServerStateChanged(resolvedPort, nowConnected);
@@ -17978,6 +18117,7 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
         return;
     }
 
+    const uint64_t discGen = ++m_sqlDiscoverReqGen;
     const uint64_t toggleGen = ++m_sqlServerToggleReqGen;
     const uint64_t schGen = ++m_sqlSchemaReqGen;
     auto allProfsCopy = m_sqlProfiles;
@@ -17987,8 +18127,9 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
 
     m_sqlIsBusy = true;
     m_sqlStatusBanner = std::wstring(wantStop ? L"Stopping " : L"Starting ") + profCopy.name + L"...";
+    SyncErdViewConnections();
 
-    std::thread([profCopy, allProfsCopy, rootCopy, profIdx, wantStop, eng, toggleGen, schGen, inbox, notifyHwnd]() mutable {
+    std::thread([profCopy, allProfsCopy, rootCopy, profIdx, wantStop, eng, discGen, toggleGen, schGen, inbox, notifyHwnd]() mutable {
         if (!inbox->alive.load()) return;
 
         std::wstring msg;
@@ -17998,19 +18139,28 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
             : phide::db::SqlEngine::StartDatabaseServer(profCopy, msg, &resolvedPort);
         if (!inbox->alive.load()) return;
 
-        phide::db::SqlConnectionProfile updatedProf = profCopy;
-        if (resolvedPort > 0 && resolvedPort != updatedProf.port) {
-            updatedProf.port = resolvedPort;
-            updatedProf.name = eng + L" (" + updatedProf.host + L":" + std::to_wstring(resolvedPort) + L")";
+        if (resolvedPort <= 0 && profCopy.dialect == phide::db::SqlDialect::MySQL) {
+            resolvedPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(3306, rootCopy);
         }
-        const bool nowConnected = phide::db::SqlEngine::IsTcpPortOpen(updatedProf.host, updatedProf.port, 35);
-        updatedProf.isConnected = nowConnected;
+        const bool nowConnected = (resolvedPort > 0) && phide::db::SqlEngine::IsTcpPortOpen(profCopy.host, resolvedPort, 35);
+        size_t nextProfIdx = profIdx;
+        if (profCopy.dialect == phide::db::SqlDialect::MySQL) {
+            auto livePorts = phide::db::SqlEngine::GetListeningMysqlPorts();
+            nextProfIdx = NormalizeMysqlProfilesAfterToggle(allProfsCopy, profIdx, profCopy, resolvedPort, nowConnected, livePorts);
+        } else if (profIdx < allProfsCopy.size()) {
+            allProfsCopy[profIdx].isConnected = nowConnected;
+            if (resolvedPort > 0 && allProfsCopy[profIdx].port != resolvedPort) {
+                allProfsCopy[profIdx].port = resolvedPort;
+                allProfsCopy[profIdx].name = eng + L" (" + allProfsCopy[profIdx].host + L":" + std::to_wstring(resolvedPort) + L")";
+            }
+        }
 
         std::vector<phide::db::SqlTableInfo> tables;
         std::vector<phide::db::SqlTableInfo> allValidationTables;
         std::vector<std::wstring> dbs;
         std::wstring schemaErr;
-        if (nowConnected) {
+        if (nextProfIdx < allProfsCopy.size() && allProfsCopy[nextProfIdx].isConnected) {
+            phide::db::SqlConnectionProfile& updatedProf = allProfsCopy[nextProfIdx];
             std::wstring dbErr;
             dbs = phide::db::SqlEngine::ListDatabases(updatedProf, dbErr);
             if (!dbs.empty()) {
@@ -18021,12 +18171,10 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
             }
             tables = phide::db::SqlEngine::InspectSchema(updatedProf, schemaErr);
         } else {
-            updatedProf.availableDatabases.clear();
-            schemaErr = eng + L" server is stopped (" + updatedProf.host + L":" + std::to_wstring(updatedProf.port) +
-                        L"). Click 'Start " + eng + L"' above to start it.";
-        }
-        if (profIdx < allProfsCopy.size()) {
-            allProfsCopy[profIdx] = updatedProf;
+            if (nextProfIdx < allProfsCopy.size()) {
+                allProfsCopy[nextProfIdx].availableDatabases.clear();
+            }
+            schemaErr = eng + L" server is stopped. Click 'Start " + eng + L"' above to start it.";
         }
         allValidationTables = BuildCombinedSqlValidationTables(allProfsCopy, rootCopy);
 
@@ -18034,9 +18182,14 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
         {
             std::lock_guard<std::mutex> lk(inbox->mtx);
             if (!inbox->alive.load()) return;
+            if (discGen >= inbox->discoverReqGen && profCopy.dialect == phide::db::SqlDialect::MySQL) {
+                inbox->discoverReqGen = discGen;
+                inbox->discoveredProfiles = std::move(allProfsCopy);
+                inbox->hasDiscoverUpdate = true;
+            }
             if (toggleGen >= inbox->serverToggleReqGen) {
                 inbox->serverToggleReqGen = toggleGen;
-                inbox->toggledProfileIdx = profIdx;
+                inbox->toggledProfileIdx = nextProfIdx;
                 inbox->toggledConnected = nowConnected;
                 inbox->toggledPort = resolvedPort;
                 inbox->toggledSuccess = opOk;
@@ -18045,7 +18198,7 @@ void EditorCanvas::StartToggleActiveSqlServerAsync() {
             }
             if (schGen >= inbox->schemaReqGen) {
                 inbox->schemaReqGen = schGen;
-                inbox->schemaProfileIdx = profIdx;
+                inbox->schemaProfileIdx = nextProfIdx;
                 inbox->schemaTables = std::move(tables);
                 inbox->schemaAllValidationTables = std::move(allValidationTables);
                 inbox->schemaDatabases = std::move(dbs);
@@ -18157,21 +18310,25 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
 
     if (hasToggle && seenToggleGen == m_sqlServerToggleReqGen && togProfIdx < m_sqlProfiles.size()) {
         auto& tProf = m_sqlProfiles[togProfIdx];
-        tProf.isConnected = togConnected;
-        if (togPort > 0 && tProf.port != togPort) {
-            tProf.port = togPort;
-            std::wstring eng = SqlDialectEngineLabel(tProf.dialect);
-            if (!eng.empty()) {
-                tProf.name = eng + L" (" + tProf.host + L":" + std::to_wstring(togPort) + L")";
+        const bool alreadyNormalizedMysql = (hasDisc && seenDiscGen == m_sqlDiscoverReqGen &&
+                                             tProf.dialect == phide::db::SqlDialect::MySQL);
+        if (!alreadyNormalizedMysql) {
+            tProf.isConnected = togConnected;
+            if (togPort > 0 && tProf.port != togPort) {
+                tProf.port = togPort;
+                std::wstring eng = SqlDialectEngineLabel(tProf.dialect);
+                if (!eng.empty()) {
+                    tProf.name = eng + L" (" + tProf.host + L":" + std::to_wstring(togPort) + L")";
+                }
+            }
+            if (!togConnected) {
+                tProf.availableDatabases.clear();
             }
         }
-        if (!togConnected) {
-            tProf.availableDatabases.clear();
-        }
         if (tProf.dialect == phide::db::SqlDialect::MySQL) {
-            if (togConnected && togPort > 0) m_sqlMysqlPort = togPort;
+            if (tProf.isConnected && tProf.port > 0) m_sqlMysqlPort = tProf.port;
             if (onMysqlServerStateChanged) {
-                onMysqlServerStateChanged(tProf.port, togConnected);
+                onMysqlServerStateChanged(tProf.isConnected ? tProf.port : togPort, tProf.isConnected);
             }
         }
         if (!togMsg.empty()) {
@@ -18189,7 +18346,7 @@ bool EditorCanvas::ApplyPendingSqlAsyncResults() {
                 if (targetProf.database.empty()) {
                     targetProf.database = targetProf.availableDatabases[0];
                 }
-            } else if (hasToggle && seenToggleGen == m_sqlServerToggleReqGen && !togConnected) {
+            } else if (hasToggle && seenToggleGen == m_sqlServerToggleReqGen && !targetProf.isConnected) {
                 targetProf.availableDatabases.clear();
             }
             if (schErr.empty()) {
@@ -18642,7 +18799,13 @@ void EditorCanvas::RenderSqlConsoleView(
     float sideContentY = sy - m_sqlSidebarScrollY;
     const float sideStartY = sideContentY;
 
-    if (!m_sqlSchemaError.empty() && fWrapUse) {
+    if (m_sqlIsBusy && fWrapUse && txtMuted) {
+        D2D1_RECT_F rcLoad = D2D1::RectF(rcSideClip.left + config.ScaleF(8.0f), sideContentY + config.ScaleF(4.0f),
+                                         rcSideClip.right - config.ScaleF(8.0f), sideContentY + config.ScaleF(52.0f));
+        const wchar_t* msg = L"Loading schema...";
+        pRT->DrawText(msg, static_cast<UINT32>(wcslen(msg)), fWrapUse, rcLoad, txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        sideContentY += config.ScaleF(36.0f);
+    } else if (!m_sqlSchemaError.empty() && fWrapUse) {
         D2D1_RECT_F rcErr = D2D1::RectF(rcSideClip.left + config.ScaleF(7.0f), sideContentY + config.ScaleF(4.0f),
                                         rcSideClip.right - config.ScaleF(7.0f), sideContentY + config.ScaleF(200.0f));
         pRT->DrawText(m_sqlSchemaError.c_str(), static_cast<UINT32>(m_sqlSchemaError.size()), fWrapUse, rcErr,

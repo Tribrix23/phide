@@ -29,18 +29,23 @@ static std::wstring FindPrettierPath() {
 
     std::error_code ec;
 
-    // 1. Check bundled phide.prettier extension
-    std::filesystem::path bundledPath = L"assets\\extensions\\phide.prettier\\node_modules\\prettier\\bin\\prettier.cjs";
-    if (std::filesystem::exists(bundledPath, ec)) {
-        s_cachedPrettierPath = std::filesystem::absolute(bundledPath).wstring();
-        s_checked = true;
-        return s_cachedPrettierPath;
+    // 1. Check bundled phide.prettier extension (exe directory first for installed launches)
+    const std::filesystem::path relPrettier = L"assets\\extensions\\phide.prettier\\node_modules\\prettier\\bin\\prettier.cjs";
+    wchar_t modPath[MAX_PATH]{};
+    std::vector<std::filesystem::path> prettierCandidates;
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH) > 0) {
+        std::filesystem::path exeDir = std::filesystem::path(modPath).parent_path();
+        prettierCandidates.push_back(exeDir / relPrettier);
+        prettierCandidates.push_back(exeDir.parent_path() / relPrettier);
     }
-    bundledPath = L"bin\\assets\\extensions\\phide.prettier\\node_modules\\prettier\\bin\\prettier.cjs";
-    if (std::filesystem::exists(bundledPath, ec)) {
-        s_cachedPrettierPath = std::filesystem::absolute(bundledPath).wstring();
-        s_checked = true;
-        return s_cachedPrettierPath;
+    prettierCandidates.push_back(relPrettier);
+    prettierCandidates.push_back(L"bin" / relPrettier);
+    for (const auto& bundledPath : prettierCandidates) {
+        if (std::filesystem::exists(bundledPath, ec)) {
+            s_cachedPrettierPath = std::filesystem::absolute(bundledPath, ec).wstring();
+            s_checked = true;
+            return s_cachedPrettierPath;
+        }
     }
 
     // 2. Check APPDATA\npm\prettier.cmd

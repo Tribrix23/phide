@@ -13531,7 +13531,37 @@ void Window::StartMysqlServer() {
         m_hMysqlProcess = nullptr;
     }
 
-    // 1. Locate bundled Phide MySQL first; fall back to XAMPP only if bundled runtime is absent
+    // 1. Check if phpMyAdmin's / Phide's MySQL daemon is already listening (e.g. started from SQL Query Console)
+    int candidatePort = 3306;
+    try {
+        int parsed = std::stoi(m_dbSettingsModal.GetPort());
+        if (parsed > 0 && parsed < 65536) candidatePort = parsed;
+    } catch (...) {}
+
+    wchar_t envMysqlBuf[32] = { 0 };
+    const bool hasEnvMysqlPort = (GetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", envMysqlBuf, 32) > 0 && envMysqlBuf[0] != 0);
+    std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+    if (phide::db::SqlEngine::IsLocalMysqlListeningOnPort(candidatePort)) {
+        m_mysqlPort = candidatePort;
+        m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+        PersistMysqlPortSafe(m_mysqlPort, pmaDir);
+        m_editor.UpdateMysqlProfilesPort(m_mysqlPort);
+        RefreshDatabaseSchemaAsync();
+        return;
+    }
+    if (!hasEnvMysqlPort) {
+        auto liveMysql = phide::db::SqlEngine::GetListeningMysqlPorts();
+        if (!liveMysql.empty()) {
+            m_mysqlPort = liveMysql.front();
+            m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+            PersistMysqlPortSafe(m_mysqlPort, pmaDir);
+            m_editor.UpdateMysqlProfilesPort(m_mysqlPort);
+            RefreshDatabaseSchemaAsync();
+            return;
+        }
+    }
+
+    // 1b. Locate bundled Phide MySQL first; fall back to XAMPP only if bundled runtime is absent
     ResolvedMysqlBinaryInfo mysqlInfo = ResolveMysqlInstallation();
     std::error_code ec;
     if (mysqlInfo.mysqldExe.empty() || !std::filesystem::exists(mysqlInfo.mysqldExe, ec)) {
@@ -13540,13 +13570,6 @@ void Window::StartMysqlServer() {
     }
 
     // 2. Determine initial port preference; automatically skip any taken/unbindable port (3306/3307 -> 3308+)
-    int candidatePort = 3306;
-    try {
-        int parsed = std::stoi(m_dbSettingsModal.GetPort());
-        if (parsed > 0 && parsed < 65536) candidatePort = parsed;
-    } catch (...) {}
-
-    std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
     std::filesystem::path pidDir = mysqlInfo.mysqlDir / L"data";
     std::filesystem::path appDataPhide;
     wchar_t localApp[MAX_PATH] = { 0 };
@@ -13683,7 +13706,18 @@ void Window::StopMysqlServer() {
         TerminateProcess(m_hMysqlProcess, 0);
         CloseHandle(m_hMysqlProcess);
         m_hMysqlProcess = nullptr;
+    } else if (m_sqlConsoleStartedMysqlPort > 0 &&
+               phide::db::SqlEngine::IsLocalMysqlListeningOnPort(m_sqlConsoleStartedMysqlPort)) {
+        phide::db::SqlConnectionProfile p;
+        p.dialect = phide::db::SqlDialect::MySQL;
+        p.host = L"127.0.0.1";
+        p.port = m_sqlConsoleStartedMysqlPort;
+        p.user = m_dbSettingsModal.GetUser();
+        p.password = m_dbSettingsModal.GetPass();
+        std::wstring stopMsg;
+        phide::db::SqlEngine::StopDatabaseServer(p, stopMsg);
     }
+    m_sqlConsoleStartedMysqlPort = 0;
 }
 
 void Window::StartPmaServer() {
@@ -14708,16 +14742,21 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         };
         m_editor.onMysqlServerStateChanged = [this](int port, bool running) {
-            if (port > 0 && port < 65536) {
+            std::filesystem::path pmaDir = GetPhideRoot() / L"include" / L"phide" / L"db" / L"phpMyAdmin";
+            if (running && port > 0 && port < 65536) {
                 m_mysqlPort = port;
+                if (!m_hMysqlProcess) m_sqlConsoleStartedMysqlPort = port;
                 m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
-                SetEnvironmentVariableW(L"PHIDE_MYSQL_PORT", std::to_wstring(m_mysqlPort).c_str());
+                PersistMysqlPortSafe(m_mysqlPort, pmaDir);
             }
-            if (!running && m_hMysqlProcess) {
-                DWORD exitCode = STILL_ACTIVE;
-                if (GetExitCodeProcess(m_hMysqlProcess, &exitCode) && exitCode != STILL_ACTIVE) {
-                    CloseHandle(m_hMysqlProcess);
-                    m_hMysqlProcess = nullptr;
+            if (!running) {
+                if (port == m_sqlConsoleStartedMysqlPort || port == 0) m_sqlConsoleStartedMysqlPort = 0;
+                if (m_hMysqlProcess) {
+                    DWORD exitCode = STILL_ACTIVE;
+                    if (GetExitCodeProcess(m_hMysqlProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                        CloseHandle(m_hMysqlProcess);
+                        m_hMysqlProcess = nullptr;
+                    }
                 }
             }
             UpdateDatabaseModalRuntimeStatus();
@@ -14737,18 +14776,22 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             ui::ErdCallbacks erdCbs;
             erdCbs.onDetectServers = [this]() {
         m_editor.StartDiscoverSqlServersAsync();
+        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     };
     erdCbs.onSelectProfile = [this](size_t profileIdx) {
         m_editor.SelectSqlProfile(profileIdx);
+        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     };
     erdCbs.onSelectDatabase = [this](const std::wstring& dbName) {
         m_editor.SelectSqlDatabase(dbName);
+        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     };
     erdCbs.onSelectCompareDatabase = [this](size_t profileIdx, const std::wstring& dbName) {
         m_editor.StartCompareSqlDatabaseAsync(profileIdx, dbName);
+        if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
         InvalidateRect(m_hwnd, nullptr, FALSE);
     };
     erdCbs.onRefreshLiveSchema = [this]() {
@@ -14757,11 +14800,7 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                     wsFolder,
                     m_dbSettingsModal.GetHost(), m_mysqlPort,
                     m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
-                m_editor.StartRefreshActiveSqlSchemaAsync();
-                m_editor.GetErdView().SetSchemaTables(
-                    m_editor.GetSqlTables(),
-                    m_editor.GetActiveSqlDialect(),
-                    m_editor.GetActiveSqlSchemaLabel());
+                if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
                 if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
             };
             erdCbs.onOpenSqlInConsole = [this](const std::wstring& sqlText) {
@@ -21386,7 +21425,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::HelpAbout:
                         MessageBoxW(m_hwnd,
-                            L"Phide - Web Development IDE\nVersion 2026.f (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"Phide - Web Development IDE\nVersion 2026.f-b (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
@@ -23134,6 +23173,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleSqlConsoleMouseDown(clientPt, m_config)) {
+                        if (m_editor.IsSqlBusy()) {
+                            if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
+                        }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return;
                     }
@@ -29943,6 +29985,50 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
+                // Live MySQL port termination/addition watcher when SQL Console or ER Diagram is visible
+                {
+                    const ULONGLONG nowPoll = GetTickCount64();
+                    if (nowPoll - m_lastSqlPortPollTick >= 1500 && !m_editor.IsSqlBusy()) {
+                        bool sqlOrErdVisible = false;
+                        auto checkVis = [&](const std::vector<editor::EditorGroup>& groups) {
+                            for (const auto& grp : groups) {
+                                if (grp.activeDocIdx >= 0 && grp.activeDocIdx < static_cast<int>(grp.docs.size())) {
+                                    const auto& d = grp.docs[grp.activeDocIdx];
+                                    if (d.isSpecialView && (d.viewType == L"erd" || d.viewType == L"sql_console")) {
+                                        sqlOrErdVisible = true;
+                                        return;
+                                    }
+                                }
+                            }
+                        };
+                        checkVis(m_editorGroups);
+                        if (!sqlOrErdVisible) {
+                            for (const auto& fw : m_floatingWindows) {
+                                if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+                                    checkVis(fw->editorGroups);
+                                    if (sqlOrErdVisible) break;
+                                }
+                            }
+                        }
+                        if (sqlOrErdVisible) {
+                            m_lastSqlPortPollTick = nowPoll;
+                            std::vector<int> liveMysqlPorts = phide::db::SqlEngine::GetListeningMysqlPorts();
+                            std::vector<int> curMysqlPorts;
+                            for (const auto& p : m_editor.GetSqlProfiles()) {
+                                if (p.dialect == phide::db::SqlDialect::MySQL && p.isConnected && p.port > 0) {
+                                    curMysqlPorts.push_back(p.port);
+                                }
+                            }
+                            std::sort(curMysqlPorts.begin(), curMysqlPorts.end());
+                            curMysqlPorts.erase(std::unique(curMysqlPorts.begin(), curMysqlPorts.end()), curMysqlPorts.end());
+                            if (liveMysqlPorts != curMysqlPorts) {
+                                m_editor.StartDiscoverSqlServersAsync();
+                                SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+                            }
+                        }
+                    }
+                }
+
                 m_editor.ToggleCaretBlink();
                 m_editor.GetInteractiveGuideView().ToggleCaretBlink();
                 if (m_editor.GetNotebookView().IsExecuting()) {
@@ -30410,8 +30496,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 }
 
-                // Smoothly animate ER Diagram zoom, pan, Auto Layout node gliding, and Schema Diff scrolling
-                if (m_editor.GetErdView().IsAnimating()) {
+                // Smoothly animate ER Diagram zoom, pan, Auto Layout node gliding, Schema Diff scrolling, and async loading spinner
+                if (m_editor.GetErdView().IsAnimating() || m_editor.IsSqlBusy()) {
                     m_editor.GetErdView().UpdateAnimation();
                     keepAnimating = true;
                 }

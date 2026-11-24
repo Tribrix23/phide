@@ -293,15 +293,25 @@ void PackageManagerView::LoadAssetBitmaps(ID2D1RenderTarget* pRT) {
     if (!pRT || m_bitmapsLoaded) return;
     m_bitmapsLoaded = true;
 
+    wchar_t modPath[MAX_PATH]{};
+    std::filesystem::path exeDir;
+    if (GetModuleFileNameW(nullptr, modPath, MAX_PATH) > 0) {
+        exeDir = std::filesystem::path(modPath).parent_path();
+    }
+
     auto loadOne = [&](const std::wstring& filename, Microsoft::WRL::ComPtr<ID2D1Bitmap>& outBmp) {
-        std::vector<std::wstring> candidates = {
-            filename,
-            L"assets\\" + filename,
-            L"bin\\assets\\" + filename,
-            L"..\\assets\\" + filename
-        };
+        std::vector<std::wstring> candidates;
+        if (!exeDir.empty()) {
+            candidates.push_back((exeDir / L"assets" / filename).wstring());
+            candidates.push_back((exeDir.parent_path() / L"assets" / filename).wstring());
+        }
+        candidates.push_back(L"assets\\" + filename);
+        candidates.push_back(L"bin\\assets\\" + filename);
+        candidates.push_back(L"..\\assets\\" + filename);
+        candidates.push_back(filename);
+        std::error_code ec;
         for (const auto& p : candidates) {
-            if (std::filesystem::exists(p)) {
+            if (std::filesystem::exists(p, ec)) {
                 Microsoft::WRL::ComPtr<IWICImagingFactory> pWicFactory;
                 if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWicFactory)))) {
                     Microsoft::WRL::ComPtr<IWICBitmapDecoder> pDecoder;
@@ -1805,7 +1815,7 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
 
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> iconBoxBg;
             pRT->CreateSolidColorBrush(
-                theme.IsDarkMode() ? D2D1::ColorF(0.08f, 0.08f, 0.10f, 0.95f) : D2D1::ColorF(0.93f, 0.94f, 0.97f, 1.0f),
+                theme.IsDarkMode() ? D2D1::ColorF(0.86f, 0.89f, 0.94f, 1.0f) : D2D1::ColorF(0.93f, 0.94f, 0.97f, 1.0f),
                 &iconBoxBg
             );
             if (iconBoxBg) pRT->FillRoundedRectangle(rrcIconBox, iconBoxBg.Get());
