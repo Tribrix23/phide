@@ -4972,6 +4972,39 @@ void Window::SyncActiveTabWithDrawer() {
     }
 }
 
+void Window::InitializeSqlOrErdView(const std::wstring& viewType) {
+    m_isTerminalFocused = false;
+    const std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
+    int mysqlPort = m_mysqlPort;
+    try {
+        if (!m_dbSettingsModal.GetPort().empty()) mysqlPort = std::stoi(m_dbSettingsModal.GetPort());
+    } catch (...) {}
+
+    const bool needsInit = m_editor.GetSqlProfiles().empty() ||
+                           (!wsFolder.empty() && m_editor.GetWorkspaceRoot() != wsFolder);
+    if (needsInit) {
+        m_editor.SetSqlWorkspaceRoot(
+            wsFolder,
+            m_dbSettingsModal.GetHost(), mysqlPort,
+            m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
+    } else if (viewType == L"erd") {
+        m_editor.GetErdView().SetSchemaTables(
+            m_editor.GetSqlTables(),
+            m_editor.GetActiveSqlDialect(),
+            m_editor.GetActiveSqlSchemaLabel());
+        m_editor.SyncErdViewConnections();
+        if (m_editor.GetSqlTables().empty() && !m_editor.IsSqlBusy()) {
+            m_editor.StartRefreshActiveSqlSchemaAsync();
+        }
+    } else if (viewType == L"sql_console" && !m_editor.IsSqlBusy()) {
+        m_editor.StartDiscoverSqlServersAsync();
+    }
+
+    if (m_hwnd && (m_editor.IsSqlBusy() || m_editor.GetErdView().IsAnimating())) {
+        SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+    }
+}
+
 void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& title) {
     if (viewType == L"terminal") {
         for (size_t g = 0; g < m_editorGroups.size(); ++g) {
@@ -5014,34 +5047,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
                 RefreshWorkspaceCoverageAsync();
             } else if (viewType == L"task_runner") {
                 RefreshWorkspaceTasks();
-            } else if (viewType == L"sql_console") {
-                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-                int mysqlPort = m_mysqlPort;
-                try {
-                    if (!m_dbSettingsModal.GetPort().empty()) mysqlPort = std::stoi(m_dbSettingsModal.GetPort());
-                } catch (...) {}
-                mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, wsFolder);
-                if (m_hMysqlProcess == nullptr) {
-                    m_mysqlPort = mysqlPort;
-                    m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
-                }
-                m_editor.SetSqlWorkspaceRoot(
-                    wsFolder,
-                    m_dbSettingsModal.GetHost(), mysqlPort,
-                    m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
-            } else if (viewType == L"erd") {
-                std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-                m_editor.SetSqlWorkspaceRoot(
-                    wsFolder,
-                    m_dbSettingsModal.GetHost(), m_mysqlPort,
-                    m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
-                m_editor.GetErdView().SetSchemaTables(
-                    m_editor.GetSqlTables(),
-                    m_editor.GetActiveSqlDialect(),
-                    m_editor.GetActiveSqlSchemaLabel());
-                if (m_editor.GetSqlTables().empty()) {
-                    m_editor.StartRefreshActiveSqlSchemaAsync();
-                }
+            } else if (viewType == L"sql_console" || viewType == L"erd") {
+                InitializeSqlOrErdView(viewType);
             } else if (viewType == L"audit") {
                 std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
                 m_editor.GetAuditView().StartAuditAsync(wsFolder);
@@ -5090,34 +5097,8 @@ void Window::OpenSpecialView(const std::wstring& viewType, const std::wstring& t
         RefreshWorkspaceCoverageAsync();
     } else if (viewType == L"task_runner") {
         RefreshWorkspaceTasks();
-    } else if (viewType == L"sql_console") {
-        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-        int mysqlPort = m_mysqlPort;
-        try {
-            if (!m_dbSettingsModal.GetPort().empty()) mysqlPort = std::stoi(m_dbSettingsModal.GetPort());
-        } catch (...) {}
-        mysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, wsFolder);
-        if (m_hMysqlProcess == nullptr) {
-            m_mysqlPort = mysqlPort;
-            m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
-        }
-        m_editor.SetSqlWorkspaceRoot(
-            wsFolder,
-            m_dbSettingsModal.GetHost(), mysqlPort,
-            m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
-    } else if (viewType == L"erd") {
-        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-        m_editor.SetSqlWorkspaceRoot(
-            wsFolder,
-            m_dbSettingsModal.GetHost(), m_mysqlPort,
-            m_dbSettingsModal.GetUser(), m_dbSettingsModal.GetPass(), m_dbSettingsModal.GetDefaultDb());
-        m_editor.GetErdView().SetSchemaTables(
-            m_editor.GetSqlTables(),
-            m_editor.GetActiveSqlDialect(),
-            m_editor.GetActiveSqlSchemaLabel());
-        if (m_editor.GetSqlTables().empty()) {
-            m_editor.StartRefreshActiveSqlSchemaAsync();
-        }
+    } else if (viewType == L"sql_console" || viewType == L"erd") {
+        InitializeSqlOrErdView(viewType);
     } else if (viewType == L"audit") {
         std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
         m_editor.GetAuditView().StartAuditAsync(wsFolder);
@@ -20023,6 +20004,20 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
         }
     }
 
+    // Check SQL Console query editor mouse drag selection
+    if (m_editor.IsSqlQuerySelecting()) {
+        if ((wParam & MK_LBUTTON) == 0) {
+            m_editor.HandleSqlConsoleMouseUp(clientPt);
+            if (GetCapture() == m_hwnd) ReleaseCapture();
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+        if (m_editor.HandleSqlConsoleMouseMove(clientPt, m_config, true)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+
     // Check vertical scrollbar dragging
     if (pActiveDoc && pActiveDoc->isDraggingScrollbar) {
         if ((wParam & MK_LBUTTON) == 0) {
@@ -20169,7 +20164,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 needRepaint = true;
             }
         } else if (pActiveDoc->viewType == L"sql_console") {
-            if (m_editor.UpdateSqlConsoleHover(clientPt)) {
+            if (m_editor.HandleSqlConsoleMouseMove(clientPt, m_config, (wParam & MK_LBUTTON) != 0)) {
                 needRepaint = true;
             }
         } else if (pActiveDoc->viewType == L"erd") {
@@ -20397,6 +20392,12 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
                 needRepaint = true;
             }
         } else if (m_config.activeRailTab == 2) {
+            if (!m_drawer.HasOpenFolder()) {
+                bool btnHover = m_drawer.HitTestOpenFolderButton(drawerHoverPt, m_config);
+                if (m_drawer.SetHoveredOpenFolderBtn(btnHover)) needRepaint = true;
+            } else {
+                if (m_drawer.SetHoveredOpenFolderBtn(false)) needRepaint = true;
+            }
             if (m_isDraggingGitSplitter) {
                 if ((wParam & MK_LBUTTON) == 0) {
                     m_isDraggingGitSplitter = false;
@@ -20424,6 +20425,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             }
         }
     } else if (m_drawerAnimProgress > 0.001f) {
+        if (m_drawer.SetHoveredOpenFolderBtn(false)) needRepaint = true;
         if (m_drawer.SetHoveredIndex(-1)) needRepaint = true;
         if (m_config.activeRailTab == 2 && m_drawer.IsCommitCardVisible()) {
             m_drawer.DismissCommitCard();
@@ -23173,6 +23175,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
                     m_drawer.SetSearchFocus(0);
                     if (m_editor.HandleSqlConsoleMouseDown(clientPt, m_config)) {
+                        if (m_editor.IsSqlQuerySelecting()) {
+                            SetCapture(m_hwnd);
+                        }
                         if (m_editor.IsSqlBusy()) {
                             if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
                         }
@@ -24357,6 +24362,12 @@ void Window::HandleLButtonDown(POINT clientPt) {
                 return;
             }
         } else if (m_config.activeRailTab == 2) {
+            if (!m_drawer.HasOpenFolder()) {
+                if (m_drawer.HitTestOpenFolderButton(ToDrawerSpace(clientPt), m_config)) {
+                    DoOpenFolder();
+                    return;
+                }
+            }
             // Check commit message input box focus & drag selection
             if (m_drawer.HandleGitMouseDown(ToDrawerSpace(clientPt), (GetKeyState(VK_SHIFT) & 0x8000) != 0, m_theme, m_config)) {
                 SetCapture(m_hwnd);
@@ -24933,6 +24944,13 @@ void Window::HandleLButtonUp(POINT clientPt) {
                     OpenFileDocument(clickedFile);
                 }
             }
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+            return;
+        }
+    }
+    if (pActiveDoc && pActiveDoc->isSpecialView && pActiveDoc->viewType == L"sql_console") {
+        if (m_editor.HandleSqlConsoleMouseUp(clientPt)) {
+            if (GetCapture() == m_hwnd) ReleaseCapture();
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -26242,8 +26260,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 if (!m_activeFloatingWindow) {
-                // Open Folder button in drawer when empty
-                if (!m_drawer.HasOpenFolder() && m_drawer.HitTestOpenFolderButton(ToDrawerSpace(pt), m_config)) {
+                // Open Folder button in drawer when empty (Explorer & Source Control panels)
+                if (!m_drawer.HasOpenFolder() &&
+                    m_drawerAnimProgress > 0.001f &&
+                    (m_config.activeRailTab == 0 || m_config.activeRailTab == 2) &&
+                    m_drawer.HitTestOpenFolderButton(ToDrawerSpace(pt), m_config)) {
                     SetCursor(LoadCursor(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -26737,6 +26758,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         auto& doc = group.docs[group.activeDocIdx];
                         if (doc.isSpecialView && doc.viewType == L"api") {
                             if (m_editor.GetApiTesterView().HandleLButtonDblClk(clientPt, m_config, m_theme)) {
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
+                            if (m_editor.HandleSqlConsoleDoubleClick(clientPt, m_config)) {
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return 0;
                             }
@@ -28797,6 +28823,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     if (m_editor.HandleSqlConsoleKeyDown(wParam, m_hwnd)) {
                         if (wParam == VK_RETURN || wParam == VK_TAB || (GetKeyState(VK_CONTROL) & 0x8000)) {
                             m_suppressNextChar = true;
+                        }
+                        if (m_editor.IsSqlBusy()) {
+                            if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
                         }
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
@@ -31100,8 +31129,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_USER + 225: {
             if (!m_isDestroying.load() && m_editor.ApplyPendingSqlAsyncResults()) {
                 SyncActiveSqlSchemaToIntelliSense();
-                const std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
-                (void)wsRoot;
+                if (m_hMysqlProcess == nullptr) {
+                    const auto& profs = m_editor.GetSqlProfiles();
+                    const size_t selIdx = m_editor.GetSqlSelectedProfileIndex();
+                    auto syncPortIfMysql = [&](const phide::db::SqlConnectionProfile& p) {
+                        if (p.dialect == phide::db::SqlDialect::MySQL && p.isConnected && p.port > 0 && p.port < 65536) {
+                            m_mysqlPort = p.port;
+                            m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
+                            return true;
+                        }
+                        return false;
+                    };
+                    if (!(selIdx < profs.size() && syncPortIfMysql(profs[selIdx]))) {
+                        for (const auto& p : profs) {
+                            if (syncPortIfMysql(p)) break;
+                        }
+                    }
+                }
                 auto revalidateGroups = [&](std::vector<editor::EditorGroup>& groups) {
                     for (auto& grp : groups) {
                         for (auto& doc : grp.docs) {
@@ -31121,7 +31165,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 RebuildProblemsCache();
                 UpdateDrawerErrorFiles();
-                if (m_editor.GetErdView().IsAnimating() && m_hwnd) {
+                if ((m_editor.GetErdView().IsAnimating() || m_editor.IsSqlBusy()) && m_hwnd) {
                     SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
                 }
                 InvalidateRect(m_hwnd, nullptr, FALSE);

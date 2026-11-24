@@ -1051,6 +1051,9 @@ void ErdView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
     // --- Paint Flat Toolbar Background & Dividers ---
     D2D1_RECT_F rcBar = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, barBottom);
     if (brToolbarBg) pRT->FillRectangle(rcBar, brToolbarBg.Get());
+    if (m_isConnectionBusy) {
+        DrawIndeterminateTopBar(pRT, theme, config.ScaleF(1.0f), canvasLeft, canvasWidth, topY);
+    }
     pRT->DrawLine(D2D1::Point2F(canvasLeft, sepY), D2D1::Point2F(canvasLeft + canvasWidth, sepY),
                   brRowSep.Get(), 1.0f);
     pRT->DrawLine(D2D1::Point2F(canvasLeft, rcBar.bottom), D2D1::Point2F(canvasLeft + canvasWidth, rcBar.bottom),

@@ -25,7 +25,9 @@ public:
         const std::wstring& filePath,
         const Buffer& buffer,
         bool validateScripts = true,
-        bool validateStyles = true
+        bool validateStyles = true,
+        bool validatePython = true,
+        bool checkPythonUndefinedVars = true
     );
 
     /**
@@ -75,7 +77,10 @@ private:
     static std::vector<lsp::Diagnostic> ValidateYaml(const Buffer& buffer);
     static std::vector<lsp::Diagnostic> ValidateJsonSchema(const std::wstring& filePath, const Buffer& buffer);
     static std::vector<lsp::Diagnostic> ValidateYamlSchema(const std::wstring& filePath, const Buffer& buffer);
-    static std::vector<lsp::Diagnostic> ValidatePython(const Buffer& buffer);
+    static std::vector<lsp::Diagnostic> ValidatePython(
+        const Buffer& buffer,
+        bool checkUndefinedVars = true
+    );
     static std::vector<lsp::Diagnostic> ValidatePhp(const Buffer& buffer);
 };
 

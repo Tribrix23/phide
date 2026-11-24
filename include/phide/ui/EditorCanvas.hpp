@@ -917,6 +917,11 @@ public:
                              const std::wstring& mysqlDb = L"");
     void SetSqlProfiles(const std::vector<phide::db::SqlConnectionProfile>& profiles);
     void SetSqlQueryText(const std::wstring& sql);
+    [[nodiscard]] std::wstring GetSqlQueryText() const { return m_sqlQueryDoc.buffer.GetText(); }
+    [[nodiscard]] const editor::OpenDocument& GetSqlQueryDocument() const noexcept { return m_sqlQueryDoc; }
+    [[nodiscard]] bool IsSqlQuerySelecting() const noexcept { return m_sqlQueryDoc.isSelecting; }
+    [[nodiscard]] const D2D1_RECT_F& GetSqlQueryBoxBounds() const noexcept { return m_rcSqlQueryBox; }
+    [[nodiscard]] const D2D1_RECT_F& GetSqlQueryTextBounds() const noexcept { return m_rcSqlQueryTextInner; }
     void RefreshActiveSqlSchema();
     void ExecuteActiveSqlQuery();
     void SetSqlNotifyHwnd(HWND hwnd) noexcept { m_sqlNotifyHwnd = hwnd; }
@@ -983,9 +988,12 @@ public:
     void RenderSqlConsoleView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleSqlConsoleDoubleClick(POINT pt, const app::AppConfig& config);
+    bool HandleSqlConsoleMouseMove(POINT pt, const app::AppConfig& config, bool leftButtonDown);
+    bool HandleSqlConsoleMouseUp(POINT pt);
     bool HandleSqlConsoleMouseWheel(POINT pt, short delta) noexcept;
     bool HandleSqlConsoleChar(wchar_t ch);
-    bool HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd);
+    bool HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd, int modOverride = -1);
     std::function<void(const std::wstring&)> onSqlStatusToast;
     std::function<void()> onSqlQueryExecuted;
     std::function<void()> onRequestEnsureMysqlRunning;
@@ -1733,8 +1741,18 @@ private:
     std::vector<phide::db::SqlTableInfo> m_sqlTables;
     std::vector<phide::db::SqlTableInfo> m_allSqlValidationTables; ///< Multi-DB + DDL tables for false-positive-free code SQL validation
     int m_sqlExpandedTableIdx = -1;
-    std::wstring m_sqlQueryText = L"SELECT 1 AS ok;";
-    size_t m_sqlCursorPos = 15;
+    editor::OpenDocument m_sqlQueryDoc;
+    float m_sqlQueryLineH = 20.0f;
+    float m_sqlQueryCharW = 8.0f;
+    float m_sqlQueryScrollX = 0.0f;
+    float m_sqlQueryMaxScrollY = 0.0f;
+    float m_sqlQueryMaxScrollX = 0.0f;
+    int m_sqlQueryTabSize = 4;
+    ULONGLONG m_sqlLastLDownTime = 0;
+    POINT m_sqlLastLDownPt{ -10000, -10000 };
+    void InitSqlQueryDocument(const std::wstring& initialSql);
+    void HitTestSqlQueryEditor(POINT pt, const app::AppConfig& config, size_t& outLine, size_t& outCol) const noexcept;
+    void EnsureSqlQueryCursorVisible() noexcept;
     phide::db::SqlQueryResult m_sqlResult;
     std::wstring m_sqlSchemaError;
     std::wstring m_sqlStatusBanner;
@@ -1769,7 +1787,6 @@ private:
     D2D1_RECT_F m_rcSqlQueryTextInner{};
     D2D1_RECT_F m_rcSqlSidebar{};
     D2D1_RECT_F m_rcSqlGrid{};
-    Microsoft::WRL::ComPtr<IDWriteTextLayout> m_sqlLastQueryLayout;
     std::vector<SqlProfileHit> m_sqlProfileHits;
     std::vector<SqlDbHit> m_sqlDbHits;
     std::vector<SqlTableHit> m_sqlTableHits;

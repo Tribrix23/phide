@@ -128,6 +128,7 @@ public:
     bool IsAutoSave() const { return m_autoSave; }
     void FlushPendingAutoSaves();
 
+    void InitializeSqlOrErdView(const std::wstring& viewType);
     void OpenSpecialView(const std::wstring& viewType, const std::wstring& title);
 
     editor::EditorGroup& GetActiveGroup() noexcept {

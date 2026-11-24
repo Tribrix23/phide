@@ -1061,6 +1061,7 @@ static void DrawPlus(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig&
 }
 
 EditorCanvas::EditorCanvas() {
+    InitSqlQueryDocument(L"SELECT 1 AS ok;");
     LoadSqlConsoleState();
 }
 
@@ -8513,17 +8514,7 @@ void EditorCanvas::RenderFileLoadingView(ID2D1RenderTarget* pRT, Theme& theme, c
                               D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     // 1. Sleek flat indeterminate progress strip across top of editor pane
-    const float barH = config.ScaleF(2.5f);
-    pRT->FillRectangle(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + barH),
-                       theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
-    const float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
-    const float slideW = (std::max)(config.ScaleF(96.0f), canvasWidth * 0.28f);
-    const float slideX = canvasLeft - slideW + t * (canvasWidth + slideW * 2.0f);
-    const float sL = (std::max)(canvasLeft, slideX);
-    const float sR = (std::min)(canvasLeft + canvasWidth, slideX + slideW);
-    if (sR > sL && theme.brushBrandAccent) {
-        pRT->FillRectangle(D2D1::RectF(sL, topY, sR, topY + barH), theme.brushBrandAccent.Get());
-    }
+    DrawIndeterminateTopBar(pRT, theme, config.ScaleF(1.0f), canvasLeft, canvasWidth, topY);
 
     // 2. Loading title with filename + formatted size
     std::wstring sizeLabel;
@@ -13910,17 +13901,7 @@ void EditorCanvas::RenderMultiFileDiffView(ID2D1RenderTarget* pRT, Theme& theme,
 
     if (doc.isMultiFileDiffLoading && doc.multiFileDiffs.empty()) {
         // Modern flat indeterminate loading state (crisp sliding accent bar + pulsing skeleton diff cards)
-        const float barH = config.ScaleF(2.5f);
-        pRT->FillRectangle(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, topY + barH),
-                           theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
-        float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
-        float slideW = (std::max)(config.ScaleF(96.0f), canvasWidth * 0.28f);
-        float slideX = canvasLeft - slideW + t * (canvasWidth + slideW * 2.0f);
-        float sL = (std::max)(canvasLeft, slideX);
-        float sR = (std::min)(canvasLeft + canvasWidth, slideX + slideW);
-        if (sR > sL && theme.brushBrandAccent) {
-            pRT->FillRectangle(D2D1::RectF(sL, topY, sR, topY + barH), theme.brushBrandAccent.Get());
-        }
+        DrawIndeterminateTopBar(pRT, theme, config.ScaleF(1.0f), canvasLeft, canvasWidth, topY);
 
         const float padX = config.ScaleF(22.0f);
         float sy = topY + config.ScaleF(18.0f);
@@ -17228,6 +17209,93 @@ std::wstring SqlDialectEngineLabel(phide::db::SqlDialect d) {
     }
 }
 
+std::wstring SqlReadClipboardText(HWND hwnd) {
+    std::wstring out;
+    if (!OpenClipboard(hwnd)) return out;
+    if (HANDLE hData = GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* pText = static_cast<const wchar_t*>(GlobalLock(hData))) {
+            for (const wchar_t* p = pText; *p; ++p) {
+                if (*p == L'\r') {
+                    if (*(p + 1) == L'\n') continue;
+                    out.push_back(L'\n');
+                } else {
+                    out.push_back(*p);
+                }
+            }
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+void SqlWriteClipboardText(HWND hwnd, const std::wstring& text) {
+    if (text.empty() || !OpenClipboard(hwnd)) return;
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void* dst = GlobalLock(hMem)) {
+            memcpy(dst, text.c_str(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        } else {
+            GlobalFree(hMem);
+        }
+    }
+    CloseClipboard();
+}
+
+size_t SqlVisualColsUpTo(const std::wstring& line, size_t col, int tabSize) noexcept {
+    const int safeTab = (std::max)(1, tabSize);
+    const size_t limit = (std::min)(col, line.length());
+    size_t v = 0;
+    for (size_t i = 0; i < limit; ++i) {
+        if (line[i] == L'\t') v += static_cast<size_t>(safeTab) - (v % static_cast<size_t>(safeTab));
+        else ++v;
+    }
+    return v;
+}
+
+editor::CursorPosition SqlStepWordLeft(const editor::Buffer& buf, editor::CursorPosition pos) noexcept {
+    const size_t lc = buf.GetLineCount();
+    if (lc == 0) return { 0, 0 };
+    if (pos.line >= lc) pos = { lc - 1, buf.GetLine(lc - 1).length() };
+    if (pos.col == 0) {
+        if (pos.line == 0) return pos;
+        --pos.line;
+        pos.col = buf.GetLine(pos.line).length();
+        return pos;
+    }
+    const auto& line = buf.GetLine(pos.line);
+    size_t c = (std::min)(pos.col, line.length());
+    while (c > 0 && iswspace(line[c - 1])) --c;
+    if (c > 0) {
+        const bool word = editor::OpenDocument::IsWordChar(line[c - 1]);
+        while (c > 0 && !iswspace(line[c - 1]) && editor::OpenDocument::IsWordChar(line[c - 1]) == word) --c;
+    }
+    return { pos.line, c };
+}
+
+editor::CursorPosition SqlStepWordRight(const editor::Buffer& buf, editor::CursorPosition pos) noexcept {
+    const size_t lc = buf.GetLineCount();
+    if (lc == 0) return { 0, 0 };
+    if (pos.line >= lc) return { lc - 1, buf.GetLine(lc - 1).length() };
+    const auto& line = buf.GetLine(pos.line);
+    size_t c = (std::min)(pos.col, line.length());
+    if (c >= line.length()) {
+        if (pos.line + 1 < lc) return { pos.line + 1, 0 };
+        return { pos.line, line.length() };
+    }
+    const bool word = editor::OpenDocument::IsWordChar(line[c]);
+    if (iswspace(line[c])) {
+        while (c < line.length() && iswspace(line[c])) ++c;
+    } else {
+        while (c < line.length() && !iswspace(line[c]) && editor::OpenDocument::IsWordChar(line[c]) == word) ++c;
+        while (c < line.length() && iswspace(line[c])) ++c;
+    }
+    return { pos.line, c };
+}
+
 } // namespace
 
 std::wstring EditorCanvas::GetActiveSqlServerActionLabel() const {
@@ -17252,7 +17320,11 @@ void EditorCanvas::SetSqlWorkspaceRoot(
     m_sqlMysqlUser = mysqlUser.empty() ? L"root" : mysqlUser;
     m_sqlMysqlPass = mysqlPass;
     m_sqlMysqlDb = mysqlDb;
-    m_sqlMysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, root);
+    if (m_sqlNotifyHwnd == nullptr) {
+        m_sqlMysqlPort = phide::db::SqlEngine::ResolveDynamicMysqlPort(mysqlPort, root);
+    } else {
+        m_sqlMysqlPort = (mysqlPort > 0 && mysqlPort < 65536) ? mysqlPort : 3306;
+    }
 
     if (m_sqlNotifyHwnd == nullptr) {
         m_sqlProfiles = phide::db::SqlEngine::DiscoverWorkspaceDatabases(
@@ -17287,9 +17359,94 @@ void EditorCanvas::SetSqlProfiles(const std::vector<phide::db::SqlConnectionProf
     }
 }
 
+void EditorCanvas::InitSqlQueryDocument(const std::wstring& initialSql) {
+    m_sqlQueryDoc.fileName = L"query.sql";
+    m_sqlQueryDoc.filePath = L"query.sql";
+    m_sqlQueryDoc.ClearSelection();
+    m_sqlQueryDoc.buffer.SetText(initialSql);
+    const size_t lc = m_sqlQueryDoc.buffer.GetLineCount();
+    if (lc > 0) {
+        m_sqlQueryDoc.buffer.SetCursor(lc - 1, m_sqlQueryDoc.buffer.GetLine(lc - 1).length());
+    }
+    m_sqlQueryScrollY = 0.0f;
+    m_sqlQueryScrollX = 0.0f;
+}
+
 void EditorCanvas::SetSqlQueryText(const std::wstring& sql) {
-    m_sqlQueryText = sql;
-    m_sqlCursorPos = sql.size();
+    InitSqlQueryDocument(sql);
+}
+
+void EditorCanvas::HitTestSqlQueryEditor(POINT pt, const app::AppConfig& config, size_t& outLine, size_t& outCol) const noexcept {
+    const size_t lc = m_sqlQueryDoc.buffer.GetLineCount();
+    if (lc == 0) {
+        outLine = 0;
+        outCol = 0;
+        return;
+    }
+    const float lineH = (m_sqlQueryLineH > 1.0f) ? m_sqlQueryLineH : config.ScaleF(20.0f);
+    const float charW = (m_sqlQueryCharW > 1.0f) ? m_sqlQueryCharW : config.ScaleF(8.0f);
+    const int safeTab = (std::max)(1, config.tabSize);
+
+    const float relY = static_cast<float>(pt.y) - m_rcSqlQueryTextInner.top + m_sqlQueryScrollY;
+    ptrdiff_t rawLine = static_cast<ptrdiff_t>(std::floor(relY / lineH));
+    if (rawLine < 0) rawLine = 0;
+    if (static_cast<size_t>(rawLine) >= lc) rawLine = static_cast<ptrdiff_t>(lc - 1);
+    outLine = static_cast<size_t>(rawLine);
+
+    const auto& lineStr = m_sqlQueryDoc.buffer.GetLine(outLine);
+    const float relX = static_cast<float>(pt.x) - (m_rcSqlQueryTextInner.left - m_sqlQueryScrollX);
+    if (relX <= 0.0f || lineStr.empty()) {
+        outCol = 0;
+        return;
+    }
+    size_t visCols = 0;
+    outCol = lineStr.length();
+    for (size_t i = 0; i < lineStr.length(); ++i) {
+        const size_t adv = (lineStr[i] == L'\t')
+            ? (static_cast<size_t>(safeTab) - (visCols % static_cast<size_t>(safeTab)))
+            : 1;
+        const float x0 = static_cast<float>(visCols) * charW;
+        const float x1 = static_cast<float>(visCols + adv) * charW;
+        if (relX < (x0 + x1) * 0.5f) {
+            outCol = i;
+            return;
+        }
+        visCols += adv;
+    }
+}
+
+void EditorCanvas::EnsureSqlQueryCursorVisible() noexcept {
+    const float viewH = m_rcSqlQueryTextInner.bottom - m_rcSqlQueryTextInner.top;
+    const float viewW = m_rcSqlQueryTextInner.right - m_rcSqlQueryTextInner.left;
+    if (viewH <= 4.0f || viewW <= 4.0f) return;
+
+    const float lineH = (m_sqlQueryLineH > 1.0f) ? m_sqlQueryLineH : 20.0f;
+    const float charW = (m_sqlQueryCharW > 1.0f) ? m_sqlQueryCharW : 8.0f;
+    const int safeTab = (std::max)(1, m_sqlQueryTabSize);
+    const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+    const size_t lc = m_sqlQueryDoc.buffer.GetLineCount();
+    const float totalH = static_cast<float>((std::max<size_t>)(1, lc)) * lineH;
+    m_sqlQueryMaxScrollY = (std::max)(0.0f, totalH - viewH + 6.0f);
+
+    const float topY = static_cast<float>(cur.line) * lineH;
+    const float botY = topY + lineH;
+    if (topY < m_sqlQueryScrollY) {
+        m_sqlQueryScrollY = topY;
+    } else if (botY > m_sqlQueryScrollY + viewH) {
+        m_sqlQueryScrollY = botY - viewH;
+    }
+    m_sqlQueryScrollY = (std::clamp)(m_sqlQueryScrollY, 0.0f, m_sqlQueryMaxScrollY);
+
+    if (cur.line < lc) {
+        const auto& line = m_sqlQueryDoc.buffer.GetLine(cur.line);
+        const float cx = static_cast<float>(SqlVisualColsUpTo(line, cur.col, safeTab)) * charW;
+        const float padRight = 20.0f;
+        if (cx < m_sqlQueryScrollX) {
+            m_sqlQueryScrollX = (std::max)(0.0f, cx - charW * 2.0f);
+        } else if (cx + padRight > m_sqlQueryScrollX + viewW) {
+            m_sqlQueryScrollX = cx + padRight - viewW;
+        }
+    }
 }
 
 void EditorCanvas::UpdateMysqlProfilesPort(int newPort) {
@@ -17575,7 +17732,7 @@ void EditorCanvas::LoadSqlConsoleState() {
 }
 
 void EditorCanvas::SaveCurrentSqlAsSnippet(const std::wstring& name) {
-    std::wstring trimmed = m_sqlQueryText;
+    std::wstring trimmed = m_sqlQueryDoc.buffer.GetText();
     while (!trimmed.empty() && iswspace(trimmed.front())) trimmed.erase(trimmed.begin());
     while (!trimmed.empty() && iswspace(trimmed.back())) trimmed.pop_back();
     if (trimmed.empty()) return;
@@ -17611,7 +17768,8 @@ void EditorCanvas::ExecuteActiveSqlQuery() {
         return;
     }
     auto& prof = m_sqlProfiles[m_sqlSelectedProfileIdx];
-    std::wstring qTrim = m_sqlQueryText;
+    const std::wstring sqlText = m_sqlQueryDoc.buffer.GetText();
+    std::wstring qTrim = sqlText;
     while (!qTrim.empty() && iswspace(qTrim.front())) qTrim.erase(qTrim.begin());
     if (!qTrim.empty() && (m_sqlQueryHistory.empty() || m_sqlQueryHistory.back() != qTrim)) {
         if (m_sqlQueryHistory.size() >= 100) m_sqlQueryHistory.erase(m_sqlQueryHistory.begin());
@@ -17622,10 +17780,10 @@ void EditorCanvas::ExecuteActiveSqlQuery() {
     int64_t totalServerRows = -1;
     bool usedServerPaging = false;
     m_sqlResult = phide::db::SqlEngine::ExecuteQueryWithPagination(
-        prof, m_sqlQueryText, m_sqlPage, m_sqlPageSize, totalServerRows, usedServerPaging);
+        prof, sqlText, m_sqlPage, m_sqlPageSize, totalServerRows, usedServerPaging);
     m_sqlServerPagedMode = usedServerPaging;
     m_sqlServerTotalRows = usedServerPaging ? totalServerRows : -1;
-    m_sqlPagedBaseQuery = usedServerPaging ? m_sqlQueryText : L"";
+    m_sqlPagedBaseQuery = usedServerPaging ? sqlText : L"";
     if (!usedServerPaging) m_sqlPage = 0;
     m_sqlSortCol = -1;
     m_sqlCellEditActive = false;
@@ -17636,7 +17794,7 @@ void EditorCanvas::ExecuteActiveSqlQuery() {
         wchar_t msBuf[64]{};
         swprintf_s(msBuf, L"%.2f ms", m_sqlResult.executionMs);
         m_sqlStatusBanner = m_sqlResult.statusMessage + L" · " + msBuf;
-        if (SqlNeedsSchemaRefresh(m_sqlQueryText)) {
+        if (SqlNeedsSchemaRefresh(sqlText)) {
             std::wstring ignoredErr;
             m_sqlTables = phide::db::SqlEngine::InspectSchema(prof, ignoredErr);
             m_erdView.SetSchemaTables(m_sqlTables, GetActiveSqlDialect(), GetActiveSqlSchemaLabel());
@@ -17917,22 +18075,23 @@ void EditorCanvas::StartExecuteActiveSqlQueryAsync() {
         m_sqlStatusBanner = L"Error: " + m_sqlResult.errorMessage;
         return;
     }
-    std::wstring qTrim = m_sqlQueryText;
+    const std::wstring sqlText = m_sqlQueryDoc.buffer.GetText();
+    std::wstring qTrim = sqlText;
     while (!qTrim.empty() && iswspace(qTrim.front())) qTrim.erase(qTrim.begin());
     if (!qTrim.empty() && (m_sqlQueryHistory.empty() || m_sqlQueryHistory.back() != qTrim)) {
         if (m_sqlQueryHistory.size() >= 100) m_sqlQueryHistory.erase(m_sqlQueryHistory.begin());
         m_sqlQueryHistory.push_back(qTrim);
         SaveSqlConsoleState();
     }
-    if (m_sqlPagedBaseQuery != m_sqlQueryText) {
+    if (m_sqlPagedBaseQuery != sqlText) {
         m_sqlPage = 0;
-        m_sqlPagedBaseQuery = m_sqlQueryText;
+        m_sqlPagedBaseQuery = sqlText;
     }
     m_sqlCellEditActive = false;
 
     const uint64_t qryGen = ++m_sqlQueryReqGen;
     const phide::db::SqlConnectionProfile profCopy = m_sqlProfiles[m_sqlSelectedProfileIdx];
-    const std::wstring sqlCopy = m_sqlQueryText;
+    const std::wstring& sqlCopy = sqlText;
     const size_t reqPage = m_sqlPage;
     const size_t reqPageSize = m_sqlPageSize;
     const bool needRefresh = SqlNeedsSchemaRefresh(sqlCopy);
@@ -18535,7 +18694,6 @@ void EditorCanvas::RenderSqlConsoleView(
     m_sqlDbHits.clear();
     m_sqlTableHits.clear();
     m_sqlColHeaderHits.clear();
-    m_sqlLastQueryLayout.Reset();
     m_rcSqlViewport = D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight);
     m_rcSqlRunBtn = {};
     m_rcSqlRefreshBtn = {};
@@ -18566,6 +18724,9 @@ void EditorCanvas::RenderSqlConsoleView(
     pRT->CreateSolidColorBrush(dark ? D2D1::ColorF(0x1B1F27) : D2D1::ColorF(0xF8FAFC), &brAltRow);
 
     pRT->FillRectangle(D2D1::RectF(canvasLeft, topY, canvasLeft + canvasWidth, clientHeight), brBg.Get());
+    if (m_sqlIsBusy) {
+        DrawIndeterminateTopBar(pRT, theme, config.ScaleF(1.0f), canvasLeft, canvasWidth, topY);
+    }
 
     IDWriteFactory* dwf = theme.dwriteFactory.Get();
     auto cloneFmt = [&](IDWriteTextFormat* src, float fallbackSize, const wchar_t* fallbackFamily,
@@ -18613,7 +18774,7 @@ void EditorCanvas::RenderSqlConsoleView(
     cloneFmt(theme.fontMenuItem ? theme.fontMenuItem.Get() : theme.fontBody.Get(), config.ScaleF(12.2f), L"Segoe UI",
              DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true, fmtUiSingle);
     cloneFmt(theme.fontCode.Get(), config.ScaleF(13.5f), L"Consolas",
-             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP, false, fmtMonoQuery);
+             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP, false, fmtMonoQuery);
     cloneFmt(theme.fontCode.Get(), config.ScaleF(12.2f), L"Consolas",
              DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true, fmtGridCell);
 
@@ -18865,65 +19026,251 @@ void EditorCanvas::RenderSqlConsoleView(
     m_sqlMaxSidebarScrollY = (std::max)(0.0f, totalSideH - viewSideH + config.ScaleF(12.0f));
     pRT->PopAxisAlignedClip();
 
-    // 6. Right Stack: SQL Query Input Box + Result Data Grid
+    // 6. Right Stack: Phide Buffer-Backed SQL Editor + Result Data Grid
     const float rightLeft = m_rcSqlSidebar.right + config.ScaleF(12.0f);
     const float rightRight = canvasLeft + canvasWidth - pad;
-    const float queryBoxH = (std::min)(config.ScaleF(122.0f), (std::max)(config.ScaleF(82.0f), (bodyBottom - bodyTop) * 0.24f));
+    const float queryBoxH = (std::min)(config.ScaleF(165.0f), (std::max)(config.ScaleF(104.0f), (bodyBottom - bodyTop) * 0.27f));
     m_rcSqlQueryBox = D2D1::RectF(rightLeft, bodyTop, rightRight, bodyTop + queryBoxH);
     pRT->FillRoundedRectangle(D2D1::RoundedRect(m_rcSqlQueryBox, 6.0f, 6.0f), brInput.Get());
     pRT->DrawRoundedRectangle(D2D1::RoundedRect(m_rcSqlQueryBox, 6.0f, 6.0f),
                               m_sqlEditorFocused ? brAccent.Get() : brBorder.Get(),
                               m_sqlEditorFocused ? 1.6f : 1.0f);
 
-    const float qPadX = config.ScaleF(12.0f);
-    const float qPadY = config.ScaleF(10.0f);
-    m_rcSqlQueryTextInner = D2D1::RectF(m_rcSqlQueryBox.left + qPadX, m_rcSqlQueryBox.top + qPadY,
-                                        m_rcSqlQueryBox.right - qPadX, m_rcSqlQueryBox.bottom - qPadY);
-    const float qInnerW = (std::max)(40.0f, m_rcSqlQueryTextInner.right - m_rcSqlQueryTextInner.left);
+    EnsureCachedEditorBrushes(pRT, theme);
+    const float gutterW = config.ScaleF(38.0f);
+    const float qPadX = config.ScaleF(10.0f);
+    const float qPadY = config.ScaleF(8.0f);
+    m_rcSqlQueryTextInner = D2D1::RectF(
+        m_rcSqlQueryBox.left + gutterW + qPadX,
+        m_rcSqlQueryBox.top + qPadY,
+        m_rcSqlQueryBox.right - config.ScaleF(10.0f),
+        m_rcSqlQueryBox.bottom - qPadY);
 
-    pRT->PushAxisAlignedClip(m_rcSqlQueryBox, D2D1_ANTIALIAS_MODE_ALIASED);
+    float qCharW = config.ScaleF(8.0f);
+    float qLineH = config.ScaleF(20.0f);
     if (dwf && fQueryUse) {
-        if (!m_sqlQueryText.empty()) {
-            if (SUCCEEDED(dwf->CreateTextLayout(
-                    m_sqlQueryText.c_str(), static_cast<UINT32>(m_sqlQueryText.size()),
-                    fQueryUse, qInnerW, 10000.0f, &m_sqlLastQueryLayout))) {
-                DWRITE_TEXT_METRICS qm{};
-                m_sqlLastQueryLayout->GetMetrics(&qm);
-                const float maxQScroll = (std::max)(0.0f, qm.height - (m_rcSqlQueryTextInner.bottom - m_rcSqlQueryTextInner.top) + config.ScaleF(8.0f));
-                m_sqlQueryScrollY = (std::min)(m_sqlQueryScrollY, maxQScroll);
-                if (txtMain) {
-                    pRT->DrawTextLayout(
-                        D2D1::Point2F(m_rcSqlQueryTextInner.left, m_rcSqlQueryTextInner.top - m_sqlQueryScrollY),
-                        m_sqlLastQueryLayout.Get(), txtMain, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-                }
-
-                // True DirectWrite 500ms Blinking Caret
-                if (m_sqlEditorFocused && m_caretVisible && txtWhite) {
-                    const UINT32 cPos = static_cast<UINT32>((std::min)(m_sqlCursorPos, m_sqlQueryText.size()));
-                    FLOAT cx = 0.0f, cy = 0.0f;
-                    DWRITE_HIT_TEST_METRICS htm{};
-                    if (SUCCEEDED(m_sqlLastQueryLayout->HitTestTextPosition(cPos, FALSE, &cx, &cy, &htm))) {
-                        const float xLine = m_rcSqlQueryTextInner.left + cx;
-                        const float yTop = m_rcSqlQueryTextInner.top - m_sqlQueryScrollY + cy;
-                        const float yBot = yTop + (htm.height > 1.0f ? htm.height : config.ScaleF(16.0f));
-                        pRT->DrawLine(D2D1::Point2F(xLine, yTop), D2D1::Point2F(xLine, yBot), txtWhite, config.ScaleF(1.6f));
-                    }
-                }
-            }
-        } else {
-            const wchar_t* ph = L"-- Enter SQL query (Ctrl+Enter to Run)...";
-            if (txtMuted) {
-                pRT->DrawText(ph, static_cast<UINT32>(wcslen(ph)), fQueryUse, m_rcSqlQueryTextInner, txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            }
-            if (m_sqlEditorFocused && m_caretVisible && txtWhite) {
-                const float xLine = m_rcSqlQueryTextInner.left + config.ScaleF(1.0f);
-                const float yTop = m_rcSqlQueryTextInner.top;
-                const float yBot = yTop + config.ScaleF(17.0f);
-                pRT->DrawLine(D2D1::Point2F(xLine, yTop), D2D1::Point2F(xLine, yBot), txtWhite, config.ScaleF(1.6f));
+        qLineH = (std::max)(config.ScaleF(19.0f), fQueryUse->GetFontSize() * 1.44f);
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> pMeasure;
+        if (SUCCEEDED(dwf->CreateTextLayout(L"0000000000", 10, fQueryUse, 1000.0f, 100.0f, &pMeasure)) && pMeasure) {
+            DWRITE_TEXT_METRICS tm{};
+            if (SUCCEEDED(pMeasure->GetMetrics(&tm)) && tm.widthIncludingTrailingWhitespace > 1.0f) {
+                qCharW = tm.widthIncludingTrailingWhitespace / 10.0f;
             }
         }
     }
+    m_sqlQueryCharW = qCharW;
+    m_sqlQueryLineH = qLineH;
+    m_sqlQueryTabSize = (std::max)(1, config.tabSize);
+
+    const auto& qLines = m_sqlQueryDoc.buffer.GetLines();
+    const size_t qLineCount = (std::max<size_t>)(1, qLines.size());
+    const auto qCur = m_sqlQueryDoc.buffer.GetCursor();
+    const float qInnerW = (std::max)(40.0f, m_rcSqlQueryTextInner.right - m_rcSqlQueryTextInner.left);
+    const float qInnerH = (std::max)(20.0f, m_rcSqlQueryTextInner.bottom - m_rcSqlQueryTextInner.top);
+    size_t maxVisCols = 0;
+    for (const auto& ln : qLines) {
+        maxVisCols = (std::max)(maxVisCols, SqlVisualColsUpTo(ln, ln.length(), m_sqlQueryTabSize));
+    }
+    const float totalContentH = static_cast<float>(qLineCount) * qLineH;
+    const float maxContentW = static_cast<float>(maxVisCols) * qCharW;
+    m_sqlQueryMaxScrollY = (std::max)(0.0f, totalContentH - qInnerH + config.ScaleF(6.0f));
+    m_sqlQueryMaxScrollX = (std::max)(0.0f, maxContentW - qInnerW + config.ScaleF(24.0f));
+    m_sqlQueryScrollY = (std::clamp)(m_sqlQueryScrollY, 0.0f, m_sqlQueryMaxScrollY);
+    m_sqlQueryScrollX = (std::clamp)(m_sqlQueryScrollX, 0.0f, m_sqlQueryMaxScrollX);
+
+    pRT->PushAxisAlignedClip(m_rcSqlQueryBox, D2D1_ANTIALIAS_MODE_ALIASED);
+    // Gutter divider & line numbers
+    const float gutterSepX = m_rcSqlQueryBox.left + gutterW;
+    pRT->FillRectangle(D2D1::RectF(m_rcSqlQueryBox.left + 1.0f, m_rcSqlQueryBox.top + 1.0f, gutterSepX, m_rcSqlQueryBox.bottom - 1.0f),
+                       brPanel.Get());
+    pRT->DrawLine(D2D1::Point2F(gutterSepX, m_rcSqlQueryBox.top + 3.0f),
+                  D2D1::Point2F(gutterSepX, m_rcSqlQueryBox.bottom - 3.0f), brBorder.Get(), 1.0f);
+
+    pRT->PushAxisAlignedClip(
+        D2D1::RectF(m_rcSqlQueryBox.left + 2.0f, m_rcSqlQueryTextInner.top - 2.0f, gutterSepX - 2.0f, m_rcSqlQueryTextInner.bottom + 2.0f),
+        D2D1_ANTIALIAS_MODE_ALIASED);
+    IDWriteTextFormat* fNum = theme.fontLineNumber ? theme.fontLineNumber.Get() : fRowUse;
+    IDWriteTextFormat* fNumAct = theme.fontLineNumberActive ? theme.fontLineNumberActive.Get() : fNum;
+    for (size_t li = 0; li < qLineCount; ++li) {
+        const float ly = m_rcSqlQueryTextInner.top - m_sqlQueryScrollY + static_cast<float>(li) * qLineH;
+        if (ly + qLineH < m_rcSqlQueryTextInner.top - 2.0f) continue;
+        if (ly > m_rcSqlQueryTextInner.bottom + 2.0f) break;
+        const bool isActLine = (li == qCur.line && m_sqlEditorFocused);
+        std::wstring numStr = std::to_wstring(li + 1);
+        D2D1_RECT_F rcNum = D2D1::RectF(m_rcSqlQueryBox.left + config.ScaleF(2.0f), ly, gutterSepX - config.ScaleF(6.0f), ly + qLineH);
+        if (fNum && txtMuted && txtMain) {
+            pRT->DrawText(numStr.c_str(), static_cast<UINT32>(numStr.size()),
+                          isActLine ? fNumAct : fNum, rcNum, isActLine ? txtMain : txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+    }
     pRT->PopAxisAlignedClip();
+
+    // Code text viewport clip
+    D2D1_RECT_F rcCodeClip = D2D1::RectF(gutterSepX + 1.0f, m_rcSqlQueryBox.top + 2.0f, m_rcSqlQueryBox.right - 2.0f, m_rcSqlQueryBox.bottom - 2.0f);
+    pRT->PushAxisAlignedClip(rcCodeClip, D2D1_ANTIALIAS_MODE_ALIASED);
+
+    const bool isBufferEmpty = (qLines.empty() || (qLines.size() == 1 && qLines[0].empty()));
+    if (isBufferEmpty && fQueryUse && txtMuted) {
+        const wchar_t* ph = L"-- Enter SQL query (Ctrl+Enter to Run)...";
+        pRT->DrawText(ph, static_cast<UINT32>(wcslen(ph)), fQueryUse, m_rcSqlQueryTextInner, txtMuted, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    auto bracketAnalysis = config.enableBracketPairColorization
+        ? editor::BracketPairAnalyzer::Analyze(m_sqlQueryDoc.buffer, qCur.line, qCur.col, L".sql")
+        : editor::BracketAnalysisResult{};
+    std::unordered_map<size_t, std::vector<const editor::BracketItem*>> sqlBracketsByLine;
+    for (const auto& b : bracketAnalysis.brackets) {
+        sqlBracketsByLine[b.line].push_back(&b);
+    }
+
+    // Matching word occurrences highlight (selected word or identifier under caret)
+    std::wstring occWord = m_sqlQueryDoc.selectedWord;
+    bool occWholeWord = false;
+    if (occWord.empty() && !m_sqlQueryDoc.HasSelection() && m_sqlEditorFocused && qCur.line < qLines.size()) {
+        const auto& cl = qLines[qCur.line];
+        size_t probe = qCur.col;
+        if (probe >= cl.length() && probe > 0 && editor::OpenDocument::IsWordChar(cl[probe - 1])) --probe;
+        else if (probe > 0 && probe < cl.length() && !editor::OpenDocument::IsWordChar(cl[probe]) && editor::OpenDocument::IsWordChar(cl[probe - 1])) --probe;
+        if (probe < cl.length() && editor::OpenDocument::IsWordChar(cl[probe])) {
+            size_t ws = probe, we = probe + 1;
+            while (ws > 0 && editor::OpenDocument::IsWordChar(cl[ws - 1])) --ws;
+            while (we < cl.length() && editor::OpenDocument::IsWordChar(cl[we])) ++we;
+            if (we - ws >= 2) {
+                occWord = cl.substr(ws, we - ws);
+                occWholeWord = true;
+            }
+        }
+    }
+
+    const float textOriginX = m_rcSqlQueryTextInner.left - m_sqlQueryScrollX;
+    for (size_t li = 0; li < qLines.size(); ++li) {
+        const float ly = m_rcSqlQueryTextInner.top - m_sqlQueryScrollY + static_cast<float>(li) * qLineH;
+        if (ly + qLineH < m_rcSqlQueryBox.top) continue;
+        if (ly > m_rcSqlQueryBox.bottom) break;
+        const auto& lineStr = qLines[li];
+        auto colToX = [&](size_t col) -> float {
+            return textOriginX + static_cast<float>(SqlVisualColsUpTo(lineStr, col, m_sqlQueryTabSize)) * qCharW;
+        };
+
+        // Active line highlight
+        if (m_sqlEditorFocused && !m_sqlQueryDoc.HasSelection() && li == qCur.line && theme.brushCurrentLineBg) {
+            pRT->FillRectangle(D2D1::RectF(gutterSepX + 2.0f, ly, m_rcSqlQueryBox.right - 2.0f, ly + qLineH),
+                               theme.brushCurrentLineBg.Get());
+        }
+
+        // Selection highlight
+        if (m_sqlQueryDoc.HasSelection()) {
+            size_t sL = 0, sC = 0, eL = 0, eC = 0;
+            m_sqlQueryDoc.GetSelectionRange(sL, sC, eL, eC);
+            if (li >= sL && li <= eL) {
+                float sx1 = textOriginX;
+                float sx2 = textOriginX;
+                if (li == sL && li == eL) {
+                    sx1 = colToX(sC);
+                    sx2 = colToX(eC);
+                } else if (li == sL) {
+                    sx1 = colToX(sC);
+                    sx2 = colToX(lineStr.length()) + qCharW * 0.7f;
+                } else if (li == eL) {
+                    sx1 = textOriginX;
+                    sx2 = colToX(eC);
+                } else {
+                    sx1 = textOriginX;
+                    sx2 = (std::max)(colToX(lineStr.length()) + qCharW * 0.7f, textOriginX + qCharW * 2.0f);
+                }
+                if (sx2 > sx1) {
+                    ID2D1Brush* selBr = m_pSelBrush ? m_pSelBrush.Get() : brAccent.Get();
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(sx1, ly + 0.5f, sx2, ly + qLineH - 0.5f), 3.0f, 3.0f), selBr);
+                }
+            }
+        }
+
+        // Word occurrence highlight
+        if (!occWord.empty() && occWord.length() > 1 && !lineStr.empty() && m_pOccWordFillBrush) {
+            size_t wp = 0;
+            while ((wp = lineStr.find(occWord, wp)) != std::wstring::npos) {
+                bool wordOk = true;
+                if (occWholeWord) {
+                    const bool lOk = (wp == 0) || !editor::OpenDocument::IsWordChar(lineStr[wp - 1]);
+                    const bool rOk = (wp + occWord.length() >= lineStr.length()) || !editor::OpenDocument::IsWordChar(lineStr[wp + occWord.length()]);
+                    wordOk = lOk && rOk;
+                }
+                bool isCurSel = false;
+                if (m_sqlQueryDoc.HasSelection()) {
+                    size_t sL = 0, sC = 0, eL = 0, eC = 0;
+                    m_sqlQueryDoc.GetSelectionRange(sL, sC, eL, eC);
+                    if (li == sL && li == eL && wp == sC) isCurSel = true;
+                }
+                if (wordOk && !isCurSel) {
+                    const float wx = colToX(wp);
+                    const float ww = (std::max)(qCharW, colToX(wp + occWord.length()) - wx);
+                    D2D1_RECT_F rcOcc = D2D1::RectF(wx - 1.0f, ly + 1.0f, wx + ww + 1.0f, ly + qLineH - 1.0f);
+                    pRT->FillRoundedRectangle(D2D1::RoundedRect(rcOcc, 2.0f, 2.0f), m_pOccWordFillBrush.Get());
+                    if (m_pOccWordBorderBrush) {
+                        pRT->DrawRoundedRectangle(D2D1::RoundedRect(rcOcc, 2.0f, 2.0f), m_pOccWordBorderBrush.Get(), 0.9f);
+                    }
+                }
+                wp += occWord.length();
+            }
+        }
+
+        // SQL syntax-highlighted line rendering
+        if (!lineStr.empty()) {
+            const auto& tokens = m_sqlQueryDoc.buffer.GetTokensForLineRef(li, L".sql");
+            if (dwf && fQueryUse) {
+                const float layW = (std::max)(240.0f, static_cast<float>(lineStr.length()) * qCharW + config.ScaleF(64.0f));
+                Microsoft::WRL::ComPtr<IDWriteTextLayout> pLineLayout;
+                if (SUCCEEDED(dwf->CreateTextLayout(
+                        lineStr.c_str(), static_cast<UINT32>(lineStr.length()),
+                        fQueryUse, layW, qLineH, &pLineLayout)) && pLineLayout) {
+                    pLineLayout->SetIncrementalTabStop(qCharW * static_cast<float>(m_sqlQueryTabSize));
+                    for (const auto& tok : tokens) {
+                        if (tok.startCol >= lineStr.length()) continue;
+                        const size_t tLen = (std::min)(tok.length, lineStr.length() - tok.startCol);
+                        if (tLen == 0) continue;
+                        ID2D1Brush* tokBr = ResolveSyntaxTokenBrush(
+                            theme, tok, li, lineStr, sqlBracketsByLine, BetterCommentType::Normal, config.enableBracketPairColorization);
+                        if (tokBr) {
+                            DWRITE_TEXT_RANGE rng = { static_cast<UINT32>(tok.startCol), static_cast<UINT32>(tLen) };
+                            pLineLayout->SetDrawingEffect(tokBr, rng);
+                        }
+                    }
+                    if (txtMain) {
+                        pRT->DrawTextLayout(D2D1::Point2F(textOriginX, ly), pLineLayout.Get(), txtMain, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                    }
+                }
+            }
+        }
+    }
+
+    // Active Caret Rendering (500ms blink)
+    if (m_sqlEditorFocused && m_caretVisible && qCur.line < qLines.size()) {
+        const auto& cLine = qLines[qCur.line];
+        const float cx = textOriginX + static_cast<float>(SqlVisualColsUpTo(cLine, qCur.col, m_sqlQueryTabSize)) * qCharW;
+        const float cy = m_rcSqlQueryTextInner.top - m_sqlQueryScrollY + static_cast<float>(qCur.line) * qLineH;
+        ID2D1Brush* caretBr = theme.brushBrandAccent ? theme.brushBrandAccent.Get() : txtWhite;
+        if (caretBr) {
+            pRT->DrawLine(D2D1::Point2F(cx, cy + config.ScaleF(1.5f)),
+                          D2D1::Point2F(cx, cy + qLineH - config.ScaleF(1.5f)),
+                          caretBr, config.ScaleF(1.8f));
+        }
+    }
+
+    // Subtle vertical scrollbar pill inside query editor if content overflows vertically
+    if (m_sqlQueryMaxScrollY > 0.5f) {
+        const float trackH = (std::max)(12.0f, m_rcSqlQueryBox.bottom - m_rcSqlQueryBox.top - config.ScaleF(8.0f));
+        const float thumbRatio = (std::min)(1.0f, qInnerH / (totalContentH + config.ScaleF(6.0f)));
+        const float thumbH = (std::max)(config.ScaleF(18.0f), trackH * thumbRatio);
+        const float scrollRatio = (std::min)(1.0f, m_sqlQueryScrollY / m_sqlQueryMaxScrollY);
+        const float thumbY = m_rcSqlQueryBox.top + config.ScaleF(4.0f) + (trackH - thumbH) * scrollRatio;
+        const float thumbW = config.ScaleF(4.0f);
+        D2D1_RECT_F rcThumb = D2D1::RectF(m_rcSqlQueryBox.right - config.ScaleF(6.0f), thumbY,
+                                          m_rcSqlQueryBox.right - config.ScaleF(6.0f) + thumbW, thumbY + thumbH);
+        pRT->FillRoundedRectangle(D2D1::RoundedRect(rcThumb, 2.0f, 2.0f), m_pScrollbarThumbBrush ? m_pScrollbarThumbBrush.Get() : brBorder.Get());
+    }
+
+    pRT->PopAxisAlignedClip(); // rcCodeClip
+    pRT->PopAxisAlignedClip(); // m_rcSqlQueryBox
 
     // Results Grid Box
     const float gridTop = m_rcSqlQueryBox.bottom + config.ScaleF(10.0f);
@@ -19183,9 +19530,9 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
         if (SqlPtInRectF(pt, m_rcSqlHistoryPopup)) {
             for (const auto& hh : m_sqlHistoryHits) {
                 if (SqlPtInRectF(pt, hh.bounds)) {
-                    m_sqlQueryText = hh.sql;
-                    m_sqlCursorPos = m_sqlQueryText.size();
+                    SetSqlQueryText(hh.sql);
                     m_sqlEditorFocused = true;
+                    m_caretVisible = true;
                     m_sqlHistoryMenuOpen = false;
                     return true;
                 }
@@ -19222,8 +19569,7 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
                 m_sqlActiveTableSchema = m_sqlTables[t.tableIndex].schemaName;
                 m_sqlActiveTableName = m_sqlTables[t.tableIndex].name;
                 m_sqlPage = 0;
-                m_sqlQueryText = BuildSelectTableQuery(m_sqlProfiles[m_sqlSelectedProfileIdx], m_sqlTables[t.tableIndex]);
-                m_sqlCursorPos = m_sqlQueryText.size();
+                SetSqlQueryText(BuildSelectTableQuery(m_sqlProfiles[m_sqlSelectedProfileIdx], m_sqlTables[t.tableIndex]));
                 m_sqlEditorFocused = true;
                 m_caretVisible = true;
                 StartExecuteActiveSqlQueryAsync();
@@ -19270,25 +19616,98 @@ bool EditorCanvas::HandleSqlConsoleMouseDown(POINT pt, const app::AppConfig& con
     if (SqlPtInRectF(pt, m_rcSqlQueryBox)) {
         m_sqlEditorFocused = true;
         m_caretVisible = true;
-        if (m_sqlLastQueryLayout) {
-            BOOL isTrailing = FALSE, isInside = FALSE;
-            DWRITE_HIT_TEST_METRICS htm{};
-            const float relX = (std::max)(0.0f, static_cast<float>(pt.x) - m_rcSqlQueryTextInner.left);
-            const float relY = (std::max)(0.0f, static_cast<float>(pt.y) - m_rcSqlQueryTextInner.top + m_sqlQueryScrollY);
-            if (SUCCEEDED(m_sqlLastQueryLayout->HitTestPoint(relX, relY, &isTrailing, &isInside, &htm))) {
-                size_t newPos = htm.textPosition + (isTrailing ? 1 : 0);
-                m_sqlCursorPos = (std::min)(newPos, m_sqlQueryText.size());
-            } else {
-                m_sqlCursorPos = m_sqlQueryText.size();
-            }
-        } else {
-            m_sqlCursorPos = m_sqlQueryText.size();
+        size_t targetLine = 0, targetCol = 0;
+        HitTestSqlQueryEditor(pt, config, targetLine, targetCol);
+
+        const ULONGLONG now = GetTickCount64();
+        const int dblTime = static_cast<int>(GetDoubleClickTime());
+        const int ddx = abs(pt.x - m_sqlLastLDownPt.x);
+        const int ddy = abs(pt.y - m_sqlLastLDownPt.y);
+        const bool isDbl = (m_sqlLastLDownTime != 0) &&
+                           (now - m_sqlLastLDownTime <= static_cast<ULONGLONG>(dblTime)) &&
+                           (ddx <= 6 && ddy <= 6);
+        m_sqlLastLDownTime = now;
+        m_sqlLastLDownPt = pt;
+
+        if (isDbl) {
+            m_sqlQueryDoc.isSelecting = false;
+            m_sqlQueryDoc.SelectWordAt(targetLine, targetCol);
+            return true;
         }
+
+        const bool isShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (isShift) {
+            if (!m_sqlQueryDoc.hasSelection) {
+                m_sqlQueryDoc.selAnchor = m_sqlQueryDoc.buffer.GetCursor();
+            }
+            m_sqlQueryDoc.selEnd = { targetLine, targetCol };
+            m_sqlQueryDoc.hasSelection = (m_sqlQueryDoc.selAnchor.line != m_sqlQueryDoc.selEnd.line ||
+                                          m_sqlQueryDoc.selAnchor.col != m_sqlQueryDoc.selEnd.col);
+            m_sqlQueryDoc.selectedWord.clear();
+        } else {
+            m_sqlQueryDoc.ClearSelection();
+            m_sqlQueryDoc.selAnchor = { targetLine, targetCol };
+            m_sqlQueryDoc.selEnd = { targetLine, targetCol };
+        }
+        m_sqlQueryDoc.buffer.SetCursor(targetLine, targetCol);
+        m_sqlQueryDoc.isSelecting = true;
         return true;
     }
+    m_sqlQueryDoc.isSelecting = false;
     const bool wasFocused = m_sqlEditorFocused;
     m_sqlEditorFocused = false;
     return wasFocused || SqlPtInRectF(pt, m_rcSqlViewport);
+}
+
+bool EditorCanvas::HandleSqlConsoleDoubleClick(POINT pt, const app::AppConfig& config) {
+    if (!SqlPtInRectF(pt, m_rcSqlQueryBox)) return false;
+    m_sqlEditorFocused = true;
+    m_caretVisible = true;
+    m_sqlQueryDoc.isSelecting = false;
+    size_t targetLine = 0, targetCol = 0;
+    HitTestSqlQueryEditor(pt, config, targetLine, targetCol);
+    m_sqlQueryDoc.SelectWordAt(targetLine, targetCol);
+    m_sqlLastLDownTime = 0;
+    return true;
+}
+
+bool EditorCanvas::HandleSqlConsoleMouseMove(POINT pt, const app::AppConfig& config, bool leftButtonDown) {
+    if (m_sqlQueryDoc.isSelecting) {
+        if (!leftButtonDown) {
+            m_sqlQueryDoc.isSelecting = false;
+            return true;
+        }
+        if (static_cast<float>(pt.y) < m_rcSqlQueryTextInner.top && m_sqlQueryScrollY > 0.0f) {
+            m_sqlQueryScrollY = (std::max)(0.0f, m_sqlQueryScrollY - config.ScaleF(14.0f));
+        } else if (static_cast<float>(pt.y) > m_rcSqlQueryTextInner.bottom && m_sqlQueryScrollY < m_sqlQueryMaxScrollY) {
+            m_sqlQueryScrollY = (std::min)(m_sqlQueryMaxScrollY, m_sqlQueryScrollY + config.ScaleF(14.0f));
+        }
+        if (static_cast<float>(pt.x) < m_rcSqlQueryTextInner.left && m_sqlQueryScrollX > 0.0f) {
+            m_sqlQueryScrollX = (std::max)(0.0f, m_sqlQueryScrollX - config.ScaleF(20.0f));
+        } else if (static_cast<float>(pt.x) > m_rcSqlQueryTextInner.right && m_sqlQueryScrollX < m_sqlQueryMaxScrollX) {
+            m_sqlQueryScrollX = (std::min)(m_sqlQueryMaxScrollX, m_sqlQueryScrollX + config.ScaleF(20.0f));
+        }
+        size_t targetLine = 0, targetCol = 0;
+        HitTestSqlQueryEditor(pt, config, targetLine, targetCol);
+        m_sqlQueryDoc.selEnd = { targetLine, targetCol };
+        m_sqlQueryDoc.hasSelection = (m_sqlQueryDoc.selAnchor.line != m_sqlQueryDoc.selEnd.line ||
+                                      m_sqlQueryDoc.selAnchor.col != m_sqlQueryDoc.selEnd.col);
+        m_sqlQueryDoc.selectedWord.clear();
+        m_sqlQueryDoc.buffer.SetCursor(targetLine, targetCol);
+        m_caretVisible = true;
+        return true;
+    }
+    return UpdateSqlConsoleHover(pt);
+}
+
+bool EditorCanvas::HandleSqlConsoleMouseUp(POINT pt) {
+    (void)pt;
+    if (!m_sqlQueryDoc.isSelecting) return false;
+    m_sqlQueryDoc.isSelecting = false;
+    m_sqlQueryDoc.hasSelection = (m_sqlQueryDoc.selAnchor.line != m_sqlQueryDoc.selEnd.line ||
+                                  m_sqlQueryDoc.selAnchor.col != m_sqlQueryDoc.selEnd.col);
+    m_sqlQueryDoc.selectedWord = m_sqlQueryDoc.HasSelection() ? m_sqlQueryDoc.GetSelectedText() : L"";
+    return true;
 }
 
 bool EditorCanvas::HandleSqlConsoleMouseWheel(POINT pt, short delta) noexcept {
@@ -19298,7 +19717,11 @@ bool EditorCanvas::HandleSqlConsoleMouseWheel(POINT pt, short delta) noexcept {
         return true;
     }
     if (SqlPtInRectF(pt, m_rcSqlQueryBox)) {
-        m_sqlQueryScrollY = (std::max)(0.0f, m_sqlQueryScrollY + step);
+        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+            m_sqlQueryScrollX = (std::max)(0.0f, (std::min)(m_sqlQueryMaxScrollX, m_sqlQueryScrollX + step));
+        } else {
+            m_sqlQueryScrollY = (std::max)(0.0f, (std::min)(m_sqlQueryMaxScrollY, m_sqlQueryScrollY + step));
+        }
         return true;
     }
     if (SqlPtInRectF(pt, m_rcSqlGrid)) {
@@ -19321,22 +19744,34 @@ bool EditorCanvas::HandleSqlConsoleChar(wchar_t ch) {
         return true;
     }
     if (!m_sqlEditorFocused) return false;
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) return false;
+    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && (GetKeyState(VK_MENU) & 0x8000) == 0) return false;
     if (ch == L'\r') ch = L'\n';
     if (ch < 0x20 && ch != L'\n' && ch != L'\t') return false;
-    size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
+
+    const wchar_t pairClose = editor::OpenDocument::GetPairCloser(ch);
+    if (m_sqlQueryDoc.HasSelection()) {
+        if (pairClose != 0) {
+            const std::wstring sel = m_sqlQueryDoc.GetSelectedText();
+            m_sqlQueryDoc.DeleteSelection();
+            m_sqlQueryDoc.buffer.InsertText(std::wstring(1, ch) + sel + pairClose);
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
+            return true;
+        }
+        m_sqlQueryDoc.DeleteSelection();
+    }
+
     if (ch == L'\t') {
-        m_sqlQueryText.insert(pos, L"    ");
-        m_sqlCursorPos = pos + 4;
+        m_sqlQueryDoc.buffer.InsertText(L"    ");
     } else {
-        m_sqlQueryText.insert(pos, 1, ch);
-        m_sqlCursorPos = pos + 1;
+        m_sqlQueryDoc.buffer.InsertChar(ch);
     }
     m_caretVisible = true;
+    EnsureSqlQueryCursorVisible();
     return true;
 }
 
-bool EditorCanvas::HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd) {
+bool EditorCanvas::HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd, int modOverride) {
     if (m_sqlCellEditActive) {
         if (wParam == VK_ESCAPE) {
             m_sqlCellEditActive = false;
@@ -19387,127 +19822,298 @@ bool EditorCanvas::HandleSqlConsoleKeyDown(WPARAM wParam, HWND hwnd) {
         }
         return true;
     }
-    if ((wParam == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000) != 0) || wParam == VK_F5) {
+
+    const bool ctrl = (modOverride >= 0) ? ((modOverride & 1) != 0) : ((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+    const bool shift = (modOverride >= 0) ? ((modOverride & 2) != 0) : ((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+    const bool alt = (modOverride >= 0) ? ((modOverride & 4) != 0) : ((GetKeyState(VK_MENU) & 0x8000) != 0);
+
+    if ((wParam == VK_RETURN && ctrl) || wParam == VK_F5) {
         StartExecuteActiveSqlQueryAsync();
         return true;
     }
     if (!m_sqlEditorFocused) return false;
 
-    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    if (ctrl && (wParam == 'V' || wParam == 'v')) {
-        if (OpenClipboard(hwnd)) {
-            HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-            if (hData) {
-                if (const wchar_t* pText = static_cast<const wchar_t*>(GlobalLock(hData))) {
-                    std::wstring clip;
-                    for (const wchar_t* p = pText; *p; ++p) {
-                        if (*p == L'\r') {
-                            if (*(p + 1) == L'\n') continue;
-                            clip.push_back(L'\n');
-                        } else {
-                            clip.push_back(*p);
-                        }
+    // Ctrl + A: Select All
+    if (ctrl && !alt && (wParam == 'A' || wParam == 'a')) {
+        const size_t lc = m_sqlQueryDoc.buffer.GetLineCount();
+        if (lc > 0) {
+            const size_t lastL = lc - 1;
+            const size_t lastC = m_sqlQueryDoc.buffer.GetLine(lastL).length();
+            m_sqlQueryDoc.selAnchor = { 0, 0 };
+            m_sqlQueryDoc.selEnd = { lastL, lastC };
+            m_sqlQueryDoc.hasSelection = (lastL > 0 || lastC > 0);
+            m_sqlQueryDoc.selectedWord.clear();
+            m_sqlQueryDoc.buffer.SetCursor(lastL, lastC);
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
+        }
+        return true;
+    }
+
+    // Ctrl + Z / Ctrl + Shift + Z / Ctrl + Y: Undo / Redo
+    if (ctrl && !alt && (wParam == 'Z' || wParam == 'z')) {
+        m_sqlQueryDoc.ClearSelection();
+        if (shift) m_sqlQueryDoc.buffer.Redo();
+        else m_sqlQueryDoc.buffer.Undo();
+        m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
+        return true;
+    }
+    if (ctrl && !alt && (wParam == 'Y' || wParam == 'y')) {
+        m_sqlQueryDoc.ClearSelection();
+        m_sqlQueryDoc.buffer.Redo();
+        m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
+        return true;
+    }
+
+    // Ctrl + /: Toggle SQL -- line comments
+    if (ctrl && !alt && wParam == VK_OEM_2) {
+        size_t sL = 0, eL = 0;
+        if (m_sqlQueryDoc.HasSelection()) {
+            size_t sC = 0, eC = 0;
+            m_sqlQueryDoc.GetSelectionRange(sL, sC, eL, eC);
+            if (eL > sL && eC == 0) --eL;
+        } else {
+            const auto c = m_sqlQueryDoc.buffer.GetCursor();
+            sL = c.line;
+            eL = c.line;
+        }
+        std::vector<int> deltas;
+        if (m_sqlQueryDoc.buffer.ToggleLineCommentRange(sL, eL, L"sql", &deltas)) {
+            auto applyDelta = [&](editor::CursorPosition& p) {
+                if (p.line >= sL && p.line <= eL) {
+                    const size_t idx = p.line - sL;
+                    if (idx < deltas.size()) {
+                        p.col = static_cast<size_t>((std::max)(0, static_cast<int>(p.col) + deltas[idx]));
                     }
-                    GlobalUnlock(hData);
-                    const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-                    m_sqlQueryText.insert(pos, clip);
-                    m_sqlCursorPos = pos + clip.size();
-                    m_caretVisible = true;
                 }
+            };
+            auto c = m_sqlQueryDoc.buffer.GetCursor();
+            applyDelta(c);
+            m_sqlQueryDoc.buffer.SetCursor(c.line, c.col);
+            if (m_sqlQueryDoc.HasSelection()) {
+                applyDelta(m_sqlQueryDoc.selAnchor);
+                applyDelta(m_sqlQueryDoc.selEnd);
             }
-            CloseClipboard();
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
         }
         return true;
     }
-    if (ctrl && (wParam == 'C' || wParam == 'c')) {
-        if (!m_sqlQueryText.empty() && OpenClipboard(hwnd)) {
-            EmptyClipboard();
-            const size_t bytes = (m_sqlQueryText.size() + 1) * sizeof(wchar_t);
-            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-            if (hMem) {
-                if (void* dst = GlobalLock(hMem)) {
-                    memcpy(dst, m_sqlQueryText.c_str(), bytes);
-                    GlobalUnlock(hMem);
-                    SetClipboardData(CF_UNICODETEXT, hMem);
-                } else {
-                    GlobalFree(hMem);
-                }
+
+    // Ctrl + D: Select word under caret
+    if (ctrl && !alt && (wParam == 'D' || wParam == 'd')) {
+        const auto c = m_sqlQueryDoc.buffer.GetCursor();
+        m_sqlQueryDoc.SelectWordAt(c.line, c.col);
+        m_caretVisible = true;
+        return true;
+    }
+
+    // Ctrl + C: Copy selection (or current line if nothing selected)
+    if (ctrl && !alt && (wParam == 'C' || wParam == 'c')) {
+        if (m_sqlQueryDoc.HasSelection()) {
+            SqlWriteClipboardText(hwnd, m_sqlQueryDoc.GetSelectedText());
+        } else {
+            const auto c = m_sqlQueryDoc.buffer.GetCursor();
+            if (c.line < m_sqlQueryDoc.buffer.GetLineCount()) {
+                SqlWriteClipboardText(hwnd, m_sqlQueryDoc.buffer.GetLine(c.line));
             }
-            CloseClipboard();
         }
         return true;
     }
+
+    // Ctrl + X: Cut selection
+    if (ctrl && !alt && (wParam == 'X' || wParam == 'x')) {
+        if (m_sqlQueryDoc.HasSelection()) {
+            SqlWriteClipboardText(hwnd, m_sqlQueryDoc.GetSelectedText());
+            m_sqlQueryDoc.DeleteSelection();
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
+        }
+        return true;
+    }
+
+    // Ctrl + V: Paste
+    if (ctrl && !alt && (wParam == 'V' || wParam == 'v')) {
+        const std::wstring clip = SqlReadClipboardText(hwnd);
+        if (!clip.empty()) {
+            m_sqlQueryDoc.DeleteSelection();
+            m_sqlQueryDoc.buffer.InsertText(clip);
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
+        }
+        return true;
+    }
+
+    // Escape clears active selection
+    if (wParam == VK_ESCAPE) {
+        if (m_sqlQueryDoc.HasSelection()) {
+            m_sqlQueryDoc.ClearSelection();
+            return true;
+        }
+        return false;
+    }
+
+    // Enter (without Ctrl): insert newline with preserved indentation
+    if (wParam == VK_RETURN && !ctrl && !alt) {
+        m_sqlQueryDoc.DeleteSelection();
+        const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+        std::wstring indent;
+        if (cur.line < m_sqlQueryDoc.buffer.GetLineCount()) {
+            const auto& line = m_sqlQueryDoc.buffer.GetLine(cur.line);
+            for (size_t i = 0; i < line.length() && i < cur.col && (line[i] == L' ' || line[i] == L'\t'); ++i) {
+                indent.push_back(line[i]);
+            }
+        }
+        m_sqlQueryDoc.buffer.InsertText(L"\n" + indent);
+        m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
+        return true;
+    }
+
+    // Tab / Shift+Tab
+    if (wParam == VK_TAB && !ctrl && !alt) {
+        if (shift) {
+            const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+            size_t sL = cur.line, eL = cur.line;
+            if (m_sqlQueryDoc.HasSelection()) {
+                size_t sC = 0, eC = 0;
+                m_sqlQueryDoc.GetSelectionRange(sL, sC, eL, eC);
+                if (eL > sL && eC == 0) --eL;
+            }
+            m_sqlQueryDoc.buffer.PushUndo();
+            for (size_t l = sL; l <= eL && l < m_sqlQueryDoc.buffer.GetLineCount(); ++l) {
+                std::wstring ln = m_sqlQueryDoc.buffer.GetLine(l);
+                size_t rm = 0;
+                while (rm < 4 && rm < ln.size() && ln[rm] == L' ') ++rm;
+                if (rm == 0 && !ln.empty() && ln[0] == L'\t') rm = 1;
+                if (rm > 0) {
+                    ln.erase(0, rm);
+                    m_sqlQueryDoc.buffer.SetLine(l, ln);
+                    if (l == cur.line) {
+                        m_sqlQueryDoc.buffer.SetCursor(l, cur.col > rm ? cur.col - rm : 0);
+                    }
+                    if (m_sqlQueryDoc.HasSelection()) {
+                        if (m_sqlQueryDoc.selAnchor.line == l) m_sqlQueryDoc.selAnchor.col = (m_sqlQueryDoc.selAnchor.col > rm) ? m_sqlQueryDoc.selAnchor.col - rm : 0;
+                        if (m_sqlQueryDoc.selEnd.line == l) m_sqlQueryDoc.selEnd.col = (m_sqlQueryDoc.selEnd.col > rm) ? m_sqlQueryDoc.selEnd.col - rm : 0;
+                    }
+                }
+            }
+        } else {
+            m_sqlQueryDoc.DeleteSelection();
+            m_sqlQueryDoc.buffer.InsertText(L"    ");
+        }
+        m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
+        return true;
+    }
+
     if (wParam == VK_BACK) {
-        if (m_sqlCursorPos > 0 && !m_sqlQueryText.empty()) {
-            const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-            if (pos > 0) {
-                m_sqlQueryText.erase(pos - 1, 1);
-                m_sqlCursorPos = pos - 1;
-            }
+        if (m_sqlQueryDoc.HasSelection()) {
+            m_sqlQueryDoc.DeleteSelection();
+        } else if (ctrl) {
+            const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+            const auto prevPos = SqlStepWordLeft(m_sqlQueryDoc.buffer, cur);
+            m_sqlQueryDoc.buffer.DeleteRange(prevPos.line, prevPos.col, cur.line, cur.col);
+        } else {
+            m_sqlQueryDoc.buffer.Backspace();
         }
         m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
         return true;
     }
+
     if (wParam == VK_DELETE) {
-        if (m_sqlCursorPos < m_sqlQueryText.size()) {
-            m_sqlQueryText.erase(m_sqlCursorPos, 1);
-        }
-        m_caretVisible = true;
-        return true;
-    }
-    if (wParam == VK_LEFT && m_sqlCursorPos > 0) {
-        --m_sqlCursorPos;
-        m_caretVisible = true;
-        return true;
-    }
-    if (wParam == VK_RIGHT && m_sqlCursorPos < m_sqlQueryText.size()) {
-        ++m_sqlCursorPos;
-        m_caretVisible = true;
-        return true;
-    }
-    if (wParam == VK_UP) {
-        const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-        const size_t lineStart = (pos == 0) ? std::wstring::npos : m_sqlQueryText.rfind(L'\n', pos - 1);
-        if (lineStart != std::wstring::npos) {
-            const size_t col = pos - (lineStart + 1);
-            const size_t prevStart = (lineStart == 0) ? 0 : (m_sqlQueryText.rfind(L'\n', lineStart - 1) == std::wstring::npos ? 0 : m_sqlQueryText.rfind(L'\n', lineStart - 1) + 1);
-            const size_t prevLen = lineStart - prevStart;
-            m_sqlCursorPos = prevStart + (std::min)(col, prevLen);
+        if (m_sqlQueryDoc.HasSelection()) {
+            m_sqlQueryDoc.DeleteSelection();
+        } else if (ctrl) {
+            const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+            const auto nextPos = SqlStepWordRight(m_sqlQueryDoc.buffer, cur);
+            m_sqlQueryDoc.buffer.DeleteRange(cur.line, cur.col, nextPos.line, nextPos.col);
         } else {
-            m_sqlCursorPos = 0;
+            m_sqlQueryDoc.buffer.DeleteForward();
         }
         m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
         return true;
     }
-    if (wParam == VK_DOWN) {
-        const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-        const size_t lineStart = (pos == 0) ? 0 : (m_sqlQueryText.rfind(L'\n', pos - 1) == std::wstring::npos ? 0 : m_sqlQueryText.rfind(L'\n', pos - 1) + 1);
-        const size_t col = pos - lineStart;
-        const size_t nextNl = m_sqlQueryText.find(L'\n', pos);
-        if (nextNl != std::wstring::npos) {
-            const size_t nextStart = nextNl + 1;
-            const size_t nextEnd = m_sqlQueryText.find(L'\n', nextStart);
-            const size_t nextLen = (nextEnd == std::wstring::npos) ? (m_sqlQueryText.size() - nextStart) : (nextEnd - nextStart);
-            m_sqlCursorPos = nextStart + (std::min)(col, nextLen);
+
+    // Navigation + Shift selection extension + Ctrl word/document jumps
+    auto navigate = [&](auto moveFn, int collapseDir) -> bool {
+        if (!shift && collapseDir != 0 && m_sqlQueryDoc.HasSelection()) {
+            size_t sL = 0, sC = 0, eL = 0, eC = 0;
+            m_sqlQueryDoc.GetSelectionRange(sL, sC, eL, eC);
+            m_sqlQueryDoc.ClearSelection();
+            m_sqlQueryDoc.buffer.SetCursor(collapseDir < 0 ? sL : eL, collapseDir < 0 ? sC : eC);
+            m_caretVisible = true;
+            EnsureSqlQueryCursorVisible();
+            return true;
+        }
+        if (shift) {
+            if (!m_sqlQueryDoc.hasSelection) {
+                m_sqlQueryDoc.selAnchor = m_sqlQueryDoc.buffer.GetCursor();
+            }
+            moveFn();
+            m_sqlQueryDoc.selEnd = m_sqlQueryDoc.buffer.GetCursor();
+            m_sqlQueryDoc.hasSelection = (m_sqlQueryDoc.selAnchor.line != m_sqlQueryDoc.selEnd.line ||
+                                          m_sqlQueryDoc.selAnchor.col != m_sqlQueryDoc.selEnd.col);
+            m_sqlQueryDoc.selectedWord.clear();
         } else {
-            m_sqlCursorPos = m_sqlQueryText.size();
+            m_sqlQueryDoc.ClearSelection();
+            moveFn();
         }
         m_caretVisible = true;
+        EnsureSqlQueryCursorVisible();
         return true;
-    }
-    if (wParam == VK_HOME) {
-        const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-        const size_t prevNl = (pos == 0) ? std::wstring::npos : m_sqlQueryText.rfind(L'\n', pos - 1);
-        m_sqlCursorPos = (prevNl == std::wstring::npos) ? 0 : (prevNl + 1);
-        m_caretVisible = true;
-        return true;
-    }
-    if (wParam == VK_END) {
-        const size_t pos = (std::min)(m_sqlCursorPos, m_sqlQueryText.size());
-        const size_t nextNl = m_sqlQueryText.find(L'\n', pos);
-        m_sqlCursorPos = (nextNl == std::wstring::npos) ? m_sqlQueryText.size() : nextNl;
-        m_caretVisible = true;
-        return true;
+    };
+
+    switch (wParam) {
+        case VK_LEFT:
+            return navigate([&]() {
+                if (ctrl) {
+                    const auto np = SqlStepWordLeft(m_sqlQueryDoc.buffer, m_sqlQueryDoc.buffer.GetCursor());
+                    m_sqlQueryDoc.buffer.SetCursor(np.line, np.col);
+                } else {
+                    m_sqlQueryDoc.buffer.MoveCursorLeft();
+                }
+            }, -1);
+        case VK_RIGHT:
+            return navigate([&]() {
+                if (ctrl) {
+                    const auto np = SqlStepWordRight(m_sqlQueryDoc.buffer, m_sqlQueryDoc.buffer.GetCursor());
+                    m_sqlQueryDoc.buffer.SetCursor(np.line, np.col);
+                } else {
+                    m_sqlQueryDoc.buffer.MoveCursorRight();
+                }
+            }, +1);
+        case VK_UP:
+            return navigate([&]() { m_sqlQueryDoc.buffer.MoveCursorUp(); }, -1);
+        case VK_DOWN:
+            return navigate([&]() { m_sqlQueryDoc.buffer.MoveCursorDown(); }, +1);
+        case VK_HOME:
+            return navigate([&]() {
+                const auto cur = m_sqlQueryDoc.buffer.GetCursor();
+                m_sqlQueryDoc.buffer.SetCursor(ctrl ? 0 : cur.line, 0);
+            }, 0);
+        case VK_END:
+            return navigate([&]() {
+                const size_t lc = m_sqlQueryDoc.buffer.GetLineCount();
+                if (lc > 0) {
+                    const size_t targetL = ctrl ? (lc - 1) : (std::min)(m_sqlQueryDoc.buffer.GetCursor().line, lc - 1);
+                    m_sqlQueryDoc.buffer.SetCursor(targetL, m_sqlQueryDoc.buffer.GetLine(targetL).length());
+                }
+            }, 0);
+        case VK_PRIOR:
+            return navigate([&]() {
+                for (int i = 0; i < 4; ++i) m_sqlQueryDoc.buffer.MoveCursorUp();
+            }, 0);
+        case VK_NEXT:
+            return navigate([&]() {
+                for (int i = 0; i < 4; ++i) m_sqlQueryDoc.buffer.MoveCursorDown();
+            }, 0);
+        default:
+            break;
     }
     return false;
 }

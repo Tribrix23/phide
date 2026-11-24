@@ -679,7 +679,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
     const std::wstring& filePath,
     const Buffer& buffer,
     bool validateScripts,
-    bool validateStyles
+    bool validateStyles,
+    bool validatePython,
+    bool checkPythonUndefinedVars
 ) {
     if (buffer.GetLineCount() == 0) return {};
 
@@ -708,8 +710,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         diags = ValidatePhp(buffer);
         auto htmlDiags = ValidateHtml(buffer, validateScripts, validateStyles);
         diags.insert(diags.end(), htmlDiags.begin(), htmlDiags.end());
-    } else if (ext == L".py") {
-        diags = ValidatePython(buffer);
+    } else if (ext == L".py" || ext == L".pyw") {
+        if (validatePython) {
+            diags = ValidatePython(buffer, checkPythonUndefinedVars);
+        }
     } else if (ext == L".yml" || ext == L".yaml") {
         diags = ValidateYaml(buffer);
         auto yamlSchemaDiags = ValidateYamlSchema(filePath, buffer);
@@ -741,7 +745,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::CollectUnusedSymbolHints(
     } catch (...) {}
 
     std::vector<lsp::Diagnostic> hints;
-    if (ext == L".py") {
+    if (ext == L".py" || ext == L".pyw") {
         AppendPythonUnusedDiagnostics(buffer, hints);
     } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
         bool isJsx = (ext == L".jsx" || ext == L".tsx");
@@ -3260,7 +3264,7 @@ static bool IsReasonablePythonSuggestion(const std::wstring& sym, const std::wst
     return false;
 }
 
-std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffer) {
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffer, bool checkUndefinedVars) {
     std::vector<lsp::Diagnostic> diagnostics;
 
     struct BracketInfo {
@@ -3307,6 +3311,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
     };
 
     bool tripleIsFString = false;
+    bool tripleIsRaw = false;
     bool carryString = false;
     bool carryStrIsFString = false;
     int carryStrFBraceDepth = 0;
@@ -3369,9 +3374,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             wchar_t ch = line[c];
 
             if (inTripleString) {
+                if (!tripleIsRaw && ch == L'\\') {
+                    if (c + 1 < line.length()) c++;
+                    continue;
+                }
                 if (ch == tripleChar && c + 2 < line.length() && line[c + 1] == tripleChar && line[c + 2] == tripleChar) {
                     inTripleString = false;
                     tripleIsFString = false;
+                    tripleIsRaw = false;
                     c += 2;
                 }
                 continue;
@@ -3415,10 +3425,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             }
 
             bool prefFStr = false;
+            bool prefRaw = false;
             size_t prefQuotePos = std::wstring::npos;
             if (isPyStringPrefixAt(line, c, prefQuotePos)) {
                 for (size_t pk = c; pk < prefQuotePos; ++pk) {
-                    if (towlower(line[pk]) == L'f') prefFStr = true;
+                    wchar_t lc = static_cast<wchar_t>(towlower(line[pk]));
+                    if (lc == L'f') prefFStr = true;
+                    if (lc == L'r') prefRaw = true;
                 }
                 c = prefQuotePos;
                 ch = line[c];
@@ -3427,6 +3440,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
                 inTripleString = true;
                 tripleIsFString = prefFStr;
+                tripleIsRaw = prefRaw;
                 tripleChar = ch;
                 c += 2;
                 continue;
@@ -3638,6 +3652,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         size_t startLine = 0;
         size_t endLine = SIZE_MAX;
         size_t parentId = 0;
+        size_t declScopeId = 0;
+        size_t headerEndLine = 0;
         bool isClass = false;
         std::unordered_set<std::wstring> syms;
         std::unordered_set<std::wstring> globals;
@@ -4052,8 +4068,10 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     fnScope.indent = curStmtIndent;
                     fnScope.startLine = curStmtStartLine;
                     fnScope.endLine = SIZE_MAX;
+                    fnScope.headerEndLine = curStmtEndLine;
+                    fnScope.declScopeId = activeScopeId;
                     fnScope.isClass = false;
-                    // Enclosing non-class scope (skip class-body scope in Python LEGB lookup)
+                    // Enclosing non-class scope (skip class-body scope in Python LEGB lookup for body lines)
                     size_t enc = activeScopeId;
                     while (enc > 0 && pyScopes[enc].isClass) enc = pyScopes[enc].parentId;
                     fnScope.parentId = enc;
@@ -4102,6 +4120,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 clsScope.indent = curStmtIndent;
                 clsScope.startLine = curStmtStartLine;
                 clsScope.endLine = SIZE_MAX;
+                clsScope.headerEndLine = curStmtEndLine;
+                clsScope.declScopeId = activeScopeId;
                 clsScope.isClass = true;
                 clsScope.parentId = activeScopeId;
                 size_t newScopeId = pyScopes.size();
@@ -4337,6 +4357,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
 
         bool p1Triple = false;
         bool p1TripleF = false;
+        bool p1TripleRaw = false;
         int p1TripleFB = 0;
         bool p1TripleFInner = false;
         wchar_t p1TripleFInnerQ = 0;
@@ -4386,6 +4407,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             for (size_t i = 0; i < line.length(); ++i) {
                 wchar_t ch = line[i];
                 if (p1Triple) {
+                    if (!p1TripleRaw && ch == L'\\' && !(p1TripleF && p1TripleFB > 0 && p1TripleFInner)) {
+                        maskedLine.push_back(L' ');
+                        if (i + 1 < line.length()) { maskedLine.push_back(L' '); ++i; }
+                        continue;
+                    }
                     if (p1TripleF && p1TripleFB > 0) {
                         if (p1TripleFInner) {
                             if (ch == L'\\') { maskedLine.push_back(L' '); if (i + 1 < line.length()) { maskedLine.push_back(L' '); ++i; } continue; }
@@ -4410,6 +4436,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     if (ch == p1TripleChar && i + 2 < line.length() && line[i + 1] == p1TripleChar && line[i + 2] == p1TripleChar) {
                         p1Triple = false;
                         p1TripleF = false;
+                        p1TripleRaw = false;
                         p1TripleFB = 0;
                         maskedLine.append(L"   ");
                         i += 2;
@@ -4459,10 +4486,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     continue;
                 }
                 bool prefF = false;
+                bool prefRaw = false;
                 size_t prefQ = std::wstring::npos;
                 if (isPyStringPrefixAt(line, i, prefQ)) {
                     for (size_t pk = i; pk < prefQ; ++pk) {
-                        if (towlower(line[pk]) == L'f') prefF = true;
+                        wchar_t lc = static_cast<wchar_t>(towlower(line[pk]));
+                        if (lc == L'f') prefF = true;
+                        if (lc == L'r') prefRaw = true;
                         maskedLine.push_back(L' ');
                     }
                     i = prefQ;
@@ -4471,6 +4501,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 if ((ch == L'"' || ch == L'\'') && i + 2 < line.length() && line[i + 1] == ch && line[i + 2] == ch) {
                     p1Triple = true;
                     p1TripleF = prefF;
+                    p1TripleRaw = prefRaw;
                     p1TripleFB = 0;
                     p1TripleChar = ch;
                     maskedLine.append(L"   ");
@@ -4524,7 +4555,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
     }
 
     // Pass 2: Detect undefined names and typos (with numeric literal skipping and lexical scope chain lookup)
-    if (!hasStarImport) {
+    if (checkUndefinedVars && !hasStarImport) {
         auto isDefinedInScopeAt = [&](const std::wstring& sym, size_t lineIdx) -> bool {
             size_t activeScopeId = 0;
             for (size_t si = 0; si < pyScopes.size(); ++si) {
@@ -4535,6 +4566,16 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
             size_t cur = activeScopeId;
             for (int hop = 0; hop < 64; ++hop) {
                 if (pyScopes[cur].syms.find(sym) != pyScopes[cur].syms.end()) return true;
+                if (lineIdx <= pyScopes[cur].headerEndLine &&
+                    pyScopes[cur].declScopeId < pyScopes.size() &&
+                    pyScopes[cur].declScopeId != cur) {
+                    size_t dec = pyScopes[cur].declScopeId;
+                    for (int dhop = 0; dhop < 64; ++dhop) {
+                        if (pyScopes[dec].syms.find(sym) != pyScopes[dec].syms.end()) return true;
+                        if (dec == 0) break;
+                        dec = pyScopes[dec].parentId;
+                    }
+                }
                 if (cur == 0) break;
                 cur = pyScopes[cur].parentId;
             }
@@ -4548,6 +4589,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         };
 
         bool inTripleStr = false;
+        bool p2TripleRaw = false;
         wchar_t tChar = 0;
         bool p2CarryStr = false;
         bool p2CarryFStr = false;
@@ -4555,17 +4597,25 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
         wchar_t p2CarryChar = 0;
         int parenDepth = 0;
         bool inImportStmt = false;
+        bool prevLineEndsWithBs = false;
+        bool expectDeclIdent = false;
 
         for (size_t l = 0; l < buffer.GetLineCount(); ++l) {
             const auto& line = buffer.GetLine(l);
-            if (!inTripleStr && !p2CarryStr && parenDepth == 0 && !inImportStmt) {
+            if (!inTripleStr && !p2CarryStr && parenDepth == 0 && !inImportStmt && !prevLineEndsWithBs) {
+                expectDeclIdent = false;
+            }
+            bool atStmtStart = (!inTripleStr && !p2CarryStr && parenDepth == 0 && !inImportStmt && !prevLineEndsWithBs);
+            if (!inTripleStr && !p2CarryStr && parenDepth == 0 && !inImportStmt && !prevLineEndsWithBs) {
                 size_t ls = 0;
                 while (ls < line.length() && (line[ls] == L' ' || line[ls] == L'\t')) ls++;
                 std::wstring trimmedLine = line.substr(ls);
                 if (trimmedLine.rfind(L"import", 0) == 0 && (trimmedLine.length() == 6 || !isIdentChar(trimmedLine[6]))) {
                     inImportStmt = true;
+                    atStmtStart = false;
                 } else if (trimmedLine.rfind(L"from", 0) == 0 && (trimmedLine.length() == 4 || !isIdentChar(trimmedLine[4]))) {
                     inImportStmt = true;
+                    atStmtStart = false;
                 }
             }
 
@@ -4586,8 +4636,13 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 wchar_t ch = line[c];
 
                 if (inTripleStr) {
+                    if (!p2TripleRaw && ch == L'\\') {
+                        c += (c + 1 < line.length()) ? 2 : 1;
+                        continue;
+                    }
                     if (ch == tChar && c + 2 < line.length() && line[c + 1] == tChar && line[c + 2] == tChar) {
                         inTripleStr = false;
+                        p2TripleRaw = false;
                         c += 3;
                     } else {
                         c++;
@@ -4643,18 +4698,26 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 }
 
                 bool prefF = false;
+                bool prefRaw = false;
                 size_t prefQ = std::wstring::npos;
                 if (isPyStringPrefixAt(line, c, prefQ)) {
                     for (size_t pk = c; pk < prefQ; ++pk) {
-                        if (towlower(line[pk]) == L'f') prefF = true;
+                        wchar_t lc = static_cast<wchar_t>(towlower(line[pk]));
+                        if (lc == L'f') prefF = true;
+                        if (lc == L'r') prefRaw = true;
                     }
                     c = prefQ;
                     ch = line[c];
+                    atStmtStart = false;
+                    expectDeclIdent = false;
                 }
 
                 if ((ch == L'"' || ch == L'\'') && c + 2 < line.length() && line[c + 1] == ch && line[c + 2] == ch) {
                     inTripleStr = true;
+                    p2TripleRaw = prefRaw;
                     tChar = ch;
+                    atStmtStart = false;
+                    expectDeclIdent = false;
                     c += 3;
                     continue;
                 }
@@ -4664,6 +4727,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     p2FBraceDepth = 0;
                     p2FInnerStr = false;
                     sChar = ch;
+                    atStmtStart = false;
+                    expectDeclIdent = false;
                     c++;
                     continue;
                 }
@@ -4672,8 +4737,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     break;
                 }
 
-                if (ch == L'(' || ch == L'[' || ch == L'{') { parenDepth++; c++; continue; }
-                if (ch == L')' || ch == L']' || ch == L'}') { if (parenDepth > 0) parenDepth--; c++; continue; }
+                if (ch == L'(' || ch == L'[' || ch == L'{') { parenDepth++; expectDeclIdent = false; atStmtStart = false; c++; continue; }
+                if (ch == L')' || ch == L']' || ch == L'}') { if (parenDepth > 0) parenDepth--; expectDeclIdent = false; atStmtStart = false; c++; continue; }
+
+                if (ch == L';' && parenDepth == 0) {
+                    inImportStmt = false;
+                    atStmtStart = true;
+                    expectDeclIdent = false;
+                    c++;
+                    continue;
+                }
+                if (ch == L':' && parenDepth == 0 && (c + 1 >= line.length() || line[c + 1] != L'=')) {
+                    atStmtStart = true;
+                    expectDeclIdent = false;
+                    c++;
+                    continue;
+                }
 
                 if (ch == L'\\' && c + 1 == line.length()) {
                     lineEndsWithBs = true;
@@ -4688,6 +4767,8 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
 
                 // Skip complete Python numeric literals (hex 0x..., bin 0b..., oct 0o..., floats 1e-3, complex 1j)
                 if (iswdigit(ch) || (ch == L'.' && c + 1 < line.length() && iswdigit(line[c + 1]))) {
+                    atStmtStart = false;
+                    expectDeclIdent = false;
                     if (ch == L'0' && c + 1 < line.length() &&
                         (line[c + 1] == L'x' || line[c + 1] == L'X' || line[c + 1] == L'b' || line[c + 1] == L'B' || line[c + 1] == L'o' || line[c + 1] == L'O')) {
                         c += 2;
@@ -4706,6 +4787,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                 }
 
                 if (isIdentStart(ch) && (c == 0 || !isIdentChar(line[c - 1]))) {
+                    const bool wasStmtStart = atStmtStart;
+                    atStmtStart = false;
+
                     bool isAttr = false;
                     size_t backP = c;
                     while (backP > 0 && (line[backP - 1] == L' ' || line[backP - 1] == L'\t')) backP--;
@@ -4718,6 +4802,22 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     std::wstring sym = line.substr(tokenStart, c - tokenStart);
 
                     if (isAttr) {
+                        expectDeclIdent = false;
+                        continue;
+                    }
+
+                    if (expectDeclIdent) {
+                        expectDeclIdent = false;
+                        continue;
+                    }
+
+                    if (sym == L"def" || sym == L"class") {
+                        expectDeclIdent = true;
+                        continue;
+                    }
+
+                    if (parenDepth == 0 && (sym == L"import" || (sym == L"from" && wasStmtStart))) {
+                        inImportStmt = true;
                         continue;
                     }
 
@@ -4786,9 +4886,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidatePython(const Buffer& buffe
                     continue;
                 }
 
+                if (!iswspace(ch)) {
+                    atStmtStart = false;
+                    expectDeclIdent = false;
+                }
                 c++;
             }
 
+            prevLineEndsWithBs = lineEndsWithBs;
             if (inImportStmt && !inTripleStr && !p2CarryStr && parenDepth == 0 && !lineEndsWithBs) {
                 inImportStmt = false;
             }

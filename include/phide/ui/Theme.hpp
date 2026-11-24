@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <dwrite_3.h>
@@ -353,5 +354,30 @@ private:
     std::wstring m_editorFontFamily = L"Koda Mono";
     float m_editorFontSize = 15.0f;
 };
+
+/**
+ * @brief Renders Phide's crisp 2.5px horizontal sliding indeterminate progress strip along @p topY.
+ */
+inline void DrawIndeterminateTopBar(ID2D1RenderTarget* pRT,
+                                    const Theme& theme,
+                                    float dpiScale,
+                                    float left,
+                                    float width,
+                                    float topY) {
+    if (!pRT || width <= 4.0f) return;
+    const float barH = 2.5f * dpiScale;
+    ID2D1Brush* baseBrush = theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get();
+    if (baseBrush) {
+        pRT->FillRectangle(D2D1::RectF(left, topY, left + width, topY + barH), baseBrush);
+    }
+    const float t = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+    const float slideW = (std::max)(96.0f * dpiScale, width * 0.28f);
+    const float slideX = left - slideW + t * (width + slideW * 2.0f);
+    const float sL = (std::max)(left, slideX);
+    const float sR = (std::min)(left + width, slideX + slideW);
+    if (sR > sL && theme.brushBrandAccent) {
+        pRT->FillRectangle(D2D1::RectF(sL, topY, sR, topY + barH), theme.brushBrandAccent.Get());
+    }
+}
 
 } // namespace phide::ui
