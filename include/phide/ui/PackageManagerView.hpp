@@ -202,6 +202,7 @@ public:
 
     [[nodiscard]] RuntimeLanguage GetActiveLanguage() const noexcept { return m_activeLanguage; }
     void SetActiveLanguage(RuntimeLanguage lang);
+    [[nodiscard]] bool HasActiveInstallOrCheck() const;
 
     [[nodiscard]] PkgViewState GetViewState() const noexcept { return m_viewState; }
     void SetViewState(PkgViewState state) noexcept { m_viewState = state; }

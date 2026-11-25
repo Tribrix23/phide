@@ -653,7 +653,7 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
         }
     }
 
-    // 6. scripts\*.bat / *.ps1
+    // 6. scripts\*.bat / *.cmd / *.ps1 / *.py / *.sh
     {
         fs::path scriptsDir = root / L"scripts";
         if (fs::exists(scriptsDir, ec) && fs::is_directory(scriptsDir, ec)) {
@@ -661,13 +661,23 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
                 if (entry.is_regular_file(ec)) {
                     std::wstring fn = entry.path().filename().wstring();
                     std::wstring ext = ToLowerW(entry.path().extension().wstring());
-                    if (ext == L".bat" || ext == L".cmd" || ext == L".ps1") {
+                    if (ext == L".bat" || ext == L".cmd" || ext == L".ps1" || ext == L".py" || ext == L".sh") {
                         WorkspaceTaskDef t;
                         t.label = L"script: " + fn;
                         t.type = L"script";
-                        t.command = (ext == L".ps1")
-                            ? (L"powershell -ExecutionPolicy Bypass -File scripts\\" + fn)
-                            : (L"cmd /c scripts\\" + fn);
+                        if (ext == L".ps1") {
+                            t.command = L"powershell -ExecutionPolicy Bypass -File scripts\\" + fn;
+                        } else if (ext == L".py") {
+                            t.command = L"python scripts\\" + fn;
+                        } else if (ext == L".sh") {
+                            t.command = L"bash scripts/" + fn;
+                        } else {
+                            t.command = L"cmd /c scripts\\" + fn;
+                        }
+                        std::wstring lowerFn = ToLowerW(fn);
+                        if (lowerFn.find(L"build") != std::wstring::npos) t.group = L"build";
+                        else if (lowerFn.find(L"test") != std::wstring::npos) t.group = L"test";
+                        else if (lowerFn.find(L"watch") != std::wstring::npos || lowerFn.find(L"dev") != std::wstring::npos) t.isBackground = true;
                         t.cwd = workspaceRoot;
                         t.source = L"scripts/" + fn;
                         tasks.push_back(std::move(t));
@@ -675,6 +685,141 @@ std::vector<WorkspaceTaskDef> TaskRunnerEngine::DiscoverAllTasks(const std::wstr
                 }
             }
         }
+    }
+
+    // 7. PHP / Laravel / PHPUnit workspace auto-detection
+    {
+        if (fs::exists(root / L"phpunit.phar", ec)) {
+            WorkspaceTaskDef t;
+            t.label = L"php: PHPUnit Suite";
+            t.type = L"php";
+            t.command = L"php phpunit.phar";
+            t.cwd = workspaceRoot;
+            t.group = L"test";
+            t.source = L"phpunit.phar";
+            tasks.push_back(std::move(t));
+        } else if (fs::exists(root / L"vendor" / L"bin" / L"phpunit", ec) ||
+                   fs::exists(root / L"vendor" / L"bin" / L"phpunit.bat", ec) ||
+                   fs::exists(root / L"phpunit.xml", ec) ||
+                   fs::exists(root / L"phpunit.xml.dist", ec)) {
+            WorkspaceTaskDef t;
+            t.label = L"php: PHPUnit Suite";
+            t.type = L"php";
+            t.command = fs::exists(root / L"vendor" / L"bin" / L"phpunit.bat", ec)
+                ? L"vendor\\bin\\phpunit.bat"
+                : L"php vendor/bin/phpunit";
+            t.cwd = workspaceRoot;
+            t.group = L"test";
+            t.source = L"phpunit.xml";
+            tasks.push_back(std::move(t));
+        }
+        if (fs::exists(root / L"artisan", ec)) {
+            WorkspaceTaskDef serveT;
+            serveT.label = L"laravel: Serve (artisan serve)";
+            serveT.type = L"php";
+            serveT.command = L"php artisan serve";
+            serveT.cwd = workspaceRoot;
+            serveT.isBackground = true;
+            serveT.source = L"artisan";
+            tasks.push_back(std::move(serveT));
+
+            WorkspaceTaskDef testT;
+            testT.label = L"laravel: Test (artisan test)";
+            testT.type = L"php";
+            testT.command = L"php artisan test";
+            testT.cwd = workspaceRoot;
+            testT.group = L"test";
+            testT.source = L"artisan";
+            tasks.push_back(std::move(testT));
+        } else if (fs::exists(root / L"public" / L"index.php", ec) || fs::exists(root / L"index.php", ec)) {
+            const bool hasPublic = fs::exists(root / L"public" / L"index.php", ec);
+            WorkspaceTaskDef t;
+            t.label = L"php: Built-in Dev Server";
+            t.type = L"php";
+            t.command = hasPublic ? L"php -S 127.0.0.1:8000 -t public" : L"php -S 127.0.0.1:8000";
+            t.cwd = workspaceRoot;
+            t.isBackground = true;
+            t.source = hasPublic ? L"public/index.php" : L"index.php";
+            tasks.push_back(std::move(t));
+        }
+    }
+
+    // 8. Python / Django / Pytest workspace auto-detection
+    {
+        if (fs::exists(root / L"manage.py", ec)) {
+            WorkspaceTaskDef runT;
+            runT.label = L"django: Runserver";
+            runT.type = L"python";
+            runT.command = L"python manage.py runserver";
+            runT.cwd = workspaceRoot;
+            runT.isBackground = true;
+            runT.source = L"manage.py";
+            tasks.push_back(std::move(runT));
+
+            WorkspaceTaskDef testT;
+            testT.label = L"django: Test";
+            testT.type = L"python";
+            testT.command = L"python manage.py test";
+            testT.cwd = workspaceRoot;
+            testT.group = L"test";
+            testT.source = L"manage.py";
+            tasks.push_back(std::move(testT));
+        }
+        if (fs::exists(root / L"pytest.ini", ec) || fs::exists(root / L"conftest.py", ec)) {
+            WorkspaceTaskDef t;
+            t.label = L"python: Pytest";
+            t.type = L"python";
+            t.command = L"python -m pytest";
+            t.cwd = workspaceRoot;
+            t.group = L"test";
+            t.source = fs::exists(root / L"pytest.ini", ec) ? L"pytest.ini" : L"conftest.py";
+            tasks.push_back(std::move(t));
+        }
+        if (fs::exists(root / L"requirements.txt", ec)) {
+            WorkspaceTaskDef t;
+            t.label = L"python: Install Dependencies";
+            t.type = L"python";
+            t.command = L"python -m pip install -r requirements.txt";
+            t.cwd = workspaceRoot;
+            t.group = L"build";
+            t.source = L"requirements.txt";
+            tasks.push_back(std::move(t));
+        }
+        if (fs::exists(root / L"main.py", ec) || fs::exists(root / L"app.py", ec)) {
+            const std::wstring entryFile = fs::exists(root / L"app.py", ec) ? L"app.py" : L"main.py";
+            WorkspaceTaskDef t;
+            t.label = L"python: Run " + entryFile;
+            t.type = L"python";
+            t.command = L"python " + entryFile;
+            t.cwd = workspaceRoot;
+            t.source = entryFile;
+            tasks.push_back(std::move(t));
+        }
+    }
+
+    // 9. Rust Cargo / Go Module auto-detection
+    {
+        if (fs::exists(root / L"Cargo.toml", ec)) {
+            tasks.push_back({ L"cargo: build", L"cargo", L"cargo build", {}, workspaceRoot, L"build", false, false, {}, L"", L"Cargo.toml" });
+            tasks.push_back({ L"cargo: test",  L"cargo", L"cargo test",  {}, workspaceRoot, L"test",  false, false, {}, L"", L"Cargo.toml" });
+            tasks.push_back({ L"cargo: run",   L"cargo", L"cargo run",   {}, workspaceRoot, L"",      false, false, {}, L"", L"Cargo.toml" });
+        }
+        if (fs::exists(root / L"go.mod", ec)) {
+            tasks.push_back({ L"go: build", L"go", L"go build ./...", {}, workspaceRoot, L"build", false, false, {}, L"", L"go.mod" });
+            tasks.push_back({ L"go: test",  L"go", L"go test ./...",  {}, workspaceRoot, L"test",  false, false, {}, L"", L"go.mod" });
+        }
+    }
+
+    // Deduplicate tasks by lowercase label (preserving explicit .phide/.vscode definitions first)
+    {
+        std::vector<WorkspaceTaskDef> deduped;
+        std::set<std::wstring> seenLabels;
+        for (auto& t : tasks) {
+            if (seenLabels.insert(ToLowerW(t.label)).second) {
+                deduped.push_back(std::move(t));
+            }
+        }
+        tasks = std::move(deduped);
     }
 
     return tasks;

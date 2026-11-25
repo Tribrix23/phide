@@ -132,6 +132,26 @@ public:
     void SetScrollY(float s) noexcept { m_scrollY = s; }
     [[nodiscard]] const D2D1_RECT_F& GetBtnAddCode() const noexcept { return m_btnAddCode; }
     [[nodiscard]] const D2D1_RECT_F& GetBtnAddText() const noexcept { return m_btnAddText; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnCutCellForTest() const noexcept { return m_btnCutCell; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnCopyCellForTest() const noexcept { return m_btnCopyCell; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnPasteCellForTest() const noexcept { return m_btnPasteCell; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnRunCellForTest() const noexcept { return m_btnRunCell; }
+    [[nodiscard]] const D2D1_RECT_F& GetBtnCellTypePickerForTest() const noexcept { return m_btnCellTypePicker; }
+    [[nodiscard]] const D2D1_RECT_F& GetCellTypeItemCodeBoundsForTest() const noexcept { return m_cellTypeItemCodeBounds; }
+    [[nodiscard]] const D2D1_RECT_F& GetCellTypeItemMdBoundsForTest() const noexcept { return m_cellTypeItemMdBounds; }
+    [[nodiscard]] bool IsCellTypeDropdownOpenForTest() const noexcept { return m_cellTypeDropdownOpen; }
+
+    enum class MarkdownFormatAction {
+        Bold,
+        Italic,
+        Quote,
+        Link,
+        Image,
+        BulletList,
+        NumberList,
+        Heading
+    };
+    void ApplyMarkdownFormat(editor::NotebookDocument& nb, int cellIdx, MarkdownFormatAction action, HWND hwnd);
 
     void RunGarbageCollection() {
         std::lock_guard<std::mutex> lock(m_queueMutex);
@@ -162,6 +182,28 @@ public:
         int severity = 1;
         std::wstring message;
     };
+    struct MarkdownLinkHit {
+        D2D1_RECT_F bounds{};
+        int cellIdx = -1;
+        std::wstring url;
+    };
+    struct MarkdownImageHit {
+        D2D1_RECT_F bounds{};
+        int cellIdx = -1;
+        std::wstring target;
+        uint64_t imageId = 0;
+        std::vector<BYTE> imageBytes;
+        uint32_t pixelW = 0;
+        uint32_t pixelH = 0;
+    };
+
+    void SetHostHwnd(HWND hwnd) noexcept { m_hostHwnd = hwnd; }
+    void SeedMarkdownImageForTest(const std::wstring& target, const std::vector<BYTE>& bytes, uint32_t w, uint32_t h);
+    static std::wstring FormatLatexMathForTest(const std::wstring& latex);
+    static std::wstring ResolveMarkdownImageUrlForTest(const std::wstring& rawUrl);
+    [[nodiscard]] const std::vector<MarkdownLinkHit>& GetVisibleMdLinksForTest() const noexcept { return m_visibleMdLinks; }
+    [[nodiscard]] const std::vector<MarkdownImageHit>& GetVisibleMdImagesForTest() const noexcept { return m_visibleMdImages; }
+    [[nodiscard]] const std::wstring& GetLastOpenedMdLinkForTest() const noexcept { return m_lastOpenedMdLinkForTest; }
 
     using ImportCostAnalyzerFn = std::function<std::unordered_map<size_t, std::wstring>(
         const editor::Buffer&, const std::wstring& scopePath)>;
@@ -229,11 +271,11 @@ private:
 
     // Hover state tracking
     int m_hoveredCellIdx = -1;
-    int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput, 6: Drag, 7: Duplicate, 8: OutputCollapse, 9: OutputCopy, 10: EditMd
+    int m_hoveredBtn = 0; // 1: Run, 2: Del, 3: Up, 4: Down, 5: ClearOutput, 6: Drag, 7: Duplicate, 8: OutputCollapse, 9: OutputCopy, 10: EditMd, 11: CollapseInput, 12..20: MdToolbar(Bold..Done)
     int m_hoveredImgCellIdx = -1;
     int m_hoveredImgOutIdx = -1;
     int m_hoveredImgBtn = 0; // 1: Lightbox/Inspect, 2: Copy PNG, 3: Save PNG
-    int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll, 3: AddCode, 4: AddText
+    int m_hoveredToolbarBtn = 0; // 1: RunAll, 2: ClearAll, 3: AddCode, 4: AddText, 5: Kernel, 6: Restart, 7: Vars, 8: VarTable, 9: Cut, 10: Copy, 11: Paste, 12: RunCell, 13: CellType, 14: Interrupt
     int m_hoveredBottomCellIdx = -1; // Cell index whose bottom border is hovered
     int m_hoveredBottomBtn = 0; // 1: + Code, 2: + Text
 
@@ -328,13 +370,19 @@ private:
     float m_dragCodeStartPos = 0.0f;
     float m_dragCodeStartOffset = 0.0f;
 
-    // Toolbar button hit regions (icon-only, minimal)
+    // Toolbar button hit regions (modern flat toolbar)
     D2D1_RECT_F m_btnRunAll{};
+    D2D1_RECT_F m_btnRunCell{};
     D2D1_RECT_F m_btnClearAll{};
     D2D1_RECT_F m_btnAddCode{};
     D2D1_RECT_F m_btnAddText{};
+    D2D1_RECT_F m_btnCutCell{};
+    D2D1_RECT_F m_btnCopyCell{};
+    D2D1_RECT_F m_btnPasteCell{};
+    D2D1_RECT_F m_btnCellTypePicker{};
     D2D1_RECT_F m_btnKernelPicker{};
     D2D1_RECT_F m_btnRestartKernel{};
+    D2D1_RECT_F m_btnInterruptKernel{};
     D2D1_RECT_F m_btnVariables{};
     D2D1_RECT_F m_btnVarTable{};
     std::vector<D2D1_RECT_F> m_varInspectBtnBounds;
@@ -345,6 +393,20 @@ private:
     bool m_kernelDropdownOpen = false;
     bool m_hoverDropdownItemIdx = false;
     int m_hoveredKernelDropdownIdx = -1;
+
+    D2D1_RECT_F m_cellTypeDropdownBounds{};
+    D2D1_RECT_F m_cellTypeItemCodeBounds{};
+    D2D1_RECT_F m_cellTypeItemMdBounds{};
+    bool m_cellTypeDropdownOpen = false;
+    int m_hoveredCellTypeDropdownIdx = -1;
+
+    struct CellClipboard {
+        bool hasCell = false;
+        editor::NotebookCellType type = editor::NotebookCellType::Code;
+        std::wstring language;
+        std::wstring text;
+    };
+    CellClipboard m_cellClipboard;
 
     // Cached D2D brushes / WIC / bounded LRU bitmap cache (per-RT, cleared in DiscardDeviceResources)
     struct CachedNbBitmap {
@@ -379,9 +441,30 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbActionGlyph;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbModalTitle;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbUiLeading;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbMdProse;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbMdBold;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbMdItalic;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> m_fmtNbMonoSmall;
 
     std::atomic<bool> m_isDestroying{ false };
     std::atomic<int> m_activeWorkers{ 0 };
+    HWND m_hostHwnd = nullptr;
+
+    enum class MdImageStatus { Pending, Ready, Failed };
+    struct CachedMdImage {
+        MdImageStatus status = MdImageStatus::Pending;
+        std::vector<BYTE> bytes;
+        uint64_t imageId = 0;
+        uint32_t pixelW = 0;
+        uint32_t pixelH = 0;
+        std::wstring errorMsg;
+    };
+    std::mutex m_mdImageCacheMutex;
+    std::unordered_map<std::wstring, CachedMdImage> m_mdImageCache;
+    std::vector<MarkdownLinkHit> m_visibleMdLinks;
+    std::vector<MarkdownImageHit> m_visibleMdImages;
+    int m_hoveredMdLinkIdx = -1;
+    std::wstring m_lastOpenedMdLinkForTest;
 
     void EnsureNbBrushes(ID2D1RenderTarget* pRT);
     void EnsureNbTextFormats(Theme& theme, const app::AppConfig& config);
@@ -424,9 +507,13 @@ private:
                              float left, float width, float top, float height);
     float ComputeScaledImageSize(const editor::CellOutput& out, float availW, float imageZoomScale,
                                  const app::AppConfig& config, float& outW, float& outH) const noexcept;
-    float MeasureRenderedMarkdownHeight(const editor::NotebookCell& cell, const app::AppConfig& config) const;
+    float MeasureRenderedMarkdownHeight(Theme& theme, const editor::OpenDocument& doc, const editor::NotebookCell& cell,
+                                        const app::AppConfig& config, float maxAvailW);
     void RenderMarkdownPreview(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
-                               const editor::NotebookCell& cell, const D2D1_RECT_F& bounds);
+                               const editor::OpenDocument& doc, const editor::NotebookCell& cell,
+                               const D2D1_RECT_F& bounds, int cellIdx);
+    bool ProbeWicImageDimensions(const std::vector<BYTE>& bytes, uint32_t& outW, uint32_t& outH);
+    CachedMdImage EnsureMarkdownImage(const editor::OpenDocument& doc, const std::wstring& rawTarget);
     D2D1_RECT_F m_lastTooltipRect{};
 };
 

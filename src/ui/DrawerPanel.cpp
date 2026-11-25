@@ -23,6 +23,94 @@ namespace phide::ui {
 
 namespace {
 
+void RenderDrawerLoadingState(
+    ID2D1RenderTarget* pRT,
+    Theme& theme,
+    const app::AppConfig& config,
+    float areaLeft,
+    float areaTop,
+    float areaW,
+    float areaH,
+    float spinnerAngleDeg,
+    const wchar_t* titleMsg,
+    const wchar_t* subMsg,
+    bool drawTopSweepBar = true) {
+    if (!pRT || areaW <= 16.0f || areaH <= 24.0f) return;
+
+    const float clampedH = (std::max)(config.ScaleF(90.0f), areaH);
+    if (drawTopSweepBar) {
+        const float barH = config.ScaleF(2.5f);
+        pRT->FillRectangle(D2D1::RectF(areaLeft, areaTop, areaLeft + areaW, areaTop + barH),
+                           theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+        const float slideT = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+        const float slideW = (std::max)(config.ScaleF(64.0f), areaW * 0.30f);
+        const float slideX = areaLeft - slideW + slideT * (areaW + slideW * 2.0f);
+        const float sL = (std::max)(areaLeft, slideX);
+        const float sR = (std::min)(areaLeft + areaW, slideX + slideW);
+        if (sR > sL && theme.brushBrandAccent) {
+            pRT->FillRectangle(D2D1::RectF(sL, areaTop, sR, areaTop + barH), theme.brushBrandAccent.Get());
+        }
+    }
+
+    const float spinCy = areaTop + (std::min)(clampedH * 0.36f, config.ScaleF(120.0f));
+    const float spinCx = areaLeft + areaW * 0.5f;
+    const float spinR = config.ScaleF(13.0f);
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+    pRT->CreateSolidColorBrush(
+        theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f),
+        &trackBrush);
+    if (trackBrush) {
+        pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinCx, spinCy), spinR, spinR), trackBrush.Get(), 2.2f);
+    }
+
+    D2D1_MATRIX_3X2_F oldTrans;
+    pRT->GetTransform(&oldTrans);
+    pRT->SetTransform(D2D1::Matrix3x2F::Rotation(spinnerAngleDeg, D2D1::Point2F(spinCx, spinCy)) * oldTrans);
+    if (theme.brushBrandAccent) {
+        Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+        pRT->GetFactory(&pFactory);
+        if (pFactory) {
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+            if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                    sink->BeginFigure(D2D1::Point2F(spinCx - spinR, spinCy), D2D1_FIGURE_BEGIN_HOLLOW);
+                    D2D1_ARC_SEGMENT arc{};
+                    arc.point = D2D1::Point2F(spinCx, spinCy - spinR);
+                    arc.size = D2D1::SizeF(spinR, spinR);
+                    arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                    sink->AddArc(arc);
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                    pRT->DrawGeometry(pArcGeo.Get(), theme.brushBrandAccent.Get(), 2.4f);
+                }
+            }
+        }
+    }
+    pRT->SetTransform(oldTrans);
+
+    float txtTop = spinCy + spinR + config.ScaleF(16.0f);
+    if (titleMsg && titleMsg[0] != L'\0' && theme.fontBody && theme.brushTextPrimary) {
+        D2D1_RECT_F rcLoadTitle = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
+                                              areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(22.0f));
+        DWRITE_TEXT_ALIGNMENT prevAlign = theme.fontBody->GetTextAlignment();
+        theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(titleMsg, static_cast<UINT32>(wcslen(titleMsg)), theme.fontBody.Get(), rcLoadTitle, theme.brushTextPrimary.Get());
+        theme.fontBody->SetTextAlignment(prevAlign);
+    }
+    txtTop += config.ScaleF(22.0f);
+    IDWriteTextFormat* subFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+    if (subMsg && subMsg[0] != L'\0' && subFmt && theme.brushTextSecondary) {
+        D2D1_RECT_F rcLoadSub = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
+                                            areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(32.0f));
+        DWRITE_TEXT_ALIGNMENT prevAlign = subFmt->GetTextAlignment();
+        subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        pRT->DrawText(subMsg, static_cast<UINT32>(wcslen(subMsg)), subFmt, rcLoadSub, theme.brushTextSecondary.Get());
+        subFmt->SetTextAlignment(prevAlign);
+    }
+}
+
 bool MatchesWildcard(const std::wstring& str, const std::wstring& pattern) {
     size_t s = 0, p = 0, match = 0, starIdx = std::wstring::npos;
     while (s < str.length()) {
@@ -1712,84 +1800,13 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                 m_rcExplorerNewFolderBtn = {};
                 m_rcExplorerScrollTrack = {};
                 m_rcExplorerScrollThumb = {};
-                const float areaTop = curY;
-                const float areaLeft = railW;
-                const float areaW = fullDrawerW;
-                const float areaH = (std::max)(config.ScaleF(120.0f), treeBottomY - areaTop);
-
-                // Sleek animated progress bar strip matching EditorCanvas loading UI
-                const float barH = config.ScaleF(2.5f);
-                pRT->FillRectangle(D2D1::RectF(areaLeft, areaTop, areaLeft + areaW, areaTop + barH),
-                                   theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
-                const float slideT = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
-                const float slideW = (std::max)(config.ScaleF(64.0f), areaW * 0.30f);
-                const float slideX = areaLeft - slideW + slideT * (areaW + slideW * 2.0f);
-                const float sL = (std::max)(areaLeft, slideX);
-                const float sR = (std::min)(areaLeft + areaW, slideX + slideW);
-                if (sR > sL && theme.brushBrandAccent) {
-                    pRT->FillRectangle(D2D1::RectF(sL, areaTop, sR, areaTop + barH), theme.brushBrandAccent.Get());
-                }
-
-                // Centered D2D rotating arc spinner + Loading label
-                const float spinCy = areaTop + (std::min)(areaH * 0.36f, config.ScaleF(120.0f));
-                const float spinCx = areaLeft + areaW * 0.5f;
-                const float spinR = config.ScaleF(13.0f);
-
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush, arcBrush;
-                pRT->CreateSolidColorBrush(
-                    theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f),
-                    &trackBrush);
-                if (trackBrush) {
-                    pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinCx, spinCy), spinR, spinR), trackBrush.Get(), 2.2f);
-                }
-
-                D2D1_MATRIX_3X2_F oldTrans;
-                pRT->GetTransform(&oldTrans);
-                pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_projectLoadSpinnerAngle, D2D1::Point2F(spinCx, spinCy)) * oldTrans);
-                if (theme.brushBrandAccent) {
-                    Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
-                    pRT->GetFactory(&pFactory);
-                    if (pFactory) {
-                        Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
-                        if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
-                            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
-                            if (SUCCEEDED(pArcGeo->Open(&sink))) {
-                                sink->BeginFigure(D2D1::Point2F(spinCx - spinR, spinCy), D2D1_FIGURE_BEGIN_HOLLOW);
-                                D2D1_ARC_SEGMENT arc{};
-                                arc.point = D2D1::Point2F(spinCx, spinCy - spinR);
-                                arc.size = D2D1::SizeF(spinR, spinR);
-                                arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-                                sink->AddArc(arc);
-                                sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                                sink->Close();
-                                pRT->DrawGeometry(pArcGeo.Get(), theme.brushBrandAccent.Get(), 2.4f);
-                            }
-                        }
-                    }
-                }
-                pRT->SetTransform(oldTrans);
-
-                float txtTop = spinCy + spinR + config.ScaleF(16.0f);
-                D2D1_RECT_F rcLoadTitle = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
-                                                      areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(22.0f));
-                if (theme.fontBody && theme.brushTextPrimary) {
-                    DWRITE_TEXT_ALIGNMENT prevAlign = theme.fontBody->GetTextAlignment();
-                    theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                    const wchar_t* msg = L"Loading project files...";
-                    pRT->DrawText(msg, static_cast<UINT32>(wcslen(msg)), theme.fontBody.Get(), rcLoadTitle, theme.brushTextPrimary.Get());
-                    theme.fontBody->SetTextAlignment(prevAlign);
-                }
-                txtTop += config.ScaleF(22.0f);
-                IDWriteTextFormat* subFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
-                D2D1_RECT_F rcLoadSub = D2D1::RectF(areaLeft + config.ScaleF(14.0f), txtTop,
-                                                    areaLeft + areaW - config.ScaleF(14.0f), txtTop + config.ScaleF(32.0f));
-                if (subFmt && theme.brushTextSecondary) {
-                    DWRITE_TEXT_ALIGNMENT prevAlign = subFmt->GetTextAlignment();
-                    subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                    const wchar_t* subMsg = L"Indexing workspace tree in background";
-                    pRT->DrawText(subMsg, static_cast<UINT32>(wcslen(subMsg)), subFmt, rcLoadSub, theme.brushTextSecondary.Get());
-                    subFmt->SetTextAlignment(prevAlign);
-                }
+                RenderDrawerLoadingState(
+                    pRT, theme, config,
+                    railW, curY, fullDrawerW, (std::max)(config.ScaleF(120.0f), treeBottomY - curY),
+                    m_projectLoadSpinnerAngle,
+                    L"Loading project files...",
+                    L"Indexing workspace tree in background",
+                    true);
                 return;
             }
 
@@ -11550,6 +11567,36 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
     float curY = headerH + config.ScaleF(38.0f);
     float secH = config.ScaleF(24.0f);
 
+    if (m_isProjectLoading || (IsGitLoading() && m_gitChanges.empty() && m_gitCommits.empty() && !m_isGitRepo)) {
+        m_gitStageAllBounds = {};
+        m_gitDiscardAllBounds = {};
+        m_gitChangesHeaderBounds = {};
+        m_gitStagedHeaderBounds = {};
+        m_gitStashesHeaderBounds = {};
+        m_gitStashSaveBtnBounds = {};
+        m_gitTagsHeaderBounds = {};
+        m_gitTagCreateBtnBounds = {};
+        m_gitWorktreesHeaderBounds = {};
+        m_gitWorktreeCreateBtnBounds = {};
+        m_gitSubmodulesHeaderBounds = {};
+        m_gitSubmoduleSyncBtnBounds = {};
+        m_gitGraphLoadMoreBounds = {};
+        m_gitAmendToggleBounds = {};
+        m_gitGraphHeaderBounds = {};
+        m_gitMsgBoxBounds = {};
+        m_gitCommitBtnBounds = {};
+        m_gitSyncBtnBounds = {};
+        m_gitSplitterBounds = {};
+        RenderDrawerLoadingState(
+            pRT, theme, config,
+            railW, curY, currentDrawerW, (std::max)(config.ScaleF(140.0f), clientHeight - curY),
+            m_isProjectLoading ? m_projectLoadSpinnerAngle : m_gitAnimAngle,
+            L"Loading Source Control...",
+            L"Scanning repository status and branch history",
+            true);
+        return;
+    }
+
     // Clamp vertical splitter between Changes and Graph with persistence (Complaint 7)
     float minSplitY = curY + config.ScaleF(110.0f);
     float maxSplitY = clientHeight - config.ScaleF(70.0f);
@@ -12407,12 +12454,24 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
 
             if (m_changesExpanded) {
                 if (unstagedCount == 0 && stagedCount == 0) {
-                    D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, itemY + config.ScaleF(4.0f), railW + currentDrawerW - paddingX, itemY + config.ScaleF(24.0f));
-                    const wchar_t* noChStr = L"No changes detected";
-                    pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
-                                  theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
-                                  rcNoCh, theme.brushTextMuted.Get());
-                    itemY += rowH;
+                    if (IsGitLoading()) {
+                        const float loadingAreaH = (std::max)(config.ScaleF(100.0f), fileListBottomY - itemY);
+                        RenderDrawerLoadingState(
+                            pRT, theme, config,
+                            railW, itemY, currentDrawerW, loadingAreaH,
+                            m_gitAnimAngle,
+                            L"Refreshing changes...",
+                            L"Checking working tree & staged status",
+                            false);
+                        itemY += loadingAreaH;
+                    } else {
+                        D2D1_RECT_F rcNoCh = D2D1::RectF(railW + paddingX, itemY + config.ScaleF(4.0f), railW + currentDrawerW - paddingX, itemY + config.ScaleF(24.0f));
+                        const wchar_t* noChStr = L"No changes detected";
+                        pRT->DrawText(noChStr, static_cast<UINT32>(wcslen(noChStr)),
+                                      theme.fontMenuItem.Get() ? theme.fontMenuItem.Get() : theme.fontMenuShortcut.Get(),
+                                      rcNoCh, theme.brushTextMuted.Get());
+                        itemY += rowH;
+                    }
                 } else {
                     std::vector<size_t> unstagedIndices;
                     unstagedIndices.reserve(m_gitChanges.size());
@@ -13058,6 +13117,31 @@ void DrawerPanel::RenderSourceControlPane(ID2D1RenderTarget* pRT, Theme& theme, 
             // Clip to Graph scrollable area (cleanly bounded, never spills over)
             D2D1_RECT_F rcGraphClip = D2D1::RectF(railW, listTopY, railW + currentDrawerW, clientHeight);
             pRT->PushAxisAlignedClip(rcGraphClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            if (m_gitCommits.empty() && (IsGitLoading() || m_isProjectLoading)) {
+                RenderDrawerLoadingState(
+                    pRT, theme, config,
+                    railW, listTopY, currentDrawerW, (std::max)(config.ScaleF(100.0f), clientHeight - listTopY),
+                    m_gitAnimAngle,
+                    L"Loading commit graph...",
+                    L"Reading branch history and lanes",
+                    true);
+                pRT->PopAxisAlignedClip();
+                return;
+            }
+            if (IsGitLoading()) {
+                const float barH = config.ScaleF(2.0f);
+                pRT->FillRectangle(D2D1::RectF(railW, listTopY, railW + currentDrawerW, listTopY + barH),
+                                   theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : theme.brushHeaderBg.Get());
+                const float slideT = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+                const float slideW = (std::max)(config.ScaleF(56.0f), currentDrawerW * 0.30f);
+                const float slideX = railW - slideW + slideT * (currentDrawerW + slideW * 2.0f);
+                const float sL = (std::max)(railW, slideX);
+                const float sR = (std::min)(railW + currentDrawerW, slideX + slideW);
+                if (sR > sL && theme.brushBrandAccent) {
+                    pRT->FillRectangle(D2D1::RectF(sL, listTopY, sR, listTopY + barH), theme.brushBrandAccent.Get());
+                }
+            }
 
             float rowH = config.ScaleF(26.0f);
             float fileRowH = config.ScaleF(22.0f);

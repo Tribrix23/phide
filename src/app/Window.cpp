@@ -574,6 +574,7 @@ Window::Window() {
     m_dbSettingsModal.SetPort(std::to_wstring(m_mysqlPort));
 
     auto& nbView = m_editor.GetNotebookView();
+    nbView.SetHostHwnd(m_hwnd);
     nbView.SetImportCostAnalyzer([this](const editor::Buffer& buf, const std::wstring& scopePath) {
         return CalculatePythonBufferImportCosts(buf, scopePath);
     });
@@ -6439,6 +6440,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
             m_pendingOpenFolder.reset();
         }
         m_drawer.BeginAsyncOpenFolder(path);
+        m_editor.GetGraphView().SetLoading(true);
         m_wsCommentAnnots.clear();
         m_cachedWorkspaceDir = path;
         m_cachedProjectRuntimeId.clear();
@@ -14711,6 +14713,73 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             RefreshWorkspaceTasks();
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         };
+        m_editor.onTaskOpenConfig = [this]() {
+            std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : m_workspace.GetRootPath().wstring();
+            if (wsRoot.empty()) {
+                m_editor.ShowWorkspaceToast(L"Open a workspace folder first to configure .phide/tasks.json");
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                return;
+            }
+            std::error_code ec;
+            std::filesystem::path dir = std::filesystem::path(wsRoot) / L".phide";
+            std::filesystem::create_directories(dir, ec);
+            std::filesystem::path cfgPath = dir / L"tasks.json";
+            if (!std::filesystem::exists(cfgPath, ec)) {
+                std::ofstream out(cfgPath, std::ios::binary);
+                if (out.is_open()) {
+                    const char* starter =
+                        "{\n"
+                        "  \"version\": \"2.0.0\",\n"
+                        "  \"tasks\": [\n"
+                        "    {\n"
+                        "      \"label\": \"build\",\n"
+                        "      \"type\": \"shell\",\n"
+                        "      \"command\": \"echo Build complete\",\n"
+                        "      \"group\": \"build\"\n"
+                        "    },\n"
+                        "    {\n"
+                        "      \"label\": \"test\",\n"
+                        "      \"type\": \"shell\",\n"
+                        "      \"command\": \"echo Running tests\",\n"
+                        "      \"group\": \"test\"\n"
+                        "    }\n"
+                        "  ]\n"
+                        "}\n";
+                    out.write(starter, static_cast<std::streamsize>(strlen(starter)));
+                    out.close();
+                }
+            }
+            RefreshWorkspaceTasks();
+            LoadFileFromPath(cfgPath.wstring());
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.onTaskStopAll = [this]() {
+            for (const auto& t : m_editor.GetWorkspaceTasks()) {
+                if (m_terminal.IsWorkspaceTaskRunning(t.label)) {
+                    m_terminal.StopWorkspaceTaskTab(t.label);
+                }
+            }
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
+        m_editor.GetInteractiveGuideView().onLaunchAction = [this](const std::wstring& actionId) {
+            if (actionId == L"api") {
+                OpenSpecialView(L"api", L"API Tester");
+            } else if (actionId == L"task_runner") {
+                RefreshWorkspaceTasks();
+                OpenSpecialView(L"task_runner", L"Task Runner");
+            } else if (actionId == L"erd") {
+                m_editor.GetErdView().OpenSchemaDiffMode(false);
+                OpenSpecialView(L"erd", L"ER Diagram");
+            } else if (actionId == L"sql_console") {
+                OpenSpecialView(L"sql_console", L"SQL Query Console");
+            } else if (actionId == L"packages") {
+                OpenSpecialView(L"packages", L"Packages");
+            } else if (actionId == L"zen_mode") {
+                ToggleZenMode();
+            }
+            SaveSessionState();
+            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        };
         m_editor.SetSqlNotifyHwnd(m_hwnd);
         m_editor.onSqlStatusToast = [this](const std::wstring& msg) {
             m_drawer.ShowGitNotification(msg);
@@ -15265,38 +15334,288 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
         bool isUninstall = (cmd.find(L"uninstall") != std::wstring::npos || cmd.find(L"remove") != std::wstring::npos);
         std::wstring taskTitle = isUninstall ? (L"Uninstalling package " + pkgName) : (L"Installing package " + pkgName);
         m_extensionsPanel.StartProcessTask(taskTitle, cmd);
-        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+        if (m_hwnd) {
+            SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
 
-        std::thread([this, pkgName, cmd, taskTitle, scope, isUninstall]() {
-            // Find appropriate interpreter or tool
-            std::wstring pyPath = L"python.exe";
-            for (const auto& item : m_extensionsPanel.GetItems()) {
-                if (item.id == L"python" && !item.environments.empty()) {
-                    for (const auto& env : item.environments) {
-                        if (env.isDefault && std::filesystem::exists(env.path)) {
+        // Snapshot known Python environments on UI thread before spawning background worker
+        std::vector<phide::ui::EnvironmentOption> snapshotPyEnvs;
+        for (const auto& item : m_extensionsPanel.GetItems()) {
+            if (item.id == L"python") {
+                snapshotPyEnvs = item.environments;
+                break;
+            }
+        }
+        std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : std::filesystem::current_path().wstring();
+
+        std::thread([this, pkgName, cmd, taskTitle, scope, isUninstall, snapshotPyEnvs, wsFolder]() {
+            auto isValidPyExe = [](const std::filesystem::path& p) -> bool {
+                std::wstring s = p.wstring();
+                if (s.empty()) return false;
+                if (s.find(L"WindowsApps") != std::wstring::npos) return false;
+                if (s.find(L"_uninstalling_") != std::wstring::npos) return false;
+                if (s.find(L"emsdk") != std::wstring::npos) return false;
+                std::error_code ec;
+                if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec) || ec) return false;
+                auto sz = std::filesystem::file_size(p, ec);
+                return !ec && sz >= 10240;
+            };
+
+            auto runAndCapture = [&](const std::wstring& execCmd, const std::wstring& workDir, DWORD& outExitCode, std::string& outOutput, bool updateProg) -> BOOL {
+                outOutput.clear();
+                outExitCode = 1;
+                SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+                HANDLE hRead = nullptr, hWrite = nullptr;
+                if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+                    return FALSE;
+                }
+                SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+                STARTUPINFOW si{};
+                si.cb = sizeof(si);
+                si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+                si.wShowWindow = SW_HIDE;
+                si.hStdOutput = hWrite;
+                si.hStdError = hWrite;
+                PROCESS_INFORMATION pi{};
+
+                std::vector<wchar_t> cmdBuf(execCmd.begin(), execCmd.end());
+                cmdBuf.push_back(0);
+
+                BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                         workDir.empty() ? nullptr : workDir.c_str(), &si, &pi);
+                CloseHandle(hWrite);
+                hWrite = nullptr;
+
+                if (!ok) {
+                    CloseHandle(hRead);
+                    return FALSE;
+                }
+
+                float prog = 0.40f;
+                char tmp[4096];
+                for (;;) {
+                    DWORD avail = 0;
+                    if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                        DWORD bytesRead = 0;
+                        if (ReadFile(hRead, tmp, (std::min<DWORD>)(avail, sizeof(tmp)), &bytesRead, nullptr) && bytesRead > 0) {
+                            if (outOutput.size() + bytesRead <= 256 * 1024) {
+                                outOutput.append(tmp, bytesRead);
+                            }
+                        }
+                        continue;
+                    }
+                    DWORD waitRes = WaitForSingleObject(pi.hProcess, 150);
+                    if (waitRes == WAIT_OBJECT_0) {
+                        // Drain remaining pipe output
+                        DWORD bytesRead = 0;
+                        while (PeekNamedPipe(hRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0 &&
+                               ReadFile(hRead, tmp, (std::min<DWORD>)(avail, sizeof(tmp)), &bytesRead, nullptr) && bytesRead > 0) {
+                            if (outOutput.size() + bytesRead <= 256 * 1024) {
+                                outOutput.append(tmp, bytesRead);
+                            }
+                        }
+                        break;
+                    }
+                    if (updateProg) {
+                        prog = (std::min)(0.92f, prog + 0.04f);
+                        m_extensionsPanel.UpdateProcessTask(taskTitle, prog, (isUninstall ? L"Removing " : L"Downloading and installing ") + pkgName + L"...");
+                        if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
+                            PostMessageW(postHwnd, WM_USER + 233, 0, 0);
+                        }
+                    }
+                }
+                GetExitCodeProcess(pi.hProcess, &outExitCode);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                CloseHandle(hRead);
+                return TRUE;
+            };
+
+            const bool isPipCmd = (cmd.find(L"pip ") == 0 || cmd.find(L"\" -m pip") != std::wstring::npos);
+
+            // 1. Detect Python: check PhIDE Python FIRST, then fall back to PC Python
+            std::wstring pyPath;
+            if (isPipCmd) {
+                // 1a. Check PhIDE's own bundled / internal Python runtimes first
+                wchar_t exeModPath[MAX_PATH] = { 0 };
+                GetModuleFileNameW(nullptr, exeModPath, MAX_PATH);
+                std::filesystem::path exeDir = std::filesystem::path(exeModPath).parent_path();
+                std::vector<std::filesystem::path> phideCandidates = {
+                    exeDir / L"runtimes" / L"python" / L"python.exe",
+                    exeDir.parent_path() / L"runtimes" / L"python" / L"python.exe",
+                    GetPhideRoot() / L"runtimes" / L"python" / L"python.exe",
+                    L"C:\\Program Files\\phide\\runtimes\\python\\python.exe"
+                };
+                wchar_t szLocalPhide[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalPhide, MAX_PATH) > 0) {
+                    phideCandidates.push_back(std::filesystem::path(szLocalPhide) / L"phide" / L"runtimes" / L"python" / L"python.exe");
+                    phideCandidates.push_back(std::filesystem::path(szLocalPhide) / L"phide" / L"python" / L"python.exe");
+                }
+                for (const auto& cand : phideCandidates) {
+                    if (isValidPyExe(cand)) {
+                        pyPath = cand.wstring();
+                        break;
+                    }
+                }
+                // Check PhIDE-configured environments (PhIDE Bundled or Custom Installation)
+                if (pyPath.empty()) {
+                    for (const auto& env : snapshotPyEnvs) {
+                        if ((env.type == L"PhIDE Bundled" || env.type == L"Custom Installation") && isValidPyExe(env.path)) {
                             pyPath = env.path;
                             break;
                         }
                     }
                 }
+
+                // 1b. Fall back to PC Python only if PhIDE Python was not found
+                if (pyPath.empty()) {
+                    for (const auto& env : snapshotPyEnvs) {
+                        if (env.isDefault && env.type != L"Global Launcher" && isValidPyExe(env.path)) {
+                            pyPath = env.path;
+                            break;
+                        }
+                    }
+                }
+                if (pyPath.empty()) {
+                    for (const auto& env : snapshotPyEnvs) {
+                        if (env.type != L"Global Launcher" && isValidPyExe(env.path)) {
+                            pyPath = env.path;
+                            break;
+                        }
+                    }
+                }
+                if (pyPath.empty()) {
+                    // Check %LOCALAPPDATA%\Programs\Python (sorted newest first)
+                    wchar_t szLocalApp[MAX_PATH] = { 0 };
+                    if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+                        std::filesystem::path pyRoot = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
+                        std::error_code ecPyDir;
+                        if (std::filesystem::exists(pyRoot, ecPyDir)) {
+                            std::vector<std::wstring> cands;
+                            for (const auto& entry : std::filesystem::directory_iterator(pyRoot, ecPyDir)) {
+                                if (entry.is_directory()) {
+                                    std::filesystem::path cand = entry.path() / L"python.exe";
+                                    if (isValidPyExe(cand)) cands.push_back(cand.wstring());
+                                }
+                            }
+                            std::sort(cands.begin(), cands.end(), std::greater<std::wstring>());
+                            if (!cands.empty()) pyPath = cands[0];
+                        }
+                    }
+                }
+                if (pyPath.empty()) {
+                    // Check Windows Registry PEP 514 (HKCU / HKLM)
+                    auto checkReg = [&](HKEY root) -> std::wstring {
+                        HKEY hPyCore = nullptr;
+                        if (RegOpenKeyExW(root, L"Software\\Python\\PythonCore", 0, KEY_READ, &hPyCore) != ERROR_SUCCESS) return L"";
+                        wchar_t subName[256];
+                        DWORD idx = 0, nameLen = 256;
+                        std::wstring best;
+                        while (RegEnumKeyExW(hPyCore, idx++, subName, &nameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                            nameLen = 256;
+                            HKEY hInst = nullptr;
+                            std::wstring subPath = std::wstring(L"Software\\Python\\PythonCore\\") + subName + L"\\InstallPath";
+                            if (RegOpenKeyExW(root, subPath.c_str(), 0, KEY_READ, &hInst) == ERROR_SUCCESS) {
+                                wchar_t valBuf[MAX_PATH] = { 0 };
+                                DWORD dwType = REG_SZ, dwSz = sizeof(valBuf);
+                                if (RegQueryValueExW(hInst, L"ExecutablePath", nullptr, &dwType, reinterpret_cast<LPBYTE>(valBuf), &dwSz) == ERROR_SUCCESS && valBuf[0] != 0) {
+                                    if (isValidPyExe(valBuf)) best = valBuf;
+                                } else {
+                                    dwSz = sizeof(valBuf);
+                                    if (RegQueryValueExW(hInst, nullptr, nullptr, &dwType, reinterpret_cast<LPBYTE>(valBuf), &dwSz) == ERROR_SUCCESS && valBuf[0] != 0) {
+                                        std::filesystem::path p(valBuf);
+                                        if (p.filename() != L"python.exe") p /= L"python.exe";
+                                        if (isValidPyExe(p)) best = p.wstring();
+                                    }
+                                }
+                                RegCloseKey(hInst);
+                                if (!best.empty()) break;
+                            }
+                        }
+                        RegCloseKey(hPyCore);
+                        return best;
+                    };
+                    pyPath = checkReg(HKEY_CURRENT_USER);
+                    if (pyPath.empty()) pyPath = checkReg(HKEY_LOCAL_MACHINE);
+                }
+                if (pyPath.empty()) {
+                    wchar_t foundPath[MAX_PATH] = { 0 };
+                    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, foundPath, nullptr) > 0 && isValidPyExe(foundPath)) {
+                        pyPath = foundPath;
+                    }
+                }
+                if (pyPath.empty()) {
+                    static const wchar_t* const kSysRoots[] = {
+                        L"C:\\Program Files\\Python315\\python.exe",
+                        L"C:\\Program Files\\Python314\\python.exe",
+                        L"C:\\Program Files\\Python313\\python.exe",
+                        L"C:\\Program Files\\Python312\\python.exe",
+                        L"C:\\Program Files\\Python311\\python.exe",
+                        L"C:\\Program Files\\Python310\\python.exe"
+                    };
+                    for (const wchar_t* cand : kSysRoots) {
+                        if (isValidPyExe(cand)) { pyPath = cand; break; }
+                    }
+                }
+                if (pyPath.empty()) {
+                    // Finally check py.exe ONLY if it resolves a real installed Python
+                    wchar_t pyLauncher[MAX_PATH] = { 0 };
+                    std::error_code ecL;
+                    if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyLauncher, nullptr) > 0 ||
+                        std::filesystem::exists(L"C:\\Windows\\py.exe", ecL)) {
+                        std::wstring lPath = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
+                        std::wstring verOut = RunCmdCapture(L"\"" + lPath + L"\" --version");
+                        if (verOut.find(L"Python ") != std::wstring::npos) {
+                            pyPath = lPath;
+                        }
+                    }
+                }
+
+                // Check workspace .venv too if already present (for Project scope)
+                if (pyPath.empty() && scope == phide::ui::PkgInstallScope::Project) {
+                    std::filesystem::path existingVenvPy = std::filesystem::path(wsFolder) / L".venv" / L"Scripts" / L"python.exe";
+                    if (isValidPyExe(existingVenvPy)) {
+                        pyPath = existingVenvPy.wstring();
+                    }
+                }
+
+                // Neither PhIDE Python nor PC Python exists! Report clearly instead of generic "Failed to install"
+                if (pyPath.empty()) {
+                    m_extensionsPanel.CompleteProcessTask(taskTitle, L"No Python found in PhIDE or on this PC. Install Python first.");
+                    m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
+                    if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
+                        PostMessageW(postHwnd, WM_USER + 241, 0, 0);
+                    }
+                    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                    std::thread([this, taskTitle]() {
+                        std::this_thread::sleep_for(std::chrono::seconds(7));
+                        const auto& tasks = m_extensionsPanel.GetProcessTasks();
+                        for (size_t i = 0; i < tasks.size(); ++i) {
+                            if (tasks[i].title == taskTitle && tasks[i].isCompleted) {
+                                m_extensionsPanel.DismissProcessTask(i);
+                                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                                break;
+                            }
+                        }
+                    }).detach();
+                    return;
+                }
             }
 
-            // Determine project workspace directory
-            std::wstring wsFolder = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : std::filesystem::current_path().wstring();
-
             // For local project installations, ensure workspace .venv exists (PyCharm style)
-            if (scope == phide::ui::PkgInstallScope::Project && (cmd.find(L"pip ") == 0 || cmd.find(L"\" -m pip") != std::wstring::npos)) {
+            if (scope == phide::ui::PkgInstallScope::Project && isPipCmd) {
                 std::filesystem::path venvPy = std::filesystem::path(wsFolder) / L".venv" / L"Scripts" / L"python.exe";
                 std::error_code ecVenv;
                 if (!std::filesystem::exists(venvPy, ecVenv) && !isUninstall) {
                     m_extensionsPanel.UpdateProcessTask(taskTitle, 0.20f, L"Creating workspace virtual environment (.venv)...");
                     
-                    // Resolve interpreter capable of executing venv
+                    // Resolve interpreter capable of executing venv (PhIDE Python first, then PC Python)
                     std::wstring venvCreatorPy;
-                    auto testVenv = [](const std::wstring& exe) -> bool {
-                        if (exe.empty()) return false;
+                    auto testVenv = [&](const std::wstring& exe) -> bool {
+                        if (!isValidPyExe(exe)) return false;
                         std::error_code ec;
-                        if (!std::filesystem::exists(exe, ec)) return false;
                         if (std::filesystem::exists(std::filesystem::path(exe).parent_path() / L"Lib" / L"venv", ec)) return true;
                         std::wstring out = RunCmdCapture(L"\"" + exe + L"\" -c \"import venv; print('OK')\"");
                         return out.find(L"OK") != std::wstring::npos;
@@ -15305,16 +15624,11 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                     if (testVenv(pyPath)) {
                         venvCreatorPy = pyPath;
                     } else {
-                        for (const auto& item : m_extensionsPanel.GetItems()) {
-                            if (item.id == L"python") {
-                                for (const auto& env : item.environments) {
-                                    if (testVenv(env.path)) {
-                                        venvCreatorPy = env.path;
-                                        break;
-                                    }
-                                }
+                        for (const auto& env : snapshotPyEnvs) {
+                            if (testVenv(env.path)) {
+                                venvCreatorPy = env.path;
+                                break;
                             }
-                            if (!venvCreatorPy.empty()) break;
                         }
                     }
                     if (venvCreatorPy.empty()) {
@@ -15332,27 +15646,20 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                     }
 
                     std::wstring venvCmd = L"\"" + venvCreatorPy + L"\" -m venv \"" + (std::filesystem::path(wsFolder) / L".venv").wstring() + L"\"";
-                    STARTUPINFOW siV{};
-                    siV.cb = sizeof(siV);
-                    siV.dwFlags = STARTF_USESHOWWINDOW;
-                    siV.wShowWindow = SW_HIDE;
-                    PROCESS_INFORMATION piV{};
-                    std::vector<wchar_t> vBuf(venvCmd.begin(), venvCmd.end());
-                    vBuf.push_back(0);
-                    if (CreateProcessW(nullptr, vBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, wsFolder.c_str(), &siV, &piV)) {
-                        WaitForSingleObject(piV.hProcess, 35000);
-                        CloseHandle(piV.hProcess);
-                        CloseHandle(piV.hThread);
-                    }
+                    DWORD venvExit = 1;
+                    std::string venvOut;
+                    runAndCapture(venvCmd, wsFolder, venvExit, venvOut, false);
                     m_drawer.RefreshTree();
                 }
 
-                if (std::filesystem::exists(venvPy, ecVenv)) {
+                if (isValidPyExe(venvPy)) {
                     pyPath = venvPy.wstring();
                 }
             }
 
             std::wstring runCmd = cmd;
+            bool missingRuntime = false;
+            std::wstring missingMsg;
             if (cmd.find(L"pip install") == 0) {
                 std::wstring args = cmd.substr(11);
                 runCmd = L"\"" + pyPath + L"\" -m pip install " + args;
@@ -15361,7 +15668,8 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 runCmd = L"\"" + pyPath + L"\" -m pip uninstall " + args;
             } else if (cmd.find(L"composer ") == 0) {
                 wchar_t compFound[MAX_PATH] = { 0 };
-                std::wstring compPath = L"composer";
+                std::wstring compPath;
+                std::error_code ecComp;
                 if (SearchPathW(nullptr, L"composer.bat", nullptr, MAX_PATH, compFound, nullptr) > 0) {
                     compPath = compFound;
                 } else if (SearchPathW(nullptr, L"composer", nullptr, MAX_PATH, compFound, nullptr) > 0) {
@@ -15370,14 +15678,18 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                     wchar_t szLocalApp[MAX_PATH] = { 0 };
                     if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
                         std::filesystem::path p = std::filesystem::path(szLocalApp) / L"Programs" / L"PHP" / L"v8.5" / L"composer.bat";
-                        std::error_code ec;
-                        if (std::filesystem::exists(p, ec)) compPath = p.wstring();
+                        if (std::filesystem::exists(p, ecComp)) compPath = p.wstring();
                     }
                 }
-                runCmd = L"\"" + compPath + L"\" " + cmd.substr(9);
+                if (compPath.empty()) {
+                    missingRuntime = true;
+                    missingMsg = L"No PHP/Composer found in PhIDE or on this PC.";
+                } else {
+                    runCmd = L"\"" + compPath + L"\" " + cmd.substr(9);
+                }
             } else if (cmd.find(L"npm ") == 0) {
                 wchar_t npmFound[MAX_PATH] = { 0 };
-                std::wstring npmPath = L"npm.cmd";
+                std::wstring npmPath;
                 std::error_code ecNpm;
                 if (SearchPathW(nullptr, L"npm.cmd", nullptr, MAX_PATH, npmFound, nullptr) > 0) {
                     npmPath = npmFound;
@@ -15386,7 +15698,33 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 } else if (std::filesystem::exists(L"C:\\Program Files\\nodejs\\npm.cmd", ecNpm)) {
                     npmPath = L"C:\\Program Files\\nodejs\\npm.cmd";
                 }
-                runCmd = L"\"" + npmPath + L"\" " + cmd.substr(4);
+                if (npmPath.empty()) {
+                    missingRuntime = true;
+                    missingMsg = L"No Node.js/npm found on this PC. Install Node.js first.";
+                } else {
+                    runCmd = L"\"" + npmPath + L"\" " + cmd.substr(4);
+                }
+            }
+
+            if (missingRuntime) {
+                m_extensionsPanel.CompleteProcessTask(taskTitle, missingMsg);
+                m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
+                if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
+                    PostMessageW(postHwnd, WM_USER + 241, 0, 0);
+                }
+                if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                std::thread([this, taskTitle]() {
+                    std::this_thread::sleep_for(std::chrono::seconds(7));
+                    const auto& tasks = m_extensionsPanel.GetProcessTasks();
+                    for (size_t i = 0; i < tasks.size(); ++i) {
+                        if (tasks[i].title == taskTitle && tasks[i].isCompleted) {
+                            m_extensionsPanel.DismissProcessTask(i);
+                            if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+                            break;
+                        }
+                    }
+                }).detach();
+                return;
             }
 
             m_extensionsPanel.UpdateProcessTask(taskTitle, 0.40f, L"Running: " + runCmd);
@@ -15394,39 +15732,19 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                 PostMessageW(postHwnd, WM_USER + 233, 0, 0);
             }
 
-            STARTUPINFOW si{};
-            si.cb = sizeof(si);
-            si.dwFlags = STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            PROCESS_INFORMATION pi{};
-
             std::wstring execCmd;
-            if (runCmd.find(L"\"") == 0 && runCmd.find(L"python.exe\"") != std::wstring::npos) {
-                // Execute python.exe directly without cmd.exe /c wrapping for robust execution and quoting
+            if (runCmd.find(L"\"") == 0 && (runCmd.find(L"python.exe\"") != std::wstring::npos || runCmd.find(L"py.exe\"") != std::wstring::npos)) {
+                // Execute python.exe / py.exe directly without cmd.exe /c wrapping for robust execution and quoting
                 execCmd = runCmd;
             } else {
                 execCmd = L"cmd.exe /c " + runCmd;
             }
-            std::vector<wchar_t> cmdBuf(execCmd.begin(), execCmd.end());
-            cmdBuf.push_back(0);
 
             DWORD exitCode = 1;
-            BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, wsFolder.c_str(), &si, &pi);
-            if (ok) {
-                float prog = 0.40f;
-                while (WaitForSingleObject(pi.hProcess, 350) == WAIT_TIMEOUT) {
-                    prog = (std::min)(0.92f, prog + 0.08f);
-                    m_extensionsPanel.UpdateProcessTask(taskTitle, prog, (isUninstall ? L"Removing " : L"Downloading and installing ") + pkgName + L"...");
-                    if (HWND postHwnd = GetMainPostHwnd(); postHwnd && !m_isDestroying.load()) {
-                        PostMessageW(postHwnd, WM_USER + 233, 0, 0);
-                    }
-                }
-                GetExitCodeProcess(pi.hProcess, &exitCode);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-            }
+            std::string procOut;
+            BOOL ok = runAndCapture(execCmd, wsFolder, exitCode, procOut, true);
 
-            if (exitCode == 0) {
+            if (ok && exitCode == 0) {
                 if (isUninstall) {
                     m_extensionsPanel.CompleteProcessTask(taskTitle, L"Successfully uninstalled " + pkgName);
                     m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
@@ -15441,7 +15759,42 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
                     m_editor.GetPackageManagerView().MarkPackageInstalled(pkgName, scope);
                 }
             } else {
-                m_extensionsPanel.CompleteProcessTask(taskTitle, (isUninstall ? L"Failed to uninstall " : L"Failed to install ") + pkgName);
+                std::wstring errMsg = (isUninstall ? L"Failed to uninstall " : L"Failed to install ") + pkgName;
+                if (!ok) {
+                    errMsg = isPipCmd
+                        ? L"Failed: Could not start Python interpreter."
+                        : (L"Failed: Could not start installer for " + pkgName);
+                } else if (procOut.find("No module named pip") != std::string::npos) {
+                    errMsg = L"Failed: pip is not installed in this Python environment.";
+                } else if (procOut.find("No Python at") != std::string::npos ||
+                           procOut.find("Unable to create process") != std::string::npos ||
+                           procOut.find("not recognized as an internal or external command") != std::string::npos) {
+                    errMsg = L"No Python/tool found in PhIDE or on this PC.";
+                } else if (!procOut.empty()) {
+                    // Extract concise ERROR line from captured stderr/stdout
+                    std::string bestLine;
+                    std::istringstream iss(procOut);
+                    std::string ln;
+                    while (std::getline(iss, ln)) {
+                        while (!ln.empty() && (ln.back() == '\r' || ln.back() == ' ')) ln.pop_back();
+                        if (ln.empty()) continue;
+                        if (ln.find("ERROR:") != std::string::npos || ln.find("error:") != std::string::npos || ln.find("ERR!") != std::string::npos) {
+                            bestLine = ln;
+                        } else if (bestLine.empty()) {
+                            bestLine = ln;
+                        }
+                    }
+                    if (!bestLine.empty()) {
+                        int wLen = MultiByteToWideChar(CP_UTF8, 0, bestLine.c_str(), -1, nullptr, 0);
+                        if (wLen > 1) {
+                            std::wstring wReason(static_cast<size_t>(wLen - 1), L'\0');
+                            MultiByteToWideChar(CP_UTF8, 0, bestLine.c_str(), -1, wReason.data(), wLen);
+                            if (wReason.size() > 90) wReason = wReason.substr(0, 87) + L"...";
+                            errMsg += L": " + wReason;
+                        }
+                    }
+                }
+                m_extensionsPanel.CompleteProcessTask(taskTitle, errMsg);
                 m_editor.GetPackageManagerView().MarkPackageUninstalled(pkgName, scope);
             }
             editor::pyenv::InvalidateCaches();
@@ -15452,9 +15805,10 @@ bool Window::Create(HINSTANCE hInstance, int nCmdShow) {
             }
             if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
 
-            // Auto-dismiss completed package process task after 5 seconds so it doesn't linger indefinitely
-            std::thread([this, taskTitle]() {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
+            // Auto-dismiss completed package process task after 5 seconds (7s on error so user can read it)
+            int dismissSec = (ok && exitCode == 0) ? 5 : 7;
+            std::thread([this, taskTitle, dismissSec]() {
+                std::this_thread::sleep_for(std::chrono::seconds(dismissSec));
                 const auto& tasks = m_extensionsPanel.GetProcessTasks();
                 for (size_t i = 0; i < tasks.size(); ++i) {
                     if (tasks[i].title == taskTitle && tasks[i].isCompleted) {
@@ -20175,6 +20529,10 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (m_editor.GetAuditView().HandleMouseMove(clientPt)) {
                 needRepaint = true;
             }
+        } else if (pActiveDoc->viewType == L"task_runner") {
+            if (m_editor.HandleTaskRunnerMouseMove(clientPt)) {
+                needRepaint = true;
+            }
         }
     }
     if (pActiveDoc && !pActiveDoc->isSpecialView &&
@@ -21427,7 +21785,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::HelpAbout:
                         MessageBoxW(m_hwnd,
-                            L"Phide - Web Development IDE\nVersion 2026.f-b (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"Phide - Web Development IDE\nVersion 2026.f-c (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
@@ -26562,7 +26920,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Package Manager View cursor handling (Install button, split arrow, cards, inputs)
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"packages") {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"packages") {
                     LPCWSTR cur = m_editor.GetPackageManagerView().GetCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
@@ -26571,8 +26929,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Notebook View cursor handling (toolbar buttons, cell play/delete buttons, code text area)
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"notebook") {
-                    LPCWSTR cur = m_editor.GetNotebookView().GetCursorForPoint(pt, *pCurDoc);
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"notebook") {
+                    LPCWSTR cur = m_editor.GetNotebookView().GetCursorForPoint(pt, *pHoverPaneDoc);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
                         return TRUE;
@@ -26580,7 +26938,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Student Tutorials & Learning Hub cursor handling
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"student") {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"student") {
                     int hit = m_editor.HitTestStudentView(pt);
                     if (hit == 50) {
                         SetCursor(LoadCursor(nullptr, IDC_IBEAM));
@@ -26592,7 +26950,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Settings View cursor handling (toggles, steppers, dropdowns, search input, clear button)
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"settings") {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"settings") {
                     LPCWSTR cur = m_editor.GetSettingsView().GetCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
@@ -26601,7 +26959,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // API Tester View cursor handling (method, url, send, tabs, splitter, etc.)
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"api") {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"api") {
                     LPCWSTR cur = m_editor.GetApiTesterView().GetCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
@@ -26610,7 +26968,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Interactive Guide View cursor handling (interactive checkboxes, links)
-                if (pCurDoc && pCurDoc->isSpecialView && pCurDoc->viewType == L"interactive_guide") {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"interactive_guide") {
                     LPCWSTR cur = m_editor.GetInteractiveGuideView().GetCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
@@ -26619,7 +26977,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Welcome Walkthrough View cursor handling
-                if (pCurDoc && pCurDoc->isSpecialView && (pCurDoc->viewType == L"welcome" || pCurDoc->viewType == L"walkthrough")) {
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && (pHoverPaneDoc->viewType == L"welcome" || pHoverPaneDoc->viewType == L"walkthrough")) {
                     LPCWSTR cur = m_editor.GetWelcomeView().GetCursorForPoint(pt);
                     if (cur) {
                         SetCursor(LoadCursor(nullptr, cur));
@@ -26658,6 +27016,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"test_explorer") {
                     if (m_editor.IsPointInTestExplorerInteractive(pt)) {
                         SetCursor(LoadCursor(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+
+                // Workspace Task Runner cursor handling
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"task_runner") {
+                    if (LPCWSTR cur = m_editor.GetTaskRunnerCursorForPoint(pt)) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // File History cursor handling
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"file_history") {
+                    if (LPCWSTR cur = m_editor.GetFileHistoryCursorForPoint(pt)) {
+                        SetCursor(LoadCursor(nullptr, cur));
+                        return TRUE;
+                    }
+                }
+
+                // File Network Graph cursor handling
+                if (pHoverPaneDoc && pHoverPaneDoc->isSpecialView && pHoverPaneDoc->viewType == L"graph") {
+                    if (LPCWSTR cur = m_editor.GetGraphView().GetCursorForPoint(pt)) {
+                        SetCursor(LoadCursor(nullptr, cur));
                         return TRUE;
                     }
                 }
@@ -26763,6 +27145,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             }
                         } else if (doc.isSpecialView && doc.viewType == L"sql_console") {
                             if (m_editor.HandleSqlConsoleDoubleClick(clientPt, m_config)) {
+                                InvalidateRect(m_hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                        } else if (doc.isSpecialView && doc.viewType == L"notebook") {
+                            if (m_editor.GetNotebookView().HandleLButtonDown(clientPt, doc, m_config, m_hwnd)) {
                                 InvalidateRect(m_hwnd, nullptr, FALSE);
                                 return 0;
                             }
@@ -27347,6 +27734,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->isSpecialView && pDoc->viewType == L"audit") {
                     if (m_editor.GetAuditView().HandleChar(ch)) {
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->isSpecialView && pDoc->viewType == L"task_runner") {
+                    if (m_editor.HandleTaskRunnerChar(ch)) {
                         InvalidateRect(m_hwnd, nullptr, FALSE);
                         return 0;
                     }
@@ -28840,6 +29232,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                 } else if (pDoc->viewType == L"audit") {
                     if (m_editor.GetAuditView().HandleKeyDown(wParam)) {
+                        if (wParam == VK_BACK || wParam == VK_RETURN || wParam == VK_ESCAPE) {
+                            m_suppressNextChar = true;
+                        }
+                        InvalidateRect(m_hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                } else if (pDoc->viewType == L"task_runner") {
+                    if (m_editor.HandleTaskRunnerKeyDown(wParam)) {
                         if (wParam == VK_BACK || wParam == VK_RETURN || wParam == VK_ESCAPE) {
                             m_suppressNextChar = true;
                         }
@@ -30400,6 +30800,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         keepAnimating = true;
                     }
                 }
+                if (m_editor.GetPackageManagerView().HasActiveInstallOrCheck()) {
+                    keepAnimating = true;
+                }
 
                 // Smoothly update Live Server progression and auto-open user browser upon completion
                 for (auto& srv : m_activeLiveServers) {
@@ -30526,7 +30929,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 // Smoothly animate ER Diagram zoom, pan, Auto Layout node gliding, Schema Diff scrolling, and async loading spinner
-                if (m_editor.GetErdView().IsAnimating() || m_editor.IsSqlBusy()) {
+                if (m_editor.GetErdView().IsAnimating() || m_editor.IsSqlBusy() || m_editor.IsWorkspaceToastVisible()) {
                     m_editor.GetErdView().UpdateAnimation();
                     keepAnimating = true;
                 }
@@ -33937,12 +34340,30 @@ void Window::RefreshEnvDriftDiagnostics() {
 }
 
 void Window::DoSyncEnvKeysToExample() {
-    if (!m_drawer.HasOpenFolder()) {
-        const std::wstring msg = L"Open a workspace folder first to sync .env keys to .env.example.";
+    auto showEnvSyncFeedback = [&](const std::wstring& msg) {
         m_drawer.ShowGitNotification(msg);
         m_editor.GetAuditView().SetStatusNotice(msg);
-        m_editor.ShowRefactorPopup(msg);
+        const auto* pActive = GetActiveDoc();
+        bool isEnvDoc = false;
+        if (pActive && !pActive->isSpecialView) {
+            std::wstring nameLow = pActive->fileName;
+            for (wchar_t& ch : nameLow) ch = static_cast<wchar_t>(towlower(ch));
+            if (nameLow.rfind(L".env", 0) == 0 || pActive->filePath.find(L".env") != std::wstring::npos) {
+                isEnvDoc = true;
+            }
+        }
+        if (isEnvDoc) {
+            m_editor.ShowRefactorPopup(msg);
+        } else {
+            m_editor.DismissRefactorPopup();
+            m_editor.ShowWorkspaceToast(L"Workspace .env sync: " + msg);
+            if (m_hwnd) SetTimer(m_hwnd, m_animTimerId, 16, nullptr);
+        }
         if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    };
+
+    if (!m_drawer.HasOpenFolder()) {
+        showEnvSyncFeedback(L"Open a workspace folder first to sync .env keys to .env.example.");
         return;
     }
     int addedCount = 0;
@@ -33959,10 +34380,7 @@ void Window::DoSyncEnvKeysToExample() {
     } else {
         msg = L"No .env file found in workspace root to sync.";
     }
-    m_drawer.ShowGitNotification(msg);
-    m_editor.GetAuditView().SetStatusNotice(msg);
-    m_editor.ShowRefactorPopup(msg);
-    if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
+    showEnvSyncFeedback(msg);
 }
 
 void Window::RefreshDatabaseSchemaAsync() {

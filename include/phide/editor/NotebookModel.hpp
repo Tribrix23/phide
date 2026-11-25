@@ -343,6 +343,18 @@ struct NotebookCell {
     D2D1_RECT_F bottomDividerBounds{};
     D2D1_RECT_F bottomAddCodeBounds{};
     D2D1_RECT_F bottomAddTextBounds{};
+
+    // Markdown edit formatting toolbar strip bounds
+    D2D1_RECT_F mdToolbarBounds{};
+    D2D1_RECT_F mdBtnBoldBounds{};
+    D2D1_RECT_F mdBtnItalicBounds{};
+    D2D1_RECT_F mdBtnQuoteBounds{};
+    D2D1_RECT_F mdBtnLinkBounds{};
+    D2D1_RECT_F mdBtnImageBounds{};
+    D2D1_RECT_F mdBtnBulletListBounds{};
+    D2D1_RECT_F mdBtnNumberListBounds{};
+    D2D1_RECT_F mdBtnHeadingBounds{};
+    D2D1_RECT_F mdBtnDoneBounds{};
 };
 
 class NotebookDocument {
@@ -448,6 +460,44 @@ public:
         cells.erase(cells.begin() + fromIdx);
         cells.insert(cells.begin() + toIdx, std::move(cell));
         activeCellIdx = toIdx;
+        isDirty = true;
+    }
+
+    void SetCellType(int idx, NotebookCellType newType) {
+        if (idx < 0 || idx >= static_cast<int>(cells.size())) return;
+        auto& cell = cells[idx];
+        if (cell.type == newType) {
+            if (newType == NotebookCellType::Markdown && !cell.isEditingMarkdown) {
+                cell.isEditingMarkdown = true;
+            }
+            return;
+        }
+        cell.type = newType;
+        if (newType == NotebookCellType::Markdown) {
+            cell.language = L"markdown";
+            cell.isExecuting = false;
+            cell.isQueued = false;
+            cell.executionCount = -1;
+            cell.hasError = false;
+            cell.errorLine = -1;
+            cell.outputs.clear();
+            cell.ClearOutputSelection();
+            cell.isEditingMarkdown = true;
+            cell.isInputCollapsed = false;
+        } else {
+            cell.language = kernelLanguage;
+            cell.isEditingMarkdown = false;
+            cell.mdToolbarBounds = {};
+            cell.mdBtnBoldBounds = {};
+            cell.mdBtnItalicBounds = {};
+            cell.mdBtnQuoteBounds = {};
+            cell.mdBtnLinkBounds = {};
+            cell.mdBtnImageBounds = {};
+            cell.mdBtnBulletListBounds = {};
+            cell.mdBtnNumberListBounds = {};
+            cell.mdBtnHeadingBounds = {};
+            cell.mdBtnDoneBounds = {};
+        }
         isDirty = true;
     }
 

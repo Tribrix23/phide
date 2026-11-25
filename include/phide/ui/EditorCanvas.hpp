@@ -227,6 +227,14 @@ public:
     }
     void DismissRefactorPopup() noexcept { m_showRefactorPopup = false; }
     [[nodiscard]] bool IsRefactorPopupVisible() const noexcept { return m_showRefactorPopup; }
+    void ShowWorkspaceToast(const std::wstring& message, ULONGLONG durationMs = 4500) {
+        m_workspaceToastMessage = message;
+        m_workspaceToastExpiry = GetTickCount64() + durationMs;
+    }
+    void DismissWorkspaceToast() noexcept { m_workspaceToastMessage.clear(); m_workspaceToastExpiry = 0; }
+    [[nodiscard]] bool IsWorkspaceToastVisible() const noexcept {
+        return !m_workspaceToastMessage.empty() && GetTickCount64() < m_workspaceToastExpiry;
+    }
     [[nodiscard]] static D2D1_RECT_F ComputeRefactorPopupBounds(
         float tipX, float tipY, float popupW, float popupH,
         float arrowH, const D2D1_RECT_F& paneBounds, float clientHeight,
@@ -488,6 +496,26 @@ public:
 
     [[nodiscard]] float GetLastCaretX() const noexcept { return m_lastCaretX; }
     [[nodiscard]] float GetLastCaretY() const noexcept { return m_lastCaretY; }
+
+    /**
+     * @brief Renders an embedded real EditorCanvas code editor inside a bounded card (e.g. Interactive Guide).
+     */
+    void RenderEmbeddedCodeBlock(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                                 editor::OpenDocument& doc, D2D1_RECT_F bounds, bool isFocused,
+                                 const std::wstring& ghostText = L"",
+                                 size_t ghostLine = static_cast<size_t>(-1),
+                                 size_t ghostCol = static_cast<size_t>(-1),
+                                 float* outCaretX = nullptr, float* outCaretY = nullptr,
+                                 float* outCharW = nullptr, float* outLineH = nullptr,
+                                 float* outGutterW = nullptr);
+
+    /**
+     * @brief Maps a client coordinate inside an embedded EditorCanvas block to (bufferLine, col).
+     */
+    [[nodiscard]] bool HitTestEmbeddedCodeBlock(POINT pt, const app::AppConfig& config,
+                                                const editor::OpenDocument& doc,
+                                                D2D1_RECT_F bounds,
+                                                size_t& outLine, size_t& outCol) const;
 
     /**
      * @brief Draws the Python virtual environment tag (.venv [3.14.7]) matching Image 2.
@@ -757,11 +785,15 @@ private:
                                   float canvasLeft, float canvasWidth, float topY, float clientHeight);
 
     void RenderRefactorPopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config, float clientHeight);
+    void RenderWorkspaceToast(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
+                              float canvasLeft, float canvasWidth, float clientHeight);
     void RenderAutocompletePopup(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                  float clientWidth, float clientHeight);
 
     bool m_showRefactorPopup = false;
     std::wstring m_refactorMessage;
+    std::wstring m_workspaceToastMessage;
+    ULONGLONG m_workspaceToastExpiry = 0;
     float m_lastCaretX = 0.0f;
     float m_lastCaretY = 0.0f;
 
@@ -1029,6 +1061,10 @@ public:
     void RenderTaskRunnerView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                               float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleTaskRunnerMouseDown(POINT pt, const app::AppConfig& config);
+    bool HandleTaskRunnerMouseMove(POINT pt) noexcept;
+    bool HandleTaskRunnerChar(wchar_t ch);
+    bool HandleTaskRunnerKeyDown(WPARAM vk);
+    [[nodiscard]] LPCWSTR GetTaskRunnerCursorForPoint(POINT pt) const noexcept;
     bool HandleTaskRunnerMouseWheel(short delta) noexcept;
     std::function<void(const phide::dev::WorkspaceTaskDef&)> onTaskRun;
     std::function<void(const phide::dev::WorkspaceTaskDef&)> onTaskStop;
@@ -1036,6 +1072,8 @@ public:
     std::function<bool(const std::wstring& label)> onIsTaskRunning;
     std::function<DWORD(const std::wstring& label)> onGetTaskExitCode;
     std::function<void()> onTaskRefresh;
+    std::function<void()> onTaskOpenConfig;
+    std::function<void()> onTaskStopAll;
 
     // #40 Active-File Git History (--follow) View (`file_history`)
     void SetFileHistoryTarget(const std::wstring& fullPath, const std::wstring& relPath, bool loading);
@@ -1047,6 +1085,7 @@ public:
     void RenderFileHistoryView(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                float canvasLeft, float canvasWidth, float topY, float clientHeight);
     bool HandleFileHistoryMouseDown(POINT pt, const app::AppConfig& config);
+    [[nodiscard]] LPCWSTR GetFileHistoryCursorForPoint(POINT pt) const noexcept;
     bool HandleFileHistoryMouseWheel(short delta) noexcept;
     std::function<void()> onFileHistoryRefresh;
     std::function<void(const std::wstring& commitHash, const std::wstring& relPath)> onFileHistoryOpenCommitDiff;
@@ -1327,7 +1366,8 @@ public:
         const editor::BracketPair& pair,
         float openX, float openY, float closeX, float closeY,
         float charW, float lineH,
-        bool drawOpen, bool drawClose);
+        bool drawOpen, bool drawClose,
+        float openW = -1.0f, float closeW = -1.0f);
     static bool HitTestAutocompletePanel(
         POINT pt,
         const D2D1_RECT_F& popupBounds,
@@ -1659,7 +1699,19 @@ private:
     std::vector<TaskRowHit> m_taskRowHits;
     float m_taskScrollY = 0.0f;
     float m_taskMaxScrollY = 0.0f;
+    int m_taskFilterCategory = 0; // 0=All, 1=Build, 2=Test, 3=Watch, 4=Running
+    std::wstring m_taskSearchQuery;
+    bool m_taskSearchFocused = false;
+    int m_hoveredTaskHeaderBtn = -1; // 1=Refresh, 2=EditConfig, 3=StopAll, 4=SearchClear, 10..14=Filters, 20=EmptyCreate
+    int m_hoveredTaskCardIdx = -1;
+    int m_hoveredTaskCardBtn = 0; // 1=Run/Restart, 2=Stop
     D2D1_RECT_F m_rcTaskRefreshBtn{};
+    D2D1_RECT_F m_rcTaskEditConfigBtn{};
+    D2D1_RECT_F m_rcTaskStopAllBtn{};
+    D2D1_RECT_F m_rcTaskFilterBtns[5]{};
+    D2D1_RECT_F m_rcTaskSearchBox{};
+    D2D1_RECT_F m_rcTaskSearchClear{};
+    D2D1_RECT_F m_rcTaskEmptyCreateBtn{};
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestRowBg;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestRowSel;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_brushTestBtnBg;
@@ -1817,6 +1869,11 @@ private:
     D2D1_RECT_F m_rcSqlSaveSnipBtn{};
     D2D1_RECT_F m_rcSqlHistoryBtn{};
     D2D1_RECT_F m_rcSqlHistoryPopup{};
+    int m_sqlStructMode = 0; ///< 0=Tables tree, 1=DDL schema view
+    D2D1_RECT_F m_rcSqlStructTablesTab{};
+    D2D1_RECT_F m_rcSqlStructDdlTab{};
+    editor::Buffer m_sqlDdlPreviewBuffer;
+    std::wstring m_sqlDdlCacheKey;
 
     // #49 GUI Snippet Editor state
     struct SnipListHit {

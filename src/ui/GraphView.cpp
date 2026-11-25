@@ -574,6 +574,7 @@ void GraphView::ParseFileDependencies() {
 }
 
 void GraphView::RefreshFromWorkspace(const std::wstring& rootPath, bool preserveExistingPositions) {
+    m_isLoading = false;
     if (!rootPath.empty()) {
         m_currentRootPath = rootPath;
     }
@@ -981,7 +982,10 @@ void GraphView::StartBounceAnimation() {
 }
 
 bool GraphView::UpdateAnimation() {
-    if (!m_isAnimating) return false;
+    if (m_isLoading) {
+        m_loadingSpinnerAngle = std::fmod(m_loadingSpinnerAngle + 8.0f, 360.0f);
+    }
+    if (!m_isAnimating) return m_isLoading;
 
     StepPhysics(m_animAlpha);
     m_animAlpha *= 0.970f;
@@ -991,7 +995,7 @@ bool GraphView::UpdateAnimation() {
         m_animAlpha = 0.0f;
         m_animFrames = 0;
         m_isAnimating = false;
-        return false;
+        return m_isLoading;
     }
     return true;
 }
@@ -1025,6 +1029,81 @@ void GraphView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfi
     }
 
     pRT->PushAxisAlignedClip(m_canvasBounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    if (m_isLoading) {
+        const float barH = config.ScaleF(2.5f);
+        pRT->FillRectangle(D2D1::RectF(left, top, left + width, top + barH),
+                           theme.brushBorderSubtle ? theme.brushBorderSubtle.Get() : bgBrush.Get());
+        const float slideT = static_cast<float>(GetTickCount64() % 1300) / 1300.0f;
+        const float slideW = (std::max)(config.ScaleF(80.0f), width * 0.28f);
+        const float slideX = left - slideW + slideT * (width + slideW * 2.0f);
+        const float sL = (std::max)(left, slideX);
+        const float sR = (std::min)(left + width, slideX + slideW);
+        if (sR > sL && theme.brushBrandAccent) {
+            pRT->FillRectangle(D2D1::RectF(sL, top, sR, top + barH), theme.brushBrandAccent.Get());
+        }
+
+        const float spinCy = top + (std::min)(height * 0.42f, config.ScaleF(220.0f));
+        const float spinCx = left + width * 0.5f;
+        const float spinR = config.ScaleF(16.0f);
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> trackBrush;
+        pRT->CreateSolidColorBrush(
+            theme.IsDarkMode() ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f),
+            &trackBrush);
+        if (trackBrush) {
+            pRT->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(spinCx, spinCy), spinR, spinR), trackBrush.Get(), 2.4f);
+        }
+
+        D2D1_MATRIX_3X2_F oldTrans;
+        pRT->GetTransform(&oldTrans);
+        pRT->SetTransform(D2D1::Matrix3x2F::Rotation(m_loadingSpinnerAngle, D2D1::Point2F(spinCx, spinCy)) * oldTrans);
+        if (theme.brushBrandAccent) {
+            Microsoft::WRL::ComPtr<ID2D1Factory> pFactory;
+            pRT->GetFactory(&pFactory);
+            if (pFactory) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> pArcGeo;
+                if (SUCCEEDED(pFactory->CreatePathGeometry(&pArcGeo))) {
+                    Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                    if (SUCCEEDED(pArcGeo->Open(&sink))) {
+                        sink->BeginFigure(D2D1::Point2F(spinCx - spinR, spinCy), D2D1_FIGURE_BEGIN_HOLLOW);
+                        D2D1_ARC_SEGMENT arc{};
+                        arc.point = D2D1::Point2F(spinCx, spinCy - spinR);
+                        arc.size = D2D1::SizeF(spinR, spinR);
+                        arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                        sink->AddArc(arc);
+                        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                        sink->Close();
+                        pRT->DrawGeometry(pArcGeo.Get(), theme.brushBrandAccent.Get(), 2.6f);
+                    }
+                }
+            }
+        }
+        pRT->SetTransform(oldTrans);
+
+        float txtTop = spinCy + spinR + config.ScaleF(18.0f);
+        D2D1_RECT_F rcLoadTitle = D2D1::RectF(left + config.ScaleF(20.0f), txtTop,
+                                              left + width - config.ScaleF(20.0f), txtTop + config.ScaleF(24.0f));
+        if (theme.fontBody && theme.brushTextPrimary) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = theme.fontBody->GetTextAlignment();
+            theme.fontBody->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            const wchar_t* msg = L"Loading project graph...";
+            pRT->DrawText(msg, static_cast<UINT32>(wcslen(msg)), theme.fontBody.Get(), rcLoadTitle, theme.brushTextPrimary.Get());
+            theme.fontBody->SetTextAlignment(prevAlign);
+        }
+        txtTop += config.ScaleF(22.0f);
+        IDWriteTextFormat* subFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
+        D2D1_RECT_F rcLoadSub = D2D1::RectF(left + config.ScaleF(20.0f), txtTop,
+                                            left + width - config.ScaleF(20.0f), txtTop + config.ScaleF(28.0f));
+        if (subFmt && theme.brushTextSecondary) {
+            DWRITE_TEXT_ALIGNMENT prevAlign = subFmt->GetTextAlignment();
+            subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            const wchar_t* subMsg = L"Analyzing workspace files and import relationships";
+            pRT->DrawText(subMsg, static_cast<UINT32>(wcslen(subMsg)), subFmt, rcLoadSub, theme.brushTextSecondary.Get());
+            subFmt->SetTextAlignment(prevAlign);
+        }
+        pRT->PopAxisAlignedClip();
+        return;
+    }
 
     if (m_nodes.empty()) {
         const wchar_t* emptyMsg = L"No project files found. Open a workspace folder to view the project graph.";
@@ -1371,6 +1450,29 @@ bool GraphView::HandleMouseMove(POINT clientPt) {
     return (m_hoveredNode != prevHover);
 }
 
+LPCWSTR GraphView::GetCursorForPoint(POINT clientPt) const noexcept {
+    if (clientPt.x < m_canvasBounds.left || clientPt.x > m_canvasBounds.right ||
+        clientPt.y < m_canvasBounds.top || clientPt.y > m_canvasBounds.bottom) {
+        return IDC_ARROW;
+    }
+    if (m_draggedNode >= 0 || m_isPanning) return IDC_SIZEALL;
+    const float cx = (m_canvasBounds.left + m_canvasBounds.right) * 0.5f + m_panX;
+    const float cy = (m_canvasBounds.top + m_canvasBounds.bottom) * 0.5f + m_panY;
+    const float mouseX = static_cast<float>(clientPt.x);
+    const float mouseY = static_cast<float>(clientPt.y);
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        float sx = cx + m_nodes[i].x * m_zoom;
+        float sy = cy + m_nodes[i].y * m_zoom;
+        float r = (std::clamp)(m_nodes[i].radius * m_zoom, 3.0f, 26.0f) + 6.0f;
+        float dx = mouseX - sx;
+        float dy = mouseY - sy;
+        if (dx * dx + dy * dy <= r * r) {
+            return IDC_HAND;
+        }
+    }
+    return IDC_ARROW;
+}
+
 bool GraphView::HandleLButtonDown(POINT clientPt) {
     if (clientPt.x < m_canvasBounds.left || clientPt.x > m_canvasBounds.right ||
         clientPt.y < m_canvasBounds.top || clientPt.y > m_canvasBounds.bottom) {
@@ -1464,6 +1566,7 @@ bool GraphView::HandleMouseWheel(short delta, POINT clientPt) {
 }
 
 void GraphView::ApplyWorkspaceDataFrom(GraphView&& other) {
+    m_isLoading = false;
     m_currentRootPath = std::move(other.m_currentRootPath);
     m_nodes = std::move(other.m_nodes);
     m_edges = std::move(other.m_edges);

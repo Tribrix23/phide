@@ -410,7 +410,7 @@ void PopupMenu::OpenMoreActionsMenu(float x, float y, const app::AppConfig& conf
     m_items.push_back({ MenuActionId::ViewSqlConsole, L"SQL Query Console...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewDatabaseErd, L"Database ER Diagram & Schema Diff...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewWorkspaceAudit, L"Workspace Dead Code & .env Audit...", L"", false, false, false, true, {}, {} });
-    m_items.push_back({ MenuActionId::EnvSyncKeysToExample, L"Sync .env Keys to .env.example", L"", false, false, false, true, {}, {} });
+    m_items.push_back({ MenuActionId::EnvSyncKeysToExample, L"Sync Workspace .env Keys to .env.example", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::ViewHeatmap, L"Activity Heatmap...", L"", false, false, false, true, {}, {} });
     m_items.push_back({ MenuActionId::None, L"", L"", true, false, false, false, {}, {} });
     m_items.push_back({ MenuActionId::CodeFindReferences, L"Find All References", L"Shift+F12", false, false, false, true, {}, {} });

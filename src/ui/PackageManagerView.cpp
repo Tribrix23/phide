@@ -187,7 +187,7 @@ void PackageManagerView::NavigateToPackage(const std::wstring& url) {
 void PackageManagerView::DetectInstalledRuntimes() {
     m_languageCards.clear();
 
-    // 1. Python Detection - dynamically search system PATH, Windows launcher, and appdata
+    // 1. Python Detection - prioritize PhIDE's own Python first, then fall back to PC Python
     LanguageCard pyCard;
     pyCard.lang = RuntimeLanguage::Python;
     pyCard.name = L"Python";
@@ -195,32 +195,105 @@ void PackageManagerView::DetectInstalledRuntimes() {
     pyCard.isInstalled = false;
     pyCard.version.clear();
 
-    wchar_t pyFound[MAX_PATH] = { 0 };
-    std::error_code ecPyFound;
-    bool foundValidPy = false;
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 &&
-        std::wstring(pyFound).find(L"WindowsApps") == std::wstring::npos &&
-        std::filesystem::exists(pyFound, ecPyFound) && !ecPyFound) {
-        foundValidPy = true;
-    } else if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 &&
-               std::filesystem::exists(pyFound, ecPyFound) && !ecPyFound) {
-        foundValidPy = true;
+    auto isValidRealPy = [](const std::filesystem::path& p) -> bool {
+        std::wstring s = p.wstring();
+        if (s.empty()) return false;
+        if (s.find(L"WindowsApps") != std::wstring::npos) return false;
+        if (s.find(L"_uninstalling_") != std::wstring::npos) return false;
+        if (s.find(L"emsdk") != std::wstring::npos) return false;
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec) || ec) return false;
+        auto sz = std::filesystem::file_size(p, ec);
+        return !ec && sz >= 10240;
+    };
+
+    // 1a. Check PhIDE's own bundled/internal Python first
+    {
+        wchar_t exePath[MAX_PATH] = { 0 };
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+        std::vector<std::filesystem::path> phideCands = {
+            exeDir / L"runtimes" / L"python" / L"python.exe",
+            exeDir.parent_path() / L"runtimes" / L"python" / L"python.exe",
+            L"C:\\Program Files\\phide\\runtimes\\python\\python.exe"
+        };
+        wchar_t szAppDataPhide[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", szAppDataPhide, MAX_PATH) > 0) {
+            phideCands.push_back(std::filesystem::path(szAppDataPhide) / L"phide" / L"runtimes" / L"python" / L"python.exe");
+            phideCands.push_back(std::filesystem::path(szAppDataPhide) / L"phide" / L"python" / L"python.exe");
+        }
+        for (const auto& cand : phideCands) {
+            if (isValidRealPy(cand)) {
+                pyCard.isInstalled = true;
+                pyCard.executable = cand.wstring();
+                break;
+            }
+        }
     }
-    if (foundValidPy) {
-        pyCard.isInstalled = true;
-        pyCard.executable = pyFound;
-    } else {
+
+    // 1b. Fall back to PC Python if PhIDE has no Python
+    if (!pyCard.isInstalled) {
         wchar_t szAppData[MAX_PATH] = { 0 };
         if (GetEnvironmentVariableW(L"LOCALAPPDATA", szAppData, MAX_PATH) > 0) {
             std::filesystem::path pyDir = std::filesystem::path(szAppData) / L"Programs" / L"Python";
             std::error_code ec;
             if (std::filesystem::exists(pyDir, ec)) {
                 for (const auto& entry : std::filesystem::directory_iterator(pyDir, ec)) {
-                    if (entry.is_directory() && std::filesystem::exists(entry.path() / L"python.exe", ec)) {
+                    if (entry.is_directory() && isValidRealPy(entry.path() / L"python.exe")) {
                         pyCard.isInstalled = true;
                         pyCard.executable = (entry.path() / L"python.exe").wstring();
                         break;
                     }
+                }
+            }
+        }
+    }
+    if (!pyCard.isInstalled) {
+        wchar_t pyFound[MAX_PATH] = { 0 };
+        if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 && isValidRealPy(pyFound)) {
+            pyCard.isInstalled = true;
+            pyCard.executable = pyFound;
+        } else {
+            // Check py.exe only if it actually resolves a real Python installation
+            wchar_t pyLauncher[MAX_PATH] = { 0 };
+            std::error_code ecL;
+            if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyLauncher, nullptr) > 0 ||
+                std::filesystem::exists(L"C:\\Windows\\py.exe", ecL)) {
+                std::wstring lPath = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
+                STARTUPINFOW si{};
+                si.cb = sizeof(si);
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_HIDE;
+                SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+                HANDLE hR = nullptr, hW = nullptr;
+                if (CreatePipe(&hR, &hW, &sa, 0)) {
+                    SetHandleInformation(hR, HANDLE_FLAG_INHERIT, 0);
+                    si.dwFlags |= STARTF_USESTDHANDLES;
+                    si.hStdOutput = hW;
+                    si.hStdError = hW;
+                    PROCESS_INFORMATION pi{};
+                    std::wstring cmd = L"\"" + lPath + L"\" --version";
+                    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+                    buf.push_back(0);
+                    if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                        CloseHandle(hW);
+                        hW = nullptr;
+                        std::string out;
+                        char tmp[256];
+                        DWORD n = 0;
+                        while (ReadFile(hR, tmp, sizeof(tmp), &n, nullptr) && n > 0) out.append(tmp, n);
+                        WaitForSingleObject(pi.hProcess, 3000);
+                        DWORD ex = 1;
+                        GetExitCodeProcess(pi.hProcess, &ex);
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
+                        if (ex == 0 && out.find("Python ") != std::string::npos) {
+                            pyCard.isInstalled = true;
+                            pyCard.executable = lPath;
+                        }
+                    }
+                    if (hW) CloseHandle(hW);
+                    CloseHandle(hR);
                 }
             }
         }
@@ -1184,11 +1257,17 @@ void PackageManagerView::CheckOutdatedPackagesAsync(const std::wstring& wsFolder
     std::thread([this, alive, lang, dir, pyExe, hwnd]() {
         std::wstring cmd;
         if (lang == RuntimeLanguage::Python) {
-            std::wstring exe = pyExe.empty() ? L"python.exe" : pyExe;
+            std::wstring exe = pyExe;
             if (!dir.empty()) {
                 std::filesystem::path venvPy = std::filesystem::path(dir) / L".venv" / L"Scripts" / L"python.exe";
                 std::error_code ec;
                 if (std::filesystem::exists(venvPy, ec)) exe = venvPy.wstring();
+            }
+            if (exe.empty()) {
+                m_outdatedStatusText = L"No Python found";
+                m_isCheckingOutdated.store(false);
+                if (hwnd) { InvalidateRect(hwnd, nullptr, FALSE); PostMessageW(hwnd, WM_NULL, 0, 0); }
+                return;
             }
             cmd = L"\"" + exe + L"\" -m pip list --outdated --format=json";
         } else if (lang == RuntimeLanguage::Php) {
@@ -1270,9 +1349,19 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         addFromSitePackages(venvSp, projectInstalled);
     }
 
-    // 2. Check global python site-packages (from system python or LOCALAPPDATA)
+    // 2. Check PhIDE python site-packages first, then global PC python site-packages
+    {
+        wchar_t exePath[MAX_PATH] = { 0 };
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+        addFromSitePackages(exeDir / L"runtimes" / L"python" / L"Lib" / L"site-packages", globalInstalled);
+        addFromSitePackages(exeDir.parent_path() / L"runtimes" / L"python" / L"Lib" / L"site-packages", globalInstalled);
+        addFromSitePackages(std::filesystem::path(L"C:\\Program Files\\phide\\runtimes\\python\\Lib\\site-packages"), globalInstalled);
+    }
     wchar_t szLocalApp[MAX_PATH] = { 0 };
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalApp, MAX_PATH) > 0) {
+        addFromSitePackages(std::filesystem::path(szLocalApp) / L"phide" / L"runtimes" / L"python" / L"Lib" / L"site-packages", globalInstalled);
+        addFromSitePackages(std::filesystem::path(szLocalApp) / L"phide" / L"python" / L"Lib" / L"site-packages", globalInstalled);
         std::filesystem::path pyBase = std::filesystem::path(szLocalApp) / L"Programs" / L"Python";
         if (std::filesystem::exists(pyBase, ec)) {
             for (const auto& entry : std::filesystem::directory_iterator(pyBase, ec)) {
@@ -1283,7 +1372,8 @@ void PackageManagerView::ScanInstalledPackages(const std::wstring& wsFolder) {
         }
     }
     wchar_t pyFound[MAX_PATH] = { 0 };
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0) {
+    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, pyFound, nullptr) > 0 &&
+        std::wstring(pyFound).find(L"WindowsApps") == std::wstring::npos) {
         std::filesystem::path spPath = std::filesystem::path(pyFound).parent_path() / L"Lib" / L"site-packages";
         addFromSitePackages(spPath, globalInstalled);
     }
@@ -1733,6 +1823,20 @@ bool PackageManagerView::HandleKeyDown(WPARAM key) {
     return false;
 }
 
+bool PackageManagerView::HasActiveInstallOrCheck() const {
+    if (m_isCheckingOutdated.load()) return true;
+    for (const auto& p : m_packages) {
+        if (p.isInstalling) return true;
+    }
+    for (const auto& p : m_phpPackages) {
+        if (p.isInstalling) return true;
+    }
+    for (const auto& p : m_nodePackages) {
+        if (p.isInstalling) return true;
+    }
+    return false;
+}
+
 void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app::AppConfig& config,
                                 float left, float width, float top, float height) {
     if (!pRT || width <= 10.0f || height <= 10.0f) return;
@@ -2134,16 +2238,44 @@ void PackageManagerView::Render(ID2D1RenderTarget* pRT, Theme& theme, const app:
             }
 
             if (pkg.isInstalling) {
-                // When actively installing/removing, occupy full button width without split dropdown arrow (no leak!)
+                // When actively installing/removing, occupy full button width without split dropdown arrow and run mall-style right-to-left marquee text
                 pkg.rcInstallBtn = D2D1::RectF(btnX, btnY, btnX + btnW, btnY + btnH);
                 pkg.rcSplitArrowBtn = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
                 D2D1_ROUNDED_RECT rrcInstallBtn = D2D1::RoundedRect(pkg.rcInstallBtn, 3.5f, 3.5f);
                 pRT->FillRoundedRectangle(rrcInstallBtn, btnBrush ? btnBrush.Get() : theme.brushBrandAccent.Get());
 
                 pRT->PushAxisAlignedClip(pkg.rcInstallBtn, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
-                              theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get(),
-                              pkg.rcInstallBtn, theme.brushTextWhite.Get());
+                IDWriteTextFormat* pBtnFmt = theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontHint.Get();
+                if (theme.dwriteFactory && pBtnFmt) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pMarqLayout;
+                    float boxW = pkg.rcInstallBtn.right - pkg.rcInstallBtn.left;
+                    float boxH = pkg.rcInstallBtn.bottom - pkg.rcInstallBtn.top;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
+                            pBtnFmt, 1024.0f, boxH, &pMarqLayout)) && pMarqLayout) {
+                        pMarqLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        pMarqLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        pMarqLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        DWRITE_TEXT_METRICS tm{};
+                        float textW = boxW * 0.6f;
+                        if (SUCCEEDED(pMarqLayout->GetMetrics(&tm)) && tm.widthIncludingTrailingWhitespace > 0.0f) {
+                            textW = tm.widthIncludingTrailingWhitespace;
+                        }
+                        double tSec = static_cast<double>(GetTickCount64()) / 1000.0;
+                        double speed = static_cast<double>(config.ScaleF(45.0f));
+                        double totalTravel = static_cast<double>(boxW + textW);
+                        double pos = std::fmod(tSec * speed, totalTravel);
+                        if (pos < 0.0) pos += totalTravel;
+                        float drawX = pkg.rcInstallBtn.right - static_cast<float>(pos);
+                        pRT->DrawTextLayout(D2D1::Point2F(drawX, pkg.rcInstallBtn.top), pMarqLayout.Get(), theme.brushTextWhite.Get());
+                    } else {
+                        pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
+                                      pBtnFmt, pkg.rcInstallBtn, theme.brushTextWhite.Get());
+                    }
+                } else if (pBtnFmt) {
+                    pRT->DrawText(installLabel.c_str(), static_cast<UINT32>(installLabel.length()),
+                                  pBtnFmt, pkg.rcInstallBtn, theme.brushTextWhite.Get());
+                }
                 pRT->PopAxisAlignedClip();
             } else {
                 // Split Button: [ Install | ▾ ]

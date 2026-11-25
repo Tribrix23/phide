@@ -115,6 +115,11 @@ public:
     bool HandleLButtonUp(POINT clientPt);
 
     /**
+     * @brief Returns cursor shape (IDC_HAND on nodes, IDC_SIZEALL when panning/dragging, IDC_ARROW otherwise).
+     */
+    [[nodiscard]] LPCWSTR GetCursorForPoint(POINT clientPt) const noexcept;
+
+    /**
      * @brief Handles mouse wheel scrolling for smooth cursor-centered zooming.
      * @return True if a repaint is required.
      */
@@ -142,9 +147,11 @@ public:
     bool UpdateAnimation();
 
     /**
-     * @brief Checks if the graph is currently animating.
+     * @brief Checks if the graph is currently animating or loading.
      */
-    [[nodiscard]] bool IsAnimating() const noexcept { return m_isAnimating; }
+    [[nodiscard]] bool IsAnimating() const noexcept { return m_isAnimating || m_isLoading; }
+    void SetLoading(bool loading) noexcept { m_isLoading = loading; }
+    [[nodiscard]] bool IsLoading() const noexcept { return m_isLoading; }
 
     /**
      * @brief Advances force-directed physics layout with given energy alpha.
@@ -191,6 +198,8 @@ private:
     float m_animAlpha = 0.0f;
     int m_animFrames = 0;
     bool m_isAnimating = false;
+    bool m_isLoading = false;
+    float m_loadingSpinnerAngle = 0.0f;
 
     // Color palette resolution
     static D2D1_COLOR_F GetExtensionColor(const std::wstring& ext, bool isDir);

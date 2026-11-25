@@ -391,16 +391,20 @@ void ExtensionsPanel::RefreshPcStatus() {
                 std::wstring ver;
                 std::wstring path;
                 bool isDefault = false;
+                bool isPhideBundled = false;
             };
             std::vector<PyEnvInfo> detectedPythons;
 
-            auto tryAddPython = [&](const std::wstring& exePath, bool isDef) {
+            auto tryAddPython = [&](const std::wstring& exePath, bool isDef, bool isPhide = false) {
                 if (exePath.empty()) return;
                 if (exePath.find(L"WindowsApps") != std::wstring::npos) return;
                 if (exePath.find(L"_uninstalling_") != std::wstring::npos) return;
                 if (exePath.find(L"Quantix") != std::wstring::npos) return;
+                if (exePath.find(L"emsdk") != std::wstring::npos) return;
                 std::error_code ec;
-                if (!std::filesystem::exists(exePath, ec) || ec) return;
+                if (!std::filesystem::exists(exePath, ec) || !std::filesystem::is_regular_file(exePath, ec) || ec) return;
+                auto fSz = std::filesystem::file_size(exePath, ec);
+                if (ec || fSz < 10240) return;
                 std::filesystem::path canonical = std::filesystem::weakly_canonical(exePath, ec);
                 std::wstring normPath = ec ? exePath : canonical.wstring();
 
@@ -408,6 +412,7 @@ void ExtensionsPanel::RefreshPcStatus() {
                     std::filesystem::path p1 = std::filesystem::weakly_canonical(dp.path, ec);
                     if (_wcsicmp(normPath.c_str(), (ec ? dp.path : p1.wstring()).c_str()) == 0) {
                         if (isDef) dp.isDefault = true;
+                        if (isPhide) dp.isPhideBundled = true;
                         return;
                     }
                 }
@@ -420,11 +425,31 @@ void ExtensionsPanel::RefreshPcStatus() {
                     while (!ver.empty() && (ver.back() == L'\r' || ver.back() == L'\n' || ver.back() == L' ')) ver.pop_back();
                 }
                 if (!ver.empty()) {
-                    detectedPythons.push_back({ ver, normPath, isDef });
+                    detectedPythons.push_back({ ver, normPath, isDef, isPhide });
                 }
             };
 
-            // 1. Query py.exe -0p to discover registered Python interpreters
+            // 0. Check PhIDE's own bundled / internal Python runtimes FIRST
+            {
+                wchar_t exePath[MAX_PATH] = { 0 };
+                GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+                std::vector<std::filesystem::path> phideCandidates = {
+                    exeDir / L"runtimes" / L"python" / L"python.exe",
+                    exeDir.parent_path() / L"runtimes" / L"python" / L"python.exe",
+                    L"C:\\Program Files\\phide\\runtimes\\python\\python.exe"
+                };
+                wchar_t szLocalAppPhide[MAX_PATH] = { 0 };
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", szLocalAppPhide, MAX_PATH) > 0) {
+                    phideCandidates.push_back(std::filesystem::path(szLocalAppPhide) / L"phide" / L"runtimes" / L"python" / L"python.exe");
+                    phideCandidates.push_back(std::filesystem::path(szLocalAppPhide) / L"phide" / L"python" / L"python.exe");
+                }
+                for (const auto& pc : phideCandidates) {
+                    tryAddPython(pc.wstring(), true, true);
+                }
+            }
+
+            // 1. Query py.exe -0p to discover registered PC Python interpreters
             std::wstring py0p = RunCmdCapture(L"py.exe -0p");
             if (!py0p.empty()) {
                 std::wstringstream ss(py0p);
@@ -500,36 +525,39 @@ void ExtensionsPanel::RefreshPcStatus() {
 
             // Populate environments purely from verified existing executables
             if (!detectedPythons.empty()) {
-                // Sort detected Python versions descending (newest first, e.g. 3.15.1 > 3.15.0 > 3.13.9)
+                // Sort detected Python versions: PhIDE bundled first, then newest version descending
                 auto parseVerTuple = [](const std::wstring& v) -> std::tuple<int, int, int> {
                     int maj = 0, min = 0, pat = 0;
                     swscanf_s(v.c_str(), L"%d.%d.%d", &maj, &min, &pat);
                     return { maj, min, pat };
                 };
                 std::sort(detectedPythons.begin(), detectedPythons.end(), [&](const PyEnvInfo& a, const PyEnvInfo& b) {
+                    if (a.isPhideBundled != b.isPhideBundled) return a.isPhideBundled > b.isPhideBundled;
                     return parseVerTuple(a.ver) > parseVerTuple(b.ver);
                 });
 
-                std::wstring pyDefVer;
-                std::wstring pyDefOut = RunCmdCapture(L"py.exe --version");
-                if (pyDefOut.find(L"Python ") != std::wstring::npos) {
-                    pyDefVer = pyDefOut.substr(pyDefOut.find(L"Python ") + 7);
-                    while (!pyDefVer.empty() && (pyDefVer.back() == L'\r' || pyDefVer.back() == L'\n' || pyDefVer.back() == L' ')) pyDefVer.pop_back();
-                }
+                if (!detectedPythons[0].isPhideBundled) {
+                    std::wstring pyDefVer;
+                    std::wstring pyDefOut = RunCmdCapture(L"py.exe --version");
+                    if (pyDefOut.find(L"Python ") != std::wstring::npos) {
+                        pyDefVer = pyDefOut.substr(pyDefOut.find(L"Python ") + 7);
+                        while (!pyDefVer.empty() && (pyDefVer.back() == L'\r' || pyDefVer.back() == L'\n' || pyDefVer.back() == L' ')) pyDefVer.pop_back();
+                    }
 
-                int defIdx = -1;
-                if (!pyDefVer.empty()) {
-                    for (size_t i = 0; i < detectedPythons.size(); ++i) {
-                        if (detectedPythons[i].ver == pyDefVer) {
-                            defIdx = static_cast<int>(i);
-                            break;
+                    int defIdx = -1;
+                    if (!pyDefVer.empty()) {
+                        for (size_t i = 0; i < detectedPythons.size(); ++i) {
+                            if (detectedPythons[i].ver == pyDefVer) {
+                                defIdx = static_cast<int>(i);
+                                break;
+                            }
                         }
                     }
-                }
-                if (defIdx > 0) {
-                    PyEnvInfo chosen = detectedPythons[defIdx];
-                    detectedPythons.erase(detectedPythons.begin() + defIdx);
-                    detectedPythons.insert(detectedPythons.begin(), chosen);
+                    if (defIdx > 0) {
+                        PyEnvInfo chosen = detectedPythons[defIdx];
+                        detectedPythons.erase(detectedPythons.begin() + defIdx);
+                        detectedPythons.insert(detectedPythons.begin(), chosen);
+                    }
                 }
 
                 item.isInstalled = true;
@@ -551,20 +579,25 @@ void ExtensionsPanel::RefreshPcStatus() {
                     item.versions = { L"v" + normalizeVer(detectedPythons[0].ver) };
                 }
 
-                // Primary default Global System environment
-                EnvironmentOption envGlobal;
-                envGlobal.name = L"Python " + detectedPythons[0].ver + L" (Global System)";
-                envGlobal.path = detectedPythons[0].path;
-                envGlobal.type = L"System PATH";
-                envGlobal.isDefault = true;
-                item.environments.push_back(envGlobal);
+                // Primary default environment (PhIDE Bundled if present, otherwise PC Global System)
+                EnvironmentOption envPrimary;
+                if (detectedPythons[0].isPhideBundled) {
+                    envPrimary.name = L"Python " + detectedPythons[0].ver + L" (PhIDE Bundled)";
+                    envPrimary.type = L"PhIDE Bundled";
+                } else {
+                    envPrimary.name = L"Python " + detectedPythons[0].ver + L" (Global System)";
+                    envPrimary.type = L"System PATH";
+                }
+                envPrimary.path = detectedPythons[0].path;
+                envPrimary.isDefault = true;
+                item.environments.push_back(envPrimary);
 
-                // Secondary system environments (all other detected versions on PC)
+                // Secondary environments (other PhIDE or PC installations)
                 for (size_t i = 1; i < detectedPythons.size(); ++i) {
                     EnvironmentOption envSec;
-                    envSec.name = L"Python " + detectedPythons[i].ver + L" (System PATH)";
+                    envSec.name = L"Python " + detectedPythons[i].ver + (detectedPythons[i].isPhideBundled ? L" (PhIDE)" : L" (System PATH)");
                     envSec.path = detectedPythons[i].path;
-                    envSec.type = L"System PATH";
+                    envSec.type = detectedPythons[i].isPhideBundled ? L"PhIDE Bundled" : L"System PATH";
                     envSec.isDefault = false;
                     item.environments.push_back(envSec);
                 }
@@ -574,17 +607,21 @@ void ExtensionsPanel::RefreshPcStatus() {
                 item.installPath.clear();
             }
 
-            // Windows Python Launcher (py.exe) - only if actually present
+            // Windows Python Launcher (py.exe) - only if actually present AND backed by a working Python
             wchar_t pyLauncher[MAX_PATH] = { 0 };
             std::error_code ecPy;
             if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, pyLauncher, nullptr) > 0 ||
                 std::filesystem::exists(L"C:\\Windows\\py.exe", ecPy)) {
-                EnvironmentOption envLauncher;
-                envLauncher.name = L"Windows Python Launcher (py.exe)";
-                envLauncher.path = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
-                envLauncher.type = L"Global Launcher";
-                envLauncher.isDefault = false;
-                item.environments.push_back(envLauncher);
+                std::wstring lPath = (pyLauncher[0] != 0) ? pyLauncher : L"C:\\Windows\\py.exe";
+                std::wstring lVer = RunCmdCapture(L"\"" + lPath + L"\" --version");
+                if (lVer.find(L"Python ") != std::wstring::npos) {
+                    EnvironmentOption envLauncher;
+                    envLauncher.name = L"Windows Python Launcher (py.exe)";
+                    envLauncher.path = lPath;
+                    envLauncher.type = L"Global Launcher";
+                    envLauncher.isDefault = false;
+                    item.environments.push_back(envLauncher);
+                }
             }
 
             // Workspace Virtual Environment (.venv) - only if actually present AND its base interpreter is valid
@@ -937,18 +974,32 @@ void ExtensionsPanel::CreateWorkspaceVenv(std::function<void(const std::wstring&
     StartProcessTask(L"Updating Python interpreter", L"Creating virtual environment (.venv)...");
 
     std::thread([this, wsRoot, venvDir, notifyCb]() {
-        // Find existing python executable on system
-        std::wstring pyExe = L"python.exe";
+        // Detect PhIDE Python first, then PC Python
+        std::wstring pyExe;
         {
             std::lock_guard<std::mutex> lock(m_itemsMutex);
             if (!m_items.empty()) {
                 for (const auto& env : m_items[0].environments) {
-                    if (env.type == L"System PATH" && std::filesystem::exists(env.path)) {
+                    if ((env.type == L"PhIDE Bundled" || env.type == L"Custom Installation") && std::filesystem::exists(env.path)) {
                         pyExe = env.path;
                         break;
                     }
                 }
+                if (pyExe.empty()) {
+                    for (const auto& env : m_items[0].environments) {
+                        if ((env.type == L"System PATH" || env.type == L"Global Launcher") && std::filesystem::exists(env.path)) {
+                            pyExe = env.path;
+                            break;
+                        }
+                    }
+                }
             }
+        }
+        if (pyExe.empty()) {
+            CompleteProcessTask(L"Updating Python interpreter", L"Failed: No Python found in PhIDE or on this PC.");
+            if (notifyCb) notifyCb(L"No Python found in PhIDE or on this PC.");
+            if (m_onDataChanged) m_onDataChanged();
+            return;
         }
 
         // Run python -m venv "<wsRoot>\.venv"
@@ -1812,6 +1863,39 @@ void ExtensionsPanel::RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, 
         return;
     }
 
+    auto drawMarqueeText = [&](const std::wstring& txt, IDWriteTextFormat* pFmt, const D2D1_RECT_F& rc, ID2D1Brush* pBrush, float speedPxPerSec, double phaseOffsetSec = 0.0) {
+        if (!pRT || !pFmt || !pBrush || txt.empty()) return;
+        float boxW = rc.right - rc.left;
+        float boxH = rc.bottom - rc.top;
+        if (boxW <= 2.0f || boxH <= 2.0f) return;
+
+        pRT->PushAxisAlignedClip(rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if (theme.dwriteFactory) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> pLayout;
+            if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                    txt.c_str(), static_cast<UINT32>(txt.size()), pFmt, 4096.0f, boxH, &pLayout)) && pLayout) {
+                pLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                pLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                pLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                DWRITE_TEXT_METRICS tm{};
+                float textW = boxW;
+                if (SUCCEEDED(pLayout->GetMetrics(&tm)) && tm.widthIncludingTrailingWhitespace > 0.0f) {
+                    textW = tm.widthIncludingTrailingWhitespace;
+                }
+                double tSec = (static_cast<double>(GetTickCount64()) / 1000.0) + phaseOffsetSec;
+                double totalTravel = static_cast<double>(boxW + textW);
+                double pos = std::fmod(tSec * static_cast<double>(speedPxPerSec), totalTravel);
+                if (pos < 0.0) pos += totalTravel;
+                float drawX = rc.right - static_cast<float>(pos);
+                pRT->DrawTextLayout(D2D1::Point2F(drawX, rc.top), pLayout.Get(), pBrush);
+                pRT->PopAxisAlignedClip();
+                return;
+            }
+        }
+        pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), pFmt, rc, pBrush);
+        pRT->PopAxisAlignedClip();
+    };
+
     const float pad = config.ScaleF(14.0f);
     const float cardW = w - pad * 2.0f;
 
@@ -1836,7 +1920,11 @@ void ExtensionsPanel::RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, 
         IDWriteTextFormat* pFmt = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
         ID2D1Brush* pTxtBrush = theme.brushTextPrimary ? theme.brushTextPrimary.Get() : theme.brushTextWhite.Get();
         if (pFmt && pTxtBrush) {
-            pRT->DrawText(dispText.c_str(), static_cast<UINT32>(dispText.size()), pFmt, rcText, pTxtBrush);
+            if (!m_processTasks[0].isCompleted) {
+                drawMarqueeText(dispText, pFmt, rcText, pTxtBrush, config.ScaleF(48.0f));
+            } else {
+                pRT->DrawText(dispText.c_str(), static_cast<UINT32>(dispText.size()), pFmt, rcText, pTxtBrush);
+            }
         }
 
         // Mini blue progress bar
@@ -1926,7 +2014,11 @@ void ExtensionsPanel::RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, 
                                               m_processesCardBounds.right - config.ScaleF(38.0f), curTaskY + config.ScaleF(18.0f));
         IDWriteTextFormat* pFmtTask = theme.fontHint ? theme.fontHint.Get() : theme.fontBody.Get();
         if (pFmtTask && pTitleBrush) {
-            pRT->DrawText(task.title.c_str(), static_cast<UINT32>(task.title.size()), pFmtTask, rcTaskTitle, pTitleBrush);
+            if (!task.isCompleted) {
+                drawMarqueeText(task.title, pFmtTask, rcTaskTitle, pTitleBrush, config.ScaleF(50.0f));
+            } else {
+                pRT->DrawText(task.title.c_str(), static_cast<UINT32>(task.title.size()), pFmtTask, rcTaskTitle, pTitleBrush);
+            }
         }
 
         // Progress Bar
@@ -1947,13 +2039,38 @@ void ExtensionsPanel::RenderProcessesCard(ID2D1RenderTarget* pRT, Theme& theme, 
         pRT->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f), &fillBrush);
         if (fillBrush) pRT->FillRoundedRectangle(rrcFill, fillBrush.Get());
 
-        // Task Subtitle (Generous height so long text e.g. "Extracted PHP v8.5 and configured environment..." fits cleanly without truncation)
+        // Task Subtitle: smooth right-to-left mall marquee while running; readable wrapped/static when completed or failed
         D2D1_RECT_F rcSub = D2D1::RectF(m_processesCardBounds.left + config.ScaleF(12.0f), curTaskY + config.ScaleF(27.0f),
                                        m_processesCardBounds.right - config.ScaleF(38.0f), curTaskY + taskH - config.ScaleF(3.0f));
         if (pFmtTask && pMuted) {
-            pRT->PushAxisAlignedClip(rcSub, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            pRT->DrawText(task.subtitle.c_str(), static_cast<UINT32>(task.subtitle.size()), pFmtTask, rcSub, pMuted);
-            pRT->PopAxisAlignedClip();
+            if (!task.isCompleted) {
+                drawMarqueeText(task.subtitle, pFmtTask, rcSub, pMuted, config.ScaleF(52.0f), 0.35);
+            } else {
+                pRT->PushAxisAlignedClip(rcSub, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                if (theme.dwriteFactory) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> pSubLayout;
+                    float subW = (std::max)(20.0f, rcSub.right - rcSub.left);
+                    float subH = (std::max)(12.0f, rcSub.bottom - rcSub.top);
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            task.subtitle.c_str(), static_cast<UINT32>(task.subtitle.size()),
+                            pFmtTask, subW, subH, &pSubLayout)) && pSubLayout) {
+                        pSubLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                        pSubLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        pSubLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                        DWRITE_TRIMMING trim = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                        Microsoft::WRL::ComPtr<IDWriteInlineObject> pEllipsis;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(pFmtTask, &pEllipsis))) {
+                            pSubLayout->SetTrimming(&trim, pEllipsis.Get());
+                        }
+                        pRT->DrawTextLayout(D2D1::Point2F(rcSub.left, rcSub.top), pSubLayout.Get(), pMuted);
+                    } else {
+                        pRT->DrawText(task.subtitle.c_str(), static_cast<UINT32>(task.subtitle.size()), pFmtTask, rcSub, pMuted);
+                    }
+                } else {
+                    pRT->DrawText(task.subtitle.c_str(), static_cast<UINT32>(task.subtitle.size()), pFmtTask, rcSub, pMuted);
+                }
+                pRT->PopAxisAlignedClip();
+            }
         }
 
         // Cancel / Dismiss Button ✕ (Generous hit box: 28x28px, working clickable)
