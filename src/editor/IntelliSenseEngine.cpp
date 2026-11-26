@@ -48,10 +48,35 @@ void IntelliSenseEngine::SetDatabaseSchema(std::vector<DbSchemaColumn> columns, 
     m_dbName = std::move(dbName);
 }
 
+static int CommonHtmlTagScoreBonus(const std::wstring& lowerTag) {
+    static const std::unordered_map<std::wstring, int> kTagBonus = {
+        { L"div", 240 }, { L"span", 220 }, { L"p", 210 }, { L"a", 210 },
+        { L"button", 205 }, { L"input", 205 }, { L"img", 205 }, { L"form", 195 },
+        { L"section", 190 }, { L"header", 185 }, { L"footer", 185 }, { L"main", 185 },
+        { L"nav", 185 }, { L"ul", 180 }, { L"ol", 175 }, { L"li", 180 },
+        { L"h1", 180 }, { L"h2", 175 }, { L"h3", 170 }, { L"h4", 160 }, { L"h5", 150 }, { L"h6", 140 },
+        { L"label", 175 }, { L"select", 170 }, { L"option", 165 }, { L"textarea", 170 },
+        { L"table", 160 }, { L"thead", 145 }, { L"tbody", 145 }, { L"tr", 150 }, { L"td", 150 }, { L"th", 150 },
+        { L"script", 165 }, { L"link", 160 }, { L"meta", 160 }, { L"style", 160 },
+        { L"html", 160 }, { L"head", 155 }, { L"body", 160 }, { L"title", 150 },
+        { L"br", 150 }, { L"hr", 140 }, { L"article", 145 }, { L"aside", 140 },
+        { L"strong", 135 }, { L"em", 130 }, { L"code", 130 }, { L"pre", 125 },
+        { L"canvas", 130 }, { L"svg", 135 }, { L"video", 125 }, { L"audio", 120 },
+        { L"dialog", 120 }, { L"details", 120 }, { L"summary", 115 }, { L"iframe", 120 }
+    };
+    auto it = kTagBonus.find(lowerTag);
+    return (it != kTagBonus.end()) ? it->second : 0;
+}
+
 void IntelliSenseEngine::PopulateHtmlTags() {
     const auto& officialTags = WebIntelliSenseData::GetHtmlTags();
     if (!officialTags.empty()) {
         m_htmlTags = officialTags;
+        for (auto& t : m_htmlTags) {
+            std::wstring lower = t.label;
+            for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+            t.score += CommonHtmlTagScoreBonus(lower);
+        }
         return;
     }
     // Standard HTML5 tags (all 120+ elements)
@@ -182,10 +207,58 @@ void IntelliSenseEngine::PopulateHtmlTags() {
     }
 }
 
+static bool IsHtmlBooleanAttributeName(const std::wstring& lowerName) {
+    static const std::unordered_set<std::wstring> kBoolAttrs = {
+        L"allowfullscreen", L"async", L"autofocus", L"autoplay", L"checked",
+        L"controls", L"default", L"defer", L"disabled", L"formnovalidate",
+        L"hidden", L"inert", L"ismap", L"itemscope", L"loop", L"multiple",
+        L"muted", L"nomodule", L"novalidate", L"open", L"playsinline",
+        L"readonly", L"required", L"reversed", L"selected"
+    };
+    return kBoolAttrs.count(lowerName) > 0;
+}
+
+static bool IsHtmlVoidTagName(const std::wstring& lowerTag) {
+    static const std::unordered_set<std::wstring> kVoidTags = {
+        L"area", L"base", L"br", L"col", L"embed", L"hr", L"img",
+        L"input", L"link", L"meta", L"param", L"source", L"track", L"wbr"
+    };
+    return kVoidTags.count(lowerTag) > 0;
+}
+
+static void NormalizeHtmlAttrItem(IntelliSenseItem& item) {
+    std::wstring lower = item.label;
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+    if (IsHtmlBooleanAttributeName(lower)) {
+        item.insertText = item.label;
+        return;
+    }
+    if (item.insertText.find(L"$0") == std::wstring::npos) {
+        if (item.insertText.size() >= 3 &&
+            item.insertText.compare(item.insertText.size() - 3, 3, L"=\"\"") == 0) {
+            item.insertText = item.insertText.substr(0, item.insertText.size() - 1) + L"$0\"";
+        } else if (item.insertText == item.label) {
+            item.insertText = item.label + L"=\"$0\"";
+        }
+    }
+}
+
+static bool IsCssVendorPrefixed(const std::wstring& label) {
+    return label.rfind(L"-moz-", 0) == 0 ||
+           label.rfind(L"-ms-", 0) == 0 ||
+           label.rfind(L"-webkit-", 0) == 0 ||
+           label.rfind(L"-o-", 0) == 0 ||
+           label.rfind(L"-khtml-", 0) == 0 ||
+           label.rfind(L"-apple-", 0) == 0;
+}
+
 void IntelliSenseEngine::PopulateHtmlAttributes() {
     const auto& officialAttrs = WebIntelliSenseData::GetHtmlGlobalAttributes();
     if (!officialAttrs.empty()) {
         m_htmlAttributes = officialAttrs;
+        for (auto& item : m_htmlAttributes) {
+            NormalizeHtmlAttrItem(item);
+        }
         return;
     }
     struct AttrDef { const wchar_t* name; const wchar_t* desc; };
@@ -386,6 +459,11 @@ void IntelliSenseEngine::PopulateCssProperties() {
     const auto& officialProps = WebIntelliSenseData::GetCssProperties();
     if (!officialProps.empty()) {
         m_cssProperties = officialProps;
+        for (auto& item : m_cssProperties) {
+            if (IsCssVendorPrefixed(item.label)) {
+                item.score = -400;
+            }
+        }
         return;
     }
     struct PropDef { const wchar_t* name; const wchar_t* desc; };
@@ -546,6 +624,16 @@ void IntelliSenseEngine::PopulateCssValues() {
     const auto& officialVals = WebIntelliSenseData::GetCssValues();
     if (!officialVals.empty()) {
         m_cssValues = officialVals;
+        for (auto& item : m_cssValues) {
+            if (IsCssVendorPrefixed(item.label)) {
+                item.score = -500;
+            } else if (item.label == L"inherit" || item.label == L"initial" ||
+                       item.label == L"unset" || item.label == L"revert" ||
+                       item.label == L"auto" || item.label == L"none" ||
+                       item.label == L"currentColor" || item.label == L"transparent") {
+                item.score = 180;
+            }
+        }
         const auto& pseudo = WebIntelliSenseData::GetCssPseudo();
         m_cssValues.insert(m_cssValues.end(), pseudo.begin(), pseudo.end());
         return;
@@ -1300,15 +1388,22 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
             }
         }
 
-        // 1b. CSS Custom Properties: --var-name: #hex;
+        // 1b. CSS Custom Properties: --var-name: #hex; (require ':' after declaration, avoid matching var(--partial) or '<!--')
         size_t pDash = 0;
         while ((pDash = line.find(L"--", pDash)) != std::wstring::npos) {
+            if (pDash > 0 && (line[pDash - 1] == L'<' || iswalnum(line[pDash - 1]))) {
+                pDash += 2;
+                continue;
+            }
             size_t pStart = pDash;
             size_t pEnd = pStart + 2;
             while (pEnd < line.length() && (iswalnum(line[pEnd]) || line[pEnd] == L'-' || line[pEnd] == L'_')) {
                 pEnd++;
             }
-            if (pEnd > pStart + 2) {
+            size_t afterName = pEnd;
+            while (afterName < line.length() && iswspace(line[afterName])) afterName++;
+            bool isCssCustomDecl = (afterName < line.length() && line[afterName] == L':');
+            if (pEnd > pStart + 2 && isCssCustomDecl) {
                 std::wstring varName = line.substr(pStart, pEnd - pStart);
                 if (seenVars.insert(varName).second) {
                     IntelliSenseItem item;
@@ -1324,7 +1419,317 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::ExtractDocumentSymbols(
             pDash = pEnd;
         }
 
-        // 2. JS/TS declarations: const port = 3000; or let port = ...
+        // 2. Modern JS/TS/JSX/TSX declarations (const/let/var, destructuring, functions, arrow params, classes, interfaces, types)
+        {
+            auto addSym = [&](const std::wstring& symName, const std::wstring& detailStr,
+                              CompletionKind kind, int score, const std::wstring& origin = L"variable") {
+                if (symName.empty() || symName.length() > 80) return;
+                if (!(iswalpha(symName[0]) || symName[0] == L'_' || symName[0] == L'$')) return;
+                for (wchar_t ch : symName) {
+                    if (!(iswalnum(ch) || ch == L'_' || ch == L'$')) return;
+                }
+                static const std::unordered_set<std::wstring> kReservedWords = {
+                    L"const", L"let", L"var", L"function", L"return", L"if", L"else", L"for",
+                    L"while", L"switch", L"case", L"break", L"continue", L"default", L"export",
+                    L"import", L"from", L"as", L"async", L"await", L"try", L"catch", L"finally",
+                    L"throw", L"new", L"typeof", L"instanceof", L"in", L"of", L"true", L"false",
+                    L"null", L"undefined", L"this", L"super", L"class", L"extends", L"implements",
+                    L"interface", L"type", L"enum", L"void", L"delete"
+                };
+                if (kReservedWords.count(symName)) return;
+                if (seenVars.insert(symName).second) {
+                    IntelliSenseItem item;
+                    item.label = symName;
+                    item.detail = detailStr;
+                    item.insertText = symName;
+                    item.kind = kind;
+                    item.score = score;
+                    item.origin = origin;
+                    results.push_back(std::move(item));
+                }
+            };
+
+            auto splitTopLevel = [](const std::wstring& src) -> std::vector<std::wstring> {
+                std::vector<std::wstring> parts;
+                int paren = 0, brack = 0, brace = 0, angle = 0;
+                wchar_t quote = 0;
+                size_t start = 0;
+                for (size_t i = 0; i < src.length(); ++i) {
+                    wchar_t c = src[i];
+                    if (quote) {
+                        if (c == L'\\' && i + 1 < src.length()) { ++i; continue; }
+                        if (c == quote) quote = 0;
+                        continue;
+                    }
+                    if (c == L'\'' || c == L'"' || c == L'`') { quote = c; continue; }
+                    if (c == L'(') ++paren;
+                    else if (c == L')' && paren > 0) --paren;
+                    else if (c == L'[') ++brack;
+                    else if (c == L']' && brack > 0) --brack;
+                    else if (c == L'{') ++brace;
+                    else if (c == L'}' && brace > 0) --brace;
+                    else if (c == L'<' && paren == 0 && brack == 0 && brace == 0) ++angle;
+                    else if (c == L'>' && angle > 0 && (i == 0 || src[i - 1] != L'=')) --angle;
+                    else if (c == L',' && paren == 0 && brack == 0 && brace == 0 && angle == 0) {
+                        parts.push_back(src.substr(start, i - start));
+                        start = i + 1;
+                    }
+                }
+                if (start <= src.length()) parts.push_back(src.substr(start));
+                return parts;
+            };
+
+            auto extractObjectBindings = [&](const std::wstring& insideBrace, const std::wstring& detailStr, int baseScore) {
+                for (auto tok : splitTopLevel(insideBrace)) {
+                    tok = trim(tok);
+                    if (tok.empty()) continue;
+                    if (tok.rfind(L"...", 0) == 0) tok = trim(tok.substr(3));
+                    // Strip default value `= ...` outside nested braces
+                    int b = 0, p = 0, br = 0;
+                    for (size_t i = 0; i < tok.length(); ++i) {
+                        wchar_t c = tok[i];
+                        if (c == L'{') ++b; else if (c == L'}' && b > 0) --b;
+                        else if (c == L'(') ++p; else if (c == L')' && p > 0) --p;
+                        else if (c == L'[') ++br; else if (c == L']' && br > 0) --br;
+                        else if (c == L'=' && b == 0 && p == 0 && br == 0) {
+                            tok = trim(tok.substr(0, i));
+                            break;
+                        }
+                    }
+                    size_t colonPos = tok.find(L':');
+                    if (colonPos != std::wstring::npos) {
+                        tok = trim(tok.substr(colonPos + 1));
+                    }
+                    if (!tok.empty() && tok[0] != L'{' && tok[0] != L'[') {
+                        size_t endId = 0;
+                        while (endId < tok.length() && (iswalnum(tok[endId]) || tok[endId] == L'_' || tok[endId] == L'$')) ++endId;
+                        if (endId > 0) addSym(tok.substr(0, endId), detailStr, CompletionKind::Variable, baseScore);
+                    }
+                }
+            };
+
+            auto extractParamSpan = [&](const std::wstring& paramSpan, const std::wstring& detailStr, int baseScore) {
+                for (auto tok : splitTopLevel(paramSpan)) {
+                    tok = trim(tok);
+                    if (tok.empty()) continue;
+                    if (tok.rfind(L"...", 0) == 0) tok = trim(tok.substr(3));
+                    // Strip top-level `: Type` or `= default` outside `{}` / `[]`
+                    int b = 0, br = 0, p = 0;
+                    for (size_t i = 0; i < tok.length(); ++i) {
+                        wchar_t c = tok[i];
+                        if (c == L'{') ++b; else if (c == L'}' && b > 0) --b;
+                        else if (c == L'[') ++br; else if (c == L']' && br > 0) --br;
+                        else if (c == L'(') ++p; else if (c == L')' && p > 0) --p;
+                        else if ((c == L':' || c == L'=') && b == 0 && br == 0 && p == 0) {
+                            tok = trim(tok.substr(0, i));
+                            break;
+                        }
+                    }
+                    if (tok.empty()) continue;
+                    if (tok.front() == L'{' && tok.back() == L'}' && tok.length() > 2) {
+                        extractObjectBindings(tok.substr(1, tok.length() - 2), detailStr, baseScore);
+                    } else if (tok.front() == L'[' && tok.back() == L']' && tok.length() > 2) {
+                        for (auto el : splitTopLevel(tok.substr(1, tok.length() - 2))) {
+                            el = trim(el);
+                            if (el.rfind(L"...", 0) == 0) el = trim(el.substr(3));
+                            size_t endId = 0;
+                            while (endId < el.length() && (iswalnum(el[endId]) || el[endId] == L'_' || el[endId] == L'$')) ++endId;
+                            if (endId > 0) addSym(el.substr(0, endId), detailStr, CompletionKind::Variable, baseScore);
+                        }
+                    } else {
+                        if (!tok.empty() && tok.back() == L'?') tok.pop_back();
+                        size_t endId = 0;
+                        while (endId < tok.length() && (iswalnum(tok[endId]) || tok[endId] == L'_' || tok[endId] == L'$')) ++endId;
+                        if (endId > 0) addSym(tok.substr(0, endId), detailStr, CompletionKind::Variable, baseScore);
+                    }
+                }
+            };
+
+            const bool isJsOrTsDoc =
+                (fileExt == L".js" || fileExt == L".jsx" || fileExt == L".ts" || fileExt == L".tsx" ||
+                 fileExt == L".mjs" || fileExt == L".cjs" || fileExt == L".mts" || fileExt == L".cts");
+            const bool isJsxOrTsxDoc = (fileExt == L".jsx" || fileExt == L".tsx");
+
+            std::wstring declTrim = trimmed;
+            if (declTrim.rfind(L"export default ", 0) == 0) declTrim = trim(declTrim.substr(15));
+            else if (declTrim.rfind(L"export ", 0) == 0) declTrim = trim(declTrim.substr(7));
+            if (declTrim.rfind(L"declare ", 0) == 0) declTrim = trim(declTrim.substr(8));
+            if (declTrim.rfind(L"async ", 0) == 0) declTrim = trim(declTrim.substr(6));
+
+            if (isJsOrTsDoc) {
+                // Inline or top-level arrow function parameters: e.g. `(e) => ...` or `const F = ({ a, b }: Props) =>`
+                size_t arrowPos = trimmed.find(L"=>");
+                if (arrowPos != std::wstring::npos && arrowPos > 0) {
+                    size_t beforeArrow = arrowPos;
+                    while (beforeArrow > 0 && iswspace(trimmed[beforeArrow - 1])) --beforeArrow;
+                    // Handle optional `: ReturnType` right before `=>`
+                    if (beforeArrow > 0 && trimmed[beforeArrow - 1] != L')') {
+                        // Could be single unparenthesized param `e =>` or `) : ReturnType =>`
+                        size_t closeP = trimmed.rfind(L')', beforeArrow - 1);
+                        size_t colonP = (closeP != std::wstring::npos) ? trimmed.find(L':', closeP) : std::wstring::npos;
+                        if (closeP != std::wstring::npos && colonP != std::wstring::npos && colonP < beforeArrow) {
+                            beforeArrow = closeP + 1;
+                        }
+                    }
+                    if (beforeArrow > 0 && trimmed[beforeArrow - 1] == L')') {
+                        int depth = 0;
+                        size_t openP = std::wstring::npos;
+                        for (size_t i = beforeArrow; i > 0; --i) {
+                            wchar_t c = trimmed[i - 1];
+                            if (c == L')') ++depth;
+                            else if (c == L'(') {
+                                --depth;
+                                if (depth == 0) { openP = i - 1; break; }
+                            }
+                        }
+                        if (openP != std::wstring::npos && beforeArrow - 1 > openP + 1) {
+                            extractParamSpan(trimmed.substr(openP + 1, (beforeArrow - 1) - (openP + 1)),
+                                             L"Parameter", 1780);
+                        }
+                    } else if (beforeArrow > 0) {
+                        size_t idEnd = beforeArrow;
+                        size_t idStart = idEnd;
+                        while (idStart > 0 && (iswalnum(trimmed[idStart - 1]) || trimmed[idStart - 1] == L'_' || trimmed[idStart - 1] == L'$')) --idStart;
+                        if (idEnd > idStart) {
+                            addSym(trimmed.substr(idStart, idEnd - idStart), L"Parameter", CompletionKind::Variable, 1750);
+                        }
+                    }
+                }
+
+                // Function declarations: function Name(params)
+                if (declTrim.rfind(L"function", 0) == 0 && declTrim.length() > 8 &&
+                    (iswspace(declTrim[8]) || declTrim[8] == L'*')) {
+                    size_t p = 8;
+                    while (p < declTrim.length() && (iswspace(declTrim[p]) || declTrim[p] == L'*')) ++p;
+                    size_t pEnd = p;
+                    while (pEnd < declTrim.length() && (iswalnum(declTrim[pEnd]) || declTrim[pEnd] == L'_' || declTrim[pEnd] == L'$')) ++pEnd;
+                    if (pEnd > p) {
+                        std::wstring fnName = declTrim.substr(p, pEnd - p);
+                        bool isComp = isJsxOrTsxDoc && iswupper(fnName[0]);
+                        addSym(fnName, isComp ? L"React Component" : L"Function",
+                               isComp ? CompletionKind::Class : CompletionKind::Function, 1880);
+                    }
+                    size_t lp = declTrim.find(L'(', pEnd);
+                    if (lp != std::wstring::npos) {
+                        int depth = 0;
+                        for (size_t i = lp; i < declTrim.length(); ++i) {
+                            if (declTrim[i] == L'(') ++depth;
+                            else if (declTrim[i] == L')') {
+                                --depth;
+                                if (depth == 0) {
+                                    if (i > lp + 1) extractParamSpan(declTrim.substr(lp + 1, i - lp - 1), L"Parameter", 1780);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // TypeScript interface / type / enum / class
+                if (declTrim.rfind(L"class ", 0) == 0 || declTrim.rfind(L"abstract class ", 0) == 0) {
+                    size_t kwOff = (declTrim.rfind(L"abstract class ", 0) == 0) ? 15 : 6;
+                    while (kwOff < declTrim.length() && iswspace(declTrim[kwOff])) ++kwOff;
+                    size_t idEnd = kwOff;
+                    while (idEnd < declTrim.length() && (iswalnum(declTrim[idEnd]) || declTrim[idEnd] == L'_' || declTrim[idEnd] == L'$')) ++idEnd;
+                    if (idEnd > kwOff) addSym(declTrim.substr(kwOff, idEnd - kwOff), L"Class", CompletionKind::Class, 1820);
+                } else if (declTrim.rfind(L"interface ", 0) == 0 || declTrim.rfind(L"type ", 0) == 0 || declTrim.rfind(L"enum ", 0) == 0) {
+                    size_t sp = declTrim.find(L' ');
+                    size_t kwOff = (sp != std::wstring::npos) ? sp + 1 : 0;
+                    while (kwOff < declTrim.length() && iswspace(declTrim[kwOff])) ++kwOff;
+                    size_t idEnd = kwOff;
+                    while (idEnd < declTrim.length() && (iswalnum(declTrim[idEnd]) || declTrim[idEnd] == L'_' || declTrim[idEnd] == L'$')) ++idEnd;
+                    if (idEnd > kwOff) addSym(declTrim.substr(kwOff, idEnd - kwOff), L"TypeScript Type", CompletionKind::Class, 1480, L"ts-type");
+                }
+            }
+
+            // const / let / var (including [arr] & { obj } destructuring and exported bindings)
+            static const std::vector<std::wstring> jsDeclKws = { L"const", L"let", L"var" };
+            for (const auto& kw : jsDeclKws) {
+                if (declTrim.rfind(kw + L" ", 0) == 0) {
+                    size_t pStart = kw.length();
+                    while (pStart < declTrim.length() && iswspace(declTrim[pStart])) ++pStart;
+                    // Find top-level '='
+                    int paren = 0, brack = 0, brace = 0, angle = 0;
+                    wchar_t q = 0;
+                    size_t eqPos = std::wstring::npos;
+                    for (size_t i = pStart; i < declTrim.length(); ++i) {
+                        wchar_t c = declTrim[i];
+                        if (q) { if (c == L'\\' && i + 1 < declTrim.length()) { ++i; continue; } if (c == q) q = 0; continue; }
+                        if (c == L'\'' || c == L'"' || c == L'`') { q = c; continue; }
+                        if (c == L'(') ++paren; else if (c == L')' && paren > 0) --paren;
+                        else if (c == L'[') ++brack; else if (c == L']' && brack > 0) --brack;
+                        else if (c == L'{') ++brace; else if (c == L'}' && brace > 0) --brace;
+                        else if (c == L'<') ++angle; else if (c == L'>' && angle > 0) --angle;
+                        else if (c == L'=' && paren == 0 && brack == 0 && brace == 0 && angle == 0 &&
+                                 (i + 1 >= declTrim.length() || (declTrim[i + 1] != L'=' && declTrim[i + 1] != L'>'))) {
+                            eqPos = i;
+                            break;
+                        }
+                    }
+                    std::wstring lhs = trim((eqPos != std::wstring::npos) ? declTrim.substr(pStart, eqPos - pStart) : declTrim.substr(pStart));
+                    std::wstring rhs = (eqPos != std::wstring::npos) ? trim(declTrim.substr(eqPos + 1)) : L"";
+                    // Strip trailing TS `: Type` annotation on lhs if any
+                    if (!lhs.empty() && (lhs[0] == L'[' || lhs[0] == L'{')) {
+                        wchar_t openCh = lhs[0];
+                        wchar_t closeCh = (openCh == L'[') ? L']' : L'}';
+                        int d = 0;
+                        size_t closeIdx = std::wstring::npos;
+                        for (size_t i = 0; i < lhs.length(); ++i) {
+                            if (lhs[i] == openCh) ++d;
+                            else if (lhs[i] == closeCh) { --d; if (d == 0) { closeIdx = i; break; } }
+                        }
+                        if (closeIdx != std::wstring::npos && closeIdx > 1) {
+                            std::wstring inner = lhs.substr(1, closeIdx - 1);
+                            if (openCh == L'[') {
+                                bool isHookTuple = (rhs.find(L"useState") != std::wstring::npos ||
+                                                    rhs.find(L"useReducer") != std::wstring::npos ||
+                                                    rhs.find(L"useTransition") != std::wstring::npos ||
+                                                    rhs.find(L"useActionState") != std::wstring::npos);
+                                auto elems = splitTopLevel(inner);
+                                for (size_t ei = 0; ei < elems.size(); ++ei) {
+                                    std::wstring el = trim(elems[ei]);
+                                    if (el.rfind(L"...", 0) == 0) el = trim(el.substr(3));
+                                    size_t cut = el.find_first_of(L"=:");
+                                    if (cut != std::wstring::npos) el = trim(el.substr(0, cut));
+                                    if (el.empty()) continue;
+                                    size_t endId = 0;
+                                    while (endId < el.length() && (iswalnum(el[endId]) || el[endId] == L'_' || el[endId] == L'$')) ++endId;
+                                    if (endId == 0) continue;
+                                    std::wstring idName = el.substr(0, endId);
+                                    if (isHookTuple && ei == 1 && (idName.rfind(L"set", 0) == 0 || idName.rfind(L"dispatch", 0) == 0 || idName.rfind(L"start", 0) == 0)) {
+                                        addSym(idName, L"React state setter (Dispatch)", CompletionKind::Function, 1950);
+                                    } else if (isHookTuple && ei == 0) {
+                                        addSym(idName, L"React state value", CompletionKind::Variable, 1920);
+                                    } else {
+                                        addSym(idName, L"Variable", CompletionKind::Variable, 1850);
+                                    }
+                                }
+                            } else {
+                                extractObjectBindings(inner, L"Variable", 1850);
+                            }
+                        }
+                    } else if (!lhs.empty() && (iswalpha(lhs[0]) || lhs[0] == L'_' || lhs[0] == L'$')) {
+                        size_t idEnd = 0;
+                        while (idEnd < lhs.length() && (iswalnum(lhs[idEnd]) || lhs[idEnd] == L'_' || lhs[idEnd] == L'$')) ++idEnd;
+                        std::wstring varName = lhs.substr(0, idEnd);
+                        std::wstring explicitType;
+                        size_t colonPos = lhs.find(L':', idEnd);
+                        if (colonPos != std::wstring::npos) {
+                            explicitType = trim(lhs.substr(colonPos + 1));
+                        }
+                        std::wstring inferred = explicitType.empty() ? inferTypeFromVal(rhs) : explicitType;
+                        bool isFnVal = (rhs.find(L"=>") != std::wstring::npos || rhs.rfind(L"function", 0) == 0 || rhs.rfind(L"async ", 0) == 0);
+                        bool isReactComp = isJsxOrTsxDoc && !varName.empty() && iswupper(varName[0]) && isFnVal;
+                        CompletionKind k = isReactComp ? CompletionKind::Class : (isFnVal ? CompletionKind::Function : CompletionKind::Variable);
+                        std::wstring det = isReactComp ? L"React Component" : (inferred.empty() ? (isFnVal ? L"Function" : L"Variable") : (L"Variable (" + inferred + L")"));
+                        addSym(varName, det, k, isFnVal ? 1880 : 1850);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2b. Fallback JS/TS declarations: const port = 3000; or let port = ...
         static const std::vector<std::wstring> jsVarKws = { L"const", L"let", L"var" };
         for (const auto& kw : jsVarKws) {
             if (trimmed.rfind(kw + L" ", 0) == 0) {
@@ -2506,6 +2911,9 @@ static void ProvideClassCompletions(
         }
     };
 
+    bool docLinksTailwindCss = false;
+    bool docIsHtmlMarkup = false;
+
     // 1. Scan current document for:
     //    - Linked CSS files (<link ... href="style.css"> or import "./globals.css")
     //    - Inline <style> CSS rules
@@ -2513,6 +2921,12 @@ static void ProvideClassCompletions(
         std::wstring inlineCss;
         bool inStyleBlock = false;
         for (const auto& line : *pDocLines) {
+            std::wstring lowLine = line;
+            for (auto& ch : lowLine) ch = static_cast<wchar_t>(towlower(ch));
+            if (lowLine.find(L"<html") != std::wstring::npos || lowLine.find(L"<head") != std::wstring::npos ||
+                lowLine.find(L"<body") != std::wstring::npos || lowLine.find(L"<!doctype") != std::wstring::npos) {
+                docIsHtmlMarkup = true;
+            }
             // Check <link ... href="...css">
             if (line.find(L"<link") != std::wstring::npos || line.find(L"href=") != std::wstring::npos) {
                 size_t hp = line.find(L"href=");
@@ -2525,6 +2939,11 @@ static void ProvideClassCompletions(
                         if (qEnd != std::wstring::npos && qEnd > qStart + 1) {
                             std::wstring hrefVal = line.substr(qStart + 1, qEnd - qStart - 1);
                             if (hrefVal.find(L".css") != std::wstring::npos) {
+                                std::wstring hrefLow = hrefVal;
+                                for (auto& ch : hrefLow) ch = static_cast<wchar_t>(towlower(ch));
+                                if (hrefLow.find(L"tailwind") != std::wstring::npos) {
+                                    docLinksTailwindCss = true;
+                                }
                                 // Strip query string if any
                                 size_t qm = hrefVal.find(L'?');
                                 if (qm != std::wstring::npos) hrefVal = hrefVal.substr(0, qm);
@@ -2548,6 +2967,11 @@ static void ProvideClassCompletions(
                     size_t q2 = line.find(qCh, q1 + 1);
                     if (q2 != std::wstring::npos && q2 > q1 + 1) {
                         std::wstring impSpec = line.substr(q1 + 1, q2 - q1 - 1);
+                        std::wstring impLow = impSpec;
+                        for (auto& ch : impLow) ch = static_cast<wchar_t>(towlower(ch));
+                        if (impLow.find(L"tailwind") != std::wstring::npos) {
+                            docLinksTailwindCss = true;
+                        }
                         if (impSpec.rfind(L"@/", 0) == 0 && !projectRoot.empty()) {
                             queueCssFile(projectRoot / impSpec.substr(2), 3500);
                             queueCssFile(projectRoot / L"src" / impSpec.substr(2), 3500);
@@ -2578,6 +3002,13 @@ static void ProvideClassCompletions(
         }
     }
 
+    auto shouldSkipUnlinkedTailwindCss = [&](const std::filesystem::path& p) -> bool {
+        if (!docIsHtmlMarkup || docLinksTailwindCss) return false;
+        std::wstring fnameLow = p.filename().wstring();
+        for (auto& ch : fnameLow) ch = static_cast<wchar_t>(towlower(ch));
+        return fnameLow.find(L"tailwind") != std::wstring::npos;
+    };
+
     // 2. Priority CSS files in baseDir and projectRoot (style.css, globals.css, global.css, app/globals.css, src/app/globals.css, etc.)
     static const wchar_t* s_priorityCssNames[] = {
         L"style.css", L"styles.css", L"globals.css", L"global.css", L"index.css", L"app.css", L"main.css",
@@ -2601,7 +3032,7 @@ static void ProvideClassCompletions(
             auto p = it->path();
             std::wstring ext = p.extension().wstring();
             for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-            if (ext == L".css") {
+            if (ext == L".css" && !shouldSkipUnlinkedTailwindCss(p)) {
                 localCount++;
                 queueCssFile(p, 3380);
             }
@@ -2677,7 +3108,9 @@ static void ProvideClassCompletions(
         }
 
         for (const auto& p : discoveredCss) {
-            queueCssFile(p, 3250);
+            if (!shouldSkipUnlinkedTailwindCss(p)) {
+                queueCssFile(p, 3250);
+            }
         }
     }
 
@@ -2834,6 +3267,151 @@ static void ProvideHtmlMethodCompletions(std::vector<IntelliSenseItem>& outCandi
         it.score = 1600;
         outCandidates.push_back(std::move(it));
     }
+}
+
+static void ProvideCommonHtmlAttrValues(
+    const std::wstring& tagNameLower,
+    const std::wstring& attrNameLower,
+    std::vector<IntelliSenseItem>& outCandidates,
+    const std::wstring& originTag = L"html"
+) {
+    auto pushVals = [&](std::initializer_list<const wchar_t*> vals, const wchar_t* desc) {
+        for (const wchar_t* v : vals) {
+            outCandidates.push_back({ v, desc, v, CompletionKind::Constant, 2200, 0, 0, originTag, desc });
+        }
+    };
+
+    if (attrNameLower == L"type") {
+        ProvideHtmlTypeCompletions(outCandidates);
+    } else if (attrNameLower == L"rel") {
+        ProvideHtmlRelCompletions(outCandidates);
+    } else if (attrNameLower == L"target") {
+        ProvideHtmlTargetCompletions(outCandidates);
+    } else if (attrNameLower == L"method") {
+        ProvideHtmlMethodCompletions(outCandidates);
+    } else if (attrNameLower == L"loading") {
+        pushVals({ L"lazy", L"eager" }, L"Image / iframe loading strategy");
+    } else if (attrNameLower == L"decoding") {
+        pushVals({ L"async", L"auto", L"sync" }, L"Image decoding mode");
+    } else if (attrNameLower == L"as") {
+        pushVals({ L"style", L"script", L"font", L"image", L"fetch", L"document", L"audio", L"video", L"worker" }, L"Preload resource destination");
+    } else if (attrNameLower == L"enctype") {
+        pushVals({ L"application/x-www-form-urlencoded", L"multipart/form-data", L"text/plain" }, L"Form submission MIME encoding type");
+    } else if (attrNameLower == L"role") {
+        pushVals({
+            L"button", L"link", L"dialog", L"alertdialog", L"menu", L"menuitem",
+            L"navigation", L"main", L"banner", L"contentinfo", L"complementary",
+            L"region", L"search", L"status", L"alert", L"tab", L"tablist", L"tabpanel",
+            L"listbox", L"option", L"combobox", L"checkbox", L"radio", L"switch",
+            L"slider", L"progressbar", L"tooltip", L"presentation", L"none"
+        }, L"WAI-ARIA role");
+    } else if (attrNameLower == L"dir") {
+        pushVals({ L"ltr", L"rtl", L"auto" }, L"Text directionality");
+    } else if (attrNameLower == L"autocomplete") {
+        pushVals({
+            L"off", L"on", L"name", L"email", L"username", L"new-password",
+            L"current-password", L"one-time-code", L"tel", L"street-address",
+            L"postal-code", L"country", L"organization"
+        }, L"Browser autofill hint");
+    } else if (attrNameLower == L"crossorigin") {
+        pushVals({ L"anonymous", L"use-credentials" }, L"CORS setting");
+    } else if (attrNameLower == L"referrerpolicy") {
+        pushVals({
+            L"no-referrer", L"no-referrer-when-downgrade", L"origin",
+            L"origin-when-cross-origin", L"same-origin", L"strict-origin",
+            L"strict-origin-when-cross-origin", L"unsafe-url"
+        }, L"Referrer policy");
+    } else if (attrNameLower == L"inputmode") {
+        pushVals({ L"none", L"text", L"tel", L"url", L"email", L"numeric", L"decimal", L"search" }, L"Virtual keyboard mode");
+    } else if (attrNameLower == L"enterkeyhint") {
+        pushVals({ L"enter", L"done", L"go", L"next", L"previous", L"search", L"send" }, L"Virtual keyboard Enter action label");
+    } else if (attrNameLower == L"draggable" || attrNameLower == L"spellcheck" || attrNameLower == L"contenteditable" || attrNameLower == L"aria-hidden" || attrNameLower == L"aria-expanded" || attrNameLower == L"aria-selected" || attrNameLower == L"aria-disabled" || attrNameLower == L"aria-checked") {
+        pushVals({ L"true", L"false" }, L"Boolean / enumerated attribute value");
+    } else if (attrNameLower == L"aria-live") {
+        pushVals({ L"off", L"polite", L"assertive" }, L"ARIA live region politeness");
+    } else if (attrNameLower == L"aria-current") {
+        pushVals({ L"page", L"step", L"location", L"date", L"time", L"true", L"false" }, L"ARIA current item state");
+    } else if (attrNameLower == L"scope" && tagNameLower == L"th") {
+        pushVals({ L"col", L"row", L"colgroup", L"rowgroup" }, L"Table header cell scope");
+    } else if (attrNameLower == L"preload" && (tagNameLower == L"audio" || tagNameLower == L"video")) {
+        pushVals({ L"auto", L"metadata", L"none" }, L"Media preload hint");
+    } else if (attrNameLower == L"wrap" && tagNameLower == L"textarea") {
+        pushVals({ L"soft", L"hard" }, L"Textarea line wrapping mode");
+    }
+}
+
+static std::vector<std::wstring> FindUnclosedMarkupTags(
+    const std::vector<std::wstring>* pDocLines,
+    size_t cursorLine,
+    size_t cursorCol
+) {
+    std::vector<std::wstring> stack;
+    if (!pDocLines || pDocLines->empty()) return stack;
+    size_t maxLine = (cursorLine < pDocLines->size()) ? cursorLine : (pDocLines->size() - 1);
+    bool inScriptOrStyle = false;
+    std::wstring endTagNeeded;
+
+    for (size_t l = 0; l <= maxLine; ++l) {
+        const std::wstring& raw = (*pDocLines)[l];
+        size_t len = (l == maxLine) ? (std::min)(cursorCol, raw.length()) : raw.length();
+        for (size_t i = 0; i < len; ++i) {
+            if (raw[i] != L'<') continue;
+            if (i + 3 < len && raw.compare(i, 4, L"<!--") == 0) {
+                size_t closeCmt = raw.find(L"-->", i + 4);
+                if (closeCmt != std::wstring::npos && closeCmt < len) {
+                    i = closeCmt + 2;
+                    continue;
+                }
+                break;
+            }
+            if (i + 1 >= len) break;
+            if (raw[i + 1] == L'!' || raw[i + 1] == L'?') continue;
+            bool isClose = (raw[i + 1] == L'/');
+            size_t nameStart = i + (isClose ? 2 : 1);
+            if (nameStart >= len || !(iswalpha(raw[nameStart]) || raw[nameStart] == L'_')) continue;
+            size_t nameEnd = nameStart;
+            while (nameEnd < len && (iswalnum(raw[nameEnd]) || raw[nameEnd] == L'-' || raw[nameEnd] == L'_' || raw[nameEnd] == L'.')) {
+                ++nameEnd;
+            }
+            std::wstring tag = raw.substr(nameStart, nameEnd - nameStart);
+            std::wstring lowerTag = tag;
+            for (auto& c : lowerTag) c = static_cast<wchar_t>(towlower(c));
+
+            if (inScriptOrStyle) {
+                if (isClose && lowerTag == endTagNeeded) {
+                    inScriptOrStyle = false;
+                    endTagNeeded.clear();
+                    if (!stack.empty() && _wcsicmp(stack.back().c_str(), tag.c_str()) == 0) stack.pop_back();
+                }
+                continue;
+            }
+
+            if (isClose) {
+                // Only pop complete closing tags (not the partial </ being typed at cursor!)
+                size_t gt = raw.find(L'>', nameEnd);
+                if (gt != std::wstring::npos && (l < maxLine || gt < len)) {
+                    for (size_t s = stack.size(); s > 0; --s) {
+                        if (_wcsicmp(stack[s - 1].c_str(), tag.c_str()) == 0) {
+                            stack.resize(s - 1);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                size_t gt = raw.find(L'>', nameEnd);
+                bool selfClosed = (gt != std::wstring::npos && gt > nameEnd && raw[gt - 1] == L'/');
+                bool voidTag = IsHtmlVoidTagName(lowerTag);
+                if (!selfClosed && !voidTag) {
+                    stack.push_back(tag);
+                    if (lowerTag == L"script" || lowerTag == L"style") {
+                        inScriptOrStyle = true;
+                        endTagNeeded = lowerTag;
+                    }
+                }
+            }
+        }
+    }
+    return stack;
 }
 
 } // namespace
@@ -3149,7 +3727,9 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     bool afterDoubleColon = (beforePos >= 2 && currentLine[beforePos - 1] == L':' && currentLine[beforePos - 2] == L':');
     bool afterArrow       = (beforePos >= 2 && currentLine[beforePos - 1] == L'>' && currentLine[beforePos - 2] == L'-');
     bool afterDot         = (beforePos >= 1 && currentLine[beforePos - 1] == L'.');
-    bool afterOpenAngle   = (beforePos >= 1 && currentLine[beforePos - 1] == L'<');
+    bool afterOpenAngle   = (beforePos >= 1 && currentLine[beforePos - 1] == L'<') ||
+                            (beforePos >= 2 && currentLine[beforePos - 1] == L'/' && currentLine[beforePos - 2] == L'<' &&
+                             (isHtml || ext == L".jsx" || ext == L".tsx" || ext == L".xml" || ext == L".svg"));
 
     bool insideServerKey = false;
     if (insidePhp && quotePos != std::wstring::npos && quotePos < cursorCol) {
@@ -3308,6 +3888,24 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     insideHtmlTag = true;
                 }
             }
+        } else if (isJs) {
+            // Also detect class-utility calls like `cn("...")`, `clsx("...")`, `twMerge("...")`, `cva("...")`, `classList.add("...")`
+            std::wstring beforeQuote = currentLine.substr(0, openQuotePos);
+            std::wstring beforeQuoteLower = beforeQuote;
+            for (auto& c : beforeQuoteLower) c = static_cast<wchar_t>(towlower(c));
+            size_t lastLParen = beforeQuoteLower.rfind(L'(');
+            if (lastLParen != std::wstring::npos && lastLParen > 0) {
+                size_t fnEnd = lastLParen;
+                while (fnEnd > 0 && iswspace(beforeQuoteLower[fnEnd - 1])) --fnEnd;
+                size_t fnStart = fnEnd;
+                while (fnStart > 0 && (iswalnum(beforeQuoteLower[fnStart - 1]) || beforeQuoteLower[fnStart - 1] == L'_' || beforeQuoteLower[fnStart - 1] == L'.')) --fnStart;
+                std::wstring fnName = beforeQuoteLower.substr(fnStart, fnEnd - fnStart);
+                if (fnName == L"cn" || fnName == L"clsx" || fnName == L"twmerge" || fnName == L"cva" ||
+                    fnName == L"classnames" || fnName == L"classlist.add" || fnName == L"classlist.remove" ||
+                    fnName == L"classlist.toggle") {
+                    enclosingAttrName = L"classname";
+                }
+            }
         }
     }
 
@@ -3343,22 +3941,33 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
         }
     }
 
-    // Detect SQL query context in .sql files OR SQL strings/calls in PHP, Python, JS, TS
+    // Detect SQL query context in .sql files OR genuine SQL strings/calls in PHP, Python, JS, TS.
+    // Never trigger db-schema inside class/className/id/style attributes, HTML/JSX markup/tags, CSS, or ES/Python imports.
+    const bool suppressSqlContext =
+        isClassAttrContext || isIdAttrContext || enclosingAttrName == L"style" ||
+        insideJsImportClause || isCss ||
+        ((isHtml || insideHtmlTag) && !insidePhp);
+
     auto hasSqlToken = [](const std::wstring& lineText) -> bool {
         std::wstring up;
         up.reserve(lineText.size());
         for (wchar_t ch : lineText) up.push_back(static_cast<wchar_t>(towupper(ch)));
+        // Never treat JS/TS ES imports or Python `from x import y` as SQL queries
+        if ((up.find(L"IMPORT ") != std::wstring::npos && up.find(L" FROM ") != std::wstring::npos)) {
+            return false;
+        }
         static const wchar_t* kSqlWords[] = {
-            L"SELECT ", L"FROM ", L"JOIN ", L"WHERE ", L"INSERT INTO ", L"UPDATE ",
-            L"DELETE FROM ", L"ORDER BY ", L"GROUP BY ", L"ALTER TABLE ", L"CREATE TABLE ",
-            L"HAVING ", L"->QUERY(", L"->PREPARE(", L"->EXEC(", L"CURSOR.EXECUTE(", L"DB::TABLE("
+            L"INSERT INTO ", L"DELETE FROM ", L"ALTER TABLE ", L"CREATE TABLE ", L"DROP TABLE ",
+            L"->QUERY(", L"->PREPARE(", L"->EXEC(", L"CURSOR.EXECUTE(", L"DB::TABLE("
         };
         for (const auto* kw : kSqlWords) {
             if (up.find(kw) != std::wstring::npos) return true;
         }
+        if (up.find(L"SELECT ") != std::wstring::npos && up.find(L" FROM ") != std::wstring::npos) return true;
+        if (up.find(L"UPDATE ") != std::wstring::npos && up.find(L" SET ") != std::wstring::npos) return true;
         return false;
     };
-    bool isSqlContext = isSqlFile || hasSqlToken(currentLine);
+    bool isSqlContext = !suppressSqlContext && (isSqlFile || hasSqlToken(currentLine));
     HostSqlCursorContext hostSqlCtx{};
     size_t resolvedCursorLine = cursorLine;
     if (resolvedCursorLine == static_cast<size_t>(-1) && pDocLines && !pDocLines->empty()) {
@@ -3378,26 +3987,25 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
     }
-    if (pDocLines && resolvedCursorLine < pDocLines->size() &&
+    if (!suppressSqlContext && pDocLines && resolvedCursorLine < pDocLines->size() &&
         HostSqlAnalyzer::IsSupportedHostExtension(ext)) {
         hostSqlCtx = HostSqlAnalyzer::ExtractContextAtCursor(*pDocLines, resolvedCursorLine, cursorCol);
         if (hostSqlCtx.inSqlString) {
             isSqlContext = true;
         }
     }
-    if (!isSqlContext && isInsideQuotes && pDocLines && !pDocLines->empty()) {
-        size_t checked = 0;
-        for (const auto& dl : *pDocLines) {
-            if (hasSqlToken(dl)) {
-                // Only check up to cursor line
+    if (!isSqlContext && !suppressSqlContext && isPy && isInsideQuotes && pDocLines && resolvedCursorLine < pDocLines->size()) {
+        const size_t minScan = (resolvedCursorLine > 15) ? (resolvedCursorLine - 15) : 0;
+        for (size_t li = minScan; li <= resolvedCursorLine; ++li) {
+            if (hasSqlToken((*pDocLines)[li])) {
                 isSqlContext = true;
+                break;
             }
-            if (&dl == &currentLine || ++checked >= 120) break;
         }
     }
 
-    // If typing inside quotes and NOT inside an HTML tag attribute, PHP server key, JS import, .env lookup, SQL query, or file path prefix:
-    if (isInsideQuotes && !insideHtmlTag && !insideServerKey && !insideJsImportClause && !isEnvKeyContext && !isSqlContext) {
+    // If typing inside quotes and NOT inside an HTML tag attribute, class/className context, PHP server key, JS import, .env lookup, SQL query, or file path prefix:
+    if (isInsideQuotes && !insideHtmlTag && !isClassAttrContext && !insideServerKey && !insideJsImportClause && !isEnvKeyContext && !isSqlContext) {
         bool isPathPrefix = (!prefix.empty() && (prefix[0] == L'.' || prefix[0] == L'/' || prefix[0] == L'\\'));
         bool isImportLine = (currentLine.find(L"import ") != std::wstring::npos || currentLine.find(L"require(") != std::wstring::npos || currentLine.find(L"include") != std::wstring::npos);
         if (!isPathPrefix && !isImportLine) {
@@ -3576,15 +4184,48 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         }
         if (!insideStyle && pDocLines && !pDocLines->empty()) {
-            // Scan backwards from current line to find enclosing <style> or <script> tags
-            size_t curL = 0;
-            // Approximate line by finding matching text or looking at last lines
-            for (size_t l = 0; l < pDocLines->size(); ++l) {
-                const auto& dLine = (*pDocLines)[l];
-                if (dLine.find(L"<style") != std::wstring::npos) insideStyle = true;
-                if (dLine.find(L"</style>") != std::wstring::npos) insideStyle = false;
-                if (dLine.find(L"<script") != std::wstring::npos) insideScript = true;
-                if (dLine.find(L"</script>") != std::wstring::npos) insideScript = false;
+            size_t maxLine = (resolvedCursorLine < pDocLines->size()) ? resolvedCursorLine : (pDocLines->size() - 1);
+            for (size_t l = 0; l <= maxLine; ++l) {
+                std::wstring dLine = (*pDocLines)[l];
+                if (l == maxLine) {
+                    dLine = dLine.substr(0, (std::min)(cursorCol, dLine.length()));
+                }
+                std::wstring dLower = dLine;
+                for (auto& c : dLower) c = static_cast<wchar_t>(towlower(c));
+
+                size_t scanPos = 0;
+                while (scanPos < dLower.length()) {
+                    size_t nextStyleOpen = dLower.find(L"<style", scanPos);
+                    size_t nextStyleClose = dLower.find(L"</style>", scanPos);
+                    size_t nextScriptOpen = dLower.find(L"<script", scanPos);
+                    size_t nextScriptClose = dLower.find(L"</script>", scanPos);
+                    size_t nextPos = (std::min)((std::min)(nextStyleOpen, nextStyleClose),
+                                                (std::min)(nextScriptOpen, nextScriptClose));
+                    if (nextPos == std::wstring::npos) break;
+
+                    if (nextPos == nextStyleOpen) {
+                        size_t gt = dLower.find(L'>', nextPos);
+                        if (gt != std::wstring::npos && (gt == 0 || dLower[gt - 1] != L'/')) insideStyle = true;
+                        scanPos = (gt != std::wstring::npos) ? (gt + 1) : (nextPos + 6);
+                    } else if (nextPos == nextStyleClose) {
+                        insideStyle = false;
+                        scanPos = nextPos + 8;
+                    } else if (nextPos == nextScriptOpen) {
+                        size_t gt = dLower.find(L'>', nextPos);
+                        if (gt != std::wstring::npos && (gt == 0 || dLower[gt - 1] != L'/')) insideScript = true;
+                        scanPos = (gt != std::wstring::npos) ? (gt + 1) : (nextPos + 7);
+                    } else {
+                        insideScript = false;
+                        scanPos = nextPos + 9;
+                    }
+                }
+            }
+        }
+        // An unclosed <style or <script tag header (e.g. `<script src="|">`) is HTML tag/attribute context, not embedded JS/CSS
+        if (insideHtmlTag && (insideStyle || insideScript)) {
+            if (enclosingJsxTagName == L"style" || enclosingJsxTagName == L"script") {
+                insideStyle = false;
+                insideScript = false;
             }
         }
     }
@@ -3635,32 +4276,37 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
 
     if (insideStyle) {
         // In CSS context: Check if typing inside rule block { ... } or at selector level
-        bool insideBraces = false;
-        size_t lastOpenBrace = currentLine.rfind(L'{', cursorCol > 0 ? cursorCol - 1 : 0);
-        size_t lastCloseBrace = currentLine.rfind(L'}', cursorCol > 0 ? cursorCol - 1 : 0);
-        if (lastOpenBrace != std::wstring::npos && (lastCloseBrace == std::wstring::npos || lastOpenBrace > lastCloseBrace)) {
+        bool insideBraces = (enclosingAttrName == L"style");
+        size_t lastOpenBrace = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'{', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
+        size_t lastCloseBrace = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'}', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
+        if (!insideBraces && lastOpenBrace != std::wstring::npos && (lastCloseBrace == std::wstring::npos || lastOpenBrace > lastCloseBrace)) {
             insideBraces = true;
-        } else if (pDocLines && !pDocLines->empty()) {
+        } else if (!insideBraces && pDocLines && !pDocLines->empty()) {
             int depth = 0;
-            for (const auto& dLine : *pDocLines) {
-                if (&dLine == &currentLine) {
-                    for (size_t i = 0; i < cursorCol && i < dLine.length(); ++i) {
-                        if (dLine[i] == L'{') depth++;
-                        else if (dLine[i] == L'}') { if (depth > 0) depth--; }
-                    }
-                    break;
-                }
-                for (wchar_t ch : dLine) {
-                    if (ch == L'{') depth++;
-                    else if (ch == L'}') { if (depth > 0) depth--; }
+            size_t maxCssLine = (resolvedCursorLine < pDocLines->size()) ? resolvedCursorLine : (pDocLines->size() - 1);
+            for (size_t li = 0; li <= maxCssLine; ++li) {
+                const auto& dLine = (*pDocLines)[li];
+                size_t colLimit = (li == maxCssLine) ? (std::min)(cursorCol, dLine.length()) : dLine.length();
+                for (size_t i = 0; i < colLimit; ++i) {
+                    if (dLine[i] == L'{') depth++;
+                    else if (dLine[i] == L'}') { if (depth > 0) depth--; }
                 }
             }
             insideBraces = (depth > 0);
         }
 
-        size_t lastColon = currentLine.rfind(L':', cursorCol > 0 ? cursorCol - 1 : 0);
-        size_t lastSemi = currentLine.rfind(L';', cursorCol > 0 ? cursorCol - 1 : 0);
-        bool colonPrecededByIdent = (lastColon != std::wstring::npos && lastColon > 0 && iswalnum(currentLine[lastColon - 1]));
+        size_t curCssCap = (!currentLine.empty() && cursorCol > 0) ? (std::min)(cursorCol - 1, currentLine.length() - 1) : 0;
+        size_t lastColon = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L':', curCssCap);
+        size_t lastSemi = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L';', curCssCap);
+        bool colonPrecededByIdent = false;
+        if (lastColon != std::wstring::npos && lastColon > 0 &&
+            (lastOpenBrace == std::wstring::npos || lastColon > lastOpenBrace)) {
+            size_t k = lastColon;
+            while (k > 0 && iswspace(currentLine[k - 1])) --k;
+            if (k > 0 && (iswalnum(currentLine[k - 1]) || currentLine[k - 1] == L'-' || currentLine[k - 1] == L'_')) {
+                colonPrecededByIdent = true;
+            }
+        }
         bool typingValue = insideBraces && (lastColon != std::wstring::npos && (lastSemi == std::wstring::npos || lastColon > lastSemi) && colonPrecededByIdent);
 
         if (typingValue) {
@@ -3944,13 +4590,40 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     addPropVal(L"calc()", L"Performs mathematical calculations on CSS values", 390, L"calc($0)");
                 }
 
-                for (const auto& v : m_cssValues) rawCandidates.push_back(v);
+                // Check if inside var(--...) to prioritize document CSS custom properties
+                size_t lastVarOpen = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L"var(", curCssCap);
+                size_t lastParenClose = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L')', curCssCap);
+                bool insideCssVarFn = (lastVarOpen != std::wstring::npos && (lastParenClose == std::wstring::npos || lastVarOpen > lastParenClose));
+                if (insideCssVarFn) {
+                    for (auto& sym : workspaceVarSymbols) {
+                        if (sym.label.rfind(L"--", 0) == 0) {
+                            sym.score = 2600;
+                        }
+                    }
+                } else {
+                    for (const auto& v : m_cssValues) rawCandidates.push_back(v);
+                }
             }
         } else {
-            for (const auto& p : m_cssProperties) rawCandidates.push_back(p);
+            if (insideBraces) {
+                for (const auto& p : m_cssProperties) rawCandidates.push_back(p);
+            } else if (lastColon != std::wstring::npos && (lastCloseBrace == std::wstring::npos || lastColon > lastCloseBrace)) {
+                // Selector pseudo-class / pseudo-element context (e.g. a:hover, ::before)
+                for (auto ps : WebIntelliSenseData::GetCssPseudo()) {
+                    ps.score = 1800;
+                    rawCandidates.push_back(std::move(ps));
+                }
+            } else {
+                // Selector tag names (e.g. button, div, input, body)
+                for (auto tag : m_htmlTags) {
+                    tag.insertText = tag.label;
+                    tag.score = 420;
+                    rawCandidates.push_back(std::move(tag));
+                }
+            }
 
-            // Check for CSS Emmet abbreviation
-            std::wstring cssEmmet = EmmetEngine::ExtractAbbreviation(currentLine, cursorCol, true, nullptr);
+            // Check for CSS Emmet abbreviation (inside declaration blocks only)
+            std::wstring cssEmmet = insideBraces ? EmmetEngine::ExtractAbbreviation(currentLine, cursorCol, true, nullptr) : L"";
             if (!cssEmmet.empty() && EmmetEngine::IsEmmetAbbreviation(cssEmmet, true)) {
                 std::wstring expandedCss = EmmetEngine::ExpandCss(cssEmmet);
                 if (!expandedCss.empty()) {
@@ -4170,8 +4843,11 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
         };
 
-        // 2. If cursor is inside `import { ... | ... } from 'moduleSpec'`, suggest exports from that module EXCLUSIVELY!
-        if (insideJsImportClause) {
+        // 2. If inside `cn("...")`, `clsx("...")`, `className={"..."}`, or `import { ... } from '...'`:
+        if (isClassAttrContext && !insidePhp && !insideJsImportClause) {
+            insideTagAttr = true;
+            ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot, currentLine);
+        } else if (insideJsImportClause) {
             rawCandidates.clear();
             if (!importLineModuleSpec.empty()) {
                 auto entryFile = ResolveModuleEntryFile(importLineModuleSpec, baseDir, projectRoot);
@@ -4260,23 +4936,101 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 bool isJsx = (ext == L".jsx" || ext == L".tsx" || (isJs && (currentLine.find(L"<") != std::wstring::npos || insideHtmlTag)));
                 size_t lastOpenTag = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'<', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
                 size_t lastCloseTag = (!currentLine.empty() && cursorCol > 0) ? currentLine.rfind(L'>', (std::min)(cursorCol - 1, currentLine.length() - 1)) : std::wstring::npos;
+                bool isClosingJsxTag = (lastOpenTag != std::wstring::npos &&
+                                        (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag) &&
+                                        lastOpenTag + 1 < cursorCol && currentLine[lastOpenTag + 1] == L'/');
                 bool openTagOnLineValid = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag) && isJsxOrHtmlOpenTag(currentLine, lastOpenTag));
-                bool insideTag = isJsx && (openTagOnLineValid || insideHtmlTag);
+
+                // Check whether cursor is inside a JSX `{ ... }` expression inside `<Tag ...>`: e.g. `<button onClick={(e) => setL|}>`
+                int jsxBraceDepth = 0;
+                if (isJsx && !isClosingJsxTag && (openTagOnLineValid || insideHtmlTag)) {
+                    size_t scanStartLine = (openTagOnLineValid && lastOpenTag != std::wstring::npos)
+                        ? resolvedCursorLine
+                        : (resolvedCursorLine > 12 ? resolvedCursorLine - 12 : 0);
+                    if (insideMultiLineTag && pDocLines && resolvedCursorLine < pDocLines->size() && !openTagOnLineValid) {
+                        for (size_t bl = resolvedCursorLine; bl > scanStartLine; --bl) {
+                            const auto& blText = (*pDocLines)[bl - 1];
+                            size_t op = blText.rfind(L'<');
+                            size_t cl = blText.rfind(L'>');
+                            if (op != std::wstring::npos && (cl == std::wstring::npos || op > cl)) {
+                                scanStartLine = bl - 1;
+                                break;
+                            }
+                        }
+                    }
+                    wchar_t q = 0;
+                    for (size_t sl = scanStartLine; sl <= resolvedCursorLine; ++sl) {
+                        const std::wstring& sText = (sl == resolvedCursorLine || !pDocLines || sl >= pDocLines->size()) ? currentLine : (*pDocLines)[sl];
+                        size_t colStart = 0;
+                        if (sl == scanStartLine && openTagOnLineValid && lastOpenTag != std::wstring::npos) {
+                            colStart = lastOpenTag;
+                        } else if (sl == scanStartLine && !openTagOnLineValid) {
+                            size_t op = sText.rfind(L'<');
+                            if (op != std::wstring::npos) colStart = op;
+                        }
+                        size_t colEnd = (sl == resolvedCursorLine) ? (std::min)(cursorCol, sText.length()) : sText.length();
+                        for (size_t ci = colStart; ci < colEnd; ++ci) {
+                            wchar_t ch = sText[ci];
+                            if (q) {
+                                if (ch == L'\\' && ci + 1 < colEnd) { ++ci; continue; }
+                                if (ch == q) q = 0;
+                                continue;
+                            }
+                            if (ch == L'\'' || ch == L'"' || ch == L'`') { q = ch; continue; }
+                            if (ch == L'{') ++jsxBraceDepth;
+                            else if (ch == L'}' && jsxBraceDepth > 0) --jsxBraceDepth;
+                        }
+                    }
+                }
+                const bool insideJsxExpr = (jsxBraceDepth > 0) && !(isInsideQuotes && !enclosingAttrName.empty());
+                bool insideTag = isJsx && !insideJsxExpr && (openTagOnLineValid || insideHtmlTag || isClosingJsxTag);
 
                 if (insideTag) {
                     size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : std::wstring::npos;
-                    bool typingTagName = (!insideMultiLineTag && lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen));
-                    if (typingTagName) {
-                        // Tag name inside JSX: <div, <Image, <Link, <Button, etc.
+                    bool typingTagName = isClosingJsxTag || (!insideMultiLineTag && lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen));
+                    if (isClosingJsxTag && isJsx) {
+                        insideTagAttr = true;
+                        auto unclosed = FindUnclosedMarkupTags(pDocLines, resolvedCursorLine, cursorCol);
+                        int bonus = 0;
+                        for (size_t ui = unclosed.size(); ui > 0; --ui) {
+                            const std::wstring& uTag = unclosed[ui - 1];
+                            rawCandidates.push_back({ uTag, L"Close <" + uTag + L">", uTag + L">", CompletionKind::Tag, 5200 - bonus, 0, 0, L"jsx-close" });
+                            bonus += 40;
+                        }
+                        for (const auto& tag : m_htmlTags) {
+                            IntelliSenseItem it = tag;
+                            it.insertText = tag.label + L">";
+                            it.score += 1000;
+                            rawCandidates.push_back(std::move(it));
+                        }
+                    } else if (typingTagName) {
+                        // Tag name inside JSX: <div, <David, <Image, <Link, <Button, etc.
+                        insideTagAttr = true;
+                        for (const auto& wsSym : workspaceVarSymbols) {
+                            if (!wsSym.label.empty() && iswupper(wsSym.label[0]) && wsSym.origin != L"ts-type") {
+                                IntelliSenseItem comp = wsSym;
+                                comp.kind = CompletionKind::Tag;
+                                comp.score = 2600;
+                                comp.detail = L"Local React Component: <" + wsSym.label + L" />";
+                                rawCandidates.push_back(std::move(comp));
+                            }
+                        }
                         for (const auto& imp : importedDocSymbols) {
                             if (imp.kind == CompletionKind::Class || imp.kind == CompletionKind::Function) {
-                                rawCandidates.push_back(imp);
+                                IntelliSenseItem comp = imp;
+                                comp.kind = CompletionKind::Tag;
+                                comp.score += 1400;
+                                rawCandidates.push_back(std::move(comp));
                             }
                         }
                         collectDynamicProjectExports(rawCandidates, true);
-                        for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                        for (const auto& tag : m_htmlTags) {
+                            IntelliSenseItem it = tag;
+                            it.score += 1200;
+                            rawCandidates.push_back(std::move(it));
+                        }
                         for (const auto& r : m_reactAndNodeVocabulary) {
-                            if (r.kind == CompletionKind::Class || r.kind == CompletionKind::Function) {
+                            if ((r.kind == CompletionKind::Class || r.kind == CompletionKind::Function) && r.origin != L"react-type") {
                                 rawCandidates.push_back(r);
                             }
                         }
@@ -4440,45 +5194,189 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         }
                     }
                 } else {
+                    // Check whether cursor is inside an explicit TypeScript type position (e.g. `: Type`, `useState<Type>`, `type X = Type`)
+                    bool isTsTypePos = false;
+                    if (isTs) {
+                        size_t beforePref = (cursorCol >= prefix.length()) ? (cursorCol - prefix.length()) : 0;
+                        std::wstring leftSlice = currentLine.substr(0, (std::min)(beforePref, currentLine.length()));
+                        std::wstring leftTrim = TrimWs(leftSlice);
+                        if (!leftTrim.empty()) {
+                            wchar_t lc = leftTrim.back();
+                            if (lc == L':' || lc == L'|' || lc == L'&' || lc == L'<') {
+                                isTsTypePos = true;
+                            }
+                        }
+                        std::wstring trCur = TrimWs(currentLine);
+                        if (trCur.rfind(L"interface ", 0) == 0 || trCur.rfind(L"type ", 0) == 0 ||
+                            trCur.rfind(L"export interface ", 0) == 0 || trCur.rfind(L"export type ", 0) == 0) {
+                            size_t eqP = leftTrim.find(L'=');
+                            size_t clP = leftTrim.find(L':');
+                            if (eqP != std::wstring::npos || clP != std::wstring::npos ||
+                                leftTrim.find(L"extends") != std::wstring::npos ||
+                                leftTrim.find(L"implements") != std::wstring::npos) {
+                                isTsTypePos = true;
+                            }
+                        }
+                    }
+
                     for (const auto& imp : importedDocSymbols) rawCandidates.push_back(imp);
                     collectDynamicProjectExports(rawCandidates, false);
                     for (const auto& g : m_jsGlobals) rawCandidates.push_back(g);
                     for (const auto& kw : m_jsKeywords) rawCandidates.push_back(kw);
                     for (const auto& d : m_jsDomApis) rawCandidates.push_back(d);
-                    for (const auto& r : m_reactAndNodeVocabulary) rawCandidates.push_back(r);
+                    for (auto r : m_reactAndNodeVocabulary) {
+                        if (r.origin == L"react-type") {
+                            r.score = isTsTypePos ? 1900 : 280;
+                        }
+                        rawCandidates.push_back(std::move(r));
+                    }
                     if (isTs) {
-                        for (const auto& tsItem : WebIntelliSenseData::GetTypeScriptGlobalsAndUtilityTypes()) {
-                            rawCandidates.push_back(tsItem);
+                        for (auto tsItem : WebIntelliSenseData::GetTypeScriptGlobalsAndUtilityTypes()) {
+                            if (!isTsTypePos && tsItem.kind == CompletionKind::Class) {
+                                tsItem.score = 320;
+                            }
+                            rawCandidates.push_back(std::move(tsItem));
+                        }
+                    }
+                    if (!isTsTypePos) {
+                        for (auto& wsSym : workspaceVarSymbols) {
+                            if (wsSym.origin == L"ts-type") {
+                                wsSym.score = 340;
+                            }
+                        }
+                    } else {
+                        for (auto& wsSym : workspaceVarSymbols) {
+                            if (wsSym.origin == L"ts-type") {
+                                wsSym.score = 2100;
+                            }
                         }
                     }
 
-                    // In React JSX/TSX files, also provide HTML element tags
+                    // Suggest HTML/JSX tags outside '<' in JSX/TSX when inside open JSX markup children OR inside a `return (` render block
                     if (ext == L".jsx" || ext == L".tsx") {
-                        for (const auto& tag : m_htmlTags) rawCandidates.push_back(tag);
+                        auto unclosedJsx = FindUnclosedMarkupTags(pDocLines, resolvedCursorLine, cursorCol);
+                        bool inJsxMarkupContext = !unclosedJsx.empty();
+                        if (!inJsxMarkupContext && pDocLines && resolvedCursorLine < pDocLines->size()) {
+                            std::wstring trimCur = TrimWs(currentLine);
+                            bool looksLikeStmtDecl =
+                                trimCur.rfind(L"const ", 0) == 0 || trimCur.rfind(L"let ", 0) == 0 ||
+                                trimCur.rfind(L"var ", 0) == 0 || trimCur.rfind(L"import ", 0) == 0 ||
+                                trimCur.rfind(L"export ", 0) == 0 || trimCur.rfind(L"interface ", 0) == 0 ||
+                                trimCur.rfind(L"type ", 0) == 0 || trimCur.rfind(L"function ", 0) == 0 ||
+                                trimCur.rfind(L"return ", 0) == 0;
+                            if (!looksLikeStmtDecl) {
+                                int parenDepth = 0;
+                                size_t minScan = (resolvedCursorLine > 30) ? (resolvedCursorLine - 30) : 0;
+                                for (size_t bl = resolvedCursorLine + 1; bl-- > minScan;) {
+                                    std::wstring lt = (*pDocLines)[bl];
+                                    if (bl == resolvedCursorLine) lt = lt.substr(0, (std::min)(cursorCol, lt.length()));
+                                    for (size_t ci = lt.length(); ci > 0; --ci) {
+                                        wchar_t ch = lt[ci - 1];
+                                        if (ch == L')') ++parenDepth;
+                                        else if (ch == L'(') {
+                                            if (parenDepth > 0) --parenDepth;
+                                            else {
+                                                std::wstring beforeP = TrimWs(lt.substr(0, ci - 1));
+                                                if (beforeP.ends_with(L"return") || beforeP.ends_with(L"=>")) {
+                                                    inJsxMarkupContext = true;
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (inJsxMarkupContext) break;
+                                    std::wstring blTrim = TrimWs(lt);
+                                    if (bl < resolvedCursorLine && (blTrim.rfind(L"export ", 0) == 0 || blTrim.rfind(L"function ", 0) == 0 || blTrim.rfind(L"interface ", 0) == 0)) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (inJsxMarkupContext) {
+                            for (const auto& wsSym : workspaceVarSymbols) {
+                                if (!wsSym.label.empty() && iswupper(wsSym.label[0]) && wsSym.origin != L"ts-type") {
+                                    IntelliSenseItem comp = wsSym;
+                                    comp.kind = CompletionKind::Tag;
+                                    comp.score = 1100;
+                                    comp.detail = L"Local React Component: <" + wsSym.label + L" />";
+                                    rawCandidates.push_back(std::move(comp));
+                                }
+                            }
+                            for (auto tag : m_htmlTags) {
+                                std::wstring lowerTag = tag.label;
+                                for (auto& c : lowerTag) c = static_cast<wchar_t>(towlower(c));
+                                if (IsHtmlVoidTagName(lowerTag)) {
+                                    if (lowerTag == L"img") tag.insertText = L"<img src=\"$0\" alt=\"\" />";
+                                    else if (lowerTag == L"input") tag.insertText = L"<input type=\"$0\" />";
+                                    else tag.insertText = std::wstring(L"<") + tag.label + L" />";
+                                } else {
+                                    tag.insertText = std::wstring(L"<") + tag.label + L">$0</" + tag.label + L">";
+                                }
+                                tag.score = 900;
+                                rawCandidates.push_back(std::move(tag));
+                            }
+                        }
                     }
                 }
             }
         }
     } else if (isHtml) {
         // Check context on line: if typing after '<' or in tag
-        size_t lastOpenTag = currentLine.rfind(L'<', cursorCol > 0 ? cursorCol - 1 : 0);
-        size_t lastCloseTag = currentLine.rfind(L'>', cursorCol > 0 ? cursorCol - 1 : 0);
+        size_t curCap = (cursorCol > 0) ? (std::min)(cursorCol - 1, currentLine.empty() ? size_t(0) : currentLine.length() - 1) : 0;
+        size_t lastOpenTag = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L'<', curCap);
+        size_t lastCloseTag = currentLine.empty() ? std::wstring::npos : currentLine.rfind(L'>', curCap);
+        bool isClosingHtmlTag = (lastOpenTag != std::wstring::npos &&
+                                 (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag) &&
+                                 lastOpenTag + 1 < cursorCol && currentLine[lastOpenTag + 1] == L'/');
         bool insideTag = (lastOpenTag != std::wstring::npos && (lastCloseTag == std::wstring::npos || lastOpenTag > lastCloseTag)) || insideHtmlTag;
 
         if (insideTag) {
             insideTagAttr = true;
-            // Tag name or attributes
+            std::wstring htmlTagLower = enclosingJsxTagName;
+            for (auto& c : htmlTagLower) c = static_cast<wchar_t>(towlower(c));
+            if (htmlTagLower.empty() && lastOpenTag != std::wstring::npos) {
+                htmlTagLower = extractTagNameAt(currentLine, lastOpenTag);
+                for (auto& c : htmlTagLower) c = static_cast<wchar_t>(towlower(c));
+            }
+
             size_t spaceAfterOpen = (lastOpenTag != std::wstring::npos) ? currentLine.find_first_of(L" \t", lastOpenTag) : 0;
-            if (lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen)) {
+            if (isClosingHtmlTag) {
+                auto unclosed = FindUnclosedMarkupTags(pDocLines, resolvedCursorLine, cursorCol);
+                int bonus = 0;
+                for (size_t ui = unclosed.size(); ui > 0; --ui) {
+                    const std::wstring& uTag = unclosed[ui - 1];
+                    rawCandidates.push_back({ uTag, L"Close <" + uTag + L">", uTag + L">", CompletionKind::Tag, 5200 - bonus, 0, 0, L"html" });
+                    bonus += 40;
+                }
+                for (const auto& tag : m_htmlTags) {
+                    IntelliSenseItem it = tag;
+                    it.insertText = tag.label + L">";
+                    it.score += 1000;
+                    rawCandidates.push_back(std::move(it));
+                }
+            } else if (lastOpenTag != std::wstring::npos && (spaceAfterOpen == std::wstring::npos || cursorCol <= spaceAfterOpen)) {
                 for (const auto& tag : m_htmlTags) {
                     IntelliSenseItem it = tag;
                     it.score += 1200;
                     rawCandidates.push_back(std::move(it));
                 }
             } else if (!isInsideQuotes) {
+                // 1. Tag-specific attributes first (e.g. <img src/alt/loading>, <a href/target>, <input type/placeholder>)
+                std::unordered_set<std::wstring> pushedTagAttrs;
+                if (!htmlTagLower.empty()) {
+                    const auto& tagAttrs = WebIntelliSenseData::GetHtmlTagAttributes(htmlTagLower);
+                    for (auto attr : tagAttrs) {
+                        NormalizeHtmlAttrItem(attr);
+                        attr.score = 1850;
+                        pushedTagAttrs.insert(attr.label);
+                        rawCandidates.push_back(std::move(attr));
+                    }
+                }
+                // 2. Global HTML attributes (`class="$0"`, `id="$0"`, `disabled`, `aria-*`, `on*`)
                 for (const auto& attr : m_htmlAttributes) {
+                    if (pushedTagAttrs.count(attr.label)) continue;
                     IntelliSenseItem it = attr;
-                    it.score += 1000;
+                    it.score = 1080;
                     rawCandidates.push_back(std::move(it));
                 }
             } else {
@@ -4486,22 +5384,26 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     ProvideIdCompletions(rawCandidates, pDocLines, baseDir, projectRoot);
                 } else if (isClassAttrContext) {
                     ProvideClassCompletions(rawCandidates, pDocLines, baseDir, projectRoot, currentLine);
-                } else if (enclosingAttrName == L"type") {
-                    ProvideHtmlTypeCompletions(rawCandidates);
-                } else if (enclosingAttrName == L"rel") {
-                    ProvideHtmlRelCompletions(rawCandidates);
-                } else if (enclosingAttrName == L"target") {
-                    ProvideHtmlTargetCompletions(rawCandidates);
-                } else if (enclosingAttrName == L"method") {
-                    ProvideHtmlMethodCompletions(rawCandidates);
+                } else {
+                    ProvideCommonHtmlAttrValues(htmlTagLower, enclosingAttrName, rawCandidates, L"html");
                 }
             }
         } else {
             // In HTML markup outside of tags (e.g. typing "div", "header", or Emmet abbreviations)
-            // 1. Suggest HTML tags with priority
+            // 1. Suggest HTML tags with cursor inside container tags or void-tag syntax
             for (const auto& tag : m_htmlTags) {
                 IntelliSenseItem it = tag;
-                it.insertText = std::wstring(L"<") + tag.label + L">$0</" + tag.label + L">";
+                std::wstring lowerTag = tag.label;
+                for (auto& c : lowerTag) c = static_cast<wchar_t>(towlower(c));
+                if (IsHtmlVoidTagName(lowerTag)) {
+                    if (lowerTag == L"img") it.insertText = L"<img src=\"$0\" alt=\"\">";
+                    else if (lowerTag == L"link") it.insertText = L"<link rel=\"stylesheet\" href=\"$0\">";
+                    else if (lowerTag == L"input") it.insertText = L"<input type=\"$0\">";
+                    else if (lowerTag == L"meta") it.insertText = L"<meta name=\"$0\" content=\"\">";
+                    else it.insertText = std::wstring(L"<") + tag.label + L">";
+                } else {
+                    it.insertText = std::wstring(L"<") + tag.label + L">$0</" + tag.label + L">";
+                }
                 it.score += 300;
                 rawCandidates.push_back(std::move(it));
             }
@@ -4914,29 +5816,63 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
     }
 
     // Common web and programming vocabulary (properties, tags, methods, identifiers)
-    // Keep HTML markup, CSS, Python, C++, and PHP code completions strictly scoped and clean
+    // Keep HTML markup, CSS, Python, C++, JS/TS, and PHP code completions strictly scoped and clean
     if (!isCss && !insideStyle && (!isHtml || insideScript) && !insidePhp && !insideTagAttr && !insideJsImportClause && !isPy && !isInsideQuotes && ext != L".cpp" && ext != L".h" && ext != L".hpp" && ext != L".c") {
         for (const auto& v : m_commonVocabulary) {
+            if (isJs || insideScript) {
+                if (v.kind == CompletionKind::Attribute || v.kind == CompletionKind::Tag ||
+                    v.origin == L"html" || v.origin == L"css") {
+                    continue;
+                }
+                if (v.label == L"mysqli" || v.label == L"pdo" || v.label == L"var_dump" ||
+                    v.label == L"print_r" || v.label == L"session_start" || v.label == L"json_encode" ||
+                    v.label == L"json_decode" || v.label == L"include_once" || v.label == L"require_once" ||
+                    v.label == L"isset" || v.label == L"empty" || v.label == L"unset" ||
+                    v.label == L"phpmyadmin" || v.label == L"nginx" || v.label == L"apache" ||
+                    v.label.rfind(L"$", 0) == 0) {
+                    continue;
+                }
+            }
             rawCandidates.push_back(v);
         }
     }
 
-    // Tailwind CSS IntelliSense completions: ONLY inside class="..." / className="..." attributes or CSS @apply
-    // AND only when Tailwind is connected to the workspace/project or current document
+    // Tailwind CSS IntelliSense completions: dedicated inside class="..." / className="..." / cn("...") / CSS @apply
     bool isCssApplyContext = (insideStyle && currentLine.find(L"@apply") != std::wstring::npos);
+    std::vector<IntelliSenseItem> tailwindSemanticFallback;
     if ((isClassAttrContext || isCssApplyContext) && !insidePhp && !insideJsImportClause) {
-        bool isTailwind = TailwindHelper::IsTailwindConnected(m_workspaceRoot, fileName);
-        if (!isTailwind && pDocLines && !pDocLines->empty()) {
-            size_t checkLines = (std::min)(pDocLines->size(), static_cast<size_t>(50));
+        bool docHasTailwind = false;
+        bool docIsHtmlPage = false;
+        if (pDocLines && !pDocLines->empty()) {
+            size_t checkLines = (std::min)(pDocLines->size(), static_cast<size_t>(120));
             for (size_t li = 0; li < checkLines; ++li) {
-                const auto& dL = (*pDocLines)[li];
-                if (dL.find(L"tailwindcss") != std::wstring::npos || dL.find(L"@tailwind") != std::wstring::npos) {
-                    isTailwind = true;
+                std::wstring dLow = (*pDocLines)[li];
+                for (auto& ch : dLow) ch = static_cast<wchar_t>(towlower(ch));
+                if (dLow.find(L"<html") != std::wstring::npos || dLow.find(L"<head") != std::wstring::npos ||
+                    dLow.find(L"<body") != std::wstring::npos || dLow.find(L"<!doctype") != std::wstring::npos) {
+                    docIsHtmlPage = true;
+                }
+                const bool hasCdn = (dLow.find(L"cdn.tailwindcss.com") != std::wstring::npos ||
+                                     (dLow.find(L"<script") != std::wstring::npos && dLow.find(L"tailwind") != std::wstring::npos));
+                const bool hasLink = (dLow.find(L"<link") != std::wstring::npos && dLow.find(L"tailwind") != std::wstring::npos);
+                const bool hasCssImport = (dLow.find(L"@tailwind") != std::wstring::npos ||
+                                           dLow.find(L"@import \"tailwindcss") != std::wstring::npos ||
+                                           dLow.find(L"@import 'tailwindcss") != std::wstring::npos ||
+                                           ((dLow.find(L"import") != std::wstring::npos || dLow.find(L"require") != std::wstring::npos) &&
+                                            dLow.find(L"tailwind") != std::wstring::npos && dLow.find(L".css") != std::wstring::npos));
+                if (hasCdn || hasLink || hasCssImport) {
+                    docHasTailwind = true;
                     break;
                 }
             }
         }
-        if (isTailwind) {
+        bool isTailwind = docHasTailwind;
+        if (!isTailwind && !(isHtml && docIsHtmlPage)) {
+            isTailwind = TailwindHelper::IsTailwindConnected(m_workspaceRoot, fileName);
+        }
+        // Only surface Tailwind utilities when Tailwind CDN, @tailwind/@import, linked tailwind.css, or workspace Tailwind config/package is present
+        const bool enableTailwindClasses = isTailwind;
+        if (enableTailwindClasses) {
             static const auto& allTailwindCandidates = TailwindHelper::GetAllCandidates();
 
             // Support Tailwind variant prefixes (e.g., hover:underline, dark:bg-zinc-900, md:grid-cols-3)
@@ -4949,6 +5885,47 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
             }
             std::wstring utilPrefixLower = utilPrefix;
             for (auto& ch : utilPrefixLower) ch = static_cast<wchar_t>(towlower(ch));
+
+            // Curated high-frequency utilities shown first when prefix is empty (`className="|"`)
+            if (utilPrefixLower.empty()) {
+                static const struct CoreTw { const wchar_t* name; const wchar_t* desc; } kCoreTw[] = {
+                    { L"flex", L"display: flex;" },
+                    { L"grid", L"display: grid;" },
+                    { L"block", L"display: block;" },
+                    { L"inline-flex", L"display: inline-flex;" },
+                    { L"hidden", L"display: none;" },
+                    { L"relative", L"position: relative;" },
+                    { L"absolute", L"position: absolute;" },
+                    { L"items-center", L"align-items: center;" },
+                    { L"justify-between", L"justify-content: space-between;" },
+                    { L"justify-center", L"justify-content: center;" },
+                    { L"gap-2", L"gap: 0.5rem;" },
+                    { L"gap-4", L"gap: 1rem;" },
+                    { L"p-4", L"padding: 1rem;" },
+                    { L"px-4", L"padding-inline: 1rem;" },
+                    { L"py-2", L"padding-block: 0.5rem;" },
+                    { L"w-full", L"width: 100%;" },
+                    { L"h-full", L"height: 100%;" },
+                    { L"rounded-lg", L"border-radius: 0.5rem;" },
+                    { L"border", L"border-width: 1px;" },
+                    { L"bg-white", L"background-color: #ffffff;" },
+                    { L"text-sm", L"font-size: 0.875rem; line-height: 1.25rem;" },
+                    { L"font-medium", L"font-weight: 500;" },
+                    { L"shadow-sm", L"box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);" }
+                };
+                int rank = 0;
+                for (const auto& c : kCoreTw) {
+                    IntelliSenseItem item;
+                    item.label = variantPrefix.empty() ? c.name : (variantPrefix + c.name);
+                    item.detail = c.desc;
+                    item.documentation = L"Tailwind CSS utility";
+                    item.kind = CompletionKind::Snippet;
+                    item.origin = L"tailwind";
+                    item.score = (isTailwind ? 2650 : 2350) - rank;
+                    rawCandidates.push_back(std::move(item));
+                    ++rank;
+                }
+            }
 
             // Suggest Tailwind variant modifiers when not already mid-utility
             static const struct TwVariant { const wchar_t* name; const wchar_t* desc; } twVariants[] = {
@@ -4989,7 +5966,7 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                     item.documentation = L"Tailwind variant modifier";
                     item.kind = CompletionKind::Keyword;
                     item.origin = L"tailwind";
-                    item.score = 2400;
+                    item.score = isTailwind ? 2400 : 2150;
                     rawCandidates.push_back(std::move(item));
                 }
             }
@@ -5010,9 +5987,86 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 item.colorHex = tw.hex;
                 item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
                 item.origin = L"tailwind";
-                item.score = 2500;
+                item.score = isTailwind ? 2500 : 2250;
                 rawCandidates.push_back(std::move(item));
                 ++addedTw;
+            }
+
+            // Semantic / CSS-property token fallback (e.g., typing `bg-color` -> `bg-blend-color`, `bg-white`, `bg-slate-500`, `bg-[#]`)
+            if (addedTw == 0 && utilPrefixLower.size() >= 3) {
+                std::vector<std::wstring> parts;
+                size_t spPos = 0;
+                while (spPos < utilPrefixLower.size()) {
+                    size_t dash = utilPrefixLower.find(L'-', spPos);
+                    std::wstring part = (dash == std::wstring::npos)
+                        ? utilPrefixLower.substr(spPos)
+                        : utilPrefixLower.substr(spPos, dash - spPos);
+                    if (!part.empty()) parts.push_back(part);
+                    if (dash == std::wstring::npos) break;
+                    spPos = dash + 1;
+                }
+                if (!parts.empty()) {
+                    auto matchToken = [](const std::wstring& tok, const std::wstring& name, const std::wstring& detailLower) -> bool {
+                        if (name.find(tok) != std::wstring::npos || detailLower.find(tok) != std::wstring::npos) return true;
+                        if (tok == L"bg" && detailLower.find(L"background") != std::wstring::npos) return true;
+                        if (tok == L"text" && (detailLower.find(L"color") != std::wstring::npos || detailLower.find(L"font-") != std::wstring::npos)) return true;
+                        if (tok == L"rounded" && detailLower.find(L"border-radius") != std::wstring::npos) return true;
+                        if (tok == L"w" && detailLower.find(L"width:") != std::wstring::npos) return true;
+                        if (tok == L"h" && detailLower.find(L"height:") != std::wstring::npos) return true;
+                        if (tok == L"p" && detailLower.find(L"padding") != std::wstring::npos) return true;
+                        if (tok == L"m" && detailLower.find(L"margin") != std::wstring::npos) return true;
+                        return false;
+                    };
+                    const std::wstring firstPrefix = parts[0] + L"-";
+                    for (const auto& tw : allTailwindCandidates) {
+                        std::wstring detLower = tw.detail;
+                        for (auto& ch : detLower) ch = static_cast<wchar_t>(towlower(ch));
+                        bool allMatch = true;
+                        for (const auto& tok : parts) {
+                            if (!matchToken(tok, tw.name, detLower)) {
+                                allMatch = false;
+                                break;
+                            }
+                        }
+                        if (!allMatch) continue;
+                        const bool exactNamePrefix = (tw.name.rfind(firstPrefix, 0) == 0);
+                        bool allInName = true;
+                        for (const auto& tok : parts) {
+                            if (tw.name.find(tok) == std::wstring::npos) { allInName = false; break; }
+                        }
+                        if (parts.size() >= 2 && !exactNamePrefix && !allInName) continue;
+
+                        IntelliSenseItem item;
+                        item.label = variantPrefix.empty() ? tw.name : (variantPrefix + tw.name);
+                        item.detail = tw.detail;
+                        item.documentation = tw.doc;
+                        item.isColor = tw.isColor;
+                        item.colorHex = tw.hex;
+                        item.kind = tw.isColor ? CompletionKind::Color : CompletionKind::Snippet;
+                        item.origin = L"tailwind";
+                        int bonus = (allInName ? 60 : 0) + (exactNamePrefix ? 30 : 0);
+                        if (tw.name.find(L"-500") != std::wstring::npos || tw.name == firstPrefix + L"white" ||
+                            tw.name == firstPrefix + L"black" || tw.name == firstPrefix + L"transparent") {
+                            bonus += 25;
+                        }
+                        item.score = (isTailwind ? 2400 : 2150) + bonus;
+                        tailwindSemanticFallback.push_back(std::move(item));
+                        if (tailwindSemanticFallback.size() >= 36) break;
+                    }
+                    // Also provide arbitrary color value syntax when user types e.g. `bg-color` / `text-color` / `border-color`
+                    if (parts.size() >= 2 && parts.back() == L"color" &&
+                        (parts[0] == L"bg" || parts[0] == L"text" || parts[0] == L"border" || parts[0] == L"outline" || parts[0] == L"ring" || parts[0] == L"fill" || parts[0] == L"stroke")) {
+                        IntelliSenseItem arb;
+                        arb.label = variantPrefix + firstPrefix + L"[#]";
+                        arb.insertText = variantPrefix + firstPrefix + L"[#3b82f6]";
+                        arb.detail = L"Arbitrary Tailwind hex color";
+                        arb.documentation = L"Custom color value";
+                        arb.kind = CompletionKind::Color;
+                        arb.origin = L"tailwind";
+                        arb.score = isTailwind ? 2450 : 2200;
+                        tailwindSemanticFallback.push_back(std::move(arb));
+                    }
+                }
             }
         }
     }
@@ -5116,15 +6170,25 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                 }
             }
         } else if (!isSnippet) {
-            // Fuzzy match for non-snippets only: require match to start at 0 or at word boundary,
-            // or have adjacent character matches (avoids matching 'root' into 'rowCount'!)
+            // Tighten fuzzy matching + support adjacent transposition / 1-typo recovery for user's local symbols
+            bool matchedFuzzy = false;
             if (prefixLower.length() >= 2) {
                 size_t pi = 0;
                 size_t firstMatch = std::wstring::npos;
                 size_t maxGap = 0;
                 size_t lastMatchIdx = 0;
+                bool allBoundaries = true;
+                auto isBoundaryAt = [&](size_t idx) -> bool {
+                    if (idx == 0) return true;
+                    wchar_t prev = item.label[idx - 1];
+                    wchar_t curr = item.label[idx];
+                    if (prev == L'_' || prev == L'-' || prev == L'$' || prev == L':' || prev == L'.') return true;
+                    if (iswupper(curr) && !iswupper(prev)) return true;
+                    return false;
+                };
                 for (size_t ci = 0; ci < candLower.length() && pi < prefixLower.length(); ++ci) {
                     if (candLower[ci] == prefixLower[pi]) {
+                        if (!isBoundaryAt(ci)) allBoundaries = false;
                         if (firstMatch == std::wstring::npos) firstMatch = ci;
                         else {
                             size_t gap = ci - lastMatchIdx;
@@ -5134,17 +6198,54 @@ std::vector<IntelliSenseItem> IntelliSenseEngine::QueryCompletions(
                         pi++;
                     }
                 }
-                // Accept fuzzy match only if all characters matched AND either:
-                // 1) starts at index 0 or word boundary with small gap (<= 2), OR
-                // 2) no large gaps scattering letters across unrelated words
-                if (pi == prefixLower.length() && (firstMatch == 0 || maxGap <= 2)) {
+                const bool compactMatch = (firstMatch != std::wstring::npos &&
+                                           (firstMatch == 0 || isBoundaryAt(firstMatch)) &&
+                                           maxGap <= 2 &&
+                                           (lastMatchIdx - firstMatch) <= prefixLower.length() * 2 + 1);
+                if (pi == prefixLower.length() && (allBoundaries || compactMatch)) {
                     IntelliSenseItem scored = item;
-                    scored.score += 50 - static_cast<int>(item.label.length() + firstMatch * 10);
+                    scored.score += (allBoundaries ? 160 : 50) - static_cast<int>(item.label.length() + firstMatch * 10);
                     scored.matchStart = (firstMatch != std::wstring::npos) ? firstMatch : 0;
                     scored.matchLen = prefix.length();
                     seenLabels.insert(item.label);
                     matches.push_back(std::move(scored));
+                    matchedFuzzy = true;
                 }
+            }
+
+            // Typo / adjacent-transposition prefix recovery for local/imported user symbols (e.g. `loadi` -> `laoding`)
+            const bool isLocalUserSym = (item.origin == L"variable" || item.origin == L"import" ||
+                                         item.origin == L"php-var" || item.origin == L"css-var" ||
+                                         item.origin == L"component-prop");
+            if (!matchedFuzzy && isLocalUserSym && prefixLower.length() >= 4 &&
+                candLower.length() >= prefixLower.length()) {
+                std::vector<size_t> diffs;
+                for (size_t k = 0; k < prefixLower.length(); ++k) {
+                    if (candLower[k] != prefixLower[k]) {
+                        diffs.push_back(k);
+                        if (diffs.size() > 2) break;
+                    }
+                }
+                bool isTransposition = (diffs.size() == 2 && diffs[1] == diffs[0] + 1 &&
+                                        prefixLower[diffs[0]] == candLower[diffs[1]] &&
+                                        prefixLower[diffs[1]] == candLower[diffs[0]]);
+                bool isSingleTypo = (diffs.size() == 1 && prefixLower.length() >= 5);
+                if (isTransposition || isSingleTypo) {
+                    IntelliSenseItem scored = item;
+                    scored.score += (isTransposition ? 420 : 280) - static_cast<int>(item.label.length());
+                    scored.matchStart = 0;
+                    scored.matchLen = prefix.length();
+                    seenLabels.insert(item.label);
+                    matches.push_back(std::move(scored));
+                }
+            }
+        }
+    }
+
+    if (matches.empty() && !tailwindSemanticFallback.empty()) {
+        for (auto& fb : tailwindSemanticFallback) {
+            if (seenLabels.insert(fb.label).second) {
+                matches.push_back(std::move(fb));
             }
         }
     }

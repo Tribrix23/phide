@@ -2265,9 +2265,21 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         const float closeX = rcTab.right - config.ScaleF(20.0f);
         const float closeY = headerH + (tabH - closeSize) / 2.0f;
         const float undockX = closeX - config.ScaleF(19.0f);
-        bool hasErrors = !doc.diagnostics.empty();
-        float dotReserveW = (doc.isDirty && hasErrors) ? config.ScaleF(22.0f)
-                          : ((doc.isDirty || hasErrors) ? config.ScaleF(12.0f) : config.ScaleF(2.0f));
+        bool hasErrors = false;
+        bool hasWarnings = false;
+        for (const auto& diag : doc.diagnostics) {
+            if (diag.isUnnecessary) continue;
+            if (diag.severity == 1) {
+                hasErrors = true;
+                break;
+            }
+            if (diag.severity == 2) {
+                hasWarnings = true;
+            }
+        }
+        const bool hasDiagDot = hasErrors || hasWarnings;
+        float dotReserveW = (doc.isDirty && hasDiagDot) ? config.ScaleF(22.0f)
+                          : ((doc.isDirty || hasDiagDot) ? config.ScaleF(12.0f) : config.ScaleF(2.0f));
 
         // Title: preview tabs use fontTabPreview (italic), pinned tabs use fontTab (regular)
         float textStartX = rcTab.left + ((tabCurve > 0.0f) ? config.ScaleF(36.0f) : config.ScaleF(32.0f));
@@ -2283,9 +2295,11 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
             (theme.fontTab ? theme.fontTab.Get() : theme.fontMenuItem.Get());
         ID2D1Brush* pTextBrush = hasErrors ?
             (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
+            (hasWarnings ?
+                (theme.brushIconYellow ? theme.brushIconYellow.Get() : (theme.brushCommentWarning ? theme.brushCommentWarning.Get() : theme.brushTextPrimary.Get())) :
             (isActive ? 
                 (isFocused ? (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) : theme.brushTextSecondary.Get()) :
-                theme.brushTextSecondary.Get());
+                theme.brushTextSecondary.Get()));
 
         if (pTextBrush && pTextFmt) {
             pRT->PushAxisAlignedClip(rcTitle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -2299,13 +2313,16 @@ void EditorCanvas::RenderTabs(ID2D1RenderTarget* pRT, Theme& theme, const app::A
         D2D1_RECT_F rcClose = D2D1::RectF(closeX, closeY, closeX + closeSize, closeY + closeSize);
         doc.closeBounds = rcClose;
 
-        // Red Error Indicator on Tab (Image 3)
-        if (hasErrors) {
+        // Error / Warning Indicator Dot on Tab
+        if (hasErrors || hasWarnings) {
             float errDotX = undockX - config.ScaleF(doc.isDirty ? 16.0f : 7.0f);
             float errDotY = headerH + tabH / 2.0f;
             float errDotR = config.ScaleF(3.5f);
             D2D1_ELLIPSE elErr = D2D1::Ellipse(D2D1::Point2F(errDotX, errDotY), errDotR, errDotR);
-            if (theme.brushIconRed) pRT->FillEllipse(elErr, theme.brushIconRed.Get());
+            ID2D1Brush* pDotBrush = hasErrors
+                ? theme.brushIconRed.Get()
+                : (theme.brushIconYellow ? theme.brushIconYellow.Get() : theme.brushCommentWarning.Get());
+            if (pDotBrush) pRT->FillEllipse(elErr, pDotBrush);
         }
 
         // Dirty Circle Indicator: ONLY if doc.isDirty is true! (7px diameter)

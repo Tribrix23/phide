@@ -1,4 +1,4 @@
-var process = {env: {EXTENSION_NAME: "esbenp.prettier-vscode", EXTENSION_VERSION: "12.4.0", BROWSER_ENV: "true"}, platform: "browser", cwd: function() { return "/"; }, nextTick: function(cb) { setTimeout(cb, 0); }};
+var process = {env: {EXTENSION_NAME: "esbenp.prettier-phide", EXTENSION_VERSION: "12.4.0", BROWSER_ENV: "true"}, platform: "browser", cwd: function() { return "/"; }, nextTick: function(cb) { setTimeout(cb, 0); }};
 "use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -4712,12 +4712,12 @@ __export(extension_exports, {
   activate: () => activate
 });
 module.exports = __toCommonJS(extension_exports);
-var import_vscode8 = require("vscode");
+var import_phide8 = require("phide");
 
 // src/commands.ts
-var import_vscode = require("vscode");
+var import_phide = require("phide");
 var createConfigFile = (templateService) => async () => {
-  const folderResult = await import_vscode.window.showOpenDialog({
+  const folderResult = await import_phide.window.showOpenDialog({
     canSelectFiles: false,
     canSelectFolders: true,
     canSelectMany: false
@@ -4729,10 +4729,10 @@ var createConfigFile = (templateService) => async () => {
 };
 
 // src/LoggingService.ts
-var import_vscode2 = require("vscode");
+var import_phide2 = require("phide");
 var LoggingService = class {
   constructor() {
-    __publicField(this, "outputChannel", import_vscode2.window.createOutputChannel("Prettier"));
+    __publicField(this, "outputChannel", import_phide2.window.createOutputChannel("Prettier"));
     __publicField(this, "logLevel", "INFO");
   }
   setOutputLevel(logLevel) {
@@ -4823,22 +4823,22 @@ function homedir() {
 
 // src/utils/workspace.ts
 var path = __toESM(require_path_browserify(), 1);
-var import_vscode3 = require("vscode");
+var import_phide3 = require("phide");
 function getWorkspaceRelativePath(filePath, pathToResolve) {
   if (process.platform === "darwin" && pathToResolve.indexOf("~") === 0 && homedir()) {
     return pathToResolve.replace(/^~(?=$|\/|\\)/, homedir());
   }
-  if (import_vscode3.workspace.workspaceFolders) {
-    const folder = import_vscode3.workspace.getWorkspaceFolder(import_vscode3.Uri.file(filePath));
+  if (import_phide3.workspace.workspaceFolders) {
+    const folder = import_phide3.workspace.getWorkspaceFolder(import_phide3.Uri.file(filePath));
     return folder ? path.isAbsolute(pathToResolve) ? pathToResolve : path.join(folder.uri.fsPath, pathToResolve) : void 0;
   }
 }
 function getWorkspaceConfig(scope) {
-  const config = import_vscode3.workspace.getConfiguration(
+  const config = import_phide3.workspace.getConfiguration(
     "prettier",
     scope
   );
-  if (!import_vscode3.workspace.isTrusted) {
+  if (!import_phide3.workspace.isTrusted) {
     const newConfig = {
       ...config,
       prettierPath: void 0,
@@ -20773,7 +20773,7 @@ var jn3 = (e29, t) => {
 };
 var Ta2 = {};
 jn3(Ta2, { languages: () => CD, options: () => Aa, printers: () => dD });
-var Qs4 = [{ name: "JavaScript", type: "programming", aceMode: "javascript", extensions: [".js", "._js", ".bones", ".cjs", ".es", ".es6", ".gs", ".jake", ".javascript", ".jsb", ".jscad", ".jsfl", ".jslib", ".jsm", ".jspre", ".jss", ".mjs", ".njs", ".pac", ".sjs", ".ssjs", ".xsjs", ".xsjslib", ".start.frag", ".end.frag", ".wxs"], filenames: ["Jakefile", "start.frag", "end.frag"], tmScope: "source.js", aliases: ["js", "node"], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", interpreters: ["chakra", "d8", "gjs", "js", "node", "nodejs", "qjs", "rhino", "v8", "v8-shell", "zx"], parsers: ["babel", "acorn", "espree", "meriyah", "babel-flow", "babel-ts", "flow", "typescript"], vscodeLanguageIds: ["javascript", "mongo"], linguistLanguageId: 183 }, { name: "Flow", type: "programming", aceMode: "javascript", extensions: [".js.flow"], filenames: [], tmScope: "source.js", aliases: [], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", interpreters: ["chakra", "d8", "gjs", "js", "node", "nodejs", "qjs", "rhino", "v8", "v8-shell"], parsers: ["flow", "babel-flow"], vscodeLanguageIds: ["javascript"], linguistLanguageId: 183 }, { name: "JSX", type: "programming", aceMode: "javascript", extensions: [".jsx"], filenames: void 0, tmScope: "source.js.jsx", aliases: void 0, codemirrorMode: "jsx", codemirrorMimeType: "text/jsx", interpreters: void 0, parsers: ["babel", "babel-flow", "babel-ts", "flow", "typescript", "espree", "meriyah"], vscodeLanguageIds: ["javascriptreact"], group: "JavaScript", linguistLanguageId: 183 }, { name: "TypeScript", type: "programming", aceMode: "typescript", extensions: [".ts", ".cts", ".mts"], tmScope: "source.ts", aliases: ["ts"], codemirrorMode: "javascript", codemirrorMimeType: "application/typescript", interpreters: ["bun", "deno", "ts-node", "tsx"], parsers: ["typescript", "babel-ts"], vscodeLanguageIds: ["typescript"], linguistLanguageId: 378 }, { name: "TSX", type: "programming", aceMode: "tsx", extensions: [".tsx"], tmScope: "source.tsx", codemirrorMode: "jsx", codemirrorMimeType: "text/typescript-jsx", group: "TypeScript", parsers: ["typescript", "babel-ts"], vscodeLanguageIds: ["typescriptreact"], linguistLanguageId: 94901924 }];
+var Qs4 = [{ name: "JavaScript", type: "programming", aceMode: "javascript", extensions: [".js", "._js", ".bones", ".cjs", ".es", ".es6", ".gs", ".jake", ".javascript", ".jsb", ".jscad", ".jsfl", ".jslib", ".jsm", ".jspre", ".jss", ".mjs", ".njs", ".pac", ".sjs", ".ssjs", ".xsjs", ".xsjslib", ".start.frag", ".end.frag", ".wxs"], filenames: ["Jakefile", "start.frag", "end.frag"], tmScope: "source.js", aliases: ["js", "node"], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", interpreters: ["chakra", "d8", "gjs", "js", "node", "nodejs", "qjs", "rhino", "v8", "v8-shell", "zx"], parsers: ["babel", "acorn", "espree", "meriyah", "babel-flow", "babel-ts", "flow", "typescript"], phideLanguageIds: ["javascript", "mongo"], linguistLanguageId: 183 }, { name: "Flow", type: "programming", aceMode: "javascript", extensions: [".js.flow"], filenames: [], tmScope: "source.js", aliases: [], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", interpreters: ["chakra", "d8", "gjs", "js", "node", "nodejs", "qjs", "rhino", "v8", "v8-shell"], parsers: ["flow", "babel-flow"], phideLanguageIds: ["javascript"], linguistLanguageId: 183 }, { name: "JSX", type: "programming", aceMode: "javascript", extensions: [".jsx"], filenames: void 0, tmScope: "source.js.jsx", aliases: void 0, codemirrorMode: "jsx", codemirrorMimeType: "text/jsx", interpreters: void 0, parsers: ["babel", "babel-flow", "babel-ts", "flow", "typescript", "espree", "meriyah"], phideLanguageIds: ["javascriptreact"], group: "JavaScript", linguistLanguageId: 183 }, { name: "TypeScript", type: "programming", aceMode: "typescript", extensions: [".ts", ".cts", ".mts"], tmScope: "source.ts", aliases: ["ts"], codemirrorMode: "javascript", codemirrorMimeType: "application/typescript", interpreters: ["bun", "deno", "ts-node", "tsx"], parsers: ["typescript", "babel-ts"], phideLanguageIds: ["typescript"], linguistLanguageId: 378 }, { name: "TSX", type: "programming", aceMode: "tsx", extensions: [".tsx"], tmScope: "source.tsx", codemirrorMode: "jsx", codemirrorMimeType: "text/typescript-jsx", group: "TypeScript", parsers: ["typescript", "babel-ts"], phideLanguageIds: ["typescriptreact"], linguistLanguageId: 94901924 }];
 var Hs4 = {};
 jn3(Hs4, { canAttachComment: () => Pi4, embed: () => Co2, features: () => DD, getVisitorKeys: () => Mr4, handleComments: () => Ji3, hasPrettierIgnore: () => nr5, insertPragma: () => Lo2, isBlockComment: () => ce5, isGap: () => Gi3, massageAstNode: () => Bi3, print: () => Ys4, printComment: () => wo2, printPrettierIgnored: () => Ys4, willPrintOwnComments: () => Wi3 });
 var Wt5 = (e29, t) => (r5, n5, ...s5) => r5 | 1 && n5 == null ? void 0 : (t.call(n5) ?? n5[e29]).apply(n5, s5);
@@ -25310,7 +25310,7 @@ function mD(e29, t, r5, n5) {
 }
 var Ys4 = mD;
 var DD = { experimental_avoidAstMutation: true };
-var ya2 = [{ name: "JSON.stringify", type: "data", aceMode: "json", extensions: [".importmap"], filenames: ["package.json", "package-lock.json", "composer.json"], tmScope: "source.json", aliases: ["geojson", "jsonl", "sarif", "topojson"], codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json-stringify"], vscodeLanguageIds: ["json"], linguistLanguageId: 174 }, { name: "JSON", type: "data", aceMode: "json", extensions: [".json", ".4DForm", ".4DProject", ".avsc", ".geojson", ".gltf", ".har", ".ice", ".JSON-tmLanguage", ".json.example", ".mcmeta", ".sarif", ".tact", ".tfstate", ".tfstate.backup", ".topojson", ".webapp", ".webmanifest", ".yy", ".yyp"], filenames: [".all-contributorsrc", ".arcconfig", ".auto-changelog", ".c8rc", ".htmlhintrc", ".imgbotconfig", ".nycrc", ".tern-config", ".tern-project", ".watchmanconfig", ".babelrc", ".jscsrc", ".jshintrc", ".jslintrc", ".swcrc"], tmScope: "source.json", aliases: ["geojson", "jsonl", "sarif", "topojson"], codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json"], vscodeLanguageIds: ["json"], linguistLanguageId: 174 }, { name: "JSON with Comments", type: "data", aceMode: "javascript", extensions: [".jsonc", ".code-snippets", ".code-workspace", ".sublime-build", ".sublime-color-scheme", ".sublime-commands", ".sublime-completions", ".sublime-keymap", ".sublime-macro", ".sublime-menu", ".sublime-mousemap", ".sublime-project", ".sublime-settings", ".sublime-theme", ".sublime-workspace", ".sublime_metrics", ".sublime_session"], filenames: [], tmScope: "source.json.comments", aliases: ["jsonc"], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", group: "JSON", parsers: ["jsonc"], vscodeLanguageIds: ["jsonc"], linguistLanguageId: 423 }, { name: "JSON5", type: "data", aceMode: "json5", extensions: [".json5"], tmScope: "source.js", codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json5"], vscodeLanguageIds: ["json5"], linguistLanguageId: 175 }];
+var ya2 = [{ name: "JSON.stringify", type: "data", aceMode: "json", extensions: [".importmap"], filenames: ["package.json", "package-lock.json", "composer.json"], tmScope: "source.json", aliases: ["geojson", "jsonl", "sarif", "topojson"], codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json-stringify"], phideLanguageIds: ["json"], linguistLanguageId: 174 }, { name: "JSON", type: "data", aceMode: "json", extensions: [".json", ".4DForm", ".4DProject", ".avsc", ".geojson", ".gltf", ".har", ".ice", ".JSON-tmLanguage", ".json.example", ".mcmeta", ".sarif", ".tact", ".tfstate", ".tfstate.backup", ".topojson", ".webapp", ".webmanifest", ".yy", ".yyp"], filenames: [".all-contributorsrc", ".arcconfig", ".auto-changelog", ".c8rc", ".htmlhintrc", ".imgbotconfig", ".nycrc", ".tern-config", ".tern-project", ".watchmanconfig", ".babelrc", ".jscsrc", ".jshintrc", ".jslintrc", ".swcrc"], tmScope: "source.json", aliases: ["geojson", "jsonl", "sarif", "topojson"], codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json"], phideLanguageIds: ["json"], linguistLanguageId: 174 }, { name: "JSON with Comments", type: "data", aceMode: "javascript", extensions: [".jsonc", ".code-snippets", ".code-workspace", ".sublime-build", ".sublime-color-scheme", ".sublime-commands", ".sublime-completions", ".sublime-keymap", ".sublime-macro", ".sublime-menu", ".sublime-mousemap", ".sublime-project", ".sublime-settings", ".sublime-theme", ".sublime-workspace", ".sublime_metrics", ".sublime_session"], filenames: [], tmScope: "source.json.comments", aliases: ["jsonc"], codemirrorMode: "javascript", codemirrorMimeType: "text/javascript", group: "JSON", parsers: ["jsonc"], phideLanguageIds: ["jsonc"], linguistLanguageId: 423 }, { name: "JSON5", type: "data", aceMode: "json5", extensions: [".json5"], tmScope: "source.js", codemirrorMode: "javascript", codemirrorMimeType: "application/json", parsers: ["json5"], phideLanguageIds: ["json5"], linguistLanguageId: 175 }];
 var Xs4 = {};
 jn3(Xs4, { getVisitorKeys: () => Fa2, massageAstNode: () => Ca2, print: () => yD });
 var ar5 = [[]];
@@ -55734,7 +55734,7 @@ function mi5(e29) {
 }
 var di5 = { features: { experimental_frontMatterSupport: { massageAstNode: true, embed: true, print: true } }, print: js5, massageAstNode: Fr5, hasPrettierIgnore: yn4, getVisitorKeys: dn4, embed: Hr5 };
 var _n5 = di5;
-var Ln4 = [{ name: "Handlebars", type: "markup", aceMode: "handlebars", extensions: [".handlebars", ".hbs"], tmScope: "text.html.handlebars", aliases: ["hbs", "htmlbars"], parsers: ["glimmer"], vscodeLanguageIds: ["handlebars"], linguistLanguageId: 155 }];
+var Ln4 = [{ name: "Handlebars", type: "markup", aceMode: "handlebars", extensions: [".handlebars", ".hbs"], tmScope: "text.html.handlebars", aliases: ["hbs", "htmlbars"], parsers: ["glimmer"], phideLanguageIds: ["handlebars"], linguistLanguageId: 155 }];
 var yr5 = {};
 Oe5(yr5, { glimmer: () => Ni5 });
 function gi5(e29, t) {
@@ -56160,7 +56160,7 @@ function Ct7(e29) {
 }
 var Rt6 = { print: Dt7, massageAstNode: Ue7, hasPrettierIgnore: Ct7, insertPragma: Ve6, printComment: St6, canAttachComment: gt6, getVisitorKeys: be7 };
 var Ge7 = Rt6;
-var Ye6 = [{ name: "GraphQL", type: "data", aceMode: "graphqlschema", extensions: [".graphql", ".gql", ".graphqls"], tmScope: "source.graphql", parsers: ["graphql"], vscodeLanguageIds: ["graphql"], linguistLanguageId: 139 }];
+var Ye6 = [{ name: "GraphQL", type: "data", aceMode: "graphqlschema", extensions: [".graphql", ".gql", ".graphqls"], tmScope: "source.graphql", parsers: ["graphql"], phideLanguageIds: ["graphql"], linguistLanguageId: 139 }];
 var je7 = { bracketSpacing: { category: "Common", type: "boolean", default: true, description: "Print spaces between brackets.", oppositeDescription: "Do not print spaces between brackets." }, objectWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap object literals.", choices: [{ value: "preserve", description: "Keep as multi-line, if there is a newline between the opening brace and first property." }, { value: "collapse", description: "Fit to a single line when possible." }] }, singleQuote: { category: "Common", type: "boolean", default: false, description: "Use single quotes instead of double quotes." }, proseWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap prose.", choices: [{ value: "always", description: "Wrap prose if it exceeds the print width." }, { value: "never", description: "Do not wrap prose." }, { value: "preserve", description: "Wrap prose as-is." }] }, bracketSameLine: { category: "Common", type: "boolean", default: false, description: "Put > of opening tags on the last line instead of on a new line." }, singleAttributePerLine: { category: "Common", type: "boolean", default: false, description: "Enforce single attribute per line in HTML, Vue and JSX." } };
 var vt6 = { bracketSpacing: je7.bracketSpacing };
 var $e6 = vt6;
@@ -59742,7 +59742,7 @@ function nl2(e29, t, r5) {
 }
 var il2 = { features: { experimental_frontMatterSupport: { massageAstNode: true, embed: true, print: true } }, preprocess: ps6, print: nl2, insertPragma: bi6, massageAstNode: dn5, embed: fi7, getVisitorKeys: _i5 };
 var hs6 = il2;
-var ms6 = [{ name: "Angular", type: "markup", aceMode: "html", extensions: [".component.html"], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["angular"], vscodeLanguageIds: ["html"], filenames: [], linguistLanguageId: 146 }, { name: "HTML", type: "markup", aceMode: "html", extensions: [".html", ".hta", ".htm", ".html.hl", ".inc", ".xht", ".xhtml"], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["html"], vscodeLanguageIds: ["html"], linguistLanguageId: 146 }, { name: "Lightning Web Components", type: "markup", aceMode: "html", extensions: [], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["lwc"], vscodeLanguageIds: ["html"], filenames: [], linguistLanguageId: 146 }, { name: "MJML", type: "markup", aceMode: "html", extensions: [".mjml"], tmScope: "text.mjml.basic", aliases: ["MJML", "mjml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["mjml"], filenames: [], vscodeLanguageIds: ["mjml"], linguistLanguageId: 146 }, { name: "Vue", type: "markup", aceMode: "vue", extensions: [".vue"], tmScope: "source.vue", codemirrorMode: "vue", codemirrorMimeType: "text/x-vue", parsers: ["vue"], vscodeLanguageIds: ["vue"], linguistLanguageId: 391 }];
+var ms6 = [{ name: "Angular", type: "markup", aceMode: "html", extensions: [".component.html"], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["angular"], phideLanguageIds: ["html"], filenames: [], linguistLanguageId: 146 }, { name: "HTML", type: "markup", aceMode: "html", extensions: [".html", ".hta", ".htm", ".html.hl", ".inc", ".xht", ".xhtml"], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["html"], phideLanguageIds: ["html"], linguistLanguageId: 146 }, { name: "Lightning Web Components", type: "markup", aceMode: "html", extensions: [], tmScope: "text.html.basic", aliases: ["xhtml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["lwc"], phideLanguageIds: ["html"], filenames: [], linguistLanguageId: 146 }, { name: "MJML", type: "markup", aceMode: "html", extensions: [".mjml"], tmScope: "text.mjml.basic", aliases: ["MJML", "mjml"], codemirrorMode: "htmlmixed", codemirrorMimeType: "text/html", parsers: ["mjml"], filenames: [], phideLanguageIds: ["mjml"], linguistLanguageId: 146 }, { name: "Vue", type: "markup", aceMode: "vue", extensions: [".vue"], tmScope: "source.vue", codemirrorMode: "vue", codemirrorMimeType: "text/x-vue", parsers: ["vue"], phideLanguageIds: ["vue"], linguistLanguageId: 391 }];
 var Wr6 = { bracketSpacing: { category: "Common", type: "boolean", default: true, description: "Print spaces between brackets.", oppositeDescription: "Do not print spaces between brackets." }, objectWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap object literals.", choices: [{ value: "preserve", description: "Keep as multi-line, if there is a newline between the opening brace and first property." }, { value: "collapse", description: "Fit to a single line when possible." }] }, singleQuote: { category: "Common", type: "boolean", default: false, description: "Use single quotes instead of double quotes." }, proseWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap prose.", choices: [{ value: "always", description: "Wrap prose if it exceeds the print width." }, { value: "never", description: "Do not wrap prose." }, { value: "preserve", description: "Wrap prose as-is." }] }, bracketSameLine: { category: "Common", type: "boolean", default: false, description: "Put > of opening tags on the last line instead of on a new line." }, singleAttributePerLine: { category: "Common", type: "boolean", default: false, description: "Enforce single attribute per line in HTML, Vue and JSX." } };
 var fs6 = "HTML";
 var sl2 = { bracketSameLine: Wr6.bracketSameLine, htmlWhitespaceSensitivity: { category: fs6, type: "choice", default: "css", description: "How to handle whitespaces in HTML.", choices: [{ value: "css", description: "Respect the default value of CSS display property." }, { value: "strict", description: "Whitespaces are considered sensitive." }, { value: "ignore", description: "Whitespaces are considered insensitive." }] }, singleAttributePerLine: Wr6.singleAttributePerLine, vueIndentScriptAndStyle: { category: fs6, type: "boolean", default: false, description: "Indent script and style tags in Vue files." } };
@@ -63483,7 +63483,7 @@ function ji4(e29) {
 }
 var jf = { features: { experimental_frontMatterSupport: { massageAstNode: true, embed: true, print: true } }, preprocess: Ui5, print: Yf, embed: Ti7, massageAstNode: yi7, hasPrettierIgnore: Vf, insertPragma: Ai7, getVisitorKeys: Oi6 };
 var Hi5 = jf;
-var Ki4 = [{ name: "Markdown", type: "prose", aceMode: "markdown", extensions: [".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd", ".workbook"], filenames: ["contents.lr", "README"], tmScope: "text.md", aliases: ["md", "pandoc"], codemirrorMode: "gfm", codemirrorMimeType: "text/x-gfm", wrap: true, parsers: ["markdown"], vscodeLanguageIds: ["markdown"], linguistLanguageId: 222 }, { name: "MDX", type: "prose", aceMode: "markdown", extensions: [".mdx"], filenames: [], tmScope: "text.md", aliases: ["md", "pandoc"], codemirrorMode: "gfm", codemirrorMimeType: "text/x-gfm", wrap: true, parsers: ["mdx"], vscodeLanguageIds: ["mdx"], linguistLanguageId: 222 }];
+var Ki4 = [{ name: "Markdown", type: "prose", aceMode: "markdown", extensions: [".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd", ".workbook"], filenames: ["contents.lr", "README"], tmScope: "text.md", aliases: ["md", "pandoc"], codemirrorMode: "gfm", codemirrorMimeType: "text/x-gfm", wrap: true, parsers: ["markdown"], phideLanguageIds: ["markdown"], linguistLanguageId: 222 }, { name: "MDX", type: "prose", aceMode: "markdown", extensions: [".mdx"], filenames: [], tmScope: "text.md", aliases: ["md", "pandoc"], codemirrorMode: "gfm", codemirrorMimeType: "text/x-gfm", wrap: true, parsers: ["mdx"], phideLanguageIds: ["mdx"], linguistLanguageId: 222 }];
 var Pt8 = { bracketSpacing: { category: "Common", type: "boolean", default: true, description: "Print spaces between brackets.", oppositeDescription: "Do not print spaces between brackets." }, objectWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap object literals.", choices: [{ value: "preserve", description: "Keep as multi-line, if there is a newline between the opening brace and first property." }, { value: "collapse", description: "Fit to a single line when possible." }] }, singleQuote: { category: "Common", type: "boolean", default: false, description: "Use single quotes instead of double quotes." }, proseWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap prose.", choices: [{ value: "always", description: "Wrap prose if it exceeds the print width." }, { value: "never", description: "Do not wrap prose." }, { value: "preserve", description: "Wrap prose as-is." }] }, bracketSameLine: { category: "Common", type: "boolean", default: false, description: "Put > of opening tags on the last line instead of on a new line." }, singleAttributePerLine: { category: "Common", type: "boolean", default: false, description: "Enforce single attribute per line in HTML, Vue and JSX." } };
 var $f = { proseWrap: Pt8.proseWrap, singleQuote: Pt8.singleQuote };
 var Xi4 = $f;
@@ -84309,7 +84309,7 @@ function Cc2(t, e29, s5) {
 }
 var Nc2 = { features: { experimental_frontMatterSupport: { massageAstNode: true, embed: true, print: true } }, print: Cc2, embed: wn8, insertPragma: Vn6, massageAstNode: yn7, getVisitorKeys: _n8 };
 var Ei8 = Nc2;
-var Si9 = [{ name: "CSS", type: "markup", aceMode: "css", extensions: [".css", ".wxss"], tmScope: "source.css", codemirrorMode: "css", codemirrorMimeType: "text/css", parsers: ["css"], vscodeLanguageIds: ["css"], linguistLanguageId: 50 }, { name: "PostCSS", type: "markup", aceMode: "text", extensions: [".pcss", ".postcss"], tmScope: "source.postcss", group: "CSS", parsers: ["css"], vscodeLanguageIds: ["postcss"], linguistLanguageId: 262764437 }, { name: "Less", type: "markup", aceMode: "less", extensions: [".less"], tmScope: "source.css.less", aliases: ["less-css"], codemirrorMode: "css", codemirrorMimeType: "text/x-less", parsers: ["less"], vscodeLanguageIds: ["less"], linguistLanguageId: 198 }, { name: "SCSS", type: "markup", aceMode: "scss", extensions: [".scss"], tmScope: "source.css.scss", codemirrorMode: "css", codemirrorMimeType: "text/x-scss", parsers: ["scss"], vscodeLanguageIds: ["scss"], linguistLanguageId: 329 }];
+var Si9 = [{ name: "CSS", type: "markup", aceMode: "css", extensions: [".css", ".wxss"], tmScope: "source.css", codemirrorMode: "css", codemirrorMimeType: "text/css", parsers: ["css"], phideLanguageIds: ["css"], linguistLanguageId: 50 }, { name: "PostCSS", type: "markup", aceMode: "text", extensions: [".pcss", ".postcss"], tmScope: "source.postcss", group: "CSS", parsers: ["css"], phideLanguageIds: ["postcss"], linguistLanguageId: 262764437 }, { name: "Less", type: "markup", aceMode: "less", extensions: [".less"], tmScope: "source.css.less", aliases: ["less-css"], codemirrorMode: "css", codemirrorMimeType: "text/x-less", parsers: ["less"], phideLanguageIds: ["less"], linguistLanguageId: 198 }, { name: "SCSS", type: "markup", aceMode: "scss", extensions: [".scss"], tmScope: "source.css.scss", codemirrorMode: "css", codemirrorMimeType: "text/x-scss", parsers: ["scss"], phideLanguageIds: ["scss"], linguistLanguageId: 329 }];
 var ki8 = { bracketSpacing: { category: "Common", type: "boolean", default: true, description: "Print spaces between brackets.", oppositeDescription: "Do not print spaces between brackets." }, objectWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap object literals.", choices: [{ value: "preserve", description: "Keep as multi-line, if there is a newline between the opening brace and first property." }, { value: "collapse", description: "Fit to a single line when possible." }] }, singleQuote: { category: "Common", type: "boolean", default: false, description: "Use single quotes instead of double quotes." }, proseWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap prose.", choices: [{ value: "always", description: "Wrap prose if it exceeds the print width." }, { value: "never", description: "Do not wrap prose." }, { value: "preserve", description: "Wrap prose as-is." }] }, bracketSameLine: { category: "Common", type: "boolean", default: false, description: "Put > of opening tags on the last line instead of on a new line." }, singleAttributePerLine: { category: "Common", type: "boolean", default: false, description: "Enforce single attribute per line in HTML, Vue and JSX." } };
 var Pc2 = { singleQuote: ki8.singleQuote };
 var Ti9 = Pc2;
@@ -88137,7 +88137,7 @@ function rt12(t, e29, n5) {
 }
 var uo4 = { preprocess: Fr7, embed: Cr7, print: oo5, massageAstNode: Lr8, insertPragma: Or7, getVisitorKeys: Pr7 };
 var qr7 = uo4;
-var Ur8 = [{ name: "YAML", type: "data", aceMode: "yaml", extensions: [".yml", ".mir", ".reek", ".rviz", ".sublime-syntax", ".syntax", ".yaml", ".yaml-tmlanguage", ".yaml.sed", ".yml.mysql"], filenames: [".clang-format", ".clang-tidy", ".clangd", ".gemrc", "CITATION.cff", "glide.lock", "pixi.lock", ".prettierrc", ".stylelintrc", ".lintstagedrc"], tmScope: "source.yaml", aliases: ["yml"], codemirrorMode: "yaml", codemirrorMimeType: "text/x-yaml", parsers: ["yaml"], vscodeLanguageIds: ["yaml", "ansible", "dockercompose", "github-actions-workflow", "home-assistant"], linguistLanguageId: 407 }];
+var Ur8 = [{ name: "YAML", type: "data", aceMode: "yaml", extensions: [".yml", ".mir", ".reek", ".rviz", ".sublime-syntax", ".syntax", ".yaml", ".yaml-tmlanguage", ".yaml.sed", ".yml.mysql"], filenames: [".clang-format", ".clang-tidy", ".clangd", ".gemrc", "CITATION.cff", "glide.lock", "pixi.lock", ".prettierrc", ".stylelintrc", ".lintstagedrc"], tmScope: "source.yaml", aliases: ["yml"], codemirrorMode: "yaml", codemirrorMimeType: "text/x-yaml", parsers: ["yaml"], phideLanguageIds: ["yaml", "ansible", "dockercompose", "github-actions-workflow", "home-assistant"], linguistLanguageId: 407 }];
 var vt11 = { bracketSpacing: { category: "Common", type: "boolean", default: true, description: "Print spaces between brackets.", oppositeDescription: "Do not print spaces between brackets." }, objectWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap object literals.", choices: [{ value: "preserve", description: "Keep as multi-line, if there is a newline between the opening brace and first property." }, { value: "collapse", description: "Fit to a single line when possible." }] }, singleQuote: { category: "Common", type: "boolean", default: false, description: "Use single quotes instead of double quotes." }, proseWrap: { category: "Common", type: "choice", default: "preserve", description: "How to wrap prose.", choices: [{ value: "always", description: "Wrap prose if it exceeds the print width." }, { value: "never", description: "Do not wrap prose." }, { value: "preserve", description: "Wrap prose as-is." }] }, bracketSameLine: { category: "Common", type: "boolean", default: false, description: "Put > of opening tags on the last line instead of on a new line." }, singleAttributePerLine: { category: "Common", type: "boolean", default: false, description: "Enforce single attribute per line in HTML, Vue and JSX." } };
 var po5 = { bracketSpacing: vt11.bracketSpacing, singleQuote: vt11.singleQuote, proseWrap: vt11.proseWrap };
 var Vr7 = po5;
@@ -88813,49 +88813,49 @@ var ModuleResolver = class {
           languages: [
             {
               name: "CSS",
-              vscodeLanguageIds: ["css"],
+              phideLanguageIds: ["css"],
               extensions: [".css", ".wxss"],
               parsers: ["css"]
             },
             {
               name: "PostCSS",
-              vscodeLanguageIds: ["postcss"],
+              phideLanguageIds: ["postcss"],
               extensions: [".pcss", ".postcss"],
               parsers: ["css"]
             },
             {
               name: "Less",
-              vscodeLanguageIds: ["less"],
+              phideLanguageIds: ["less"],
               extensions: [".less"],
               parsers: ["less"]
             },
             {
               name: "SCSS",
-              vscodeLanguageIds: ["scss"],
+              phideLanguageIds: ["scss"],
               extensions: [".scss"],
               parsers: ["scss"]
             },
             {
               name: "GraphQL",
-              vscodeLanguageIds: ["graphql"],
+              phideLanguageIds: ["graphql"],
               extensions: [".graphql", ".gql", ".graphqls"],
               parsers: ["graphql"]
             },
             {
               name: "Handlebars",
-              vscodeLanguageIds: ["handlebars"],
+              phideLanguageIds: ["handlebars"],
               extensions: [".handlebars", ".hbs"],
               parsers: ["glimmer"]
             },
             {
               name: "Angular",
-              vscodeLanguageIds: ["html"],
+              phideLanguageIds: ["html"],
               extensions: [".component.html"],
               parsers: ["angular"]
             },
             {
               name: "HTML",
-              vscodeLanguageIds: ["html"],
+              phideLanguageIds: ["html"],
               extensions: [
                 ".html",
                 ".hta",
@@ -88869,25 +88869,25 @@ var ModuleResolver = class {
             },
             {
               name: "Lightning Web Components",
-              vscodeLanguageIds: ["html"],
+              phideLanguageIds: ["html"],
               extensions: [],
               parsers: ["lwc"]
             },
             {
               name: "MJML",
-              vscodeLanguageIds: ["mjml"],
+              phideLanguageIds: ["mjml"],
               extensions: [".mjml"],
               parsers: ["mjml"]
             },
             {
               name: "Vue",
-              vscodeLanguageIds: ["vue"],
+              phideLanguageIds: ["vue"],
               extensions: [".vue"],
               parsers: ["vue"]
             },
             {
               name: "JavaScript",
-              vscodeLanguageIds: [
+              phideLanguageIds: [
                 "javascript",
                 "javascriptreact",
                 "mongo",
@@ -88934,13 +88934,13 @@ var ModuleResolver = class {
             },
             {
               name: "Flow",
-              vscodeLanguageIds: ["javascript"],
+              phideLanguageIds: ["javascript"],
               extensions: [".js.flow"],
               parsers: ["flow", "babel-flow"]
             },
             {
               name: "JSX",
-              vscodeLanguageIds: ["javascriptreact"],
+              phideLanguageIds: ["javascriptreact"],
               extensions: [".jsx"],
               parsers: [
                 "babel",
@@ -88954,25 +88954,25 @@ var ModuleResolver = class {
             },
             {
               name: "TypeScript",
-              vscodeLanguageIds: ["typescript"],
+              phideLanguageIds: ["typescript"],
               extensions: [".ts", ".cts", ".mts"],
               parsers: ["typescript", "babel-ts"]
             },
             {
               name: "TSX",
-              vscodeLanguageIds: ["typescriptreact"],
+              phideLanguageIds: ["typescriptreact"],
               extensions: [".tsx"],
               parsers: ["typescript", "babel-ts"]
             },
             {
               name: "JSON.stringify",
-              vscodeLanguageIds: ["json"],
+              phideLanguageIds: ["json"],
               extensions: [".importmap"],
               parsers: ["json-stringify"]
             },
             {
               name: "JSON",
-              vscodeLanguageIds: ["json"],
+              phideLanguageIds: ["json"],
               extensions: [
                 ".json",
                 ".4DForm",
@@ -88999,7 +88999,7 @@ var ModuleResolver = class {
             },
             {
               name: "JSON with Comments",
-              vscodeLanguageIds: ["jsonc"],
+              phideLanguageIds: ["jsonc"],
               extensions: [
                 ".jsonc",
                 ".code-snippets",
@@ -89023,13 +89023,13 @@ var ModuleResolver = class {
             },
             {
               name: "JSON5",
-              vscodeLanguageIds: ["json5"],
+              phideLanguageIds: ["json5"],
               extensions: [".json5"],
               parsers: ["json5"]
             },
             {
               name: "Markdown",
-              vscodeLanguageIds: ["markdown"],
+              phideLanguageIds: ["markdown"],
               extensions: [
                 ".md",
                 ".livemd",
@@ -89047,13 +89047,13 @@ var ModuleResolver = class {
             },
             {
               name: "MDX",
-              vscodeLanguageIds: ["mdx"],
+              phideLanguageIds: ["mdx"],
               extensions: [".mdx"],
               parsers: ["mdx"]
             },
             {
               name: "YAML",
-              vscodeLanguageIds: ["yaml", "ansible", "home-assistant"],
+              phideLanguageIds: ["yaml", "ansible", "home-assistant"],
               extensions: [
                 ".yml",
                 ".mir",
@@ -89076,10 +89076,10 @@ var ModuleResolver = class {
       }
     };
   }
-  async resolveConfig(_prettierInstance, _fileName, _vscodeConfig) {
+  async resolveConfig(_prettierInstance, _fileName, _phideConfig) {
     return null;
   }
-  async getResolvedConfig(_doc, _vscodeConfig) {
+  async getResolvedConfig(_doc, _phideConfig) {
     return null;
   }
   async clearModuleCache(_filePath) {
@@ -89097,7 +89097,7 @@ function pathToFileURL(path4) {
 }
 
 // src/PrettierEditService.ts
-var import_vscode6 = require("vscode");
+var import_phide6 = require("phide");
 
 // src/utils/get-parser-from-language.ts
 function getParserFromLanguageId(languages3, uri, languageId) {
@@ -89106,7 +89106,7 @@ function getParserFromLanguageId(languages3, uri, languageId) {
     return languageId;
   }
   const language = languages3.find(
-    (lang) => lang && lang.extensions && Array.isArray(lang.vscodeLanguageIds) && lang.vscodeLanguageIds.includes(languageId)
+    (lang) => lang && lang.extensions && Array.isArray(lang.phideLanguageIds) && lang.phideLanguageIds.includes(languageId)
   );
   if (language && language.parsers?.length > 0) {
     return language.parsers[0];
@@ -89114,8 +89114,8 @@ function getParserFromLanguageId(languages3, uri, languageId) {
 }
 
 // src/message.ts
-var RESTART_TO_ENABLE = "To enable or disable prettier after changing the `enable` setting, you must restart VS Code.";
-var EXTENSION_DISABLED = "Extension is disabled. No formatters will be registered. To enable, change the `prettier.enable` to `true` and restart VS Code.";
+var RESTART_TO_ENABLE = "To enable or disable prettier after changing the `enable` setting, you must restart Phide.";
+var EXTENSION_DISABLED = "Extension is disabled. No formatters will be registered. To enable, change the `prettier.enable` to `true` and restart Phide.";
 
 // src/PrettierEditProvider.ts
 var PrettierEditProvider = class {
@@ -89137,8 +89137,8 @@ var PrettierEditProvider = class {
 };
 
 // src/PrettierCodeActionProvider.ts
-var import_vscode4 = require("vscode");
-var EXTENSION_ID = "esbenp.prettier-vscode";
+var import_phide4 = require("phide");
+var EXTENSION_ID = "esbenp.prettier-phide";
 var PrettierCodeActionProvider = class {
   constructor(provideEdits) {
     this.provideEdits = provideEdits;
@@ -89151,10 +89151,10 @@ var PrettierCodeActionProvider = class {
    *
    * This prevents Prettier from running via source.fixAll when the user has
    * explicitly chosen a different formatter (e.g., ESLint with Prettier plugin).
-   * See: https://github.com/prettier/prettier-vscode/issues/3908
+   * See: https://github.com/prettier/prettier-phide/issues/3908
    */
   shouldProvideCodeActions(document2) {
-    const editorConfig = import_vscode4.workspace.getConfiguration("editor", {
+    const editorConfig = import_phide4.workspace.getConfiguration("editor", {
       uri: document2.uri,
       languageId: document2.languageId
     });
@@ -89182,32 +89182,32 @@ var PrettierCodeActionProvider = class {
     if (edits.length === 0) {
       return [];
     }
-    const action = new import_vscode4.CodeAction(
+    const action = new import_phide4.CodeAction(
       "Format with Prettier",
-      import_vscode4.CodeActionKind.SourceFixAll.append("prettier")
+      import_phide4.CodeActionKind.SourceFixAll.append("prettier")
     );
-    const workspaceEdit = new import_vscode4.WorkspaceEdit();
+    const workspaceEdit = new import_phide4.WorkspaceEdit();
     workspaceEdit.set(document2.uri, edits);
     action.edit = workspaceEdit;
     return [action];
   }
 };
 __publicField(PrettierCodeActionProvider, "providedCodeActionKinds", [
-  import_vscode4.CodeActionKind.SourceFixAll.append("prettier")
+  import_phide4.CodeActionKind.SourceFixAll.append("prettier")
 ]);
 
 // src/StatusBar.ts
-var import_vscode5 = require("vscode");
+var import_phide5 = require("phide");
 var StatusBar = class {
   constructor() {
     __publicField(this, "statusBarItem");
     __publicField(this, "languageStatusItem");
-    this.statusBarItem = import_vscode5.window.createStatusBarItem(
+    this.statusBarItem = import_phide5.window.createStatusBarItem(
       "prettier.status",
-      import_vscode5.StatusBarAlignment.Right,
+      import_phide5.StatusBarAlignment.Right,
       -1
     );
-    this.languageStatusItem = import_vscode5.languages.createLanguageStatusItem(
+    this.languageStatusItem = import_phide5.languages.createLanguageStatusItem(
       "prettier.status",
       []
     );
@@ -89236,22 +89236,22 @@ var StatusBar = class {
     switch (result) {
       case "x" /* Ignore */:
       case "warning" /* Warn */:
-        this.statusBarItem.backgroundColor = new import_vscode5.ThemeColor(
+        this.statusBarItem.backgroundColor = new import_phide5.ThemeColor(
           "statusBarItem.warningBackground"
         );
-        this.languageStatusItem.severity = import_vscode5.LanguageStatusSeverity.Warning;
+        this.languageStatusItem.severity = import_phide5.LanguageStatusSeverity.Warning;
         break;
       case "alert" /* Error */:
-        this.statusBarItem.backgroundColor = new import_vscode5.ThemeColor(
+        this.statusBarItem.backgroundColor = new import_phide5.ThemeColor(
           "statusBarItem.errorBackground"
         );
-        this.languageStatusItem.severity = import_vscode5.LanguageStatusSeverity.Error;
+        this.languageStatusItem.severity = import_phide5.LanguageStatusSeverity.Error;
         break;
       default:
-        this.statusBarItem.backgroundColor = new import_vscode5.ThemeColor(
+        this.statusBarItem.backgroundColor = new import_phide5.ThemeColor(
           "statusBarItem.fourgroundBackground"
         );
-        this.languageStatusItem.severity = import_vscode5.LanguageStatusSeverity.Information;
+        this.languageStatusItem.severity = import_phide5.LanguageStatusSeverity.Information;
         break;
     }
     this.statusBarItem.show();
@@ -89350,7 +89350,7 @@ var PrettierEditService = class {
     ]);
     __publicField(this, "forceFormatDocument", async () => {
       try {
-        const editor = import_vscode6.window.activeTextEditor;
+        const editor = import_phide6.window.activeTextEditor;
         if (!editor) {
           this.loggingService.logInfo(
             "No active document. Nothing was formatted."
@@ -89384,7 +89384,7 @@ var PrettierEditService = class {
     });
     __publicField(this, "resetFormatters", (uri) => {
       if (uri) {
-        const workspaceFolder = import_vscode6.workspace.getWorkspaceFolder(uri);
+        const workspaceFolder = import_phide6.workspace.getWorkspaceFolder(uri);
         this.registeredWorkspaces.delete(workspaceFolder?.uri.fsPath ?? "global");
       } else {
         this.registeredWorkspaces.clear();
@@ -89406,7 +89406,7 @@ var PrettierEditService = class {
         this.statusBar.update("check-all" /* Ready */);
         return;
       }
-      const workspaceFolder = import_vscode6.workspace.getWorkspaceFolder(document2.uri);
+      const workspaceFolder = import_phide6.workspace.getWorkspaceFolder(document2.uri);
       if (!workspaceFolder) {
         return;
       }
@@ -89436,7 +89436,7 @@ var PrettierEditService = class {
           selectors
         );
       }
-      const score = import_vscode6.languages.match(selectors.languageSelector, document2);
+      const score = import_phide6.languages.match(selectors.languageSelector, document2);
       if (score > 0) {
         this.statusBar.update("check-all" /* Ready */);
       } else {
@@ -89480,8 +89480,8 @@ var PrettierEditService = class {
         plugins: plugins2
       });
       languages3.forEach((lang) => {
-        if (lang && lang.vscodeLanguageIds) {
-          this.allLanguages.push(...lang.vscodeLanguageIds);
+        if (lang && lang.phideLanguageIds) {
+          this.allLanguages.push(...lang.phideLanguageIds);
         }
       });
       this.allLanguages = this.allLanguages.filter((value, index, self2) => {
@@ -89508,8 +89508,8 @@ var PrettierEditService = class {
       })) : [];
       const defaultLanguageSelectors = [
         ...this.allLanguages.map((language) => ({ language })),
-        { language: "jsonc", scheme: "vscode-userdata" }
-        // Selector for VSCode settings.json
+        { language: "jsonc", scheme: "phide-userdata" }
+        // Selector for phide settings.json
       ];
       const languageSelector = [
         ...customLanguageSelectors,
@@ -89542,11 +89542,11 @@ var PrettierEditService = class {
     });
   }
   registerDisposables() {
-    const packageWatcher = import_vscode6.workspace.createFileSystemWatcher("**/package.json");
+    const packageWatcher = import_phide6.workspace.createFileSystemWatcher("**/package.json");
     packageWatcher.onDidChange(this.resetFormatters);
     packageWatcher.onDidCreate(this.resetFormatters);
     packageWatcher.onDidDelete(this.resetFormatters);
-    const configurationWatcher = import_vscode6.workspace.onDidChangeConfiguration((event) => {
+    const configurationWatcher = import_phide6.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("prettier.enable")) {
         this.loggingService.logWarning(RESTART_TO_ENABLE);
       } else if (event.affectsConfiguration("prettier")) {
@@ -89554,24 +89554,24 @@ var PrettierEditService = class {
       }
     });
     const prettierConfigWatchers = [
-      import_vscode6.workspace.createFileSystemWatcher("**/.prettierrc"),
-      import_vscode6.workspace.createFileSystemWatcher("**/.prettierrc.*"),
-      import_vscode6.workspace.createFileSystemWatcher("**/prettier.config.*"),
-      import_vscode6.workspace.createFileSystemWatcher("**/.editorconfig")
+      import_phide6.workspace.createFileSystemWatcher("**/.prettierrc"),
+      import_phide6.workspace.createFileSystemWatcher("**/.prettierrc.*"),
+      import_phide6.workspace.createFileSystemWatcher("**/prettier.config.*"),
+      import_phide6.workspace.createFileSystemWatcher("**/.editorconfig")
     ];
     for (const watcher of prettierConfigWatchers) {
       watcher.onDidChange(this.prettierConfigChanged);
       watcher.onDidCreate(this.prettierConfigChanged);
       watcher.onDidDelete(this.prettierConfigChanged);
     }
-    const prettierIgnoreWatcher = import_vscode6.workspace.createFileSystemWatcher("**/.prettierignore");
+    const prettierIgnoreWatcher = import_phide6.workspace.createFileSystemWatcher("**/.prettierignore");
     prettierIgnoreWatcher.onDidChange(this.prettierConfigChanged);
     prettierIgnoreWatcher.onDidCreate(this.prettierConfigChanged);
     prettierIgnoreWatcher.onDidDelete(this.prettierConfigChanged);
-    const textEditorChange = import_vscode6.window.onDidChangeActiveTextEditor(
+    const textEditorChange = import_phide6.window.onDidChangeActiveTextEditor(
       this.handleActiveTextEditorChangedSync
     );
-    this.handleActiveTextEditorChangedSync(import_vscode6.window.activeTextEditor);
+    this.handleActiveTextEditorChangedSync(import_phide6.window.activeTextEditor);
     return [
       packageWatcher,
       configurationWatcher,
@@ -89595,15 +89595,15 @@ var PrettierEditService = class {
     const codeActionProvider = new PrettierCodeActionProvider(
       this.provideEdits
     );
-    this.rangeFormatterHandler = import_vscode6.languages.registerDocumentRangeFormattingEditProvider(
+    this.rangeFormatterHandler = import_phide6.languages.registerDocumentRangeFormattingEditProvider(
       rangeLanguageSelector,
       editProvider
     );
-    this.formatterHandler = import_vscode6.languages.registerDocumentFormattingEditProvider(
+    this.formatterHandler = import_phide6.languages.registerDocumentFormattingEditProvider(
       languageSelector,
       editProvider
     );
-    this.codeActionHandler = import_vscode6.languages.registerCodeActionsProvider(
+    this.codeActionHandler = import_phide6.languages.registerCodeActionsProvider(
       languageSelector,
       codeActionProvider,
       {
@@ -89627,7 +89627,7 @@ var PrettierEditService = class {
     const newText = string1.substring(i, string1.length - j10);
     const pos0 = document2.positionAt(i);
     const pos1 = document2.positionAt(string0.length - j10);
-    return import_vscode6.TextEdit.replace(new import_vscode6.Range(pos0, pos1), newText);
+    return import_phide6.TextEdit.replace(new import_phide6.Range(pos0, pos1), newText);
   }
   /**
    * Format the given text with user's configuration.
@@ -89638,10 +89638,10 @@ var PrettierEditService = class {
   async format(text, doc, options) {
     const { fileName, uri, languageId } = doc;
     this.loggingService.logInfo(`Formatting ${uri}`);
-    const vscodeConfig = getWorkspaceConfig(doc);
+    const phideConfig = getWorkspaceConfig(doc);
     const resolvedConfig = await this.moduleResolver.getResolvedConfig(
       doc,
-      vscodeConfig
+      phideConfig
     );
     if (resolvedConfig === "error") {
       this.statusBar.update("alert" /* Error */);
@@ -89661,10 +89661,10 @@ var PrettierEditService = class {
       return;
     }
     let resolvedIgnorePath;
-    if (vscodeConfig.ignorePath) {
+    if (phideConfig.ignorePath) {
       resolvedIgnorePath = await this.moduleResolver.getResolvedIgnorePath(
         fileName,
-        vscodeConfig.ignorePath
+        phideConfig.ignorePath
       );
       if (resolvedIgnorePath) {
         this.loggingService.logInfo(
@@ -89685,7 +89685,7 @@ var PrettierEditService = class {
         ignorePath: resolvedIgnorePath,
         plugins: resolvedPlugins,
         resolveConfig: false,
-        withNodeModules: vscodeConfig.withNodeModules
+        withNodeModules: phideConfig.withNodeModules
       });
       this.loggingService.logInfo("File Info:", fileInfo);
     }
@@ -89701,7 +89701,7 @@ var PrettierEditService = class {
       parser = resolvedConfig.parser;
     } else if (languageId !== "plaintext") {
       this.loggingService.logWarning(
-        `Parser not inferred, trying VS Code language.`
+        `Parser not inferred, trying Phide language.`
       );
       const { languages: languages3 } = await prettierInstance.getSupportInfo({
         plugins: resolvedPlugins
@@ -89718,7 +89718,7 @@ var PrettierEditService = class {
     const prettierOptions = this.getPrettierOptions(
       fileName,
       parser,
-      vscodeConfig,
+      phideConfig,
       resolvedConfig,
       options,
       resolvedPlugins
@@ -89737,36 +89737,36 @@ var PrettierEditService = class {
       return text;
     }
   }
-  getPrettierOptions(fileName, parser, vsCodeConfig, configOptions, extensionFormattingOptions, resolvedPlugins) {
-    const fallbackToVSCodeConfig = configOptions === null;
+  getPrettierOptions(fileName, parser, phideConfig, configOptions, extensionFormattingOptions, resolvedPlugins) {
+    const fallbackTophideConfig = configOptions === null;
     const vsOpts = {};
-    if (fallbackToVSCodeConfig) {
-      vsOpts.arrowParens = vsCodeConfig.arrowParens;
-      vsOpts.bracketSpacing = vsCodeConfig.bracketSpacing;
-      vsOpts.endOfLine = vsCodeConfig.endOfLine;
-      vsOpts.htmlWhitespaceSensitivity = vsCodeConfig.htmlWhitespaceSensitivity;
-      vsOpts.insertPragma = vsCodeConfig.insertPragma;
-      vsOpts.singleAttributePerLine = vsCodeConfig.singleAttributePerLine;
-      vsOpts.bracketSameLine = vsCodeConfig.bracketSameLine;
-      vsOpts.jsxBracketSameLine = vsCodeConfig.jsxBracketSameLine;
-      vsOpts.jsxSingleQuote = vsCodeConfig.jsxSingleQuote;
-      vsOpts.printWidth = vsCodeConfig.printWidth;
-      vsOpts.proseWrap = vsCodeConfig.proseWrap;
-      vsOpts.quoteProps = vsCodeConfig.quoteProps;
-      vsOpts.requirePragma = vsCodeConfig.requirePragma;
-      vsOpts.semi = vsCodeConfig.semi;
-      vsOpts.singleQuote = vsCodeConfig.singleQuote;
-      vsOpts.tabWidth = vsCodeConfig.tabWidth;
-      vsOpts.trailingComma = vsCodeConfig.trailingComma;
-      vsOpts.useTabs = vsCodeConfig.useTabs;
-      vsOpts.embeddedLanguageFormatting = vsCodeConfig.embeddedLanguageFormatting;
-      vsOpts.vueIndentScriptAndStyle = vsCodeConfig.vueIndentScriptAndStyle;
-      vsOpts.experimentalTernaries = vsCodeConfig.experimentalTernaries;
-      vsOpts.objectWrap = vsCodeConfig.objectWrap;
-      vsOpts.experimentalOperatorPosition = vsCodeConfig.experimentalOperatorPosition;
+    if (fallbackTophideConfig) {
+      vsOpts.arrowParens = phideConfig.arrowParens;
+      vsOpts.bracketSpacing = phideConfig.bracketSpacing;
+      vsOpts.endOfLine = phideConfig.endOfLine;
+      vsOpts.htmlWhitespaceSensitivity = phideConfig.htmlWhitespaceSensitivity;
+      vsOpts.insertPragma = phideConfig.insertPragma;
+      vsOpts.singleAttributePerLine = phideConfig.singleAttributePerLine;
+      vsOpts.bracketSameLine = phideConfig.bracketSameLine;
+      vsOpts.jsxBracketSameLine = phideConfig.jsxBracketSameLine;
+      vsOpts.jsxSingleQuote = phideConfig.jsxSingleQuote;
+      vsOpts.printWidth = phideConfig.printWidth;
+      vsOpts.proseWrap = phideConfig.proseWrap;
+      vsOpts.quoteProps = phideConfig.quoteProps;
+      vsOpts.requirePragma = phideConfig.requirePragma;
+      vsOpts.semi = phideConfig.semi;
+      vsOpts.singleQuote = phideConfig.singleQuote;
+      vsOpts.tabWidth = phideConfig.tabWidth;
+      vsOpts.trailingComma = phideConfig.trailingComma;
+      vsOpts.useTabs = phideConfig.useTabs;
+      vsOpts.embeddedLanguageFormatting = phideConfig.embeddedLanguageFormatting;
+      vsOpts.vueIndentScriptAndStyle = phideConfig.vueIndentScriptAndStyle;
+      vsOpts.experimentalTernaries = phideConfig.experimentalTernaries;
+      vsOpts.objectWrap = phideConfig.objectWrap;
+      vsOpts.experimentalOperatorPosition = phideConfig.experimentalOperatorPosition;
     }
     this.loggingService.logInfo(
-      fallbackToVSCodeConfig ? "Using VS Code configuration" : "Using local configuration (VS Code configuration will not be used)"
+      fallbackTophideConfig ? "Using Phide configuration" : "Using local configuration (Phide configuration will not be used)"
     );
     let rangeFormattingOptions;
     if (extensionFormattingOptions.rangeEnd && extensionFormattingOptions.rangeStart) {
@@ -89776,7 +89776,7 @@ var PrettierEditService = class {
       };
     }
     const options = {
-      ...fallbackToVSCodeConfig ? vsOpts : {},
+      ...fallbackTophideConfig ? vsOpts : {},
       ...{
         /* cspell: disable-next-line */
         filepath: fileName,
@@ -89796,7 +89796,7 @@ var PrettierEditService = class {
 
 // src/TemplateService.ts
 var import_util = __toESM(require_util(), 1);
-var import_vscode7 = require("vscode");
+var import_phide7 = require("phide");
 var TemplateService = class {
   constructor(loggingService, prettierModulePromise) {
     this.loggingService = loggingService;
@@ -89804,7 +89804,7 @@ var TemplateService = class {
   }
   async writeConfigFile(folderPath) {
     const settings = { tabWidth: 2, useTabs: false };
-    const outputPath = import_vscode7.Uri.joinPath(folderPath, ".prettierrc");
+    const outputPath = import_phide7.Uri.joinPath(folderPath, ".prettierrc");
     const formatterOptions = {
       /* cspell: disable-next-line */
       filepath: outputPath.scheme === "file" ? outputPath.fsPath : void 0,
@@ -89817,7 +89817,7 @@ var TemplateService = class {
       formatterOptions
     );
     this.loggingService.logInfo(`Writing .prettierrc to ${outputPath}`);
-    await import_vscode7.workspace.fs.writeFile(
+    await import_phide7.workspace.fs.writeFile(
       outputPath,
       new import_util.TextEncoder().encode(templateSource)
     );
@@ -89825,7 +89825,7 @@ var TemplateService = class {
 };
 
 // src/extension.ts
-var extensionName = "esbenp.prettier-vscode";
+var extensionName = "esbenp.prettier-phide";
 var extensionVersion = "12.4.0";
 async function activate(context) {
   const loggingService = new LoggingService();
@@ -89838,7 +89838,7 @@ async function activate(context) {
   if (!enable) {
     loggingService.logInfo(EXTENSION_DISABLED);
     context.subscriptions.push(
-      import_vscode8.workspace.onDidChangeConfiguration((event) => {
+      import_phide8.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("prettier.enable")) {
           loggingService.logWarning(RESTART_TO_ENABLE);
         }
@@ -89857,17 +89857,17 @@ async function activate(context) {
   );
   await editService.registerGlobal();
   const createConfigFileFunc = createConfigFile(templateService);
-  const createConfigFileCommand = import_vscode8.commands.registerCommand(
+  const createConfigFileCommand = import_phide8.commands.registerCommand(
     "prettier.createConfigFile",
     createConfigFileFunc
   );
-  const openOutputCommand = import_vscode8.commands.registerCommand(
+  const openOutputCommand = import_phide8.commands.registerCommand(
     "prettier.openOutput",
     () => {
       loggingService.show();
     }
   );
-  const forceFormatDocumentCommand = import_vscode8.commands.registerCommand(
+  const forceFormatDocumentCommand = import_phide8.commands.registerCommand(
     "prettier.forceFormatDocument",
     editService.forceFormatDocument
   );

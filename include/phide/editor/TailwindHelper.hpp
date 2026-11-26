@@ -389,14 +389,30 @@ private:
             L"tailwind.config.cjs",
             L"tailwind.config.mjs",
             L"tailwind.config.ts",
-            L"tailwind.config.json",
-            L"postcss.config.js",
-            L"postcss.config.cjs",
-            L"postcss.config.mjs"
+            L"tailwind.config.json"
         };
         for (const auto* cfg : s_configFiles) {
             if (std::filesystem::exists(root / cfg, ec)) {
                 return true;
+            }
+        }
+        static const wchar_t* s_postcssFiles[] = {
+            L"postcss.config.js",
+            L"postcss.config.cjs",
+            L"postcss.config.mjs"
+        };
+        for (const auto* pcfg : s_postcssFiles) {
+            std::filesystem::path pp = root / pcfg;
+            if (std::filesystem::exists(pp, ec)) {
+                std::ifstream f(pp, std::ios::binary);
+                if (f.is_open()) {
+                    std::string s(4096, '\0');
+                    f.read(&s[0], s.size());
+                    s.resize(static_cast<size_t>(f.gcount()));
+                    if (s.find("tailwindcss") != std::string::npos) {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -415,26 +431,58 @@ private:
             }
         }
 
-        // C) Check root CSS/HTML/PHP files for @tailwind or cdn.tailwindcss.com
-        for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
-            if (entry.is_regular_file(ec)) {
+        // C) Check root and common web asset/source subdirectories for @tailwind, @import "tailwindcss", or cdn.tailwindcss.com
+        auto checkDirForTailwind = [&](const std::filesystem::path& dirPath) -> bool {
+            if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec)) return false;
+            for (const auto* cfg : s_configFiles) {
+                if (std::filesystem::exists(dirPath / cfg, ec)) return true;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(dirPath, ec)) {
+                if (!entry.is_regular_file(ec)) continue;
+                auto fname = entry.path().filename().wstring();
+                for (auto& c : fname) c = static_cast<wchar_t>(towlower(c));
                 auto ext = entry.path().extension().wstring();
                 for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-                if (ext == L".css" || ext == L".html" || ext == L".php") {
+                if (fname.find(L"tailwind") != std::wstring::npos &&
+                    (ext == L".css" || ext == L".js" || ext == L".ts" || ext == L".cjs" || ext == L".mjs")) {
+                    return true;
+                }
+                if (ext == L".css" || ext == L".scss") {
                     std::ifstream f(entry.path(), std::ios::binary);
                     if (f.is_open()) {
-                        std::string s;
-                        s.resize(4096);
+                        std::string s(4096, '\0');
                         f.read(&s[0], s.size());
                         s.resize(static_cast<size_t>(f.gcount()));
-                        if (s.find("cdn.tailwindcss.com") != std::string::npos ||
-                            s.find("@tailwind") != std::string::npos ||
-                            s.find("tailwindcss") != std::string::npos) {
+                        if (s.find("@tailwind") != std::string::npos ||
+                            s.find("@import \"tailwindcss\"") != std::string::npos ||
+                            s.find("@import 'tailwindcss'") != std::string::npos ||
+                            s.find("@import \"tailwindcss/") != std::string::npos) {
+                            return true;
+                        }
+                    }
+                } else if (ext == L".html" || ext == L".php") {
+                    std::ifstream f(entry.path(), std::ios::binary);
+                    if (f.is_open()) {
+                        std::string s(4096, '\0');
+                        f.read(&s[0], s.size());
+                        s.resize(static_cast<size_t>(f.gcount()));
+                        if (s.find("cdn.tailwindcss.com") != std::string::npos) {
                             return true;
                         }
                     }
                 }
             }
+            return false;
+        };
+
+        if (checkDirForTailwind(root)) return true;
+        static const wchar_t* s_subDirs[] = {
+            L"assets", L"assets\\css", L"css", L"styles",
+            L"src", L"src\\styles", L"src\\css", L"src\\app",
+            L"app", L"public", L"public\\css", L"resources\\css"
+        };
+        for (const auto* sub : s_subDirs) {
+            if (checkDirForTailwind(root / sub)) return true;
         }
 
         return false;
@@ -522,6 +570,24 @@ private:
                 c.name = pfx + L"transparent";
                 c.detail = prop + L": transparent;";
                 c.doc = L"transparent";
+                c.isColor = false;
+                c.hex = 0;
+                list.push_back(std::move(c));
+            }
+            {
+                TailwindCandidate c;
+                c.name = pfx + L"current";
+                c.detail = prop + L": currentColor;";
+                c.doc = L"currentColor";
+                c.isColor = false;
+                c.hex = 0;
+                list.push_back(std::move(c));
+            }
+            {
+                TailwindCandidate c;
+                c.name = pfx + L"inherit";
+                c.detail = prop + L": inherit;";
+                c.doc = L"inherit";
                 c.isColor = false;
                 c.hex = 0;
                 list.push_back(std::move(c));

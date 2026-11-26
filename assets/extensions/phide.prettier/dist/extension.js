@@ -2461,10 +2461,10 @@ var ModuleResolver = class {
     );
     return;
   }
-  async getResolvedConfig(doc, vscodeConfig) {
+  async getResolvedConfig(doc, phideConfig) {
     const fileName = doc.fileName;
     const prettier = await this.getPrettierInstance(fileName) ?? await getBundledPrettier();
-    return this.resolveConfig(prettier, fileName, vscodeConfig);
+    return this.resolveConfig(prettier, fileName, phideConfig);
   }
   async clearModuleCache(filePath) {
     const prettier = await this.getPrettierInstance(filePath) ?? await getBundledPrettier();
@@ -2587,10 +2587,10 @@ var ModuleResolver = class {
       return false;
     }
   }
-  async resolveConfig(prettierInstance, fileName, vscodeConfig) {
+  async resolveConfig(prettierInstance, fileName, phideConfig) {
     if (!workspace2.isTrusted) {
       this.loggingService.logDebug(UNTRUSTED_WORKSPACE_SKIPPING_CONFIG);
-      if (vscodeConfig.requireConfig) {
+      if (phideConfig.requireConfig) {
         return "disabled";
       }
       return null;
@@ -2608,14 +2608,14 @@ var ModuleResolver = class {
     if (configPath) {
       this.loggingService.logInfo(`Using config file at ${configPath}`);
     }
-    if (vscodeConfig.useEditorConfig) {
+    if (phideConfig.useEditorConfig) {
       this.loggingService.logInfo(
         "EditorConfig support is enabled, checking for .editorconfig files"
       );
     }
     let resolvedConfig;
     try {
-      const customConfigPath = vscodeConfig.configPath ? getWorkspaceRelativePath(fileName, vscodeConfig.configPath) : void 0;
+      const customConfigPath = phideConfig.configPath ? getWorkspaceRelativePath(fileName, phideConfig.configPath) : void 0;
       if (customConfigPath) {
         this.loggingService.logInfo(
           `Using custom config path from settings: ${customConfigPath}`
@@ -2623,7 +2623,7 @@ var ModuleResolver = class {
       }
       const resolveConfigOptions = {
         config: customConfigPath ?? configPath,
-        editorconfig: vscodeConfig.useEditorConfig
+        editorconfig: phideConfig.useEditorConfig
       };
       resolvedConfig = await prettierInstance.resolveConfig(
         fileName,
@@ -2636,7 +2636,7 @@ var ModuleResolver = class {
     if (resolvedConfig) {
       this.loggingService.logInfo("Resolved config:", resolvedConfig);
     }
-    if (!configPath && resolvedConfig && vscodeConfig.useEditorConfig) {
+    if (!configPath && resolvedConfig && phideConfig.useEditorConfig) {
       this.loggingService.logInfo(
         "No Prettier config file found, but settings were loaded from .editorconfig"
       );
@@ -2645,7 +2645,7 @@ var ModuleResolver = class {
         "No local configuration (i.e. .prettierrc or .editorconfig) detected, will fall back to phide configuration"
       );
     }
-    if (!vscodeConfig.requireConfig) {
+    if (!phideConfig.requireConfig) {
       return resolvedConfig;
     }
     if (resolvedConfig) {
@@ -2682,7 +2682,7 @@ function getParserFromLanguageId(languages3, uri, languageId) {
     return languageId;
   }
   const language = languages3.find(
-    (lang) => lang && lang.extensions && Array.isArray(lang.vscodeLanguageIds) && lang.vscodeLanguageIds.includes(languageId)
+    (lang) => lang && lang.extensions && Array.isArray(lang.phideLanguageIds) && lang.phideLanguageIds.includes(languageId)
   );
   if (language && language.parsers?.length > 0) {
     return language.parsers[0];
@@ -3119,8 +3119,8 @@ var PrettierEditService = class {
       plugins
     });
     languages3.forEach((lang) => {
-      if (lang && lang.vscodeLanguageIds) {
-        this.allLanguages.push(...lang.vscodeLanguageIds);
+      if (lang && lang.phideLanguageIds) {
+        this.allLanguages.push(...lang.phideLanguageIds);
       }
     });
     this.allLanguages = this.allLanguages.filter((value, index, self) => {
@@ -3206,10 +3206,10 @@ var PrettierEditService = class {
   async format(text, doc, options) {
     const { fileName, uri, languageId } = doc;
     this.loggingService.logInfo(`Formatting ${uri}`);
-    const vscodeConfig = getWorkspaceConfig(doc);
+    const phideConfig = getWorkspaceConfig(doc);
     const resolvedConfig = await this.moduleResolver.getResolvedConfig(
       doc,
-      vscodeConfig
+      phideConfig
     );
     if (resolvedConfig === "error") {
       this.statusBar.update("alert" /* Error */);
@@ -3229,10 +3229,10 @@ var PrettierEditService = class {
       return;
     }
     let resolvedIgnorePath;
-    if (vscodeConfig.ignorePath) {
+    if (phideConfig.ignorePath) {
       resolvedIgnorePath = await this.moduleResolver.getResolvedIgnorePath(
         fileName,
-        vscodeConfig.ignorePath
+        phideConfig.ignorePath
       );
       if (resolvedIgnorePath) {
         this.loggingService.logInfo(
@@ -3253,7 +3253,7 @@ var PrettierEditService = class {
         ignorePath: resolvedIgnorePath,
         plugins: resolvedPlugins,
         resolveConfig: false,
-        withNodeModules: vscodeConfig.withNodeModules
+        withNodeModules: phideConfig.withNodeModules
       });
       this.loggingService.logInfo("File Info:", fileInfo);
     }
@@ -3286,7 +3286,7 @@ var PrettierEditService = class {
     const prettierOptions = this.getPrettierOptions(
       fileName,
       parser,
-      vscodeConfig,
+      phideConfig,
       resolvedConfig,
       options,
       resolvedPlugins
@@ -3305,33 +3305,33 @@ var PrettierEditService = class {
       return text;
     }
   }
-  getPrettierOptions(fileName, parser, vsCodeConfig, configOptions, extensionFormattingOptions, resolvedPlugins) {
+  getPrettierOptions(fileName, parser, phideConfig, configOptions, extensionFormattingOptions, resolvedPlugins) {
     const fallbackTophideConfig = configOptions === null;
     const vsOpts = {};
     if (fallbackTophideConfig) {
-      vsOpts.arrowParens = vsCodeConfig.arrowParens;
-      vsOpts.bracketSpacing = vsCodeConfig.bracketSpacing;
-      vsOpts.endOfLine = vsCodeConfig.endOfLine;
-      vsOpts.htmlWhitespaceSensitivity = vsCodeConfig.htmlWhitespaceSensitivity;
-      vsOpts.insertPragma = vsCodeConfig.insertPragma;
-      vsOpts.singleAttributePerLine = vsCodeConfig.singleAttributePerLine;
-      vsOpts.bracketSameLine = vsCodeConfig.bracketSameLine;
-      vsOpts.jsxBracketSameLine = vsCodeConfig.jsxBracketSameLine;
-      vsOpts.jsxSingleQuote = vsCodeConfig.jsxSingleQuote;
-      vsOpts.printWidth = vsCodeConfig.printWidth;
-      vsOpts.proseWrap = vsCodeConfig.proseWrap;
-      vsOpts.quoteProps = vsCodeConfig.quoteProps;
-      vsOpts.requirePragma = vsCodeConfig.requirePragma;
-      vsOpts.semi = vsCodeConfig.semi;
-      vsOpts.singleQuote = vsCodeConfig.singleQuote;
-      vsOpts.tabWidth = vsCodeConfig.tabWidth;
-      vsOpts.trailingComma = vsCodeConfig.trailingComma;
-      vsOpts.useTabs = vsCodeConfig.useTabs;
-      vsOpts.embeddedLanguageFormatting = vsCodeConfig.embeddedLanguageFormatting;
-      vsOpts.vueIndentScriptAndStyle = vsCodeConfig.vueIndentScriptAndStyle;
-      vsOpts.experimentalTernaries = vsCodeConfig.experimentalTernaries;
-      vsOpts.objectWrap = vsCodeConfig.objectWrap;
-      vsOpts.experimentalOperatorPosition = vsCodeConfig.experimentalOperatorPosition;
+      vsOpts.arrowParens = phideConfig.arrowParens;
+      vsOpts.bracketSpacing = phideConfig.bracketSpacing;
+      vsOpts.endOfLine = phideConfig.endOfLine;
+      vsOpts.htmlWhitespaceSensitivity = phideConfig.htmlWhitespaceSensitivity;
+      vsOpts.insertPragma = phideConfig.insertPragma;
+      vsOpts.singleAttributePerLine = phideConfig.singleAttributePerLine;
+      vsOpts.bracketSameLine = phideConfig.bracketSameLine;
+      vsOpts.jsxBracketSameLine = phideConfig.jsxBracketSameLine;
+      vsOpts.jsxSingleQuote = phideConfig.jsxSingleQuote;
+      vsOpts.printWidth = phideConfig.printWidth;
+      vsOpts.proseWrap = phideConfig.proseWrap;
+      vsOpts.quoteProps = phideConfig.quoteProps;
+      vsOpts.requirePragma = phideConfig.requirePragma;
+      vsOpts.semi = phideConfig.semi;
+      vsOpts.singleQuote = phideConfig.singleQuote;
+      vsOpts.tabWidth = phideConfig.tabWidth;
+      vsOpts.trailingComma = phideConfig.trailingComma;
+      vsOpts.useTabs = phideConfig.useTabs;
+      vsOpts.embeddedLanguageFormatting = phideConfig.embeddedLanguageFormatting;
+      vsOpts.vueIndentScriptAndStyle = phideConfig.vueIndentScriptAndStyle;
+      vsOpts.experimentalTernaries = phideConfig.experimentalTernaries;
+      vsOpts.objectWrap = phideConfig.objectWrap;
+      vsOpts.experimentalOperatorPosition = phideConfig.experimentalOperatorPosition;
     }
     this.loggingService.logInfo(
       fallbackTophideConfig ? "Using phide configuration" : "Using local configuration (phide configuration will not be used)"

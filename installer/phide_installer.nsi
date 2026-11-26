@@ -16,11 +16,11 @@
 ; General Configuration
 ; ------------------------------------------------------------------------------
 !define APP_NAME "Phide"
-!define APP_VERSION "2026.f-c"
+!define APP_VERSION "2026.g"
 
 Name "${APP_NAME} ${APP_VERSION}"
 BrandingText "${APP_NAME} ${APP_VERSION}"
-OutFile "output\phide-Setup-x64f-c.exe"
+OutFile "output\phide-Setup-x64g.exe"
 InstallDir "$PROGRAMFILES64\phide"
 InstallDirRegKey HKLM "Software\phide" "InstallDir"
 RequestExecutionLevel admin

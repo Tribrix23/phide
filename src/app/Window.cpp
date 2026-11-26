@@ -8568,9 +8568,16 @@ void Window::CommitAutocompleteSelection() {
         }
 
         if (hasClosingAngle) {
-            // Already typed '</' (closing tag): Complete with 'tag>' ONLY (prevents '<//main>')
-            std::wstring closePart = item->label + L">";
+            // Already typed '</' (closing tag): Complete with 'tag>' ONLY (avoid duplicate '>' if already present after cursor)
+            auto curPosClose = pDoc->buffer.GetCursor();
+            const auto& curLineClose = pDoc->buffer.GetLine(curPosClose.line);
+            bool hasTrailingGt = (curPosClose.col < curLineClose.length() && curLineClose[curPosClose.col] == L'>');
+            std::wstring closePart = hasTrailingGt ? item->label : (item->label + L">");
             for (wchar_t c : closePart) pDoc->buffer.InsertChar(c);
+            if (hasTrailingGt) {
+                auto endP = pDoc->buffer.GetCursor();
+                pDoc->buffer.SetCursor(endP.line, endP.col + 1);
+            }
         } else if (hasLeadingAngle) {
             // Already has '<'. Complete after '<'
             auto curPos = pDoc->buffer.GetCursor();
@@ -21785,7 +21792,7 @@ bool Window::HandlePopupMenuClick(POINT clientPt) {
                         break;
                     case ui::MenuActionId::HelpAbout:
                         MessageBoxW(m_hwnd,
-                            L"Phide - Web Development IDE\nVersion 2026.f-c (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
+                            L"Phide - Web Development IDE\nVersion 2026.g (Direct2D Native Desktop)\n\nFast, lightweight, native C++ desktop IDE for Web & PHP development.\n\nAuthor: John David Laniohan Perez\nEmail: john12david12perez@gmail.com",
                             L"About Phide - Web Development IDE",
                             MB_OK | MB_ICONINFORMATION);
                         break;
@@ -34581,6 +34588,12 @@ static std::wstring DetectLspLanguageId(const std::wstring& filePath) {
     if (ext == L".tsx") return L"typescriptreact";
     if (ext == L".js" || ext == L".mjs" || ext == L".cjs") return L"javascript";
     if (ext == L".jsx") return L"javascriptreact";
+    if (ext == L".html" || ext == L".htm") return L"html";
+    if (ext == L".css") return L"css";
+    if (ext == L".scss") return L"scss";
+    if (ext == L".less") return L"less";
+    if (ext == L".json" || ext == L".jsonc") return L"json";
+    if (ext == L".yaml" || ext == L".yml") return L"yaml";
     if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".hpp" || ext == L".hh") return L"cpp";
     if (ext == L".c" || ext == L".h") return L"c";
     return L"";
@@ -34713,37 +34726,49 @@ std::vector<editor::IntelliSenseItem> Window::QueryCombinedCompletions(
                     default: return editor::CompletionKind::Function;
                 }
             };
-            std::vector<editor::IntelliSenseItem> merged;
-            merged.reserve(m_cachedLspCompletions.items.size() + items.size());
-            for (const auto& li : m_cachedLspCompletions.items) {
-                if (li.label.empty()) continue;
-                int scoreBoost = 1200;
-                if (!prefixLower.empty()) {
-                    std::wstring lblLower = li.label;
-                    for (auto& c : lblLower) c = static_cast<wchar_t>(towlower(c));
-                    if (lblLower.rfind(prefixLower, 0) == 0) {
-                        scoreBoost = 1300;
-                    } else if (lblLower.find(prefixLower) != std::wstring::npos) {
-                        scoreBoost = 1150;
-                    } else {
-                        continue;
-                    }
+            bool specializedBuiltInContext = false;
+            for (const auto& ex : items) {
+                if (ex.origin == L"css-class" || ex.origin == L"tailwind" || ex.origin == L"html-id" ||
+                    ex.origin == L"path" || ex.origin == L"npm-module" || ex.origin == L"jsx-close") {
+                    specializedBuiltInContext = true;
+                    break;
                 }
-                if (!existingLabels.insert(li.label).second) continue;
-                editor::IntelliSenseItem ci;
-                ci.label = li.label;
-                ci.detail = li.detail.empty() ? L"LSP" : li.detail;
-                ci.insertText = li.insertText.empty() ? li.label : li.insertText;
-                ci.kind = mapLspKind(li.kind);
-                ci.score = scoreBoost;
-                ci.matchLen = prefix.length();
-                ci.origin = L"lsp";
-                merged.push_back(std::move(ci));
             }
-            if (!merged.empty()) {
+            if (!specializedBuiltInContext) {
+                std::vector<editor::IntelliSenseItem> merged;
+                merged.reserve(m_cachedLspCompletions.items.size() + items.size());
                 for (auto& base : items) {
                     merged.push_back(std::move(base));
                 }
+                for (const auto& li : m_cachedLspCompletions.items) {
+                    if (li.label.empty()) continue;
+                    int scoreBoost = 1550;
+                    if (!prefixLower.empty()) {
+                        std::wstring lblLower = li.label;
+                        for (auto& c : lblLower) c = static_cast<wchar_t>(towlower(c));
+                        if (lblLower.rfind(prefixLower, 0) == 0) {
+                            scoreBoost = 1900;
+                        } else if (lblLower.find(prefixLower) != std::wstring::npos) {
+                            scoreBoost = 1250;
+                        } else {
+                            continue;
+                        }
+                    }
+                    if (!existingLabels.insert(li.label).second) continue;
+                    editor::IntelliSenseItem ci;
+                    ci.label = li.label;
+                    ci.detail = li.detail.empty() ? L"LSP" : li.detail;
+                    ci.insertText = li.insertText.empty() ? li.label : li.insertText;
+                    ci.kind = mapLspKind(li.kind);
+                    ci.score = scoreBoost;
+                    ci.matchLen = prefix.length();
+                    ci.origin = L"lsp";
+                    merged.push_back(std::move(ci));
+                }
+                std::stable_sort(merged.begin(), merged.end(), [](const editor::IntelliSenseItem& a, const editor::IntelliSenseItem& b) {
+                    if (a.score != b.score) return a.score > b.score;
+                    return a.label < b.label;
+                });
                 items.swap(merged);
                 if (items.size() > 64) items.resize(64);
             }

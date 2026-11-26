@@ -18,11 +18,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Phide Studio"
             VALUE "FileDescription", "phide - Web Development IDE"
-            VALUE "FileVersion", "2026.f-b"
+            VALUE "FileVersion", "2026.g"
             VALUE "InternalName", "phide.exe"
             VALUE "OriginalFilename", "phide.exe"
             VALUE "ProductName", "phide - Web Development IDE"
-            VALUE "ProductVersion", "2026.f-b"
+            VALUE "ProductVersion", "2026.g"
         END
     END
     BLOCK "VarFileInfo"

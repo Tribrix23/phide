@@ -366,6 +366,14 @@ std::wstring InferServerArgs(const std::wstring& exePath) {
     }
     if (lower.find(L"intelephense") != std::wstring::npos ||
         lower.find(L"pyright") != std::wstring::npos ||
+        lower.find(L"phide-pyright-langserver") != std::wstring::npos ||
+        lower.find(L"phide-ts-langserver") != std::wstring::npos ||
+        lower.find(L"phide-html-langserver") != std::wstring::npos ||
+        lower.find(L"phide-css-langserver") != std::wstring::npos ||
+        lower.find(L"phide-json-langserver") != std::wstring::npos ||
+        lower.find(L"phide-tailwind-langserver") != std::wstring::npos ||
+        lower.find(L"phide-eslint-langserver") != std::wstring::npos ||
+        lower.find(L"phide-yaml-langserver") != std::wstring::npos ||
         lower.find(L"typescript-language-server") != std::wstring::npos ||
         lower.find(L"vscode-html-language-server") != std::wstring::npos ||
         lower.find(L"vscode-css-language-server") != std::wstring::npos ||
@@ -688,8 +696,16 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
     }
 
     std::vector<std::wstring> extraDirs;
+    wchar_t modulePathBuf[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, modulePathBuf, MAX_PATH) > 0) {
+        std::filesystem::path exeDir = std::filesystem::path(modulePathBuf).parent_path();
+        extraDirs.push_back((exeDir / L"assets" / L"lsp" / L"bin").wstring());
+        extraDirs.push_back((exeDir.parent_path() / L"assets" / L"lsp" / L"bin").wstring());
+    }
+    extraDirs.push_back(L"assets\\lsp\\bin");
     if (!workspaceRoot.empty()) {
         std::filesystem::path ws(workspaceRoot);
+        extraDirs.push_back((ws / L"assets" / L"lsp" / L"bin").wstring());
         extraDirs.push_back((ws / L"vendor" / L"bin").wstring());
         extraDirs.push_back((ws / L"node_modules" / L".bin").wstring());
         extraDirs.push_back((ws / L".venv" / L"Scripts").wstring());
@@ -744,6 +760,7 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
             candidates = {
                 { L"pyright-langserver.cmd", L"--stdio" },
                 { L"pyright-langserver.exe", L"--stdio" },
+                { L"phide-pyright-langserver.cmd", L"--stdio" },
                 { L"pylsp.exe", L"" },
                 { L"pylsp", L"" }
             };
@@ -754,23 +771,32 @@ bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const st
             };
         } else if (lang == L"typescript" || lang == L"javascript") {
             candidates = {
+                { L"phide-ts-langserver.cmd", L"--stdio" },
                 { L"typescript-language-server.cmd", L"--stdio" },
                 { L"typescript-language-server.exe", L"--stdio" }
             };
         } else if (lang == L"html") {
             candidates = {
+                { L"phide-html-langserver.cmd", L"--stdio" },
                 { L"vscode-html-language-server.cmd", L"--stdio" },
                 { L"vscode-html-language-server.exe", L"--stdio" }
             };
         } else if (lang == L"css" || lang == L"scss" || lang == L"less") {
             candidates = {
+                { L"phide-css-langserver.cmd", L"--stdio" },
                 { L"vscode-css-language-server.cmd", L"--stdio" },
                 { L"vscode-css-language-server.exe", L"--stdio" }
             };
         } else if (lang == L"json") {
             candidates = {
+                { L"phide-json-langserver.cmd", L"--stdio" },
                 { L"vscode-json-language-server.cmd", L"--stdio" },
                 { L"vscode-json-language-server.exe", L"--stdio" }
+            };
+        } else if (lang == L"yaml") {
+            candidates = {
+                { L"phide-yaml-langserver.cmd", L"--stdio" },
+                { L"yaml-language-server.cmd", L"--stdio" }
             };
         } else {
             return false;
@@ -954,7 +980,7 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
         m_semanticTokenTypes.clear();
     }
     std::string initResp;
-    if (!SendRequestAndWait("initialize", initParams.str(), initResp, 1800)) {
+    if (!SendRequestAndWait("initialize", initParams.str(), initResp, 3000)) {
         PHIDE_LOG_ERROR(Lsp, L"LSP initialize handshake timed out or failed for: " + commandLine);
         Shutdown();
         return false;
@@ -1486,7 +1512,7 @@ std::vector<CompletionItem> LspClient::RequestCompletions(const std::wstring& fi
            << "},\"position\":{\"line\":" << line << ",\"character\":" << col << "}}";
 
     std::string respJson;
-    if (!SendRequestAndWait("textDocument/completion", params.str(), respJson, 500)) {
+    if (!SendRequestAndWait("textDocument/completion", params.str(), respJson, 1200)) {
         return items;
     }
 
