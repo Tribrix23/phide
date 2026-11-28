@@ -1223,7 +1223,8 @@ struct OpenDocument {
 
     // Viewport Scrolling State
     size_t scrollLine = 0;              ///< Top-most visible visual line index
-    float smoothScrollOffsetPx = 0.0f;  ///< Sub-frame pixel residual animated smoothly to 0 at 60 FPS
+    float smoothScrollOffsetPx = 0.0f;  ///< Sub-frame pixel residual animated smoothly to (-wheelRemainderPx)
+    float wheelRemainderPx = 0.0f;      ///< Sub-line pixel accumulator for precision touchpads & smooth wheels
     size_t lastTotalVisualLines = 0;    ///< Last rendered visual line count (including CodeLens & folding)
     size_t lastMaxScrollLine = 0;       ///< Last rendered max vertical scrollLine bound
     size_t lastVisibleLines = 25;       ///< Last rendered vertical line capacity of viewport
@@ -1334,7 +1335,9 @@ struct OpenDocument {
     std::unordered_map<size_t, CodeLensMeta> codeLensMap; ///< 0-based buffer line -> references/test metadata
 
     // Syntax Error Diagnostics & Hover Popover State
-    std::vector<phide::lsp::Diagnostic> diagnostics;   ///< Diagnostic errors and warnings for this document
+    std::vector<phide::lsp::Diagnostic> diagnostics;      ///< Combined diagnostic errors and warnings for this document
+    std::vector<phide::lsp::Diagnostic> lspDiagnostics;   ///< Cached live LSP publishDiagnostics entries (preserved across revalidations)
+    bool hasReceivedLspDiagnostics = false;               ///< True once LSP has published diagnostics for this document
     std::vector<phide::lsp::Diagnostic> unusedSymbolHints; ///< Cached local unused-import/variable fade hints (severity 4)
     uint64_t cachedUnusedHintsVersion = UINT64_MAX;
     std::wstring cachedUnusedHintsTarget;

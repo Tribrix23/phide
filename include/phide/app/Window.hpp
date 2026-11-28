@@ -1203,6 +1203,8 @@ private:
     void RefreshDatabaseSchemaAsync();
     void SyncActiveSqlSchemaToIntelliSense();
     void RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector<lsp::Diagnostic>& diags) const;
+    void RebuildDocumentDiagnostics(editor::OpenDocument& doc) const;
+    void SyncExternalLinterDiagnosticsToOpenDocs();
     void RefreshEnvDriftDiagnostics();
     void DoSyncEnvKeysToExample();
     std::unordered_set<std::wstring> m_cachedKnownEnvKeys;
@@ -1483,6 +1485,11 @@ private:
     UINT_PTR m_animTimerId     = 1002;
     UINT_PTR m_throttleTimerId = 1003; ///< 50ms timer for throttled code search queries
     UINT_PTR m_gcTimerId       = 1004; ///< 60s periodic idle garbage collection timer
+    UINT_PTR m_scrollTimerId   = 1005; ///< Dedicated high-cadence smooth editor scroll timer (never reset on wheel)
+    bool     m_scrollTimerActive = false;
+    ULONGLONG m_lastScrollAnimUs = 0;
+    ULONGLONG m_lastWheelPaintTickMs = 0;
+    void StartSmoothScrollTimer();
     ULONGLONG m_lastUserInputTick = 0; ///< Last timestamp of user scroll/key/click input
     ULONGLONG m_lastGitAutoFetchTick = 0; ///< Last timestamp of background git.autofetch
 
@@ -1654,12 +1661,13 @@ public:
     };
 
     bool JumpToNextCommentAnnotation();
-    /** @brief Scans rootDir recursively on a background-safe path for BetterComment annotations across closed workspace files. */
+    /** @brief Scans rootDir recursively on a background-safe path for BetterComment annotations (and optional native syntax diagnostics) across closed workspace files. */
     [[nodiscard]] static std::vector<WorkspaceCommentAnnotFile> ScanWorkspaceCommentAnnots(
         const std::wstring& rootDir,
         const std::atomic<bool>* isDestroying = nullptr,
         const std::atomic<uint64_t>* activeGen = nullptr,
-        uint64_t expectedGen = 0);
+        uint64_t expectedGen = 0,
+        std::vector<editor::ProblemEntry>* outSyntaxProblems = nullptr);
     /** @brief Collects all comment annotations across open tabs and closed scanned workspace files. */
     [[nodiscard]] std::vector<CommentAnnotDropdownItem> CollectAllCommentAnnotations(size_t* outDistinctFiles = nullptr) const;
     /** @brief Fast zero-entry-allocation aggregator for Status Bar pill counts & tooltip composition. */
@@ -1697,9 +1705,11 @@ private:
     float m_commentAnnotsDropdownMaxScrollY = 0.0f;
     D2D1_RECT_F m_rcCommentAnnotsDropdown{};
     std::vector<WorkspaceCommentAnnotFile> m_wsCommentAnnots;
+    std::vector<editor::ProblemEntry> m_wsSyntaxProblems;
     std::atomic<uint64_t> m_wsCommentScanGen{ 0 };
     std::mutex m_wsCommentMutex;
     std::vector<WorkspaceCommentAnnotFile> m_pendingWsCommentAnnots;
+    std::vector<editor::ProblemEntry> m_pendingWsSyntaxProblems;
     uint64_t m_pendingWsCommentGen = 0;
     bool m_hasPendingWsCommentAnnots = false;
 

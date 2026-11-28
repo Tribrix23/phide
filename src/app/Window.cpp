@@ -614,6 +614,7 @@ Window::~Window() {
     if (m_hwnd) {
         KillTimer(m_hwnd, m_caretTimerId);
         KillTimer(m_hwnd, m_animTimerId);
+        KillTimer(m_hwnd, m_scrollTimerId);
     }
 }
 
@@ -3948,7 +3949,7 @@ void Window::FinalizeOpenedTextDocument(editor::OpenDocument& doc, const std::ws
             doc.lastSyncedGitHeadHash = m_drawer.GetGitHeadHash();
             doc.lastSyncedGitStatus = gitStat;
         }
-        RunExtraDocDiagnostics(doc, doc.diagnostics);
+        RebuildDocumentDiagnostics(doc);
         CalculateImportCosts(doc);
         RefreshMergeConflicts(doc);
     }
@@ -6442,6 +6443,7 @@ void Window::DoOpenFolderFromPath(const std::wstring& path) {
         m_drawer.BeginAsyncOpenFolder(path);
         m_editor.GetGraphView().SetLoading(true);
         m_wsCommentAnnots.clear();
+        m_wsSyntaxProblems.clear();
         m_cachedWorkspaceDir = path;
         m_cachedProjectRuntimeId.clear();
         SetTimer(postHwnd, m_animTimerId, 16, nullptr);
@@ -8145,8 +8147,9 @@ void Window::DoRevertFile() {
         std::error_code writeEc;
         pDoc->lastDiskWriteTime = std::filesystem::last_write_time(pDoc->filePath, writeEc);
         pDoc->hasLastDiskWriteTime = !writeEc;
-        pDoc->diagnostics = editor::SyntaxValidator::Validate(pDoc->filePath, pDoc->buffer);
-        RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
+        pDoc->lspDiagnostics.clear();
+        pDoc->hasReceivedLspDiagnostics = false;
+        RebuildDocumentDiagnostics(*pDoc);
         if (pDoc->isDiffView) ComputeDiffHunks(*pDoc);
         if (m_lsp.IsRunning()) {
             m_lsp.NotifyDidChange(pDoc->filePath, pDoc->originalDiskText);
@@ -8253,6 +8256,9 @@ void Window::SyncDocumentBuffers(editor::OpenDocument* sourceDoc) {
                         doc.hasLastDiskWriteTime = sourceDoc->hasLastDiskWriteTime;
                         doc.hasExternalDiskConflict = false;
                     }
+                    doc.lspDiagnostics = sourceDoc->lspDiagnostics;
+                    doc.hasReceivedLspDiagnostics = sourceDoc->hasReceivedLspDiagnostics;
+                    doc.diagnostics = sourceDoc->diagnostics;
                     if (doc.isDiffView) {
                         ComputeDiffHunks(doc);
                     }
@@ -8324,17 +8330,33 @@ void Window::UpdateDrawerDirtyFiles() {
 
 void Window::UpdateDrawerErrorFiles() {
     std::map<std::wstring, size_t> errorFiles;
+    std::map<std::wstring, size_t> warningFiles;
+    auto normErrKey = [](std::wstring p) {
+        for (auto& c : p) {
+            if (c == L'/') c = L'\\';
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        return p;
+    };
+    std::unordered_set<std::wstring> openNormKeys;
     auto collectErrors = [&](const std::vector<editor::EditorGroup>& groups) {
         for (const auto& group : groups) {
             for (const auto& doc : group.docs) {
-                if (!doc.diagnostics.empty() && !doc.isSpecialView) {
-                    size_t actionableCount = 0;
-                    for (const auto& d : doc.diagnostics) {
-                        if (!d.isUnnecessary && d.severity <= 2) ++actionableCount;
-                    }
+                if (!doc.isSpecialView) {
                     std::wstring key = !doc.filePath.empty() ? doc.filePath : doc.fileName;
-                    if (!key.empty() && actionableCount > 0) {
-                        errorFiles[key] = actionableCount;
+                    if (!key.empty()) openNormKeys.insert(normErrKey(key));
+                    if (!doc.diagnostics.empty()) {
+                        size_t errCount = 0;
+                        size_t warnCount = 0;
+                        for (const auto& d : doc.diagnostics) {
+                            if (d.isUnnecessary) continue;
+                            if (d.severity == 1) ++errCount;
+                            else if (d.severity == 2) ++warnCount;
+                        }
+                        if (!key.empty()) {
+                            if (errCount > 0) errorFiles[key] = errCount;
+                            else if (warnCount > 0) warningFiles[key] = warnCount;
+                        }
                     }
                 }
             }
@@ -8346,7 +8368,42 @@ void Window::UpdateDrawerErrorFiles() {
             collectErrors(fw->editorGroups);
         }
     }
-    m_drawer.SetErrorFiles(errorFiles);
+    // Include closed-file workspace syntax & external linter / tsc errors & warnings too
+    struct ClosedCounts {
+        std::wstring path;
+        size_t err = 0;
+        size_t warn = 0;
+        std::vector<std::pair<size_t, std::wstring>> seenLineMsgs;
+    };
+    std::unordered_map<std::wstring, ClosedCounts> closedLinterCounts;
+    auto addClosedProblem = [&](const editor::ProblemEntry& pe) {
+        if (pe.filePath.empty() || pe.severity > 2) return;
+        std::wstring nk = normErrKey(pe.filePath);
+        if (openNormKeys.count(nk) > 0) return;
+        auto& slot = closedLinterCounts[nk];
+        if (slot.path.empty()) slot.path = pe.filePath;
+        for (const auto& prev : slot.seenLineMsgs) {
+            if (prev.first == pe.line && prev.second == pe.message) return;
+        }
+        slot.seenLineMsgs.emplace_back(pe.line, pe.message);
+        if (pe.severity == 1) ++slot.err;
+        else ++slot.warn;
+    };
+    for (const auto& pe : m_wsSyntaxProblems) {
+        addClosedProblem(pe);
+    }
+    for (const auto& [fk, list] : m_externalLinterProblems) {
+        (void)fk;
+        for (const auto& pe : list) {
+            addClosedProblem(pe);
+        }
+    }
+    for (const auto& [nk, c] : closedLinterCounts) {
+        (void)nk;
+        if (c.err > 0) errorFiles[c.path] = c.err;
+        else if (c.warn > 0) warningFiles[c.path] = c.warn;
+    }
+    m_drawer.SetErrorFiles(errorFiles, warningFiles);
     RebuildProblemsCache();
 }
 
@@ -8855,8 +8912,6 @@ void Window::FlushPendingAutoSaves() {
                             OnDocumentDiskSaved(doc);
                             anySaved = true;
                             SyncRemoteDocumentIfNeeded(doc);
-                            ClearStaleExternalLinterProblemsForFile(doc.filePath);
-                            ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters, true);
                         } else {
                             anyStillDirty = true;
                         }
@@ -9810,6 +9865,20 @@ void Window::DoShowSourceControl() {
     InvalidateRect(m_hwnd, nullptr, FALSE);
 }
 
+void Window::StartSmoothScrollTimer() {
+    if (m_scrollTimerActive) return;
+    HWND mainHwnd = GetMainPostHwnd();
+    if (!mainHwnd) return;
+    LARGE_INTEGER qpcFreq{}, qpcNow{};
+    QueryPerformanceFrequency(&qpcFreq);
+    QueryPerformanceCounter(&qpcNow);
+    m_lastScrollAnimUs = (qpcFreq.QuadPart > 0)
+        ? static_cast<ULONGLONG>((qpcNow.QuadPart * 1000000ULL) / qpcFreq.QuadPart)
+        : (GetTickCount64() * 1000ULL);
+    m_scrollTimerActive = true;
+    SetTimer(mainHwnd, m_scrollTimerId, 8, nullptr);
+}
+
 void Window::AnimateTerminalOpen() {
     m_bottomProblemsActive = false;
     if (m_terminal.GetDockPosition() == 3) {
@@ -9976,7 +10045,8 @@ void Window::UpdateExecutionButtonStates() {
     bool hasLaunchCfgs = false;
     if (!wsRootDbg.empty()) {
         const ULONGLONG nowTick = GetTickCount64();
-        if (m_cachedLaunchRoot == wsRootDbg && m_lastLaunchCheckTick != 0 && (nowTick - m_lastLaunchCheckTick) < 2000ULL) {
+        if (m_cachedLaunchRoot == wsRootDbg && m_lastLaunchCheckTick != 0 &&
+            (m_scrollTimerActive || (nowTick - m_lastLaunchCheckTick) < 2000ULL)) {
             hasLaunchCfgs = m_cachedHasLaunchCfgs;
         } else {
             hasLaunchCfgs = !phide::dev::LoadWorkspaceLaunchConfigs(wsRootDbg, L"").empty();
@@ -12507,7 +12577,9 @@ void Window::FinishDiscardOrRestore(const std::wstring& targetPath, const std::w
                     if (doc.buffer.GetCursor().line >= doc.buffer.GetLineCount()) {
                         doc.buffer.SetCursor(doc.buffer.GetLineCount() > 0 ? doc.buffer.GetLineCount() - 1 : 0, 0);
                     }
-                    doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                    doc.lspDiagnostics.clear();
+                    doc.hasReceivedLspDiagnostics = false;
+                    RebuildDocumentDiagnostics(doc);
                     if (doc.isDiffView) {
                         ComputeDiffHunks(doc);
                     }
@@ -17130,19 +17202,27 @@ std::wstring FormatAnnotDisplayPath(const std::wstring& fullPath, const std::wst
     }
 }
 
-/// Returns true for source/markup/config extensions scanned for workspace BetterComment annotations.
-bool IsWorkspaceCommentScanExtension(const std::wstring& extLower) {
+/// Returns true for source/markup/config extensions or dotfiles scanned for workspace BetterComment annotations.
+bool IsWorkspaceCommentScanFile(const std::filesystem::path& filePath, const std::wstring& extLower) {
     static const wchar_t* const kExts[] = {
         L".php", L".phtml", L".html", L".htm", L".js", L".jsx", L".mjs", L".cjs",
         L".ts", L".tsx", L".css", L".scss", L".sass", L".less", L".py", L".pyw",
         L".cpp", L".cc", L".cxx", L".c", L".h", L".hpp", L".hxx", L".cs", L".java",
         L".go", L".rs", L".rb", L".sql", L".sh", L".bash", L".zsh", L".ps1",
-        L".bat", L".cmd", L".yaml", L".yml", L".toml", L".ini", L".xml", L".svg",
-        L".vue", L".svelte", L".astro", L".lua", L".kt", L".swift", L".dart", L".r",
-        L".md", L".mdx"
+        L".bat", L".cmd", L".yaml", L".yml", L".toml", L".ini", L".conf", L".cfg",
+        L".xml", L".svg", L".vue", L".svelte", L".astro", L".lua", L".kt",
+        L".swift", L".dart", L".r", L".md", L".mdx", L".txt", L".jsonc",
+        L".env", L".gitignore", L".gitattributes", L".dockerignore", L".npmignore", L".editorconfig"
     };
     for (const wchar_t* e : kExts) {
         if (extLower == e) return true;
+    }
+    std::wstring fname = filePath.filename().wstring();
+    for (auto& c : fname) c = static_cast<wchar_t>(towlower(c));
+    if (fname == L"dockerfile" || fname == L"makefile" || fname == L".gitignore" ||
+        fname == L".gitattributes" || fname == L".dockerignore" || fname == L".npmignore" ||
+        fname == L".editorconfig" || fname == L".env" || fname.rfind(L".env.", 0) == 0) {
+        return true;
     }
     return false;
 }
@@ -17150,8 +17230,8 @@ bool IsWorkspaceCommentScanExtension(const std::wstring& extLower) {
 /// Returns true for directories skipped during workspace comment scanning (build outputs / vendored deps).
 bool ShouldSkipCommentScanDir(const std::wstring& dirNameLower) {
     static const wchar_t* const kSkip[] = {
-        L".git", L".hg", L".svn", L"node_modules", L"vendor", L".phide",
-        L".vs", L".vscode", L".idea", L"build", L"dist", L"out", L"target",
+        L".git", L".hg", L".svn", L"node_modules", L"vendor", L"third_party", L".phide",
+        L".vs", L".vscode", L".idea", L"build", L"dist", L"out", L"target", L"obj",
         L"x64", L"x86", L"__pycache__", L"coverage", L".next", L".nuxt", L".cache",
         L".venv", L"venv", L"env", L"site-packages", L".tox",
         L".pytest_cache", L".mypy_cache", L".ruff_cache",
@@ -17210,14 +17290,46 @@ void AccumulateSummaryToStats(const ui::EditorCanvas::DocCommentSummary& s,
     stats.questionCount += s.questionCount;
 }
 
+/// Returns true for user source/config files eligible for lightweight background native syntax validation.
+bool IsWorkspaceSyntaxValidateFile(const std::filesystem::path& filePath, const std::wstring& extLower) {
+    static const wchar_t* const kValidateExts[] = {
+        L".js", L".jsx", L".mjs", L".cjs", L".ts", L".tsx", L".mts", L".cts",
+        L".php", L".py", L".pyw", L".html", L".htm", L".css", L".scss", L".less",
+        L".json", L".jsonc", L".eslintrc", L".prettierrc", L".yaml", L".yml",
+        L".cpp", L".cc", L".cxx", L".c", L".h", L".hpp", L".hxx", L".cs", L".java", L".rs", L".go"
+    };
+    bool extMatch = false;
+    for (const wchar_t* e : kValidateExts) {
+        if (extLower == e) {
+            extMatch = true;
+            break;
+        }
+    }
+    if (!extMatch) return false;
+
+    std::wstring fname = filePath.filename().wstring();
+    for (auto& c : fname) c = static_cast<wchar_t>(towlower(c));
+
+    // Skip ambient declaration files, minified bundles, and large dependency lockfiles
+    if (fname.ends_with(L".d.ts") || fname.ends_with(L".d.mts") || fname.ends_with(L".d.cts") ||
+        fname.ends_with(L".min.js") || fname.ends_with(L".min.css") || fname.ends_with(L".bundle.js") ||
+        fname == L"package-lock.json" || fname == L"composer.lock" ||
+        fname == L"pnpm-lock.yaml" || fname == L"yarn.lock") {
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnots(
     const std::wstring& rootDir,
     const std::atomic<bool>* isDestroying,
     const std::atomic<uint64_t>* activeGen,
-    uint64_t expectedGen) {
+    uint64_t expectedGen,
+    std::vector<editor::ProblemEntry>* outSyntaxProblems) {
     std::vector<WorkspaceCommentAnnotFile> out;
+    if (outSyntaxProblems) outSyntaxProblems->clear();
     if (rootDir.empty()) return out;
 
     std::error_code ec;
@@ -17227,15 +17339,28 @@ std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnot
 
     constexpr size_t kMaxScannedFiles = 2000;
     constexpr uintmax_t kMaxFileBytes = 512 * 1024;
+    constexpr size_t kMaxSyntaxValidatedFiles = 1200;
+    constexpr uintmax_t kMaxSyntaxFileBytes = 256 * 1024;
+    constexpr size_t kMaxSyntaxLines = 5000;
+    constexpr size_t kMaxLineLengthForSyntax = 2000;
+    constexpr size_t kMaxProblemsPerFile = 25;
+    constexpr size_t kMaxTotalProblems = 500;
     size_t scannedFiles = 0;
+    size_t syntaxValidatedFiles = 0;
 
     std::filesystem::recursive_directory_iterator it(
         rootDir, std::filesystem::directory_options::skip_permission_denied, ec);
     const std::filesystem::recursive_directory_iterator endIt;
 
     while (!ec && it != endIt) {
-        if (isDestroying && isDestroying->load()) return {};
-        if (activeGen && activeGen->load() != expectedGen) return {};
+        if (isDestroying && isDestroying->load()) {
+            if (outSyntaxProblems) outSyntaxProblems->clear();
+            return {};
+        }
+        if (activeGen && activeGen->load() != expectedGen) {
+            if (outSyntaxProblems) outSyntaxProblems->clear();
+            return {};
+        }
         if (scannedFiles >= kMaxScannedFiles) break;
 
         const auto& entry = *it;
@@ -17260,7 +17385,12 @@ std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnot
 
         std::wstring ext = entry.path().extension().wstring();
         for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-        if (!IsWorkspaceCommentScanExtension(ext)) {
+        const bool wantCommentScan = IsWorkspaceCommentScanFile(entry.path(), ext);
+        const bool wantSyntaxScan = (outSyntaxProblems != nullptr &&
+                                     syntaxValidatedFiles < kMaxSyntaxValidatedFiles &&
+                                     outSyntaxProblems->size() < kMaxTotalProblems &&
+                                     IsWorkspaceSyntaxValidateFile(entry.path(), ext));
+        if (!wantCommentScan && !wantSyntaxScan) {
             it.increment(ec);
             continue;
         }
@@ -17276,13 +17406,61 @@ std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnot
         const std::wstring fullPath = entry.path().wstring();
         editor::Buffer buf;
         if (buf.LoadFromFile(fullPath)) {
-            auto summary = ui::EditorCanvas::ComputeDocCommentSummary(buf, ext);
-            if (!summary.entries.empty()) {
-                WorkspaceCommentAnnotFile rec;
-                rec.filePath = fullPath;
-                rec.displayPath = FormatAnnotDisplayPath(fullPath, rootDir);
-                rec.summary = std::move(summary);
-                out.push_back(std::move(rec));
+            if (wantCommentScan) {
+                auto summary = ui::EditorCanvas::ComputeDocCommentSummary(buf, ext);
+                if (!summary.entries.empty()) {
+                    WorkspaceCommentAnnotFile rec;
+                    rec.filePath = fullPath;
+                    rec.displayPath = FormatAnnotDisplayPath(fullPath, rootDir);
+                    rec.summary = std::move(summary);
+                    out.push_back(std::move(rec));
+                }
+            }
+
+            if (wantSyntaxScan && fsz <= kMaxSyntaxFileBytes && buf.GetLineCount() <= kMaxSyntaxLines) {
+                bool looksMinified = false;
+                const size_t sampleLines = (std::min<size_t>)(buf.GetLineCount(), 20);
+                for (size_t sl = 0; sl < sampleLines; ++sl) {
+                    if (buf.GetLine(sl).size() > kMaxLineLengthForSyntax) {
+                        looksMinified = true;
+                        break;
+                    }
+                }
+                if (!looksMinified) {
+                    ++syntaxValidatedFiles;
+                    // Run pure in-memory C++ syntax/lint analysis only (no external CLI child processes)
+                    auto diags = editor::SyntaxValidator::Validate(fullPath, buf, true, true, true, true, false);
+                    if (!diags.empty()) {
+                        std::wstring disp;
+                        size_t addedForFile = 0;
+                        for (const auto& diag : diags) {
+                            if (diag.isUnnecessary || diag.severity > 2) continue;
+                            if (addedForFile >= kMaxProblemsPerFile || outSyntaxProblems->size() >= kMaxTotalProblems) {
+                                break;
+                            }
+                            if (disp.empty()) {
+                                disp = FormatAnnotDisplayPath(fullPath, rootDir);
+                                for (auto& ch : disp) {
+                                    if (ch == L'/') ch = L'\\';
+                                }
+                            }
+                            editor::ProblemEntry pe;
+                            pe.filePath = fullPath;
+                            pe.displayPath = disp;
+                            pe.line = diag.line;
+                            pe.col = diag.col;
+                            pe.length = (std::max<size_t>)(1, diag.length);
+                            pe.severity = (diag.severity == 1) ? 1 : 2;
+                            pe.message = diag.message;
+                            pe.source = !diag.source.empty()
+                                ? diag.source
+                                : (!diag.code.empty() ? L"LSP" : L"Syntax");
+                            pe.code = diag.code;
+                            outSyntaxProblems->push_back(std::move(pe));
+                            ++addedForFile;
+                        }
+                    }
+                }
             }
         }
         it.increment(ec);
@@ -17291,28 +17469,48 @@ std::vector<Window::WorkspaceCommentAnnotFile> Window::ScanWorkspaceCommentAnnot
     std::sort(out.begin(), out.end(), [](const WorkspaceCommentAnnotFile& a, const WorkspaceCommentAnnotFile& b) {
         return _wcsicmp(a.displayPath.c_str(), b.displayPath.c_str()) < 0;
     });
+    if (outSyntaxProblems) {
+        std::sort(outSyntaxProblems->begin(), outSyntaxProblems->end(), [](const editor::ProblemEntry& a, const editor::ProblemEntry& b) {
+            int cmp = _wcsicmp(a.displayPath.c_str(), b.displayPath.c_str());
+            if (cmp != 0) return cmp < 0;
+            if (a.line != b.line) return a.line < b.line;
+            return a.col < b.col;
+        });
+    }
     return out;
 }
 
 void Window::RefreshWorkspaceCommentAnnotsAsync() {
     const uint64_t gen = ++m_wsCommentScanGen;
-    m_wsCommentAnnots.clear();
 
     std::wstring wsRoot = m_drawer.HasOpenFolder() ? m_drawer.GetOpenFolderPath() : L"";
     if (wsRoot.empty() || !m_hwnd || m_isDestroying.load()) {
-        InvalidateRect(m_hwnd, nullptr, FALSE);
+        m_wsCommentAnnots.clear();
+        m_wsSyntaxProblems.clear();
+        UpdateDrawerErrorFiles();
+        if (m_hwnd) InvalidateRect(m_hwnd, nullptr, FALSE);
         return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_bgWorkersMutex);
+        if (m_isDestroying.load()) return;
+        ++m_activeBgWorkers;
     }
 
     HWND postHwnd = GetMainPostHwnd();
     std::thread([this, wsRoot, gen, postHwnd]() {
+        BgWorkerGuard workerGuard{ m_bgWorkersMutex, m_bgWorkersCv, m_activeBgWorkers };
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         if (m_isDestroying.load() || m_wsCommentScanGen.load() != gen) return;
-        auto scanned = ScanWorkspaceCommentAnnots(wsRoot, &m_isDestroying, &m_wsCommentScanGen, gen);
+        std::vector<editor::ProblemEntry> scannedProblems;
+        auto scanned = ScanWorkspaceCommentAnnots(wsRoot, &m_isDestroying, &m_wsCommentScanGen, gen, &scannedProblems);
         if (m_isDestroying.load() || m_wsCommentScanGen.load() != gen) return;
         {
             std::lock_guard<std::mutex> lk(m_wsCommentMutex);
             if (m_wsCommentScanGen.load() == gen) {
                 m_pendingWsCommentAnnots = std::move(scanned);
+                m_pendingWsSyntaxProblems = std::move(scannedProblems);
                 m_pendingWsCommentGen = gen;
                 m_hasPendingWsCommentAnnots = true;
             }
@@ -17325,12 +17523,14 @@ void Window::RefreshWorkspaceCommentAnnotsAsync() {
 
 void Window::ApplyPendingWorkspaceCommentAnnots() {
     std::vector<WorkspaceCommentAnnotFile> ready;
+    std::vector<editor::ProblemEntry> readyProblems;
     uint64_t readyGen = 0;
     bool hasReady = false;
     {
         std::lock_guard<std::mutex> lk(m_wsCommentMutex);
         if (m_hasPendingWsCommentAnnots) {
             ready.swap(m_pendingWsCommentAnnots);
+            readyProblems.swap(m_pendingWsSyntaxProblems);
             readyGen = m_pendingWsCommentGen;
             m_hasPendingWsCommentAnnots = false;
             hasReady = true;
@@ -17339,6 +17539,8 @@ void Window::ApplyPendingWorkspaceCommentAnnots() {
     if (!hasReady || readyGen != m_wsCommentScanGen.load()) return;
 
     m_wsCommentAnnots = std::move(ready);
+    m_wsSyntaxProblems = std::move(readyProblems);
+    UpdateDrawerErrorFiles();
     if (m_showCommentAnnotsDropdown) {
         // Live-refresh the open dropdown when workspace scan finishes
         m_showCommentAnnotsDropdown = false;
@@ -17855,8 +18057,8 @@ void Window::UpdateCachedGitInfo() {
 
     std::wstring openDir = m_drawer.GetOpenFolderPath();
     const ULONGLONG nowTick = GetTickCount64();
-    if (m_isGitCached && m_cachedGitOpenDir == openDir && m_lastGitStatCheckTick != 0 &&
-        (nowTick - m_lastGitStatCheckTick) < 1500ULL) {
+    if (m_cachedGitOpenDir == openDir && m_lastGitStatCheckTick != 0 &&
+        (m_scrollTimerActive || (nowTick - m_lastGitStatCheckTick) < 1500ULL)) {
         return;
     }
     m_cachedGitOpenDir = openDir;
@@ -20418,6 +20620,7 @@ void Window::HandleMouseMove(POINT clientPt, WPARAM wParam) {
             if (static_cast<size_t>(newScroll) > maxS) newScroll = static_cast<long long>(maxS);
             pActiveDoc->scrollLine = static_cast<size_t>(newScroll);
             pActiveDoc->smoothScrollOffsetPx = 0.0f;
+            pActiveDoc->wheelRemainderPx = 0.0f;
             InvalidateRect(m_hwnd, nullptr, FALSE);
             return;
         }
@@ -23772,6 +23975,7 @@ void Window::HandleLButtonDown(POINT clientPt) {
                     bool hitThumb = false;
                     if (m_editor.HitTestScrollbar(clientPt, doc, hitThumb)) {
                         doc.smoothScrollOffsetPx = 0.0f;
+                        doc.wheelRemainderPx = 0.0f;
                         if (hitThumb) {
                             doc.isDraggingScrollbar = true;
                             doc.dragStartY = static_cast<float>(clientPt.y);
@@ -24196,7 +24400,9 @@ void Window::HandleLButtonDown(POINT clientPt) {
                                 std::error_code writeEc;
                                 doc.lastDiskWriteTime = std::filesystem::last_write_time(doc.filePath, writeEc);
                                 doc.hasLastDiskWriteTime = !writeEc;
-                                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
+                                doc.lspDiagnostics.clear();
+                                doc.hasReceivedLspDiagnostics = false;
+                                RebuildDocumentDiagnostics(doc);
                                 if (doc.isDiffView) ComputeDiffHunks(doc);
                                 if (m_lsp.IsRunning()) {
                                     m_lsp.NotifyDidChange(doc.filePath, doc.originalDiskText);
@@ -27478,7 +27684,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     }
                     int totalWheelDelta = delta;
                     MSG nextWheel{};
-                    for (int coalesce = 0; coalesce < 8 && PeekMessageW(&nextWheel, m_hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE); ++coalesce) {
+                    for (int coalesce = 0; coalesce < 16 && PeekMessageW(&nextWheel, m_hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE); ++coalesce) {
                         if (LOWORD(nextWheel.wParam) != LOWORD(wParam)) break;
                         POINT nextPt = { GET_X_LPARAM(nextWheel.lParam), GET_Y_LPARAM(nextWheel.lParam) };
                         ScreenToClient(m_hwnd, &nextPt);
@@ -27486,41 +27692,68 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         PeekMessageW(&nextWheel, m_hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE);
                         totalWheelDelta += GET_WHEEL_DELTA_WPARAM(nextWheel.wParam);
                     }
-                    int absNotches = (std::max)(1, (std::abs(totalWheelDelta) + WHEEL_DELTA / 2) / WHEEL_DELTA);
-                    size_t linesToScroll = static_cast<size_t>(absNotches) * 3;
-                    const size_t prevScrollLine = pDoc->scrollLine;
-                    if (totalWheelDelta > 0) {
-                        if (pDoc->scrollLine >= linesToScroll) {
-                            pDoc->scrollLine -= linesToScroll;
+
+                    static UINT s_wheelLinesPerNotch = 0;
+                    if (s_wheelLinesPerNotch == 0) {
+                        UINT sysLines = 3;
+                        if (SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &sysLines, 0) && sysLines > 0 && sysLines <= 20) {
+                            s_wheelLinesPerNotch = sysLines;
                         } else {
-                            pDoc->scrollLine = 0;
+                            s_wheelLinesPerNotch = 3;
                         }
-                    } else if (totalWheelDelta < 0) {
-                        const size_t rawLines = pDoc->buffer.GetLineCount();
-                        const size_t maxS = (pDoc->lastTotalVisualLines > 0)
-                            ? pDoc->lastMaxScrollLine
-                            : ((rawLines > 3) ? (rawLines - 3) : 0);
-                        pDoc->scrollLine = (std::min)(maxS, pDoc->scrollLine + linesToScroll);
                     }
-                    // Seed subpixel vertical offset so the viewport eases smoothly to the new scrollLine at 60 FPS.
-                    const ptrdiff_t actualDeltaLines = static_cast<ptrdiff_t>(pDoc->scrollLine) - static_cast<ptrdiff_t>(prevScrollLine);
-                    if (m_config.smoothScrolling && actualDeltaLines != 0) {
-                        const float lineH = m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier));
-                        const float maxOffsetPx = lineH * 14.0f;
-                        pDoc->smoothScrollOffsetPx = (std::clamp)(
-                            pDoc->smoothScrollOffsetPx + static_cast<float>(actualDeltaLines) * lineH,
-                            -maxOffsetPx, maxOffsetPx);
-                        if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
-                    } else if (m_config.smoothScrolling && std::abs(pDoc->smoothScrollOffsetPx) > 0.01f) {
-                        // Ensure any residual smooth scroll offset always eases back to 0 even at top/bottom bounds.
-                        if (HWND animHwnd = GetMainPostHwnd()) SetTimer(animHwnd, m_animTimerId, 16, nullptr);
-                    } else if (!m_config.smoothScrolling) {
-                        pDoc->smoothScrollOffsetPx = 0.0f;
+
+                    const float lineH = (std::max)(1.0f, m_config.ScaleF(std::round(m_config.fontSize * m_config.lineHeightMultiplier)));
+                    const size_t rawLines = pDoc->buffer.GetLineCount();
+                    const size_t maxS = (pDoc->lastTotalVisualLines > 0)
+                        ? pDoc->lastMaxScrollLine
+                        : ((rawLines > 3) ? (rawLines - 3) : 0);
+
+                    const double prevDisplayedTopPx =
+                        static_cast<double>(pDoc->scrollLine) * static_cast<double>(lineH) -
+                        static_cast<double>(pDoc->smoothScrollOffsetPx);
+                    const double prevTargetTopPx =
+                        static_cast<double>(pDoc->scrollLine) * static_cast<double>(lineH) +
+                        static_cast<double>(pDoc->wheelRemainderPx);
+
+                    const double scrollDeltaPx =
+                        -(static_cast<double>(totalWheelDelta) / static_cast<double>(WHEEL_DELTA)) *
+                        static_cast<double>(s_wheelLinesPerNotch) * static_cast<double>(lineH);
+                    const double maxTopPx = static_cast<double>(maxS) * static_cast<double>(lineH);
+                    const double newTargetTopPx = (std::clamp)(prevTargetTopPx + scrollDeltaPx, 0.0, maxTopPx);
+
+                    const long long roundedLine = std::llround(newTargetTopPx / static_cast<double>(lineH));
+                    pDoc->scrollLine = static_cast<size_t>((std::clamp)(roundedLine, 0LL, static_cast<long long>(maxS)));
+                    pDoc->wheelRemainderPx = static_cast<float>(
+                        newTargetTopPx - static_cast<double>(pDoc->scrollLine) * static_cast<double>(lineH));
+
+                    const float targetResidualPx = -pDoc->wheelRemainderPx;
+                    if (m_config.smoothScrolling) {
+                        const float maxOffsetPx = lineH * 18.0f;
+                        const float rawOffsetPx = static_cast<float>(
+                            static_cast<double>(pDoc->scrollLine) * static_cast<double>(lineH) - prevDisplayedTopPx);
+                        // Precision touchpad micro-deltas (< half notch) respond tightly; mouse wheel notches glide smoothly
+                        const float immediateRetention = (std::abs(totalWheelDelta) < (WHEEL_DELTA / 2)) ? 0.35f : 0.72f;
+                        const float nextOffsetPx = targetResidualPx + (rawOffsetPx - targetResidualPx) * immediateRetention;
+                        pDoc->smoothScrollOffsetPx = (std::clamp)(nextOffsetPx, -maxOffsetPx, maxOffsetPx);
+                        if (std::abs(pDoc->smoothScrollOffsetPx - targetResidualPx) > 0.35f) {
+                            StartSmoothScrollTimer();
+                        } else {
+                            pDoc->smoothScrollOffsetPx = targetResidualPx;
+                        }
+                    } else {
+                        pDoc->smoothScrollOffsetPx = targetResidualPx;
                     }
+
                     if (IsMarkdownFile(pDoc->filePath)) {
                         SyncMarkdownCompanionScroll(*pDoc, false);
                     }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
+                    const ULONGLONG nowPaintTick = GetTickCount64();
+                    if (nowPaintTick - m_lastWheelPaintTickMs >= 10ULL) {
+                        m_lastWheelPaintTickMs = nowPaintTick;
+                        UpdateWindow(m_hwnd);
+                    }
                     return 0;
                 }
             }
@@ -30618,12 +30851,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                             std::erase_if(pDoc->diagnostics, [](const lsp::Diagnostic& d) {
                                 return d.message.find(L"Runtime:") != std::wstring::npos;
                             });
-                            pDoc->diagnostics = editor::SyntaxValidator::Validate(
-                                pDoc->filePath.empty() ? pDoc->fileName : pDoc->filePath, pDoc->buffer);
-                            RunExtraDocDiagnostics(*pDoc, pDoc->diagnostics);
+                            RebuildDocumentDiagnostics(*pDoc);
                             CalculateImportCosts(*pDoc);
-                            if (!pDoc->filePath.empty() && m_lsp.IsRunningForFile(pDoc->filePath)) {
-                                NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
+                            if (!pDoc->filePath.empty()) {
+                                if (m_lsp.IsRunningForFile(pDoc->filePath)) {
+                                    NotifyLspDidChangeAsync(pDoc->filePath, pDoc->buffer.GetText());
+                                } else {
+                                    StartLspForDocumentAsync(pDoc->filePath, pDoc->buffer.GetText());
+                                }
                             }
                             ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters);
                             if (pDoc == activeDoc) {
@@ -30656,8 +30891,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                                 OnDocumentDiskSaved(*pDoc);
                                 SyncDocumentBuffers(pDoc);
                                 SyncRemoteDocumentIfNeeded(*pDoc);
-                                ClearStaleExternalLinterProblemsForFile(pDoc->filePath);
-                                ScheduleLangIntelAndLintersAsync(pDoc, m_config.enableExternalLinters, true);
                                 TriggerDebouncedGitRefresh(300);
                             } else {
                                 // Transient disk lock (e.g. dev server / AV reading file): retry shortly
@@ -30941,17 +31174,36 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     keepAnimating = true;
                 }
 
-                // 60 FPS exponential ease-out for code editor smooth vertical wheel scrolling
+                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
+                    KillTimer(m_hwnd, m_animTimerId);
+                }
+                InvalidateRect(m_hwnd, nullptr, FALSE);
+            } else if (wParam == m_scrollTimerId) {
+                LARGE_INTEGER qpcFreq{}, qpcNow{};
+                QueryPerformanceFrequency(&qpcFreq);
+                QueryPerformanceCounter(&qpcNow);
+                const ULONGLONG nowUs = (qpcFreq.QuadPart > 0)
+                    ? static_cast<ULONGLONG>((qpcNow.QuadPart * 1000000ULL) / qpcFreq.QuadPart)
+                    : (GetTickCount64() * 1000ULL);
+                const float dtMs = (m_lastScrollAnimUs > 0 && nowUs >= m_lastScrollAnimUs)
+                    ? (std::clamp)(static_cast<float>(nowUs - m_lastScrollAnimUs) / 1000.0f, 2.0f, 45.0f)
+                    : 12.0f;
+                m_lastScrollAnimUs = nowUs;
+                const float decay = std::pow(0.58f, dtMs / 16.0f);
+
+                bool anyStillScrolling = false;
                 bool anyFloatingScrolled = false;
                 auto easeSmoothGroupScroll = [&](std::vector<editor::EditorGroup>& groups, bool isFloating) {
                     for (auto& grp : groups) {
                         for (auto& d : grp.docs) {
-                            if (std::abs(d.smoothScrollOffsetPx) > 0.01f) {
-                                d.smoothScrollOffsetPx *= 0.68f;
-                                if (std::abs(d.smoothScrollOffsetPx) < 0.45f) {
-                                    d.smoothScrollOffsetPx = 0.0f;
+                            const float targetPx = -d.wheelRemainderPx;
+                            const float diffPx = d.smoothScrollOffsetPx - targetPx;
+                            if (std::abs(diffPx) > 0.05f) {
+                                d.smoothScrollOffsetPx = targetPx + diffPx * decay;
+                                if (std::abs(d.smoothScrollOffsetPx - targetPx) < 0.35f) {
+                                    d.smoothScrollOffsetPx = targetPx;
                                 } else {
-                                    keepAnimating = true;
+                                    anyStillScrolling = true;
                                 }
                                 if (isFloating) anyFloatingScrolled = true;
                             }
@@ -30964,11 +31216,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                         easeSmoothGroupScroll(fw->editorGroups, true);
                     }
                 }
-
-                if (!keepAnimating && !m_isDrawerAnimating && !m_isTerminalAnimating && !m_isTermFullScreenAnimating && !m_isRightSidebarAnimating) {
-                    KillTimer(m_hwnd, m_animTimerId);
+                if (!anyStillScrolling) {
+                    m_scrollTimerActive = false;
+                    if (HWND mainHwnd = GetMainPostHwnd()) KillTimer(mainHwnd, m_scrollTimerId);
                 }
-                InvalidateRect(m_hwnd, nullptr, FALSE);
+                if (HWND mainHwnd = GetMainPostHwnd()) InvalidateRect(mainHwnd, nullptr, FALSE);
                 if (anyFloatingScrolled) InvalidateFloatingWindows();
             } else if (wParam == m_gcTimerId) {
                 ULONGLONG nowTick = GetTickCount64();
@@ -31042,6 +31294,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 if (lParam != 0) {
                     RefreshWorkspaceEnvVars();
                 }
+                RefreshWorkspaceCommentAnnotsAsync();
                 TriggerDebouncedGitRefresh(450);
                 InvalidateRect(m_hwnd, nullptr, FALSE);
                 return 0;
@@ -31052,6 +31305,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 RefreshWorkspaceEnvVars();
             }
             m_drawer.RefreshTree();
+            RefreshWorkspaceCommentAnnotsAsync();
             NotifyGraphViewFilesystemChanged();
             TriggerDebouncedGitRefresh(350);
             InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -31179,24 +31433,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             }
             if (!updates.empty()) {
                 bool changed = false;
+                editor::OpenDocument* activeMatchedDoc = nullptr;
+                auto* curAct = GetActiveDoc();
                 auto applyDiagsToGroups = [&](std::vector<editor::EditorGroup>& groups) {
                     for (const auto& u : updates) {
                         for (auto& grp : groups) {
                             for (auto& doc : grp.docs) {
                                 if (doc.isSpecialView || doc.filePath.empty()) continue;
-                                if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0) {
-                                    doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
-                                    RunExtraDocDiagnostics(doc, doc.diagnostics);
-                                    for (const auto& ld : u.diags) {
-                                        bool dup = false;
-                                        for (const auto& existing : doc.diagnostics) {
-                                            if (existing.line == ld.line && existing.message == ld.message) {
-                                                dup = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!dup) doc.diagnostics.push_back(ld);
-                                    }
+                                if (_wcsicmp(doc.filePath.c_str(), u.filePath.c_str()) == 0 ||
+                                    AreRecentPathsEqual(doc.filePath, u.filePath)) {
+                                    doc.lspDiagnostics = u.diags;
+                                    doc.hasReceivedLspDiagnostics = true;
+                                    RebuildDocumentDiagnostics(doc);
+                                    if (&doc == curAct) activeMatchedDoc = &doc;
                                     changed = true;
                                 }
                             }
@@ -31211,6 +31460,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (changed) {
                     UpdateDrawerErrorFiles();
+                    if (activeMatchedDoc) {
+                        RequestCodeActionsAsync(activeMatchedDoc, false, false);
+                    }
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                     InvalidateFloatingWindows();
                 }
@@ -31438,8 +31690,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     m_externalLinterProblems[key] = std::move(res->linterProblems);
                 }
+                SyncExternalLinterDiagnosticsToOpenDocs();
                 RebuildProblemsCache();
                 UpdateDrawerErrorFiles();
+                if (auto* pAct = GetActiveDoc(); pAct && !pAct->isSpecialView && AreRecentPathsEqual(pAct->filePath, res->filePath)) {
+                    RequestCodeActionsAsync(pAct, false, false);
+                }
             }
             InvalidateRect(m_hwnd, nullptr, FALSE);
             InvalidateFloatingWindows();
@@ -31529,6 +31785,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (!exists) {
                 vec.push_back(std::move(entry));
                 if (vec.size() > 200) vec.erase(vec.begin());
+                SyncExternalLinterDiagnosticsToOpenDocs();
                 RebuildProblemsCache();
                 UpdateDrawerErrorFiles();
                 InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -31560,9 +31817,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     for (auto& grp : groups) {
                         for (auto& doc : grp.docs) {
                             if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
-                                std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
-                                doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
-                                RunExtraDocDiagnostics(doc, doc.diagnostics);
+                                RebuildDocumentDiagnostics(doc);
                             }
                         }
                     }
@@ -31962,6 +32217,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         case WM_DESTROY: {
             PHIDE_LOG_INFO(System, L"Main window shutting down (WM_DESTROY).");
+            if (m_scrollTimerActive) {
+                m_scrollTimerActive = false;
+                KillTimer(m_hwnd, m_scrollTimerId);
+            }
             if (ShouldAutoSaveOnWindowChange()) {
                 FlushPendingAutoSaves();
             }
@@ -34044,7 +34303,7 @@ void Window::OnDocumentDiskSaved(editor::OpenDocument& doc) {
                 phide::app::LocalTimeline::CaptureSnapshot(
                     wsRoot, doc.filePath, WideToUtf8Str(doc.originalDiskText));
             }
-            ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters);
+            ScheduleLangIntelAndLintersAsync(&doc, m_config.enableExternalLinters, true);
             RefreshWorkspaceCommentAnnotsAsync();
         }
     }
@@ -34109,8 +34368,9 @@ void Window::CheckOpenDocumentsDiskChanges() {
                 doc.hasExternalDiskConflict = false;
                 ComputeDiffHunks(doc);
                 doc.gitBlameLoaded = false;
-                doc.diagnostics = editor::SyntaxValidator::Validate(doc.filePath, doc.buffer);
-                RunExtraDocDiagnostics(doc, doc.diagnostics);
+                doc.lspDiagnostics.clear();
+                doc.hasReceivedLspDiagnostics = false;
+                RebuildDocumentDiagnostics(doc);
                 if (m_lsp.IsRunning()) {
                     NotifyLspDidChangeAsync(doc.filePath, diskText);
                 }
@@ -34313,6 +34573,114 @@ void Window::RunExtraDocDiagnostics(const editor::OpenDocument& doc, std::vector
     }
 }
 
+void Window::RebuildDocumentDiagnostics(editor::OpenDocument& doc) const {
+    if (doc.isSpecialView || doc.isImageView || doc.isFontView || doc.isUnsupportedBinary ||
+        doc.buffer.IsMemoryMappedReadOnly() || doc.buffer.GetLineCount() > 15000) {
+        return;
+    }
+
+    // Preserve active runtime errors attached to this buffer
+    std::vector<lsp::Diagnostic> runtimeDiags;
+    for (const auto& d : doc.diagnostics) {
+        if (d.message.find(L"Runtime:") != std::wstring::npos) {
+            runtimeDiags.push_back(d);
+        }
+    }
+
+    const std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
+    std::vector<lsp::Diagnostic> combined = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
+    RunExtraDocDiagnostics(doc, combined);
+
+    auto normDiagCode = [](const std::wstring& code) -> std::wstring {
+        if (code.size() > 2 &&
+            (code[0] == L'T' || code[0] == L't') &&
+            (code[1] == L'S' || code[1] == L's') &&
+            iswdigit(code[2])) {
+            return code.substr(2);
+        }
+        return code;
+    };
+    auto isSameDiag = [&](const lsp::Diagnostic& a, const lsp::Diagnostic& b) -> bool {
+        if (a.line != b.line) return false;
+        if (!a.code.empty() && !b.code.empty() && normDiagCode(a.code) == normDiagCode(b.code) &&
+            std::abs(static_cast<long long>(a.col) - static_cast<long long>(b.col)) <= 4) {
+            return true;
+        }
+        return a.message == b.message;
+    };
+    auto appendUnique = [&](lsp::Diagnostic d) {
+        if (d.line < doc.buffer.GetLineCount()) {
+            const auto& lnStr = doc.buffer.GetLine(d.line);
+            if (d.col > lnStr.size()) d.col = lnStr.size();
+            if (d.length <= 1 && d.col < lnStr.size()) {
+                auto isIdent = [](wchar_t ch) {
+                    return iswalnum(ch) || ch == L'_' || ch == L'$' || ch == L'-';
+                };
+                if (isIdent(lnStr[d.col])) {
+                    size_t endC = d.col + 1;
+                    while (endC < lnStr.size() && isIdent(lnStr[endC])) ++endC;
+                    d.length = endC - d.col;
+                }
+            }
+        }
+        for (const auto& ex : combined) {
+            if (isSameDiag(ex, d)) return;
+        }
+        combined.push_back(std::move(d));
+    };
+
+    for (const auto& rd : runtimeDiags) {
+        appendUnique(rd);
+    }
+    for (const auto& ld : doc.lspDiagnostics) {
+        appendUnique(ld);
+    }
+
+    // Merge external CLI linter diagnostics (tsc, eslint, ruff, phpstan, etc.) into editor squiggles & tab state
+    if (!doc.filePath.empty()) {
+        for (const auto& [fk, list] : m_externalLinterProblems) {
+            (void)fk;
+            for (const auto& pe : list) {
+                if (pe.filePath.empty() || !AreRecentPathsEqual(pe.filePath, doc.filePath)) continue;
+                // When buffer has unsaved in-memory edits and TypeScript LSP is actively publishing in-memory diagnostics,
+                // prefer live LSP over stale on-disk tsc results until the next save completes.
+                if (doc.isDirty && doc.hasReceivedLspDiagnostics && pe.source == L"tsc") {
+                    continue;
+                }
+                lsp::Diagnostic extDiag;
+                extDiag.line = pe.line;
+                extDiag.col = pe.col;
+                extDiag.length = (std::max<size_t>)(1, pe.length);
+                extDiag.severity = pe.severity;
+                extDiag.message = pe.message;
+                extDiag.source = pe.source;
+                extDiag.code = pe.code;
+                appendUnique(std::move(extDiag));
+            }
+        }
+    }
+
+    doc.diagnostics = std::move(combined);
+}
+
+void Window::SyncExternalLinterDiagnosticsToOpenDocs() {
+    auto syncGroups = [&](std::vector<editor::EditorGroup>& groups) {
+        for (auto& grp : groups) {
+            for (auto& doc : grp.docs) {
+                if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
+                    RebuildDocumentDiagnostics(doc);
+                }
+            }
+        }
+    };
+    syncGroups(m_editorGroups);
+    for (auto& fw : m_floatingWindows) {
+        if (fw && fw->kind == FloatingDockKind::EditorGroup) {
+            syncGroups(fw->editorGroups);
+        }
+    }
+}
+
 void Window::RefreshEnvDriftDiagnostics() {
     m_envDriftProblems.clear();
     if (!m_drawer.HasOpenFolder()) return;
@@ -34332,16 +34700,8 @@ void Window::RefreshEnvDriftDiagnostics() {
         m_envDriftProblems.push_back(std::move(pe));
     }
 
-    // Re-run extra diagnostics on open tabs so missing env warnings update immediately
-    for (auto& grp : m_editorGroups) {
-        for (auto& doc : grp.docs) {
-            if (!doc.isSpecialView && !doc.isImageView && !doc.isFontView && !doc.isUnsupportedBinary) {
-                std::wstring docTarget = doc.filePath.empty() ? doc.fileName : doc.filePath;
-                doc.diagnostics = editor::SyntaxValidator::Validate(docTarget, doc.buffer);
-                RunExtraDocDiagnostics(doc, doc.diagnostics);
-            }
-        }
-    }
+    // Re-run extra diagnostics on open tabs while preserving LSP and external linter diagnostics
+    SyncExternalLinterDiagnosticsToOpenDocs();
     RebuildProblemsCache();
     UpdateDrawerErrorFiles();
 }
@@ -35582,6 +35942,12 @@ void Window::ClearStaleExternalLinterProblemsForFile(const std::wstring& filePat
         }
         ++it;
     }
+    std::erase_if(m_wsSyntaxProblems, [&](const editor::ProblemEntry& pe) {
+        return !pe.filePath.empty() && AreRecentPathsEqual(pe.filePath, filePath);
+    });
+    std::erase_if(m_wsCommentAnnots, [&](const WorkspaceCommentAnnotFile& af) {
+        return !af.filePath.empty() && AreRecentPathsEqual(af.filePath, filePath);
+    });
 }
 
 void Window::ScheduleLangIntelAndLintersAsync(editor::OpenDocument* pDoc, bool runExternalLinters, bool forceFreshLinters) {
@@ -35945,19 +36311,37 @@ void Window::RebuildProblemsCache() {
         }
     }
 
+    // Include native syntax diagnostics scanned across closed workspace files
+    for (const auto& pe : m_wsSyntaxProblems) {
+        if (pe.filePath.empty()) continue;
+        if (seenFiles.count(normKey(pe.filePath)) > 0) continue;
+        all.push_back(pe);
+    }
+
     for (const auto& pe : m_envDriftProblems) {
         all.push_back(pe);
     }
 
+    auto normProbCode = [](const std::wstring& code) -> std::wstring {
+        if (code.size() > 2 &&
+            (code[0] == L'T' || code[0] == L't') &&
+            (code[1] == L'S' || code[1] == L's') &&
+            iswdigit(code[2])) {
+            return code.substr(2);
+        }
+        return code;
+    };
     for (const auto& [fk, list] : m_externalLinterProblems) {
         (void)fk;
         for (const auto& pe : list) {
             bool dup = false;
             for (const auto& ex : all) {
-                if (normKey(ex.filePath) == normKey(pe.filePath) &&
-                    ex.line == pe.line && ex.message == pe.message) {
-                    dup = true;
-                    break;
+                if (normKey(ex.filePath) == normKey(pe.filePath) && ex.line == pe.line) {
+                    if (ex.message == pe.message ||
+                        (!ex.code.empty() && !pe.code.empty() && normProbCode(ex.code) == normProbCode(pe.code))) {
+                        dup = true;
+                        break;
+                    }
                 }
             }
             if (!dup) all.push_back(pe);
@@ -36305,30 +36689,62 @@ void Window::RenderProblemsPanelInRect(ID2D1RenderTarget* pRT, ui::Theme& theme,
             float dotY = ry + rowH * 0.5f;
             if (sevBrush) pRT->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotR, dotR), sevBrush);
 
+            auto drawClippedSingleLine = [&](const std::wstring& txt, IDWriteTextFormat* fmt, const D2D1_RECT_F& rc, ID2D1Brush* br, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
+                if (txt.empty() || !fmt || !br || rc.right <= rc.left + 4.0f) return;
+                pRT->PushAxisAlignedClip(rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                if (theme.dwriteFactory) {
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+                    if (SUCCEEDED(theme.dwriteFactory->CreateTextLayout(
+                            txt.c_str(), static_cast<UINT32>(txt.size()), fmt,
+                            rc.right - rc.left, rc.bottom - rc.top, &lay)) && lay) {
+                        lay->SetTextAlignment(align);
+                        lay->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        DWRITE_TRIMMING trim{ DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                        Microsoft::WRL::ComPtr<IDWriteInlineObject> ellipsis;
+                        if (SUCCEEDED(theme.dwriteFactory->CreateEllipsisTrimmingSign(fmt, &ellipsis)) && ellipsis) {
+                            lay->SetTrimming(&trim, ellipsis.Get());
+                        }
+                        pRT->DrawTextLayout(D2D1::Point2F(rc.left, rc.top), lay.Get(), br, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                        pRT->PopAxisAlignedClip();
+                        return;
+                    }
+                }
+                pRT->DrawText(txt.c_str(), static_cast<UINT32>(txt.size()), fmt, rc, br, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                pRT->PopAxisAlignedClip();
+            };
+
             float rightCursor = rcRow.right - m_config.ScaleF(6.0f);
             if (prob.severity <= 2 && !prob.filePath.empty()) {
-                float fixW = m_config.ScaleF(36.0f);
+                float fixW = m_config.ScaleF(40.0f);
                 D2D1_RECT_F rcFix = D2D1::RectF(rightCursor - fixW, ry + m_config.ScaleF(3.0f), rightCursor, ry + rowH - m_config.ScaleF(3.0f));
                 m_problemsFixBtnBounds[i] = rcFix;
                 if (pillBgBrush) pRT->FillRoundedRectangle(D2D1::RoundedRect(rcFix, 3.0f, 3.0f), pillBgBrush.Get());
                 if (uiFmt && accentBrush) {
-                    pRT->DrawText(L" Fix", 4, uiFmt, rcFix, accentBrush.Get());
+                    drawClippedSingleLine(L"Fix", uiFmt, rcFix, accentBrush.Get(), DWRITE_TEXT_ALIGNMENT_CENTER);
                 }
-                rightCursor -= (fixW + m_config.ScaleF(8.0f));
+                rightCursor -= (fixW + m_config.ScaleF(10.0f));
             }
 
             std::wstring locStr = m_problemsFilter.groupByFile
                 ? (L"Ln " + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1))
                 : ((prob.displayPath.empty() ? prob.filePath : prob.displayPath) +
                    L":" + std::to_wstring(prob.line + 1) + L":" + std::to_wstring(prob.col + 1));
-            float locW = (std::min)(m_config.ScaleF(260.0f), measureTextW(locStr) + m_config.ScaleF(14.0f));
-            D2D1_RECT_F rcLoc = D2D1::RectF(rightCursor - locW, ry + m_config.ScaleF(2.0f), rightCursor, ry + rowH - m_config.ScaleF(2.0f));
-            if (uiFmt && textSec) pRT->DrawText(locStr.c_str(), static_cast<UINT32>(locStr.size()), uiFmt, rcLoc, textSec);
+            float maxLocW = (std::max)(m_config.ScaleF(80.0f), (std::min)(m_config.ScaleF(240.0f), (rcRow.right - rcRow.left) * 0.28f));
+            float locW = (std::min)(maxLocW, measureTextW(locStr) + m_config.ScaleF(10.0f));
+            D2D1_RECT_F rcLoc = D2D1::RectF(rightCursor - locW, ry + m_config.ScaleF(1.0f), rightCursor, ry + rowH - m_config.ScaleF(1.0f));
+            if (uiFmt && textSec) {
+                drawClippedSingleLine(locStr, uiFmt, rcLoc, textSec, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            }
 
-            std::wstring msgLine = L"[" + prob.source + (prob.code.empty() ? L"" : L":" + prob.code) + L"] " + prob.message;
-            D2D1_RECT_F rcMsg = D2D1::RectF(dotX + m_config.ScaleF(10.0f), ry + m_config.ScaleF(2.0f), rcLoc.left - m_config.ScaleF(10.0f), ry + rowH - m_config.ScaleF(2.0f));
+            std::wstring cleanMsg = prob.message;
+            for (wchar_t& ch : cleanMsg) {
+                if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' ';
+            }
+            std::wstring msgLine = L"[" + prob.source + (prob.code.empty() ? L"" : L":" + prob.code) + L"] " + cleanMsg;
+            D2D1_RECT_F rcMsg = D2D1::RectF(dotX + m_config.ScaleF(10.0f), ry + m_config.ScaleF(1.0f), rcLoc.left - m_config.ScaleF(12.0f), ry + rowH - m_config.ScaleF(1.0f));
             if (bodyFmt && textPrim && rcMsg.right > rcMsg.left + 20.0f) {
-                pRT->DrawText(msgLine.c_str(), static_cast<UINT32>(msgLine.size()), bodyFmt, rcMsg, textPrim);
+                drawClippedSingleLine(msgLine, bodyFmt, rcMsg, textPrim, DWRITE_TEXT_ALIGNMENT_LEADING);
             }
         }
         pRT->PopAxisAlignedClip();
@@ -36401,6 +36817,7 @@ bool Window::HandleProblemsPanelMouseDown(POINT pt, bool isFloatingOverride) {
     if (PtInRectF(pt, m_rcProblemsRefreshBtn)) {
         if (auto* pDoc = GetActiveDoc(); pDoc && !pDoc->isSpecialView) {
             ClearStaleExternalLinterProblemsForFile(pDoc->filePath);
+            SyncExternalLinterDiagnosticsToOpenDocs();
             RebuildProblemsCache();
             UpdateDrawerErrorFiles();
             ScheduleLangIntelAndLintersAsync(pDoc, true, true);

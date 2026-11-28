@@ -681,25 +681,33 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
     bool validateScripts,
     bool validateStyles,
     bool validatePython,
-    bool checkPythonUndefinedVars
+    bool checkPythonUndefinedVars,
+    bool runPluginDiagnostics
 ) {
     if (buffer.GetLineCount() == 0) return {};
 
     std::wstring ext;
+    std::wstring fname;
     try {
         std::filesystem::path p(filePath);
         ext = p.extension().wstring();
+        fname = p.filename().wstring();
         for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+        for (auto& c : fname) c = static_cast<wchar_t>(towlower(c));
     } catch (...) {}
 
     std::vector<lsp::Diagnostic> diags;
     if (ext == L".json" || ext == L".jsonc" || ext == L".eslintrc" || ext == L".prettierrc") {
-        diags = ValidateJson(buffer);
+        bool allowJsonc = (ext == L".jsonc" || ext == L".eslintrc" || ext == L".prettierrc" ||
+                           fname == L"tsconfig.json" || fname.rfind(L"tsconfig.", 0) == 0 ||
+                           fname == L"jsconfig.json" || fname.rfind(L"jsconfig.", 0) == 0);
+        diags = ValidateJson(buffer, allowJsonc);
         auto schemaDiags = ValidateJsonSchema(filePath, buffer);
         diags.insert(diags.end(), schemaDiags.begin(), schemaDiags.end());
     } else if (ext == L".css" || ext == L".scss" || ext == L".less") {
         diags = ValidateCss(buffer);
-    } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" || ext == L".mjs" || ext == L".cjs") {
+    } else if (ext == L".js" || ext == L".jsx" || ext == L".ts" || ext == L".tsx" ||
+               ext == L".mjs" || ext == L".cjs" || ext == L".mts" || ext == L".cts") {
         bool isJsx = (ext == L".jsx" || ext == L".tsx");
         diags = ValidateJavaScript(buffer, 0, static_cast<size_t>(-1), isJsx);
         auto reactDiags = ValidateReactAndESLint(buffer, isJsx);
@@ -724,9 +732,11 @@ std::vector<lsp::Diagnostic> SyntaxValidator::Validate(
         diags = ValidateBracketsAndQuotes(buffer, false);
     }
 
-    auto pluginDiags = phide::plugin::PluginManager::Instance().RunDiagnostics(filePath, ext, buffer);
-    if (!pluginDiags.empty()) {
-        diags.insert(diags.end(), pluginDiags.begin(), pluginDiags.end());
+    if (runPluginDiagnostics) {
+        auto pluginDiags = phide::plugin::PluginManager::Instance().RunDiagnostics(filePath, ext, buffer);
+        if (!pluginDiags.empty()) {
+            diags.insert(diags.end(), pluginDiags.begin(), pluginDiags.end());
+        }
     }
     return diags;
 }
@@ -756,7 +766,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::CollectUnusedSymbolHints(
     return hints;
 }
 
-std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer) {
+std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer, bool allowCommentsAndTrailingCommas) {
     std::vector<lsp::Diagnostic> diagnostics;
 
     struct BracketInfo {
@@ -768,6 +778,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer)
     std::vector<BracketInfo> bracketStack;
 
     bool inString = false;
+    bool inBlockComment = false;
     size_t strStartLine = 0;
     size_t strStartCol = 0;
     bool hasLastComma = false;
@@ -778,6 +789,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer)
         const auto& line = buffer.GetLine(l);
         for (size_t c = 0; c < line.length(); ++c) {
             wchar_t ch = line[c];
+
+            if (inBlockComment) {
+                if (ch == L'*' && c + 1 < line.length() && line[c + 1] == L'/') {
+                    inBlockComment = false;
+                    c++;
+                }
+                continue;
+            }
 
             if (inString) {
                 if (ch == L'\\') {
@@ -790,9 +809,14 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer)
                 continue;
             }
 
-            // Single line comment in JSONC
+            // Single line or block comment in JSONC / tsconfig
             if (ch == L'/' && c + 1 < line.length() && line[c + 1] == L'/') {
                 break;
+            }
+            if (ch == L'/' && c + 1 < line.length() && line[c + 1] == L'*') {
+                inBlockComment = true;
+                c++;
+                continue;
             }
 
             if (ch == L'"') {
@@ -822,7 +846,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer)
                 hasLastComma = false;
             } else if (ch == L'}') {
                 if (hasLastComma) {
-                    diagnostics.push_back({ commaLine, commaCol, 1, L"Trailing comma is not allowed in JSON", 1 });
+                    if (!allowCommentsAndTrailingCommas) {
+                        diagnostics.push_back({ commaLine, commaCol, 1, L"Trailing comma is not allowed in JSON", 1 });
+                    }
                     hasLastComma = false;
                 }
                 if (bracketStack.empty()) {
@@ -835,7 +861,9 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateJson(const Buffer& buffer)
                 }
             } else if (ch == L']') {
                 if (hasLastComma) {
-                    diagnostics.push_back({ commaLine, commaCol, 1, L"Trailing comma is not allowed in JSON array", 1 });
+                    if (!allowCommentsAndTrailingCommas) {
+                        diagnostics.push_back({ commaLine, commaCol, 1, L"Trailing comma is not allowed in JSON array", 1 });
+                    }
                     hasLastComma = false;
                 }
                 if (bracketStack.empty()) {
@@ -1171,6 +1199,32 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateCss(
                     inBlock = !braceStack.empty();
                 }
                 c++;
+                continue;
+            }
+
+            if (ch == L'@') {
+                // CSS / Tailwind / SCSS at-rules inside or outside blocks (@apply, @layer, @theme, @include, @media, etc.)
+                c++;
+                while (c < line.length() && line[c] != L';' && line[c] != L'{' && line[c] != L'}') {
+                    if (c + 1 < line.length() && line[c] == L'/' && line[c + 1] == L'*') {
+                        inComment = true;
+                        c += 2;
+                        break;
+                    }
+                    if (line[c] == L'"' || line[c] == L'\'') {
+                        wchar_t aq = line[c++];
+                        while (c < line.length()) {
+                            if (line[c] == L'\\') c += 2;
+                            else if (line[c] == aq) { c++; break; }
+                            else c++;
+                        }
+                        continue;
+                    }
+                    c++;
+                }
+                if (!inComment && c < line.length() && line[c] == L';') {
+                    c++;
+                }
                 continue;
             }
 
@@ -5211,11 +5265,21 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
     struct ComponentState {
         std::wstring name;
         size_t declLine = 0;
+        size_t bodyOpenMinCol = 0;
         int braceDepth = 0;
         int parenDepth = 0;
+        int preBodyBraceDepth = 0;
+        int preBodyAngleDepth = 0;
+        wchar_t lastPreBodyNonWs = L'\0';
+        bool isArrowComponent = false;
+        bool sawParamsOpen = false;
         bool hasOpenedBody = false;
         bool hasReturn = false;
         bool hasReturnedValue = false;
+        bool reportedBareReturn = false;
+        bool isNonComponentReturnType = false;
+        bool hasThrowOrNeverCall = false;
+        std::vector<int> nestedFnEntryDepths; ///< braceDepth values of nested functions/callbacks/methods inside this component
     };
     std::vector<ComponentState> componentStack;
 
@@ -5333,100 +5397,600 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
     bool awaitingPostRootJsxSep = false;
     size_t awaitingPostRootExprDepth = 0;
 
-    for (size_t l = 0; l < lineCount; ++l) {
-        const std::wstring& line = buffer.GetLine(l);
-        if (line.empty()) continue;
+    bool pendingNestedArrow = false;
+    struct PendingNestedFn {
+        bool active = false;
+        bool sawParens = false;
+        int parenDepth = 0;
+        int typeBraceDepth = 0;
+        int typeAngleDepth = 0;
+        wchar_t lastPostParenNonWs = L'\0';
+    } pendingNestedFn;
+    std::vector<bool> methodCandidateParens;
 
-        std::wstring code;
-        std::wstring cleanCode;
-        std::vector<bool> commentMask;
-        sanitizeLine(line, code, cleanCode, &commentMask);
+    auto isIdentChar = [](wchar_t ch) -> bool {
+        return iswalnum(ch) || ch == L'_' || ch == L'$';
+    };
 
-        auto findControlKeyword = [](const std::wstring& str) -> int {
-            auto isWord = [&](size_t idx, const std::wstring& kw) -> bool {
-                if (idx + kw.length() > str.length()) return false;
-                if (str.substr(idx, kw.length()) != kw) return false;
-                bool bOk = (idx == 0 || (!iswalnum(str[idx - 1]) && str[idx - 1] != L'_' && str[idx - 1] != L'$'));
-                size_t aIdx = idx + kw.length();
-                bool aOk = (aIdx >= str.length() || (!iswalnum(str[aIdx]) && str[aIdx] != L'_' && str[aIdx] != L'$'));
-                return bOk && aOk;
-            };
+    auto matchWordAt = [&](const std::wstring& str, size_t idx, const std::wstring& kw) -> bool {
+        if (idx + kw.length() > str.length()) return false;
+        if (str.compare(idx, kw.length(), kw) != 0) return false;
+        bool bOk = (idx == 0 || !isIdentChar(str[idx - 1]));
+        size_t aIdx = idx + kw.length();
+        bool aOk = (aIdx >= str.length() || !isIdentChar(str[aIdx]));
+        return bOk && aOk;
+    };
+
+    auto hasExplicitVoidOrNeverAnnotation = [](const std::wstring& headerSlice) -> bool {
+        size_t colon = headerSlice.find(L':');
+        if (colon == std::wstring::npos) return false;
+        std::wstring retPart = headerSlice.substr(colon + 1);
+        while (!retPart.empty() && iswspace(retPart.front())) retPart.erase(retPart.begin());
+        while (!retPart.empty() && iswspace(retPart.back())) retPart.pop_back();
+        if (retPart == L"void" || retPart == L"never" ||
+            retPart == L"Promise<void>" || retPart == L"Promise<never>" ||
+            retPart.rfind(L"asserts ", 0) == 0) {
+            return true;
+        }
+        return false;
+    };
+
+    auto processJsCodeLine = [&](size_t lineIdx, const std::wstring& lineCode, const std::wstring& lineCleanCode, bool inJsxProseAtStart) {
+        auto findControlKeyword = [&](const std::wstring& str) -> int {
             for (int p = static_cast<int>(str.length()) - 1; p >= 0; --p) {
-                if (isWord(p, L"if") || isWord(p, L"else") || isWord(p, L"switch")) return 1;
-                if (isWord(p, L"for") || isWord(p, L"while")) return 2;
-                if (str[p] == L';' || isWord(p, L"function") || isWord(p, L"return")) return 0;
+                if (matchWordAt(str, static_cast<size_t>(p), L"if") ||
+                    matchWordAt(str, static_cast<size_t>(p), L"else") ||
+                    matchWordAt(str, static_cast<size_t>(p), L"switch")) return 1;
+                if (matchWordAt(str, static_cast<size_t>(p), L"for") ||
+                    matchWordAt(str, static_cast<size_t>(p), L"while")) return 2;
+                if (str[p] == L';' ||
+                    matchWordAt(str, static_cast<size_t>(p), L"function") ||
+                    matchWordAt(str, static_cast<size_t>(p), L"return")) return 0;
             }
             return 0;
         };
 
-        // 0. Component Declaration Detection: accurate identification of function Comp() or const Comp = ...
-        if (checkReactComponents) {
-            size_t fnPos = cleanCode.find(L"function ");
-            if (fnPos != std::wstring::npos) {
-                size_t nameStart = fnPos + 9;
-                while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
+        // Detect arrow component declarations on this line: `const Comp = (...) => {`
+        // (Only when the outer arrow at parenDepth==0 && braceDepth==0 opens a `{` block body)
+        if (checkReactComponents && !inJsxProseAtStart &&
+            (lineCleanCode.find(L"const ") != std::wstring::npos ||
+             lineCleanCode.find(L"let ") != std::wstring::npos) &&
+            lineCleanCode.find(L"=>") != std::wstring::npos) {
+            size_t varPos = lineCleanCode.find(L"const ");
+            size_t kwLen = 6;
+            if (varPos == std::wstring::npos) {
+                varPos = lineCleanCode.find(L"let ");
+                kwLen = 4;
+            }
+            if (varPos != std::wstring::npos && (varPos == 0 || !isIdentChar(lineCleanCode[varPos - 1]))) {
+                size_t nameStart = varPos + kwLen;
+                while (nameStart < lineCleanCode.length() && iswspace(lineCleanCode[nameStart])) nameStart++;
                 size_t nameEnd = nameStart;
-                while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
+                while (nameEnd < lineCleanCode.length() && isIdentChar(lineCleanCode[nameEnd])) nameEnd++;
                 if (nameEnd > nameStart) {
-                    std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
-                    if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
-                        componentStack.push_back({ compName, l, 0, 0, false, false, false });
-                    }
-                }
-            } else if ((cleanCode.find(L"const ") != std::wstring::npos || cleanCode.find(L"let ") != std::wstring::npos || cleanCode.find(L"export ") != std::wstring::npos) &&
-                       cleanCode.find(L"=>") != std::wstring::npos) {
-                // Only track arrow components that actually open a block body `{ ... }` after `=>`.
-                // Implicit-return arrow components (`const Comp = () => (<div/>)` or `() => <div/>`) already return JSX!
-                size_t arrowPos = cleanCode.find(L"=>");
-                size_t afterArrow = arrowPos + 2;
-                while (afterArrow < cleanCode.length() && iswspace(cleanCode[afterArrow])) afterArrow++;
-                bool hasBlockArrowBody = (afterArrow < cleanCode.length() && cleanCode[afterArrow] == L'{');
-                size_t varPos = cleanCode.find(L"const ");
-                if (varPos == std::wstring::npos) varPos = cleanCode.find(L"let ");
-                if (hasBlockArrowBody && varPos != std::wstring::npos) {
-                    size_t nameStart = varPos + (cleanCode.substr(varPos, 4) == L"let " ? 4 : 6);
-                    while (nameStart < cleanCode.length() && iswspace(cleanCode[nameStart])) nameStart++;
-                    size_t nameEnd = nameStart;
-                    while (nameEnd < cleanCode.length() && (iswalnum(cleanCode[nameEnd]) || cleanCode[nameEnd] == L'_' || cleanCode[nameEnd] == L'$')) nameEnd++;
-                    if (nameEnd > nameStart) {
-                        std::wstring compName = cleanCode.substr(nameStart, nameEnd - nameStart);
-                        if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" && compName != L"PureComponent" && compName != L"Fragment") {
-                            componentStack.push_back({ compName, l, 0, 0, false, false, false });
+                    std::wstring compName = lineCleanCode.substr(nameStart, nameEnd - nameStart);
+                    if (iswupper(compName[0]) && compName != L"React" && compName != L"Component" &&
+                        compName != L"PureComponent" && compName != L"Fragment") {
+                        int pD = 0, bD = 0, kD = 0;
+                        bool sawAssignEq = false;
+                        size_t outerArrowPos = std::wstring::npos;
+                        size_t assignEqPos = std::wstring::npos;
+                        for (size_t s = nameEnd; s < lineCleanCode.length(); ++s) {
+                            wchar_t sc = lineCleanCode[s];
+                            if (sc == L'(') pD++;
+                            else if (sc == L')' && pD > 0) pD--;
+                            else if (sc == L'{') bD++;
+                            else if (sc == L'}' && bD > 0) bD--;
+                            else if (sc == L'[') kD++;
+                            else if (sc == L']' && kD > 0) kD--;
+                            else if (pD == 0 && bD == 0 && kD == 0) {
+                                if (!sawAssignEq && sc == L'=' &&
+                                    (s == 0 || (lineCleanCode[s - 1] != L'=' && lineCleanCode[s - 1] != L'!' &&
+                                                lineCleanCode[s - 1] != L'<' && lineCleanCode[s - 1] != L'>')) &&
+                                    (s + 1 >= lineCleanCode.length() || (lineCleanCode[s + 1] != L'=' && lineCleanCode[s + 1] != L'>'))) {
+                                    sawAssignEq = true;
+                                    assignEqPos = s;
+                                } else if (sawAssignEq && sc == L'=' && s + 1 < lineCleanCode.length() && lineCleanCode[s + 1] == L'>') {
+                                    outerArrowPos = s;
+                                    break;
+                                }
+                            }
+                        }
+                        if (outerArrowPos != std::wstring::npos) {
+                            size_t afterArrow = outerArrowPos + 2;
+                            while (afterArrow < lineCleanCode.length() && iswspace(lineCleanCode[afterArrow])) afterArrow++;
+                            if (afterArrow < lineCleanCode.length() && lineCleanCode[afterArrow] == L'{') {
+                                ComponentState cs;
+                                cs.name = compName;
+                                cs.declLine = lineIdx;
+                                cs.bodyOpenMinCol = afterArrow;
+                                cs.isArrowComponent = true;
+                                cs.sawParamsOpen = true;
+                                if (assignEqPos != std::wstring::npos && outerArrowPos > assignEqPos) {
+                                    cs.isNonComponentReturnType = hasExplicitVoidOrNeverAnnotation(
+                                        lineCleanCode.substr(assignEqPos + 1, outerArrowPos - assignEqPos - 1));
+                                }
+                                componentStack.push_back(std::move(cs));
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Track conditions, loops, and component scopes
-        for (size_t i = 0; i < cleanCode.length(); ++i) {
-            wchar_t cChar = cleanCode[i];
+        auto analyzeReturnAt = [&](size_t retPos) {
+            const bool atCompOwnScope = (!componentStack.empty() &&
+                                         componentStack.back().hasOpenedBody &&
+                                         componentStack.back().nestedFnEntryDepths.empty());
+            if (atCompOwnScope) {
+                componentStack.back().hasReturn = true;
+            }
+
+            size_t afterIdx = retPos + 6;
+            // Slice remainder of this statement on the current line up to a top-level ';' or enclosing '}' / ')'
+            std::wstring rawRest = lineCleanCode.substr(afterIdx);
+            int spBal = 0, sbBal = 0, skBal = 0;
+            size_t stmtEnd = rawRest.length();
+            bool hasSemi = false;
+            for (size_t ri = 0; ri < rawRest.length(); ++ri) {
+                wchar_t rc = rawRest[ri];
+                if (rc == L'(') spBal++;
+                else if (rc == L')') {
+                    if (spBal == 0 && sbBal == 0 && skBal == 0) { stmtEnd = ri; break; }
+                    if (spBal > 0) spBal--;
+                } else if (rc == L'{') sbBal++;
+                else if (rc == L'}') {
+                    if (spBal == 0 && sbBal == 0 && skBal == 0) { stmtEnd = ri; break; }
+                    if (sbBal > 0) sbBal--;
+                } else if (rc == L'[') skBal++;
+                else if (rc == L']') {
+                    if (spBal == 0 && sbBal == 0 && skBal == 0) { stmtEnd = ri; break; }
+                    if (skBal > 0) skBal--;
+                } else if (rc == L';' && spBal == 0 && sbBal == 0 && skBal == 0) {
+                    hasSemi = true;
+                    stmtEnd = ri;
+                    break;
+                }
+            }
+            if (!hasSemi) {
+                size_t lastNonWs = lineCode.find_last_not_of(L" \t\r\n");
+                if (lastNonWs != std::wstring::npos && lastNonWs >= afterIdx && lineCode[lastNonWs] == L';') {
+                    hasSemi = true;
+                }
+            }
+
+            std::wstring afterReturn = rawRest.substr(0, stmtEnd);
+            size_t s = 0;
+            while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'\t')) s++;
+            afterReturn = afterReturn.substr(s);
+            while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'\t' || afterReturn.back() == L'\r')) {
+                afterReturn.pop_back();
+            }
+
+            bool hasValOnSameLine = !afterReturn.empty();
+            bool multilineContinuation = inBacktickAcrossLines;
+            if (hasValOnSameLine && !multilineContinuation) {
+                wchar_t lastCh = afterReturn.back();
+                if (lastCh == L'(' || lastCh == L'{' || lastCh == L'[' || lastCh == L',' ||
+                    lastCh == L'.' || lastCh == L'?' || lastCh == L':' || lastCh == L'+' ||
+                    lastCh == L'-' || lastCh == L'*' || lastCh == L'/' || lastCh == L'%' ||
+                    lastCh == L'&' || lastCh == L'|' || lastCh == L'^' || lastCh == L'=' ||
+                    lastCh == L'!' || lastCh == L'~' || lastCh == L'`') {
+                    multilineContinuation = true;
+                }
+                int pBal = 0, bBal = 0, kBal = 0;
+                for (wchar_t ch : afterReturn) {
+                    if (ch == L'(') pBal++; else if (ch == L')') pBal--;
+                    else if (ch == L'{') bBal++; else if (ch == L'}') bBal--;
+                    else if (ch == L'[') kBal++; else if (ch == L']') kBal--;
+                }
+                if (pBal > 0 || bBal > 0 || kBal > 0) {
+                    multilineContinuation = true;
+                }
+                if (isJsx && afterReturn.front() == L'<') {
+                    bool selfClosed = afterReturn.ends_with(L"/>");
+                    bool hasClosingTagAtEnd = false;
+                    if (afterReturn.size() >= 3 && afterReturn.back() == L'>') {
+                        size_t closePos = afterReturn.rfind(L"</");
+                        if (closePos != std::wstring::npos && closePos > 0) {
+                            hasClosingTagAtEnd = true;
+                        }
+                    }
+                    if (!selfClosed && !hasClosingTagAtEnd) {
+                        multilineContinuation = true;
+                    }
+                }
+                if (!multilineContinuation) {
+                    for (size_t nl = lineIdx + 1; nl < lineCount; ++nl) {
+                        const std::wstring& nLine = buffer.GetLine(nl);
+                        size_t ns = 0;
+                        while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
+                        if (ns >= nLine.length()) continue;
+                        if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
+                        wchar_t nc = nLine[ns];
+                        if (nc == L'.' || nc == L'?' || nc == L':' || nc == L'+' || nc == L'-' ||
+                            nc == L'*' || nc == L'/' || nc == L'&' || nc == L'|' ||
+                            (isJsx && nc == L'<')) {
+                            multilineContinuation = true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            bool hasValOnNextLine = false;
+            bool asiJsxAfterNewline = false;
+            if (!hasValOnSameLine && stmtEnd == rawRest.length()) {
+                for (size_t nl = lineIdx + 1; nl < lineCount; ++nl) {
+                    const std::wstring& nLine = buffer.GetLine(nl);
+                    size_t ns = 0;
+                    while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
+                    if (ns >= nLine.length()) continue;
+                    if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
+                    if (nLine[ns] == L'}' || nLine[ns] == L')') {
+                        hasValOnNextLine = false;
+                    } else {
+                        hasValOnNextLine = true;
+                        multilineContinuation = true;
+                        if (isJsx && !hasSemi && !inBacktickAcrossLines &&
+                            nLine[ns] == L'<' && ns + 1 < nLine.length() &&
+                            (nLine[ns + 1] == L'>' || iswalpha(nLine[ns + 1]) || nLine[ns + 1] == L'_' || nLine[ns + 1] == L'$')) {
+                            asiJsxAfterNewline = true;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (asiJsxAfterNewline) {
+                lsp::Diagnostic diag;
+                diag.line = lineIdx;
+                diag.col = retPos;
+                diag.length = 6;
+                diag.message = L"Newline after 'return' inserts an automatic semicolon (returning undefined). Wrap multi-line JSX in parentheses: return ( <>...</> ). (no-unreachable)";
+                diag.severity = 1; // Error
+                diagnostics.push_back(std::move(diag));
+            }
+
+            if (atCompOwnScope) {
+                if (hasValOnSameLine || hasValOnNextLine) {
+                    componentStack.back().hasReturnedValue = true;
+                } else if (checkReactComponents && !componentStack.back().isNonComponentReturnType) {
+                    componentStack.back().reportedBareReturn = true;
+                    lsp::Diagnostic diag;
+                    diag.line = lineIdx;
+                    diag.col = retPos;
+                    diag.length = 6;
+                    diag.message = L"Component '" + componentStack.back().name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                    diag.severity = 1; // Error
+                    diagnostics.push_back(std::move(diag));
+                }
+            }
+        };
+
+        auto isMethodParenAt = [&](size_t openParenIdx) -> bool {
+            int p = static_cast<int>(openParenIdx) - 1;
+            while (p >= 0 && iswspace(lineCleanCode[p])) p--;
+            // Skip optional generic `<...>` before `(` on generic methods `foo<T>()`
+            if (p >= 0 && lineCleanCode[p] == L'>' && (p == 0 || lineCleanCode[p - 1] != L'=')) {
+                int aD = 1;
+                p--;
+                while (p >= 0 && aD > 0) {
+                    if (lineCleanCode[p] == L'>' && (p == 0 || lineCleanCode[p - 1] != L'=')) aD++;
+                    else if (lineCleanCode[p] == L'<') aD--;
+                    p--;
+                }
+                while (p >= 0 && iswspace(lineCleanCode[p])) p--;
+            }
+            if (p < 0) return false;
+
+            if (lineCleanCode[p] == L']') {
+                // Computed property method `[sym]() {`
+                int kD = 1;
+                p--;
+                while (p >= 0 && kD > 0) {
+                    if (lineCleanCode[p] == L']') kD++;
+                    else if (lineCleanCode[p] == L'[') kD--;
+                    p--;
+                }
+            } else if (isIdentChar(lineCleanCode[p])) {
+                int wEnd = p;
+                while (p >= 0 && isIdentChar(lineCleanCode[p])) p--;
+                std::wstring word = lineCleanCode.substr(static_cast<size_t>(p + 1), static_cast<size_t>(wEnd - p));
+                static const std::unordered_set<std::wstring> nonMethodWords = {
+                    L"if", L"for", L"while", L"switch", L"catch", L"with",
+                    L"function", L"return", L"throw", L"typeof", L"delete",
+                    L"void", L"await", L"yield", L"new", L"super", L"import", L"case"
+                };
+                if (nonMethodWords.count(word) > 0) return false;
+            } else {
+                return false;
+            }
+
+            // Verify only method modifiers or member-boundary punctuation precede the method name
+            static const std::unordered_set<std::wstring> methodMods = {
+                L"async", L"get", L"set", L"static", L"public", L"private",
+                L"protected", L"readonly", L"override", L"abstract"
+            };
+            while (p >= 0) {
+                while (p >= 0 && (iswspace(lineCleanCode[p]) || lineCleanCode[p] == L'*')) p--;
+                if (p < 0) return true;
+                if (lineCleanCode[p] == L'{' || lineCleanCode[p] == L',' ||
+                    lineCleanCode[p] == L';' || lineCleanCode[p] == L'}') {
+                    return true;
+                }
+                if (isIdentChar(lineCleanCode[p])) {
+                    int mEnd = p;
+                    while (p >= 0 && isIdentChar(lineCleanCode[p])) p--;
+                    std::wstring mod = lineCleanCode.substr(static_cast<size_t>(p + 1), static_cast<size_t>(mEnd - p));
+                    if (methodMods.count(mod) > 0) continue;
+                }
+                return false;
+            }
+            return true;
+        };
+
+        // Track JSX expression braces when starting inside JSX prose so words in prose aren't misread as JS keywords,
+        // while `{ ... }` expressions inside JSX STILL track braces, arrows, and returns accurately!
+        int localJsxExprDepth = inJsxProseAtStart ? 0 : 1;
+
+        for (size_t i = 0; i < lineCleanCode.length(); ++i) {
+            wchar_t cChar = lineCleanCode[i];
+            bool enteredJsxExprHere = false;
+            if (inJsxProseAtStart && localJsxExprDepth == 0) {
+                if (lineCode[i] == L'{') {
+                    localJsxExprDepth = 1;
+                    enteredJsxExprHere = true;
+                } else {
+                    continue;
+                }
+            }
+
+            bool thisBraceOpensNestedFn = false;
+            if (pendingNestedArrow && !iswspace(cChar)) {
+                if (cChar == L'{') {
+                    thisBraceOpensNestedFn = true;
+                }
+                pendingNestedArrow = false;
+            }
+
+            // Arrow `=>`
+            if (cChar == L'=' && i + 1 < lineCleanCode.length() && lineCleanCode[i + 1] == L'>') {
+                if (!componentStack.empty() && componentStack.back().hasOpenedBody) {
+                    pendingNestedArrow = true;
+                }
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0 &&
+                    pendingNestedFn.typeBraceDepth == 0 && pendingNestedFn.typeAngleDepth == 0) {
+                    pendingNestedFn.active = false;
+                }
+                ++i;
+                continue;
+            }
+
+            // Keyword checks at identifier start
+            if (iswalpha(cChar) || cChar == L'_' || cChar == L'$') {
+                bool precededByDot = (i > 0 && lineCleanCode[i - 1] == L'.');
+                if (!precededByDot && matchWordAt(lineCleanCode, i, L"function")) {
+                    bool pushedComp = false;
+                    size_t afterFn = i + 8;
+                    while (afterFn < lineCleanCode.length() && (iswspace(lineCleanCode[afterFn]) || lineCleanCode[afterFn] == L'*')) {
+                        afterFn++;
+                    }
+                    size_t nameEnd = afterFn;
+                    while (nameEnd < lineCleanCode.length() && isIdentChar(lineCleanCode[nameEnd])) nameEnd++;
+                    if (checkReactComponents && nameEnd > afterFn && lineCleanCode[i + 8 - 1] == L'n') {
+                        std::wstring compName = lineCleanCode.substr(afterFn, nameEnd - afterFn);
+                        // Do not treat `declare function Foo` as a body-requiring component
+                        size_t prevTokEnd = i;
+                        while (prevTokEnd > 0 && iswspace(lineCleanCode[prevTokEnd - 1])) prevTokEnd--;
+                        bool isAmbientDeclare = (prevTokEnd >= 7 && matchWordAt(lineCleanCode, prevTokEnd - 7, L"declare"));
+                        if (!isAmbientDeclare && iswupper(compName[0]) &&
+                            compName != L"React" && compName != L"Component" &&
+                            compName != L"PureComponent" && compName != L"Fragment") {
+                            ComponentState cs;
+                            cs.name = compName;
+                            cs.declLine = lineIdx;
+                            cs.bodyOpenMinCol = nameEnd;
+                            size_t closeP = lineCleanCode.find(L')', nameEnd);
+                            if (closeP != std::wstring::npos) {
+                                size_t openB = lineCleanCode.find(L'{', closeP + 1);
+                                std::wstring hdr = (openB != std::wstring::npos)
+                                    ? lineCleanCode.substr(closeP + 1, openB - closeP - 1)
+                                    : lineCleanCode.substr(closeP + 1);
+                                cs.isNonComponentReturnType = hasExplicitVoidOrNeverAnnotation(hdr);
+                            }
+                            componentStack.push_back(std::move(cs));
+                            pushedComp = true;
+                        }
+                    }
+                    if (!pushedComp && !componentStack.empty() && componentStack.back().hasOpenedBody) {
+                        pendingNestedFn = { true, false, 0, 0, 0, L'\0' };
+                    }
+                    i += 7;
+                    continue;
+                }
+
+                if (!precededByDot && matchWordAt(lineCleanCode, i, L"return")) {
+                    analyzeReturnAt(i);
+                    i += 5;
+                    continue;
+                }
+
+                if (!precededByDot && !componentStack.empty() &&
+                    componentStack.back().hasOpenedBody &&
+                    componentStack.back().nestedFnEntryDepths.empty()) {
+                    if (matchWordAt(lineCleanCode, i, L"throw")) {
+                        componentStack.back().hasThrowOrNeverCall = true;
+                    } else if (matchWordAt(lineCleanCode, i, L"redirect") ||
+                               matchWordAt(lineCleanCode, i, L"permanentRedirect") ||
+                               matchWordAt(lineCleanCode, i, L"notFound")) {
+                        size_t cp = i;
+                        while (cp < lineCleanCode.length() && isIdentChar(lineCleanCode[cp])) cp++;
+                        while (cp < lineCleanCode.length() && iswspace(lineCleanCode[cp])) cp++;
+                        if (cp < lineCleanCode.length() && lineCleanCode[cp] == L'(') {
+                            componentStack.back().hasThrowOrNeverCall = true;
+                        }
+                    }
+                }
+            }
+
             if (cChar == L'(') {
-                if (!componentStack.empty() && !componentStack.back().hasOpenedBody) {
+                bool isMethodCand = (!componentStack.empty() && componentStack.back().hasOpenedBody && !pendingNestedFn.active)
+                    ? isMethodParenAt(i)
+                    : false;
+                methodCandidateParens.push_back(isMethodCand);
+
+                if (pendingNestedFn.active) {
+                    if (!pendingNestedFn.sawParens) {
+                        pendingNestedFn.sawParens = true;
+                        pendingNestedFn.parenDepth = 1;
+                    } else if (pendingNestedFn.parenDepth > 0) {
+                        pendingNestedFn.parenDepth++;
+                    }
+                }
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent) {
+                    componentStack.back().sawParamsOpen = true;
                     componentStack.back().parenDepth++;
+                    componentStack.back().preBodyAngleDepth = 0;
                 }
             } else if (cChar == L')') {
-                if (!componentStack.empty() && !componentStack.back().hasOpenedBody) {
-                    if (componentStack.back().parenDepth > 0) componentStack.back().parenDepth--;
+                bool wasMethodCand = false;
+                if (!methodCandidateParens.empty()) {
+                    wasMethodCand = methodCandidateParens.back();
+                    methodCandidateParens.pop_back();
+                }
+
+                if (pendingNestedFn.active && pendingNestedFn.parenDepth > 0) {
+                    pendingNestedFn.parenDepth--;
+                    if (pendingNestedFn.parenDepth == 0) {
+                        pendingNestedFn.lastPostParenNonWs = L')';
+                    }
+                } else if (wasMethodCand && !pendingNestedFn.active &&
+                           !componentStack.empty() && componentStack.back().hasOpenedBody) {
+                    // Check if `)` is followed by `{` or `: ReturnType {` (object/class method)
+                    size_t k = i + 1;
+                    while (k < lineCleanCode.length() && iswspace(lineCleanCode[k])) k++;
+                    if (k < lineCleanCode.length()) {
+                        if (lineCleanCode[k] == L'{' || lineCleanCode[k] == L':') {
+                            pendingNestedFn = { true, true, 0, 0, 0, L')' };
+                        }
+                    } else {
+                        for (size_t nl = lineIdx + 1; nl < lineCount && nl <= lineIdx + 3; ++nl) {
+                            const std::wstring& nLine = buffer.GetLine(nl);
+                            size_t ns = 0;
+                            while (ns < nLine.length() && iswspace(nLine[ns])) ns++;
+                            if (ns >= nLine.length() || nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
+                            if (nLine[ns] == L'{') {
+                                pendingNestedFn = { true, true, 0, 0, 0, L')' };
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent) {
+                    if (componentStack.back().parenDepth > 0) {
+                        componentStack.back().parenDepth--;
+                        if (componentStack.back().parenDepth == 0) {
+                            componentStack.back().lastPreBodyNonWs = L')';
+                            size_t openB = lineCleanCode.find(L'{', i + 1);
+                            std::wstring hdr = (openB != std::wstring::npos)
+                                ? lineCleanCode.substr(i + 1, openB - i - 1)
+                                : lineCleanCode.substr(i + 1);
+                            if (hasExplicitVoidOrNeverAnnotation(hdr)) {
+                                componentStack.back().isNonComponentReturnType = true;
+                            }
+                        }
+                    }
+                }
+            } else if (cChar == L';') {
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0 &&
+                    pendingNestedFn.typeBraceDepth == 0 && pendingNestedFn.typeAngleDepth == 0) {
+                    pendingNestedFn.active = false; // Overload / interface method signature without body
+                }
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent &&
+                    componentStack.back().sawParamsOpen && componentStack.back().parenDepth == 0 &&
+                    componentStack.back().preBodyBraceDepth == 0 && componentStack.back().preBodyAngleDepth == 0) {
+                    componentStack.pop_back(); // TS function overload signature without body
+                }
+            } else if (cChar == L'<') {
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0) {
+                    pendingNestedFn.typeAngleDepth++;
+                }
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent &&
+                    componentStack.back().sawParamsOpen && componentStack.back().parenDepth == 0) {
+                    componentStack.back().preBodyAngleDepth++;
+                }
+            } else if (cChar == L'>') {
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0 &&
+                    pendingNestedFn.typeAngleDepth > 0) {
+                    pendingNestedFn.typeAngleDepth--;
+                    pendingNestedFn.lastPostParenNonWs = L'>';
+                }
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent &&
+                    componentStack.back().sawParamsOpen && componentStack.back().parenDepth == 0 &&
+                    componentStack.back().preBodyAngleDepth > 0) {
+                    componentStack.back().preBodyAngleDepth--;
+                    componentStack.back().lastPreBodyNonWs = L'>';
                 }
             } else if (cChar == L'{') {
-                std::wstring prefix = cleanCode.substr(0, i);
+                if (inJsxProseAtStart && !enteredJsxExprHere && localJsxExprDepth > 0) {
+                    localJsxExprDepth++;
+                }
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0) {
+                    wchar_t prevC = pendingNestedFn.lastPostParenNonWs;
+                    bool isReturnTypeObjectBrace =
+                        (pendingNestedFn.typeBraceDepth > 0 || pendingNestedFn.typeAngleDepth > 0 ||
+                         prevC == L':' || prevC == L'|' || prevC == L'&' || prevC == L'=' || prevC == L',');
+                    if (isReturnTypeObjectBrace) {
+                        pendingNestedFn.typeBraceDepth++;
+                    } else {
+                        thisBraceOpensNestedFn = true;
+                        pendingNestedFn.active = false;
+                    }
+                }
+
+                std::wstring prefix = lineCleanCode.substr(0, i);
                 int type = findControlKeyword(prefix);
                 controlStack.push_back(type);
                 if (type == 1) conditionDepth++;
                 else if (type == 2) loopDepth++;
+
                 if (!componentStack.empty()) {
                     auto& comp = componentStack.back();
                     if (!comp.hasOpenedBody) {
-                        if (comp.parenDepth == 0) {
-                            comp.hasOpenedBody = true;
-                            comp.braceDepth = 1;
+                        bool pastMinCol = (lineIdx > comp.declLine || i >= comp.bodyOpenMinCol);
+                        if (pastMinCol && comp.sawParamsOpen && comp.parenDepth == 0) {
+                            wchar_t prevC = comp.lastPreBodyNonWs;
+                            bool isReturnTypeBrace = !comp.isArrowComponent &&
+                                (comp.preBodyBraceDepth > 0 || comp.preBodyAngleDepth > 0 ||
+                                 prevC == L':' || prevC == L'|' || prevC == L'&' || prevC == L'=' || prevC == L',');
+                            if (isReturnTypeBrace) {
+                                comp.preBodyBraceDepth++;
+                            } else {
+                                comp.hasOpenedBody = true;
+                                comp.braceDepth = 1;
+                            }
                         }
                     } else {
                         comp.braceDepth++;
+                        if (thisBraceOpensNestedFn) {
+                            comp.nestedFnEntryDepths.push_back(comp.braceDepth);
+                        }
                     }
                 }
             } else if (cChar == L'}') {
+                if (inJsxProseAtStart && localJsxExprDepth > 0) {
+                    localJsxExprDepth--;
+                }
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0 &&
+                    pendingNestedFn.typeBraceDepth > 0) {
+                    pendingNestedFn.typeBraceDepth--;
+                    if (pendingNestedFn.typeBraceDepth == 0) {
+                        pendingNestedFn.lastPostParenNonWs = L'}';
+                    }
+                }
+
                 if (!controlStack.empty()) {
                     int topType = controlStack.back();
                     controlStack.pop_back();
@@ -5435,198 +5999,83 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 }
                 if (!componentStack.empty()) {
                     auto& comp = componentStack.back();
-                    if (comp.hasOpenedBody) {
+                    if (!comp.hasOpenedBody) {
+                        if (comp.preBodyBraceDepth > 0) {
+                            comp.preBodyBraceDepth--;
+                            if (comp.preBodyBraceDepth == 0) {
+                                comp.lastPreBodyNonWs = L'}';
+                            }
+                        }
+                    } else {
                         comp.braceDepth--;
+                        while (!comp.nestedFnEntryDepths.empty() && comp.braceDepth < comp.nestedFnEntryDepths.back()) {
+                            comp.nestedFnEntryDepths.pop_back();
+                        }
                         if (comp.braceDepth <= 0) {
                             auto finishedComp = comp;
                             componentStack.pop_back();
-                            if (!finishedComp.hasReturn || !finishedComp.hasReturnedValue) {
-                                lsp::Diagnostic diag;
-                                diag.line = l;
-                                diag.col = i;
-                                diag.length = 1;
-                                diag.message = L"Component '" + finishedComp.name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
-                                diag.severity = 1; // Error
-                                diagnostics.push_back(std::move(diag));
+                            if (!finishedComp.isNonComponentReturnType && !finishedComp.hasThrowOrNeverCall) {
+                                if (!finishedComp.hasReturn || (!finishedComp.hasReturnedValue && !finishedComp.reportedBareReturn)) {
+                                    lsp::Diagnostic diag;
+                                    diag.line = lineIdx;
+                                    diag.col = i;
+                                    diag.length = 1;
+                                    diag.message = L"Component '" + finishedComp.name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
+                                    diag.severity = 1; // Error
+                                    diagnostics.push_back(std::move(diag));
+                                }
                             }
                         }
                     }
+                }
+            } else if (!iswspace(cChar)) {
+                if (pendingNestedFn.active && pendingNestedFn.sawParens && pendingNestedFn.parenDepth == 0 &&
+                    pendingNestedFn.typeBraceDepth == 0 && pendingNestedFn.typeAngleDepth == 0) {
+                    pendingNestedFn.lastPostParenNonWs = cChar;
+                }
+                if (!componentStack.empty() && !componentStack.back().hasOpenedBody && !componentStack.back().isArrowComponent &&
+                    componentStack.back().sawParamsOpen && componentStack.back().parenDepth == 0 &&
+                    componentStack.back().preBodyBraceDepth == 0 && componentStack.back().preBodyAngleDepth == 0) {
+                    componentStack.back().lastPreBodyNonWs = cChar;
                 }
             }
-        }
 
-        const bool inJsxProseOnLine = (isJsx && !jsxStack.empty() && jsxStack.back().exprCurlyDepth == 0);
-
-        // Return Statement Analysis: check for missing return expression in components & missing semicolons
-        // Skip when inside JSX text children so prose like `<p>Click to return</p>` is never misread as a JS return statement.
-        size_t retPos = 0;
-        while (!inJsxProseOnLine && (retPos = cleanCode.find(L"return", retPos)) != std::wstring::npos) {
-            bool validBefore = (retPos == 0 || (!iswalnum(cleanCode[retPos - 1]) && cleanCode[retPos - 1] != L'_' && cleanCode[retPos - 1] != L'$'));
-            size_t afterIdx = retPos + 6;
-            bool validAfter = (afterIdx >= cleanCode.length() || (!iswalnum(cleanCode[afterIdx]) && cleanCode[afterIdx] != L'_' && cleanCode[afterIdx] != L'$'));
-
-            if (validBefore && validAfter) {
-                if (!componentStack.empty()) {
-                    componentStack.back().hasReturn = true;
-                }
-
-                std::wstring afterReturn = cleanCode.substr(afterIdx);
-                size_t s = 0;
-                while (s < afterReturn.length() && (afterReturn[s] == L' ' || afterReturn[s] == L'\t')) s++;
-                afterReturn = afterReturn.substr(s);
-                while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'\t' || afterReturn.back() == L'\r')) afterReturn.pop_back();
-
-                size_t lastNonWs = code.find_last_not_of(L" \t\r\n");
-                bool hasSemi = (lastNonWs != std::wstring::npos && code[lastNonWs] == L';');
-                if (!afterReturn.empty() && afterReturn.back() == L';') {
-                    hasSemi = true;
-                    afterReturn.pop_back();
-                    while (!afterReturn.empty() && (afterReturn.back() == L' ' || afterReturn.back() == L'\t')) afterReturn.pop_back();
-                }
-
-                bool hasValOnSameLine = !afterReturn.empty();
-                bool multilineContinuation = inBacktickAcrossLines;
-                if (hasValOnSameLine && !multilineContinuation) {
-                    wchar_t lastCh = afterReturn.back();
-                    if (lastCh == L'(' || lastCh == L'{' || lastCh == L'[' || lastCh == L',' ||
-                        lastCh == L'.' || lastCh == L'?' || lastCh == L':' || lastCh == L'+' ||
-                        lastCh == L'-' || lastCh == L'*' || lastCh == L'/' || lastCh == L'%' ||
-                        lastCh == L'&' || lastCh == L'|' || lastCh == L'^' || lastCh == L'=' ||
-                        lastCh == L'!' || lastCh == L'~' || lastCh == L'`') {
-                        multilineContinuation = true;
-                    }
-                    // Unbalanced delimiters on the same line (e.g. `return fn(a, b` or `return <div className={...`)
-                    int pBal = 0, bBal = 0, kBal = 0;
-                    for (wchar_t ch : afterReturn) {
-                        if (ch == L'(') pBal++; else if (ch == L')') pBal--;
-                        else if (ch == L'{') bBal++; else if (ch == L'}') bBal--;
-                        else if (ch == L'[') kBal++; else if (ch == L']') kBal--;
-                    }
-                    if (pBal > 0 || bBal > 0 || kBal > 0) {
-                        multilineContinuation = true;
-                    }
-                    // Multi-line JSX element / fragment returned directly without wrapping parens, e.g.:
-                    //   return <div className="...">
-                    //     <p>Hello</p>
-                    //   </div>;
-                    if (isJsx && afterReturn.front() == L'<') {
-                        bool selfClosed = afterReturn.ends_with(L"/>");
-                        bool hasClosingTagAtEnd = false;
-                        if (afterReturn.size() >= 3 && afterReturn.back() == L'>') {
-                            size_t closePos = afterReturn.rfind(L"</");
-                            if (closePos != std::wstring::npos && closePos > 0) {
-                                hasClosingTagAtEnd = true;
-                            }
-                        }
-                        if (!selfClosed && !hasClosingTagAtEnd) {
-                            multilineContinuation = true;
-                        }
-                    }
-                    // Check if the next non-empty line continues this return expression (chaining, ternary, JSX children/closing)
-                    if (!multilineContinuation) {
-                        for (size_t nl = l + 1; nl < lineCount; ++nl) {
-                            const std::wstring& nLine = buffer.GetLine(nl);
-                            size_t ns = 0;
-                            while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
-                            if (ns >= nLine.length()) continue;
-                            if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
-                            wchar_t nc = nLine[ns];
-                            if (nc == L'.' || nc == L'?' || nc == L':' || nc == L'+' || nc == L'-' ||
-                                nc == L'*' || nc == L'/' || nc == L'&' || nc == L'|' ||
-                                (isJsx && nc == L'<')) {
-                                multilineContinuation = true;
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                bool hasValOnNextLine = false;
-                bool asiJsxAfterNewline = false;
-                if (!hasValOnSameLine) {
-                    for (size_t nl = l + 1; nl < lineCount; ++nl) {
-                        const std::wstring& nLine = buffer.GetLine(nl);
-                        size_t ns = 0;
-                        while (ns < nLine.length() && (nLine[ns] == L' ' || nLine[ns] == L'\t')) ns++;
-                        if (ns >= nLine.length()) continue;
-                        if (nLine.substr(ns, 2) == L"//" || nLine.substr(ns, 2) == L"/*") continue;
-                        if (nLine[ns] == L'}' || nLine[ns] == L')') {
-                            hasValOnNextLine = false;
-                        } else {
-                            hasValOnNextLine = true;
-                            multilineContinuation = true;
-                            if (isJsx && !hasSemi && !inBacktickAcrossLines &&
-                                nLine[ns] == L'<' && ns + 1 < nLine.length() &&
-                                (nLine[ns + 1] == L'>' || iswalpha(nLine[ns + 1]) || nLine[ns + 1] == L'_' || nLine[ns + 1] == L'$')) {
-                                asiJsxAfterNewline = true;
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                if (asiJsxAfterNewline) {
-                    lsp::Diagnostic diag;
-                    diag.line = l;
-                    diag.col = retPos;
-                    diag.length = 6;
-                    diag.message = L"Newline after 'return' inserts an automatic semicolon (returning undefined). Wrap multi-line JSX in parentheses: return ( <>...</> ). (no-unreachable)";
-                    diag.severity = 1; // Error
-                    diagnostics.push_back(std::move(diag));
-                }
-
-                if (hasValOnSameLine || hasValOnNextLine) {
-                    if (!componentStack.empty()) {
-                        componentStack.back().hasReturnedValue = true;
-                    }
-                } else {
-                    if (checkReactComponents && !componentStack.empty()) {
-                        lsp::Diagnostic diag;
-                        diag.line = l;
-                        diag.col = retPos;
-                        diag.length = 6;
-                        diag.message = L"Component '" + componentStack.back().name + L"' must return a valid React element, JSX, or null. (react/require-render-return)";
-                        diag.severity = 1; // Error
-                        diagnostics.push_back(std::move(diag));
-                    }
-                }
+            if (inJsxProseAtStart && localJsxExprDepth > 0) {
+                // Keep localJsxExprDepth synchronized with `{` and `}` after entering `{...}` on a JSX prose line
             }
-            retPos += 6;
         }
 
         // 1. React Hook Rules: Cannot call hooks conditionally or inside loops
         for (const auto& hook : reactHooks) {
-            if (inJsxProseOnLine) break;
+            if (inJsxProseAtStart) break;
             size_t pos = 0;
-            while ((pos = cleanCode.find(hook, pos)) != std::wstring::npos) {
-                bool validBefore = (pos == 0 || (!iswalnum(cleanCode[pos - 1]) && cleanCode[pos - 1] != L'_' && cleanCode[pos - 1] != L'$'));
+            while ((pos = lineCleanCode.find(hook, pos)) != std::wstring::npos) {
+                bool validBefore = (pos == 0 || (!iswalnum(lineCleanCode[pos - 1]) && lineCleanCode[pos - 1] != L'_' && lineCleanCode[pos - 1] != L'$'));
                 size_t afterIdx = pos + hook.length();
-                bool validAfter = (afterIdx >= cleanCode.length() || (!iswalnum(cleanCode[afterIdx]) && cleanCode[afterIdx] != L'_' && cleanCode[afterIdx] != L'$'));
+                bool validAfter = (afterIdx >= lineCleanCode.length() || (!iswalnum(lineCleanCode[afterIdx]) && lineCleanCode[afterIdx] != L'_' && lineCleanCode[afterIdx] != L'$'));
 
-                // Only treat as a hook invocation if followed by '(' or '<' (generic call like useState<string>())
                 size_t callScan = afterIdx;
-                while (callScan < cleanCode.length() && iswspace(cleanCode[callScan])) callScan++;
-                bool isHookCall = (callScan < cleanCode.length() && (cleanCode[callScan] == L'(' || cleanCode[callScan] == L'<'));
+                while (callScan < lineCleanCode.length() && iswspace(lineCleanCode[callScan])) callScan++;
+                bool isHookCall = (callScan < lineCleanCode.length() && (lineCleanCode[callScan] == L'(' || lineCleanCode[callScan] == L'<'));
 
                 if (validBefore && validAfter && isHookCall) {
-                    bool precededByDot = (pos > 0 && cleanCode[pos - 1] == L'.');
+                    bool precededByDot = (pos > 0 && lineCleanCode[pos - 1] == L'.');
                     if (!precededByDot) {
-                        // Bare hook call e.g. useEffect(...) -> verify it is imported!
                         if (importedSymbols.find(hook) == importedSymbols.end() &&
                             definedSymbols.find(hook) == definedSymbols.end()) {
                             lsp::Diagnostic diag;
-                            diag.line = l;
+                            diag.line = lineIdx;
                             diag.col = pos;
                             diag.length = hook.length();
                             diag.message = L"Cannot find name '" + hook + L"'. Did you mean to import it from 'react'?";
                             diag.severity = 1; // 1 = Error
                             diagnostics.push_back(std::move(diag));
                         }
-                    } else if (pos >= 6 && cleanCode.substr(pos - 6, 6) == L"React.") {
+                    } else if (pos >= 6 && lineCleanCode.substr(pos - 6, 6) == L"React.") {
                         if (importedSymbols.find(L"React") == importedSymbols.end() &&
                             definedSymbols.find(L"React") == definedSymbols.end()) {
                             lsp::Diagnostic diag;
-                            diag.line = l;
+                            diag.line = lineIdx;
                             diag.col = pos - 6;
                             diag.length = 5;
                             diag.message = L"Cannot find name 'React'. Did you mean to import it from 'react'?";
@@ -5637,7 +6086,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                     if (conditionDepth > 0 || loopDepth > 0) {
                         lsp::Diagnostic diag;
-                        diag.line = l;
+                        diag.line = lineIdx;
                         diag.col = pos;
                         diag.length = hook.length();
                         diag.message = L"React Hook \"" + hook + L"\" is called conditionally. React Hooks must be called in the exact same order in every component render. (react-hooks/rules-of-hooks)";
@@ -5646,18 +6095,17 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                     }
 
                     if (hook == L"useEffect" || hook == L"useCallback" || hook == L"useMemo") {
-                        size_t callParen = cleanCode.find(L'(', afterIdx);
+                        size_t callParen = lineCleanCode.find(L'(', afterIdx);
                         if (callParen != std::wstring::npos) {
-                            // Multi-line scanner tracking parenDepth from callParen
                             int parenDepth = 1;
                             int curBraceDepth = 0;
                             bool hasCommaAtTopLevel = false;
                             bool inQ = false;
                             wchar_t qC = 0;
 
-                            size_t scanL = l;
+                            size_t scanL = lineIdx;
                             size_t scanC = callParen + 1;
-                            while (scanL < buffer.GetLineCount() && scanL - l <= 60) {
+                            while (scanL < buffer.GetLineCount() && scanL - lineIdx <= 60) {
                                 const std::wstring& sLine = buffer.GetLine(scanL);
                                 for (; scanC < sLine.length(); ++scanC) {
                                     wchar_t sc = sLine[scanC];
@@ -5693,7 +6141,7 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             if (parenDepth == 0 && !hasCommaAtTopLevel) {
                                 lsp::Diagnostic diag;
-                                diag.line = l;
+                                diag.line = lineIdx;
                                 diag.col = pos;
                                 diag.length = hook.length();
                                 diag.message = L"React Hook " + hook + L" has no dependency array. It will re-run on every render. (react-hooks/exhaustive-deps)";
@@ -5708,17 +6156,17 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
         }
 
         // 2. Direct State Mutation: this.state.x = ... (ignore comparisons ==, !=, <=, >=, =>)
-        size_t statePos = inJsxProseOnLine ? std::wstring::npos : cleanCode.find(L"this.state.");
+        size_t statePos = inJsxProseAtStart ? std::wstring::npos : lineCleanCode.find(L"this.state.");
         if (statePos != std::wstring::npos) {
-            size_t eqPos = cleanCode.find(L'=', statePos + 11);
+            size_t eqPos = lineCleanCode.find(L'=', statePos + 11);
             if (eqPos != std::wstring::npos) {
-                wchar_t prevCh = (eqPos > 0) ? cleanCode[eqPos - 1] : L'\0';
-                wchar_t nextCh = (eqPos + 1 < cleanCode.length()) ? cleanCode[eqPos + 1] : L'\0';
+                wchar_t prevCh = (eqPos > 0) ? lineCleanCode[eqPos - 1] : L'\0';
+                wchar_t nextCh = (eqPos + 1 < lineCleanCode.length()) ? lineCleanCode[eqPos + 1] : L'\0';
                 bool isComparisonOrArrow = (prevCh == L'=' || prevCh == L'!' || prevCh == L'<' || prevCh == L'>' ||
                                             nextCh == L'=' || nextCh == L'>');
                 if (!isComparisonOrArrow) {
                     lsp::Diagnostic diag;
-                    diag.line = l;
+                    diag.line = lineIdx;
                     diag.col = statePos;
                     diag.length = (eqPos - statePos + 1);
                     diag.message = L"Do not mutate state directly. Use setState(). (react/no-direct-mutation-state)";
@@ -5727,6 +6175,19 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
                 }
             }
         }
+    };
+
+    for (size_t l = 0; l < lineCount; ++l) {
+        const std::wstring& line = buffer.GetLine(l);
+        if (line.empty()) continue;
+
+        std::wstring code;
+        std::wstring cleanCode;
+        std::vector<bool> commentMask;
+        sanitizeLine(line, code, cleanCode, &commentMask);
+
+        const bool inJsxProseOnLine = (isJsx && !jsxStack.empty() && jsxStack.back().exprCurlyDepth == 0);
+        processJsCodeLine(l, code, cleanCode, inJsxProseOnLine);
 
         // 3. JSX Validation: duplicate props and tag balancing
         if (isJsx) {
@@ -5940,8 +6401,30 @@ std::vector<lsp::Diagnostic> SyntaxValidator::ValidateReactAndESLint(const Buffe
 
                             auto advanceToTagEndLine = [&]() {
                                 if (tagEndLine > l) {
+                                    const bool postTagInJsxProse = (isJsx && !jsxStack.empty() && jsxStack.back().exprCurlyDepth == 0);
                                     for (size_t adv = l + 1; adv <= tagEndLine; ++adv) {
                                         sanitizeLine(buffer.GetLine(adv), code, cleanCode, &commentMask);
+                                        if (adv < tagEndLine) {
+                                            processJsCodeLine(adv, code, cleanCode, false);
+                                        } else if (postTagInJsxProse && tagEnd + 1 < cleanCode.length()) {
+                                            std::wstring maskedClean = cleanCode;
+                                            int exprD = 0;
+                                            for (size_t mk = tagEnd + 1; mk < maskedClean.length(); ++mk) {
+                                                if (exprD == 0) {
+                                                    if ( mk < code.length() && code[mk] == L'{' ) {
+                                                        exprD = 1;
+                                                    } else {
+                                                        maskedClean[mk] = L' ';
+                                                    }
+                                                } else {
+                                                    if (maskedClean[mk] == L'{') exprD++;
+                                                    else if (maskedClean[mk] == L'}') exprD--;
+                                                }
+                                            }
+                                            processJsCodeLine(adv, code, maskedClean, false);
+                                        } else {
+                                            processJsCodeLine(adv, code, cleanCode, false);
+                                        }
                                     }
                                     l = tagEndLine;
                                 }

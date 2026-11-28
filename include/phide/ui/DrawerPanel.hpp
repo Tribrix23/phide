@@ -279,7 +279,8 @@ public:
     void RefreshGitState(bool async = true, bool showLoading = false);
     void RefreshGitStatusOnly(bool async = true);
     void SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths);
-    void SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles);
+    void SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles,
+                       const std::map<std::wstring, size_t>& warningFiles = {});
     void StageAllChangesAsync();
     void UnstageAllChangesAsync();
     void DiscardAllChangesAsync();
@@ -1469,6 +1470,7 @@ private:
     std::vector<GitCommitItem> m_gitCommits;
     std::vector<std::wstring> m_dirtyFilePaths;
     std::map<std::wstring, size_t> m_errorFiles;
+    std::map<std::wstring, size_t> m_warningFiles;
     std::atomic<bool> m_isGitLoading{false};
     std::atomic<bool> m_isGitRefreshing{false};
     std::atomic<bool> m_gitRefreshQueued{false};

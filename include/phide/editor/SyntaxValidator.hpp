@@ -27,7 +27,8 @@ public:
         bool validateScripts = true,
         bool validateStyles = true,
         bool validatePython = true,
-        bool checkPythonUndefinedVars = true
+        bool checkPythonUndefinedVars = true,
+        bool runPluginDiagnostics = true
     );
 
     /**
@@ -67,7 +68,7 @@ public:
     );
 
 private:
-    static std::vector<lsp::Diagnostic> ValidateJson(const Buffer& buffer);
+    static std::vector<lsp::Diagnostic> ValidateJson(const Buffer& buffer, bool allowCommentsAndTrailingCommas = false);
     static std::vector<lsp::Diagnostic> ValidateBracketsAndQuotes(const Buffer& buffer, bool isPhp);
     static std::vector<lsp::Diagnostic> ValidateHtml(
         const Buffer& buffer,

@@ -1792,12 +1792,13 @@ std::vector<ProblemEntry> ExternalLinterEngine::ParseTscOutput(const std::wstrin
     std::vector<ProblemEntry> items;
     auto lines = SplitLinesPreserve(output);
     for (const auto& l : lines) {
+        const bool isIndentedCont = (!l.empty() && (l[0] == L' ' || l[0] == L'\t'));
         std::wstring tl = TrimW(l);
         if (tl.empty()) continue;
         // Format A: file(line,col): error TS2304: message
         size_t lp = tl.find(L'(');
         size_t rp = (lp != std::wstring::npos) ? tl.find(L"):", lp) : std::wstring::npos;
-        if (lp != std::wstring::npos && rp != std::wstring::npos) {
+        if (!isIndentedCont && lp != std::wstring::npos && rp != std::wstring::npos) {
             std::wstring filePart = tl.substr(0, lp);
             std::wstring coords = tl.substr(lp + 1, rp - lp - 1);
             size_t comma = coords.find(L',');
@@ -1823,8 +1824,12 @@ std::vector<ProblemEntry> ExternalLinterEngine::ParseTscOutput(const std::wstrin
                         e.message = rest;
                     }
                     items.push_back(std::move(e));
+                    continue;
                 } catch (...) {}
             }
+        }
+        if (isIndentedCont && !items.empty() && items.back().message.size() < 420) {
+            items.back().message += L" \u2014 " + tl;
         }
     }
     return items;
@@ -2526,6 +2531,64 @@ std::vector<phide::lsp::CodeActionItem> CodeActionEngine::GenerateLocalCodeActio
             std::wstring nextContent = ImportOrganizer::InsertImportStatement(filePath, docContent, c);
             if (nextContent != docContent) {
                 act.edit = makeWholeDocEdit(nextContent);
+                actions.push_back(std::move(act));
+            }
+        }
+    }
+
+    // --- 1b. Quick Fix: Diagnostic "Did you mean '...'?" & Unknown Property Removal ---
+    for (const auto& d : diagnostics) {
+        if (d.line != selStartLine) continue;
+        // Extract target word on line at d.col (or cursor)
+        size_t probe = (d.col < curLineStr.size() && IsIdentCharW(curLineStr[d.col]))
+            ? d.col
+            : ((selStartCol < curLineStr.size()) ? selStartCol : (curLineStr.empty() ? 0 : curLineStr.size() - 1));
+        if (!curLineStr.empty() && !IsIdentCharW(curLineStr[probe]) && probe > 0 && IsIdentCharW(curLineStr[probe - 1])) {
+            --probe;
+        }
+        size_t wStart = 0, wEnd = 0;
+        std::wstring badTok;
+        if (!curLineStr.empty() && IsIdentCharW(curLineStr[probe])) {
+            wStart = probe;
+            while (wStart > 0 && IsIdentCharW(curLineStr[wStart - 1])) --wStart;
+            wEnd = probe + 1;
+            while (wEnd < curLineStr.size() && IsIdentCharW(curLineStr[wEnd])) ++wEnd;
+            badTok = curLineStr.substr(wStart, wEnd - wStart);
+        }
+
+        size_t dym = d.message.find(L"Did you mean '");
+        if (dym != std::wstring::npos && !badTok.empty()) {
+            size_t qStart = dym + 14;
+            size_t qEnd = d.message.find(L'\'', qStart);
+            if (qEnd != std::wstring::npos && qEnd > qStart) {
+                std::wstring suggestion = d.message.substr(qStart, qEnd - qStart);
+                if (suggestion != badTok) {
+                    phide::lsp::CodeActionItem act;
+                    act.title = L"Change '" + badTok + L"' to '" + suggestion + L"'";
+                    act.kind = L"quickfix";
+                    act.isPreferred = true;
+                    phide::lsp::LspTextEdit te{ selStartLine, wStart, selStartLine, wEnd, suggestion };
+                    act.edit.fileChanges.push_back({ filePath, { te } });
+                    actions.push_back(std::move(act));
+                }
+            }
+        }
+
+        if (!badTok.empty() &&
+            (d.message.find(L"does not exist on type") != std::wstring::npos ||
+             d.message.find(L"IntrinsicAttributes") != std::wstring::npos)) {
+            std::wstring trimmedCur = TrimW(curLineStr);
+            if (trimmedCur == badTok || trimmedCur.rfind(badTok + L"=", 0) == 0) {
+                phide::lsp::CodeActionItem act;
+                act.title = L"Remove unknown property '" + badTok + L"'";
+                act.kind = L"quickfix";
+                phide::lsp::LspTextEdit te;
+                if (selStartLine + 1 < lines.size()) {
+                    te = { selStartLine, 0, selStartLine + 1, 0, L"" };
+                } else {
+                    te = { selStartLine, 0, selStartLine, curLineStr.size(), L"" };
+                }
+                act.edit.fileChanges.push_back({ filePath, { te } });
                 actions.push_back(std::move(act));
             }
         }

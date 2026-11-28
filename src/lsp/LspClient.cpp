@@ -333,7 +333,8 @@ std::wstring ResolveExecutableOnSystem(const std::wstring& exeName, const std::v
         if (dir.empty()) continue;
         std::filesystem::path candidate = std::filesystem::path(dir) / exeName;
         if (std::filesystem::exists(candidate, ec) && std::filesystem::is_regular_file(candidate, ec)) {
-            return candidate.wstring();
+            auto absCand = std::filesystem::absolute(candidate, ec);
+            return (!ec && !absCand.empty()) ? absCand.wstring() : candidate.wstring();
         }
     }
     wchar_t foundBuf[MAX_PATH]{};
@@ -667,12 +668,9 @@ bool LspClient::StartServer(const std::wstring& serverExecutable, const std::wst
 
 bool LspClient::EnsureServerForLanguage(const std::wstring& languageId, const std::wstring& workspaceRoot) {
     std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
-    std::wstring lang = ToLowerW(languageId);
+    std::wstring lang = LspManager::NormalizeLanguageFamily(languageId);
+    if (lang.empty()) lang = ToLowerW(languageId);
     if (lang.empty()) return false;
-    // Normalize aliases
-    if (lang == L"javascriptreact") lang = L"javascript";
-    else if (lang == L"typescriptreact") lang = L"typescript";
-    else if (lang == L"c") lang = L"cpp";
 
     std::wstring customCmd;
     {
@@ -980,7 +978,7 @@ bool LspClient::LaunchProcessAndInitialize(const std::wstring& commandLine, cons
         m_semanticTokenTypes.clear();
     }
     std::string initResp;
-    if (!SendRequestAndWait("initialize", initParams.str(), initResp, 3000)) {
+    if (!SendRequestAndWait("initialize", initParams.str(), initResp, 8000)) {
         PHIDE_LOG_ERROR(Lsp, L"LSP initialize handshake timed out or failed for: " + commandLine);
         Shutdown();
         return false;
@@ -1439,31 +1437,54 @@ void LspClient::NotifyDidChange(const std::wstring& fileUri, const std::wstring&
     bool useIncremental = false;
     size_t sLine = 0, sChar = 0, eLine = 0, eChar = 0;
     std::wstring replacement;
+    bool needAutoOpen = false;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         auto it = m_docVersions.find(uriW);
         if (it == m_docVersions.end()) {
-            return;
-        }
-        nextVer = ++(it->second);
-
-        auto itPrev = m_docSyncedTexts.find(uriW);
-        if (m_syncKind.load() == TextDocumentSyncKind::Incremental &&
-            itPrev != m_docSyncedTexts.end() &&
-            itPrev->second.size() <= 1048576 && text.size() <= 1048576) {
-            if (itPrev->second == text) {
-                return;
-            }
-            useIncremental = ComputeIncrementalDelta(itPrev->second, text, sLine, sChar, eLine, eChar, replacement);
-        }
-        if (text.size() <= 1048576) {
-            if (m_docSyncedTexts.size() >= 48 && itPrev == m_docSyncedTexts.end()) {
-                m_docSyncedTexts.erase(m_docSyncedTexts.begin());
-            }
-            m_docSyncedTexts[uriW] = text;
+            needAutoOpen = true;
         } else {
-            m_docSyncedTexts.erase(uriW);
+            nextVer = ++(it->second);
+
+            auto itPrev = m_docSyncedTexts.find(uriW);
+            if (m_syncKind.load() == TextDocumentSyncKind::Incremental &&
+                itPrev != m_docSyncedTexts.end() &&
+                itPrev->second.size() <= 1048576 && text.size() <= 1048576) {
+                if (itPrev->second == text) {
+                    return;
+                }
+                useIncremental = ComputeIncrementalDelta(itPrev->second, text, sLine, sChar, eLine, eChar, replacement);
+            }
+            if (text.size() <= 1048576) {
+                if (m_docSyncedTexts.size() >= 48 && itPrev == m_docSyncedTexts.end()) {
+                    m_docSyncedTexts.erase(m_docSyncedTexts.begin());
+                }
+                m_docSyncedTexts[uriW] = text;
+            } else {
+                m_docSyncedTexts.erase(uriW);
+            }
         }
+    }
+    if (needAutoOpen) {
+        std::wstring localPath = FileUriToPath(fileUri);
+        std::wstring ext = ToLowerW(std::filesystem::path(localPath).extension().wstring());
+        std::wstring inferredLang = m_currentLanguageId;
+        if (ext == L".tsx") inferredLang = L"typescriptreact";
+        else if (ext == L".ts" || ext == L".mts" || ext == L".cts") inferredLang = L"typescript";
+        else if (ext == L".jsx") inferredLang = L"javascriptreact";
+        else if (ext == L".js" || ext == L".mjs" || ext == L".cjs") inferredLang = L"javascript";
+        else if (ext == L".php" || ext == L".phtml") inferredLang = L"php";
+        else if (ext == L".py" || ext == L".pyw") inferredLang = L"python";
+        else if (ext == L".css") inferredLang = L"css";
+        else if (ext == L".scss") inferredLang = L"scss";
+        else if (ext == L".less") inferredLang = L"less";
+        else if (ext == L".html" || ext == L".htm") inferredLang = L"html";
+        else if (ext == L".json" || ext == L".jsonc") inferredLang = L"json";
+        else if (ext == L".yaml" || ext == L".yml") inferredLang = L"yaml";
+        else if (ext == L".c" || ext == L".h") inferredLang = L"c";
+        else if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".hpp" || ext == L".hh") inferredLang = L"cpp";
+        NotifyDidOpen(fileUri, inferredLang.empty() ? L"plaintext" : inferredLang, text);
+        return;
     }
 
     std::ostringstream params;
@@ -2575,6 +2596,9 @@ std::wstring LspManager::NormalizeLanguageFamily(const std::wstring& langOrExtOr
     }
     if (s == L"json" || s == L".json" || s == L".jsonc") {
         return L"json";
+    }
+    if (s == L"yaml" || s == L".yaml" || s == L".yml") {
+        return L"yaml";
     }
     return s;
 }

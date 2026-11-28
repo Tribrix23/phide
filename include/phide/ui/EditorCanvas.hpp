@@ -1990,6 +1990,59 @@ private:
     mutable std::list<CodeLineLayoutKey> m_lineLayoutLru;
     mutable std::unordered_map<CodeLineLayoutKey, CodeLineLayoutEntry, CodeLineLayoutKeyHash> m_lineLayoutMap;
 
+    struct SegLineCacheKey {
+        uint64_t bufferInstanceId = 0;
+        uint64_t bufferVersion = UINT64_MAX;
+        size_t bufferLine = 0;
+        uint64_t semanticVer = UINT64_MAX;
+        uint64_t inlayHintsSig = 0;
+        bool isTailwind = false;
+        std::wstring docExt;
+
+        bool operator==(const SegLineCacheKey& o) const noexcept {
+            return bufferInstanceId == o.bufferInstanceId &&
+                   bufferVersion == o.bufferVersion &&
+                   bufferLine == o.bufferLine &&
+                   semanticVer == o.semanticVer &&
+                   inlayHintsSig == o.inlayHintsSig &&
+                   isTailwind == o.isTailwind &&
+                   docExt == o.docExt;
+        }
+    };
+    struct SegLineCacheKeyHash {
+        size_t operator()(const SegLineCacheKey& k) const noexcept {
+            uint64_t h = 14695981039346656037ULL;
+            auto mix = [&](uint64_t v) {
+                h ^= v;
+                h *= 1099511628211ULL;
+            };
+            mix(k.bufferInstanceId);
+            mix(k.bufferVersion);
+            mix(k.bufferLine);
+            mix(k.semanticVer);
+            mix(k.inlayHintsSig);
+            mix(k.isTailwind ? 1ULL : 0ULL);
+            for (wchar_t c : k.docExt) mix(static_cast<uint64_t>(c));
+            return static_cast<size_t>(h);
+        }
+    };
+    struct CachedSegItem {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        size_t start = 0;
+        size_t end = 0;
+        float relX = 0.0f;
+        float w = 0.0f;
+    };
+    struct SegLineCacheEntry {
+        std::vector<LineColorSpan> lineColors;
+        std::vector<CachedSegItem> segs;
+        std::vector<float> swatchRelXs;
+        std::vector<float> midHintRelXs;
+        std::list<SegLineCacheKey>::iterator lruIt;
+    };
+    mutable std::list<SegLineCacheKey> m_segLineLru;
+    mutable std::unordered_map<SegLineCacheKey, SegLineCacheEntry, SegLineCacheKeyHash> m_segLineMap;
+
     mutable IDWriteTextFormat* m_cachedClFmt = nullptr;
     mutable float m_cachedClDpi = 0.0f;
     mutable std::unordered_map<std::wstring, float> m_codeLensWidthCache;

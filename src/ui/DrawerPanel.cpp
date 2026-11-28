@@ -2212,59 +2212,60 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     }
                 } else {
                     bool itemHasError = false;
+                    bool itemHasWarningOnly = false;
                     size_t errorCount = 0;
-                    if (!item.isFolder) {
-                        std::wstring normItem = item.fullPath;
-                        for (auto& c : normItem) if (c == L'/') c = L'\\';
-                        if (m_hasOpenFolder && !m_openFolderPath.empty() && (normItem.length() < 2 || normItem[1] != L':')) {
+                    auto normalizeDiagPath = [&](std::wstring p) {
+                        for (auto& c : p) if (c == L'/') c = L'\\';
+                        if (m_hasOpenFolder && !m_openFolderPath.empty() && (p.length() < 2 || p[1] != L':')) {
                             std::wstring base = m_openFolderPath;
                             for (auto& c : base) if (c == L'/') c = L'\\';
                             if (!base.empty() && base.back() != L'\\') base += L'\\';
-                            normItem = base + normItem;
+                            p = base + p;
                         }
+                        return p;
+                    };
+                    if (!item.isFolder) {
+                        std::wstring normItem = normalizeDiagPath(item.fullPath);
+                        size_t errCnt = 0;
+                        size_t warnCnt = 0;
                         for (const auto& [errPath, count] : m_errorFiles) {
-                            if (count > 0) {
-                                std::wstring normErr = errPath;
-                                for (auto& c : normErr) if (c == L'/') c = L'\\';
-                                if (m_hasOpenFolder && !m_openFolderPath.empty() && (normErr.length() < 2 || normErr[1] != L':')) {
-                                    std::wstring base = m_openFolderPath;
-                                    for (auto& c : base) if (c == L'/') c = L'\\';
-                                    if (!base.empty() && base.back() != L'\\') base += L'\\';
-                                    normErr = base + normErr;
-                                }
-                                if (_wcsicmp(normErr.c_str(), normItem.c_str()) == 0) {
-                                    itemHasError = true;
-                                    errorCount = count;
-                                    break;
-                                }
+                            if (count > 0 && _wcsicmp(normalizeDiagPath(errPath).c_str(), normItem.c_str()) == 0) {
+                                errCnt += count;
                             }
+                        }
+                        for (const auto& [warnPath, count] : m_warningFiles) {
+                            if (count > 0 && _wcsicmp(normalizeDiagPath(warnPath).c_str(), normItem.c_str()) == 0) {
+                                warnCnt += count;
+                            }
+                        }
+                        if (errCnt > 0) {
+                            itemHasError = true;
+                            errorCount = errCnt;
+                        } else if (warnCnt > 0) {
+                            itemHasWarningOnly = true;
+                            errorCount = warnCnt;
                         }
                     } else {
-                        std::wstring normFolder = item.fullPath;
-                        for (auto& c : normFolder) if (c == L'/') c = L'\\';
-                        if (m_hasOpenFolder && !m_openFolderPath.empty() && (normFolder.length() < 2 || normFolder[1] != L':')) {
-                            std::wstring base = m_openFolderPath;
-                            for (auto& c : base) if (c == L'/') c = L'\\';
-                            if (!base.empty() && base.back() != L'\\') base += L'\\';
-                            normFolder = base + normFolder;
-                        }
+                        std::wstring normFolder = normalizeDiagPath(item.fullPath);
                         if (!normFolder.empty() && normFolder.back() != L'\\') normFolder += L'\\';
-
+                        size_t errCnt = 0;
+                        size_t warnCnt = 0;
                         for (const auto& [errPath, count] : m_errorFiles) {
-                            if (count > 0) {
-                                std::wstring normErr = errPath;
-                                for (auto& c : normErr) if (c == L'/') c = L'\\';
-                                if (m_hasOpenFolder && !m_openFolderPath.empty() && (normErr.length() < 2 || normErr[1] != L':')) {
-                                    std::wstring base = m_openFolderPath;
-                                    for (auto& c : base) if (c == L'/') c = L'\\';
-                                    if (!base.empty() && base.back() != L'\\') base += L'\\';
-                                    normErr = base + normErr;
-                                }
-                                if (_wcsnicmp(normErr.c_str(), normFolder.c_str(), normFolder.length()) == 0) {
-                                    itemHasError = true;
-                                    errorCount += count;
-                                }
+                            if (count > 0 && _wcsnicmp(normalizeDiagPath(errPath).c_str(), normFolder.c_str(), normFolder.length()) == 0) {
+                                errCnt += count;
                             }
+                        }
+                        for (const auto& [warnPath, count] : m_warningFiles) {
+                            if (count > 0 && _wcsnicmp(normalizeDiagPath(warnPath).c_str(), normFolder.c_str(), normFolder.length()) == 0) {
+                                warnCnt += count;
+                            }
+                        }
+                        if (errCnt > 0) {
+                            itemHasError = true;
+                            errorCount = errCnt;
+                        } else if (warnCnt > 0) {
+                            itemHasWarningOnly = true;
+                            errorCount = warnCnt;
                         }
                     }
 
@@ -2345,7 +2346,8 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         pRT->CreateSolidColorBrush(gitColor, &brushGitStatus);
                     }
 
-                    float maxLabelRight = railW + fullDrawerW - config.ScaleF((itemHasError || !gitStatus.empty()) ? 42.0f : 16.0f);
+                    const bool itemHasDiag = (itemHasError || itemHasWarningOnly);
+                    float maxLabelRight = railW + fullDrawerW - config.ScaleF((itemHasDiag || !gitStatus.empty()) ? 42.0f : 16.0f);
                     if (maxLabelRight < labelX + 10.0f) maxLabelRight = labelX + 10.0f;
                     D2D1_RECT_F rcLabel = D2D1::RectF(
                         labelX,
@@ -2353,8 +2355,12 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                         maxLabelRight,
                         curY + itemH
                     );
-                    ID2D1Brush* pTextBrush = itemHasError ?
-                        (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get()) :
+                    ID2D1Brush* diagBrush = itemHasError
+                        ? (theme.brushIconRed ? theme.brushIconRed.Get() : theme.brushTextPrimary.Get())
+                        : (theme.brushIconYellow ? theme.brushIconYellow.Get()
+                           : (theme.brushCommentWarning ? theme.brushCommentWarning.Get() : theme.brushTextPrimary.Get()));
+                    ID2D1Brush* pTextBrush = itemHasDiag ?
+                        diagBrush :
                         (isActive ?
                             (theme.IsDarkMode() ? theme.brushTextWhite.Get() : theme.brushTextPrimary.Get()) :
                             (brushGitStatus ?
@@ -2374,8 +2380,8 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                     );
                     pRT->PopAxisAlignedClip();
 
-                    // Red error indicator badge in explorer tree (Image 3)
-                    if (itemHasError) {
+                    // Error (red) or Warning-only (yellow) indicator badge in explorer tree
+                    if (itemHasDiag) {
                         float badgeRight = railW + fullDrawerW - config.ScaleF(12.0f);
                         float badgeCy = curY + itemH / 2.0f;
                         if (!item.isFolder) {
@@ -2384,13 +2390,19 @@ void DrawerPanel::RenderExplorerPane(ID2D1RenderTarget* pRT, Theme& theme, const
                             float errBadgeH = config.ScaleF(14.0f);
                             D2D1_RECT_F rcErrPill = D2D1::RectF(badgeRight - errBadgeW, badgeCy - errBadgeH / 2.0f, badgeRight, badgeCy + errBadgeH / 2.0f);
                             D2D1_ROUNDED_RECT rrcErrPill = D2D1::RoundedRect(rcErrPill, 4.0f, 4.0f);
-                            if (theme.brushIconRed) pRT->FillRoundedRectangle(rrcErrPill, theme.brushIconRed.Get());
+                            if (diagBrush) pRT->FillRoundedRectangle(rrcErrPill, diagBrush);
+                            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> darkNumBrush;
+                            ID2D1Brush* numTxtBrush = theme.brushTextWhite.Get();
+                            if (itemHasWarningOnly) {
+                                pRT->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.10f, 1.0f), &darkNumBrush);
+                                if (darkNumBrush) numTxtBrush = darkNumBrush.Get();
+                            }
                             pRT->DrawText(errNum.c_str(), static_cast<UINT32>(errNum.length()),
                                           theme.fontButtonCenter ? theme.fontButtonCenter.Get() : theme.fontBody.Get(),
-                                          rcErrPill, theme.brushTextWhite.Get());
+                                          rcErrPill, numTxtBrush);
                         } else {
                             D2D1_ELLIPSE errDot = D2D1::Ellipse(D2D1::Point2F(badgeRight - config.ScaleF(4.0f), badgeCy), config.ScaleF(3.0f), config.ScaleF(3.0f));
-                            if (theme.brushIconRed) pRT->FillEllipse(errDot, theme.brushIconRed.Get());
+                            if (diagBrush) pRT->FillEllipse(errDot, diagBrush);
                         }
                     } else if (!gitStatus.empty() && brushGitStatus) {
                         // Colored Git status badge / dot indicator (VS Code style, Image 1)
@@ -7971,8 +7983,10 @@ void DrawerPanel::SetDirtyFiles(const std::vector<std::wstring>& dirtyFilePaths)
     }
 }
 
-void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles) {
+void DrawerPanel::SetErrorFiles(const std::map<std::wstring, size_t>& errorFiles,
+                                 const std::map<std::wstring, size_t>& warningFiles) {
     m_errorFiles = errorFiles;
+    m_warningFiles = warningFiles;
 }
 
 std::string DrawerPanel::GenerateContextAwareGitignore(const std::wstring& rootDir) {
